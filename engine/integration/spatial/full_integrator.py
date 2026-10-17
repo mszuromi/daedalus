@@ -378,18 +378,21 @@ def _gl_on(lower, upper, n):
     return t, w
 
 
-def _gl_on_split(lower, upper, n, breaks):
+def _gl_on_split(lower, upper, n, breaks, n_short=None):
     """:func:`_gl_on` on ``[lower, upper]`` split at the fixed ``breaks`` (each
     clipped into the interval; a segment of zero width gets zero weight), so
     a kink of the integrand at a break is a segment end, not an interior
-    point.  Returns ``(t_nodes, t_w)`` of shape ``lower.shape + (n·(len(breaks)+1),)``."""
+    point.  The lowest segment (the long retarded tail) gets ``n`` nodes, the
+    segments between breaks ``n_short`` (default ``n``).  Returns
+    ``(t_nodes, t_w)`` of shape ``lower.shape + (n + n_short·len(breaks),)``."""
     if not breaks:
         return _gl_on(lower, upper, n)
+    n_short = n if n_short is None else int(n_short)
     cuts = [lower] + [np.clip(np.full_like(lower, b), lower, upper)
                       for b in sorted(breaks)] + [upper]
     ts, ws = [], []
-    for lo_, hi_ in zip(cuts[:-1], cuts[1:]):
-        t, w = _gl_on(lo_, hi_, n)
+    for i_seg, (lo_, hi_) in enumerate(zip(cuts[:-1], cuts[1:])):
+        t, w = _gl_on(lo_, hi_, n if i_seg == 0 else n_short)
         ts.append(t)
         ws.append(w)
     return np.concatenate(ts, axis=-1), np.concatenate(ws, axis=-1)
@@ -423,11 +426,13 @@ class SpatialMemoryBudgetError(MemoryError):
     """A spatial chamber evaluation would exceed the memory budget."""
 
 
-def time_grid_split_factor(descr, external_times):
+def time_grid_split_factor(descr, external_times, n_t=None, n_short=8):
     """How many times larger the causal-chamber time grid is because each
     vertex interval splits at the external times inside its static leaf
-    bounds (:func:`_c_leaf_breaks`): ``∏_v (1 + #breaks_v)``.  For memory
-    guards (the grid is ``n_t^{n_V}·n_s^{n_C}`` times this, per chamber)."""
+    bounds (:func:`_c_leaf_breaks`): ``∏_v (n_t + n_short·#breaks_v)/n_t``
+    (``∏_v (1 + #breaks_v)`` when ``n_t`` is None).  For memory guards (the
+    grid is ``n_t^{n_V}·n_s^{n_C}`` times this, per chamber; an upper bound —
+    zero-width segments are dropped)."""
     internal = list(descr.internal_vertices)
     idx = {v: i for i, v in enumerate(internal)}
     s_up = [math.inf] * len(internal)
@@ -439,10 +444,11 @@ def time_grid_split_factor(descr, external_times):
             s_up[idx[e.u]] = min(s_up[idx[e.u]], external_times[e.v])
         elif e.v in idx and e.u not in idx:
             s_lo[idx[e.v]] = max(s_lo[idx[e.v]], external_times[e.u])
-    f = 1
+    f = 1.0
     for i, bl in enumerate(_c_leaf_breaks(descr.edges, idx, external_times,
                                           len(internal))):
-        f *= 1 + sum(1 for b in bl if s_lo[i] < b < s_up[i])
+        nb = sum(1 for b in bl if s_lo[i] < b < s_up[i])
+        f *= (1 + nb) if n_t is None else (n_t + min(n_t, n_short) * nb) / n_t
     return f
 
 
@@ -730,6 +736,9 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
     c_breaks = [[b_ for b_ in bl if s_lo[i_] < b_ < s_up[i_]]   # inside the static bounds
                 for i_, bl in enumerate(_c_leaf_breaks(edges, idx, external_times, n_V))]
+    # the long tail segment keeps n_t nodes; the short smooth segments between
+    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
+    n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
     _use_mc = method == 'mc' and (n_V + n_C) > 0
     _rng = np.random.default_rng(mc_seed) if _use_mc else None
     for order in chambers:
@@ -769,7 +778,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 lower = np.full(Pt, s_lo[vi])
                 upper = np.maximum(upper, lower)      # empty interval → zero weight
                 # split at the external times (kinks; see _c_leaf_breaks)
-                tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi])
+                tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi], n_short)
                 for k in placed:
                     placed[k] = np.repeat(placed[k], tnode.shape[-1])
                 placed[vi] = tnode.ravel()
@@ -1123,7 +1132,9 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
     # memory guard: per chamber the (P, n_assign) exponent and amplitude plus
     # the (P, n_x) heat-kernel arrays, P = n_t^{n_V}·split·n_s^{n_C}
-    _P = (n_t ** n_V) * time_grid_split_factor(descr, external_times) * Ps
+    _P = (n_t ** n_V) * time_grid_split_factor(
+        descr, external_times, n_t,
+        int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8))) * Ps
     _nx = 1 if xs_arr is None else max(1, len(xs_arr))
     _need = _P * (3 * n_assign + 2 * _nx) * 16.0
     _bud, _rule = _spatial_mem_budget()
@@ -1140,6 +1151,9 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
     c_breaks = [[b_ for b_ in bl if s_lo[i_] < b_ < s_up[i_]]   # inside the static bounds
                 for i_, bl in enumerate(_c_leaf_breaks(edges, idx, external_times, n_V))]
+    # the long tail segment keeps n_t nodes; the short smooth segments between
+    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
+    n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
     for order in chambers:
         # deterministic causal-chamber product grid (as diagram_kinematic),
         # split at the C-edge leaf times
@@ -1152,7 +1166,7 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
                 else np.minimum(s_up[vi], later)
             lower = np.full(Pt, s_lo[vi])
             upper = np.maximum(upper, lower)          # empty interval → zero weight
-            tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi])
+            tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi], n_short)
             for k in placed:
                 placed[k] = np.repeat(placed[k], tnode.shape[-1])
             placed[vi] = tnode.ravel()

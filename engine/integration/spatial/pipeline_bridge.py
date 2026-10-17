@@ -1848,7 +1848,9 @@ def compute_spatial_correlator_generic(
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
         # the time grid splits at the external times inside each vertex's
         # leaf bounds (worst lag sign of the largest |tau|)
-        _split = max(time_grid_split_factor(_dd, external_times_2pt(_dd, t_))
+        _nshort = min(_nt, int(_osg.environ.get('SPATIAL_SEGMENT_NODES', 8)))
+        _split = max(time_grid_split_factor(_dd, external_times_2pt(_dd, t_),
+                                            _nt, _nshort)
                      for t_ in ((0.0,) if _tau_m == 0.0 else (_tau_m, -_tau_m)))
         _P = (_nt ** _nV) * (_ns ** _nC) * _split
         _gb = _P * _nx * 16.0 / 1e9                        # one (P, n_x) complex array
