@@ -30,6 +30,6 @@ METADATA = {
     'ell_default': 0,
     'tau_max': 50.0,
     'tau_step': 0.5,
-    'recommended_external_fields': [('phi', 1), ('phi', 2)],
+    'recommended_external_fields': [('phi', 1), ('phi', 1)],
     'fixed_point_index_default': 0,
 }
