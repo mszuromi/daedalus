@@ -398,17 +398,54 @@ def _gl_on_split(lower, upper, n, breaks, n_short=None):
     return np.concatenate(ts, axis=-1), np.concatenate(ws, axis=-1)
 
 
-def _c_leaf_breaks(edges, idx, external_times, n_V):
-    """Per internal vertex: the external times where its time integrand can
-    have a kink — ALL distinct external times.  ``C(|t_v − t_leaf|)`` kinks at
-    ``t_v = t_leaf``; and when ``t_v`` crosses a leaf time that bounds a vertex
-    integrated inside it (``upper = min(s_up, t_v)``, or one of that vertex's
-    own breaks), the inner integral's limits switch branch.  Neither is a
-    causal-chamber boundary (the chambers order the INTERNAL vertices only);
-    the time grid splits there.  The caller keeps the ones inside the vertex's
-    static bounds."""
-    ts = sorted({float(t) for t in external_times.values()})
-    return [list(ts) for _ in range(n_V)]
+def _leaf_ties(edges, idx, external_times, n_V):
+    """Per internal vertex: (C-edge leaf times, leaf upper bound or None,
+    static lower bound, static upper bound) from the R/C edges to leaves."""
+    own = [set() for _ in range(n_V)]
+    up = [None] * n_V
+    s_lo = [-math.inf] * n_V
+    s_up = [math.inf] * n_V
+    for e in edges:
+        ui, vi = e.u in idx, e.v in idx
+        if e.kind == 'C' and e.u != e.v:
+            if ui and not vi:
+                own[idx[e.u]].add(float(external_times[e.v]))
+            elif vi and not ui:
+                own[idx[e.v]].add(float(external_times[e.u]))
+        elif e.kind == 'R':
+            if ui and not vi:
+                t = float(external_times[e.v])
+                s_up[idx[e.u]] = min(s_up[idx[e.u]], t)
+                up[idx[e.u]] = s_up[idx[e.u]]
+            elif vi and not ui:
+                s_lo[idx[e.v]] = max(s_lo[idx[e.v]],
+                                     float(external_times[e.u]))
+    return own, up, s_lo, s_up
+
+
+def _chamber_breaks(order, ties):
+    """Per internal vertex (index), for one causal chamber ``order``: the
+    external times where its time integrand can have a kink, inside its
+    static leaf bounds.
+
+    * its own C edges to leaves: ``C(|t_v − t_leaf|)`` kinks at ``t_leaf``;
+    * every vertex integrated INSIDE it (later in ``reversed(order)``):
+      that vertex's leaf upper bound (its limit ``min(s_up, t_v)`` switches
+      branch when ``t_v`` crosses it) and its own kink times.
+
+    None of these is a causal-chamber boundary (chambers order the internal
+    vertices only), so the time grid splits there."""
+    own, up, s_lo, s_up = ties
+    rev = list(reversed(order))
+    out = {}
+    acc = set()
+    for vi in reversed(rev):                      # innermost first
+        bl = set(own[vi]) | acc
+        out[vi] = sorted(b_ for b_ in bl if s_lo[vi] < b_ < s_up[vi])
+        acc |= own[vi]
+        if up[vi] is not None:
+            acc.add(up[vi])
+    return out
 
 
 def _spatial_mem_budget():
@@ -429,27 +466,26 @@ class SpatialMemoryBudgetError(MemoryError):
 def time_grid_split_factor(descr, external_times, n_t=None, n_short=8):
     """How many times larger the causal-chamber time grid is because each
     vertex interval splits at the external times inside its static leaf
-    bounds (:func:`_c_leaf_breaks`): ``∏_v (n_t + n_short·#breaks_v)/n_t``
+    bounds (:func:`_chamber_breaks`, worst chamber): ``∏_v (n_t + n_short·#breaks_v)/n_t``
     (``∏_v (1 + #breaks_v)`` when ``n_t`` is None).  For memory guards (the
     grid is ``n_t^{n_V}·n_s^{n_C}`` times this, per chamber; an upper bound —
     zero-width segments are dropped)."""
     internal = list(descr.internal_vertices)
     idx = {v: i for i, v in enumerate(internal)}
-    s_up = [math.inf] * len(internal)
-    s_lo = [-math.inf] * len(internal)
-    for e in descr.edges:
-        if e.kind != 'R':
-            continue
-        if e.u in idx and e.v not in idx:
-            s_up[idx[e.u]] = min(s_up[idx[e.u]], external_times[e.v])
-        elif e.v in idx and e.u not in idx:
-            s_lo[idx[e.v]] = max(s_lo[idx[e.v]], external_times[e.u])
-    f = 1.0
-    for i, bl in enumerate(_c_leaf_breaks(descr.edges, idx, external_times,
-                                          len(internal))):
-        nb = sum(1 for b in bl if s_lo[i] < b < s_up[i])
-        f *= (1 + nb) if n_t is None else (n_t + min(n_t, n_short) * nb) / n_t
-    return f
+    n_V = len(internal)
+    if not n_V:
+        return 1.0
+    internal_R = [(idx[e.u], idx[e.v]) for e in descr.edges
+                  if e.kind == 'R' and e.u in idx and e.v in idx]
+    ties = _leaf_ties(descr.edges, idx, external_times, n_V)
+    worst = 1.0
+    for order in causal_chambers(n_V, internal_R):
+        f = 1.0
+        for vi, bl in _chamber_breaks(order, ties).items():
+            nb = len(bl)
+            f *= (1 + nb) if n_t is None else (n_t + min(n_t, n_short) * nb) / n_t
+        worst = max(worst, f)
+    return worst
 
 
 def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
@@ -734,8 +770,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             a, b, edges, internal, idx, internal_R, external_times, xs_arr,
             mu, D, spatial_dim, formfactor, int(mc_n), mc_seed)
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
-    c_breaks = [[b_ for b_ in bl if s_lo[i_] < b_ < s_up[i_]]   # inside the static bounds
-                for i_, bl in enumerate(_c_leaf_breaks(edges, idx, external_times, n_V))]
+    _ties = _leaf_ties(edges, idx, external_times, n_V)
     # the long tail segment keeps n_t nodes; the short smooth segments between
     # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
     n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
@@ -765,6 +800,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 tvals[v] = placed[idx[v]]
             sig = [(-np.log(_rng.random(P)) / mu) for _ in range(n_C)]
         else:
+            c_breaks = _chamber_breaks(order, _ties)
             # ── deterministic causal-chamber PRODUCT GRID (the validated path) ──
             # nested internal-time grid (latest→earliest; each level bounded above
             # by the next-later time and its external scalar bound), × the σ-grid.
@@ -777,7 +813,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                     else np.minimum(s_up[vi], later)
                 lower = np.full(Pt, s_lo[vi])
                 upper = np.maximum(upper, lower)      # empty interval → zero weight
-                # split at the external times (kinks; see _c_leaf_breaks)
+                # split at the kink times (see _chamber_breaks)
                 tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi], n_short)
                 for k in placed:
                     placed[k] = np.repeat(placed[k], tnode.shape[-1])
@@ -1149,14 +1185,14 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     total = (np.zeros((n_assign, len(xs_arr)), dtype=complex)
              if xs_arr is not None else np.zeros(n_assign, dtype=complex))
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
-    c_breaks = [[b_ for b_ in bl if s_lo[i_] < b_ < s_up[i_]]   # inside the static bounds
-                for i_, bl in enumerate(_c_leaf_breaks(edges, idx, external_times, n_V))]
+    _ties = _leaf_ties(edges, idx, external_times, n_V)
     # the long tail segment keeps n_t nodes; the short smooth segments between
     # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
     n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
     for order in chambers:
         # deterministic causal-chamber product grid (as diagram_kinematic),
-        # split at the C-edge leaf times
+        # split at the kink times (_chamber_breaks)
+        c_breaks = _chamber_breaks(order, _ties)
         placed = {}
         wt = np.array([1.0])
         later = None
