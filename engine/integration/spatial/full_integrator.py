@@ -430,8 +430,9 @@ def _chamber_breaks(order, ties):
 
     * its own C edges to leaves: ``C(|t_v − t_leaf|)`` kinks at ``t_leaf``;
     * every vertex integrated INSIDE it (later in ``reversed(order)``):
-      that vertex's leaf upper bound (its limit ``min(s_up, t_v)`` switches
-      branch when ``t_v`` crosses it) and its own kink times.
+      that vertex's leaf bounds (its limit ``min(s_up, t_v)`` switches branch
+      when ``t_v`` crosses ``s_up``; its interval ``[s_lo, t_v]`` opens at
+      ``t_v = s_lo``) and its own kink times.
 
     None of these is a causal-chamber boundary (chambers order the internal
     vertices only), so the time grid splits there."""
@@ -445,6 +446,8 @@ def _chamber_breaks(order, ties):
         acc |= own[vi]
         if up[vi] is not None:
             acc.add(up[vi])
+        if s_lo[vi] > -math.inf:
+            acc.add(s_lo[vi])
     return out
 
 
