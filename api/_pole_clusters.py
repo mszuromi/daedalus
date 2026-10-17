@@ -323,7 +323,13 @@ def analyze(G_ft_F, Q_poly, nf, tau_max=None):
         n = len(roots)
         if sum(mult_Q) != Qh.degree():
             raise ArithmeticError('coprime base does not account for Q')
-        retarded = [mp.re(r) < -1e-9 for r in roots]
+        # retarded: decaying relative to the roots' own frequency scale, the
+        # same rule as the double-precision tiers (audit W4b, ACC-65: an
+        # absolute -1e-9 dropped a stable mode slower than 1e-9 silently,
+        # which in faster time units was kept)
+        from api._propagator import RETARDED_RTOL
+        lam_scale = max((abs(r) for r in roots), default=mp.mpf(0)) or 1
+        retarded = [mp.re(r) < -RETARDED_RTOL * lam_scale for r in roots]
         # entries: numerator, leading coefficient, per-root multiplicity
         entries = []
         for (i, j), D in dens.items():

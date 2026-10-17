@@ -18,6 +18,7 @@ so kernel restarts skip the expensive 6×6 inverse + factor() pass.
 """
 from __future__ import annotations
 
+import math
 import re
 
 from sage.all import (
@@ -396,6 +397,14 @@ def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
     return err
 
 
+def _note_tier1_fallback(analysis_out, reason):
+    """Record why the exact tier returned no residues without its own
+    warning (``compute_poles_and_residues`` then warns once: audit W4b,
+    ACC-61, the numerical tier was entered silently on these paths)."""
+    if analysis_out is not None:
+        analysis_out['_tier1_fallback_reason'] = reason
+
+
 def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                                                 verbose=False,
                                                 analysis_out=None,
@@ -541,6 +550,8 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                         'residue formula does not apply.  Falling '
                         'back to next tier.'
                     )
+                _note_tier1_fallback(analysis_out, 'Q(omega) has a repeated '
+                                     'root the cluster route did not resolve')
                 return None, None, None
         except (AttributeError, TypeError):
             # ``is_squarefree`` may not be implemented on the field;
@@ -562,9 +573,11 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                 if res is not None:
                     return res
         all_roots = [complex(r) for r, _ in roots]
-        # (pole, index into all_roots), retarded, in the (Im, Re) order
+        # (pole, index into all_roots), retarded (relative to the roots'
+        # own frequency scale, ``_is_retarded``), in the (Im, Re) order
+        w_scale = _omega_scale(all_roots)
         pole_idx = sorted(((p, r) for r, p in enumerate(all_roots)
-                           if p.imag > 1e-9),
+                           if _is_retarded(p, w_scale)),
                           key=lambda t: (t[0].imag, t[0].real))
         pole_vals = [p for p, _ in pole_idx]
 
@@ -707,11 +720,15 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
             print(f'[propagator] polynomial-fracfield exceeded '
                   f'{_POLYNOMIAL_PATH_BUDGET_SEC}s budget — '
                   f'falling back to numpy cofactor.')
+        _note_tier1_fallback(analysis_out, 'the exact inverse exceeded its '
+                             f'{_POLYNOMIAL_PATH_BUDGET_SEC} s budget')
         return None, None, None
     except Exception as exc:
         if verbose:
             print(f'[propagator] polynomial-fracfield failed '
                   f'({type(exc).__name__}: {exc!s:.80}); falling back.')
+        _note_tier1_fallback(analysis_out, f'{type(exc).__name__}: '
+                             f'{exc!s:.120}')
         return None, None, None
 
 
@@ -1330,10 +1347,46 @@ def _warn_zero_residue(pk):
         PoleResidueWarning, stacklevel=3)
 
 
-def _singular_at(det_at, om):
+#: A root of det K(omega) is a retarded pole when Im omega exceeds this
+#: fraction of the system's frequency scale (its largest |root|,
+#: ``_omega_scale``): a rounding-level margin in ANY time unit.  Audit W4b
+#: (ACC-62/65): the absolute floor Im omega > 1e-9 silently dropped a stable
+#: mode slower than 1e-9 (every pole of the same model written in slow
+#: units), while its fast-unit twin kept it.  A root whose rate is below
+#: this fraction of the fastest one is not resolved by double-precision root
+#: finding anyway (the analyzer's G2 gate refuses such marginal modes).
+RETARDED_RTOL = 1e-12
+
+
+def _omega_scale(roots):
+    """The frequency scale of a root set: its largest ``|root|`` (1.0 for no
+    or only zero roots, where nothing depends on it)."""
+    s = max((abs(complex(r)) for r in roots), default=0.0)
+    return s if s > 0 and math.isfinite(s) else 1.0
+
+
+def _is_retarded(r, scale):
+    """``Im r > RETARDED_RTOL * scale`` (``scale``: ``_omega_scale`` of the
+    roots ``r`` belongs to)."""
+    return complex(r).imag > RETARDED_RTOL * scale
+
+
+def _local_unit(om, scale=None):
+    """The length unit near ``om`` for difference steps and rings: ``|om|``,
+    floored at 1e-6 of the system's frequency ``scale`` (a root at the
+    origin); never an absolute constant."""
+    a = abs(complex(om))
+    if scale:
+        return max(a, 1e-6 * float(scale))
+    return a if a > 0 else 1.0
+
+
+def _singular_at(det_at, om, scale=None):
     """Scale-free test that ``det K`` vanishes at ``om``: ``|det K(om)|`` at
     most 1e-6 of its largest value on a small circle around ``om`` (radius
-    1e-3 (1 + |om|)).  An absolute ``|det| < tol`` misfires both ways: a
+    1e-3 ``_local_unit(om, scale)``, relative: audit W4b replaced the radius
+    1e-3 (1 + |om|), which in slow units encircled other roots).  An
+    absolute ``|det| < tol`` misfires both ways: a
     high-degree det is huge everywhere (rounding at a true root exceeds any
     fixed tol), a small-scale one is tiny everywhere.  Away from a zero the
     ratio is O(1); at a Newton-refined zero it is the evaluation noise over
@@ -1342,7 +1395,7 @@ def _singular_at(det_at, om):
     import numpy as np
     try:
         d0 = abs(det_at(om))
-        rho = 1e-3 * (1 + abs(om))
+        rho = 1e-3 * _local_unit(om, scale)
         ring = max(abs(det_at(om + rho * np.exp(2j * np.pi * k / 8)))
                    for k in range(8))
     except Exception:
@@ -1351,24 +1404,196 @@ def _singular_at(det_at, om):
                 and d0 <= 1e-6 * ring)
 
 
-def _newton_det(det_at, om, max_iter=30):
-    """Newton on ``det K`` from ``om`` (relative step tolerance); ``None`` on
-    a vanishing or non-finite derivative."""
+def _newton_det(det_at, om, max_iter=30, scale=None):
+    """Newton on ``det K`` from ``om``, with a difference step and a step
+    tolerance relative to ``_local_unit(om, scale)``; ``None`` on a
+    vanishing or non-finite derivative or value.  The one Newton of the
+    numerical tiers (audit W4b, RED-08: three drifted copies had absolute
+    ``|det| < 1e-13`` exits, which in slow units return the unrefined
+    candidate, and absolute steps 1e-7 (1 + |om|))."""
     import numpy as np
     om = complex(om)
     for _ in range(max_iter):
         d = det_at(om)
         if not np.isfinite(d):
             return None
-        h = 1e-7 * (1 + abs(om))
+        if d == 0:
+            return om
+        u = _local_unit(om, scale)
+        h = 1e-7 * u
         dp = (det_at(om + h) - det_at(om - h)) / (2 * h)
         if dp == 0 or not np.isfinite(dp):
             return None
         step = d / dp
         om -= step
-        if abs(step) <= 1e-14 * (1 + abs(om)):
+        if abs(step) <= 1e-14 * u:
             break
     return om
+
+
+def _dedup_roots(roots, rtol):
+    """``roots`` without near-duplicates: ``r`` is dropped when a kept ``q``
+    has ``|r - q| <= rtol * max(|r|, |q|)`` (pairwise relative)."""
+    kept = []
+    for r in roots:
+        if any(abs(r - q) <= rtol * max(abs(r), abs(q)) for q in kept):
+            continue
+        kept.append(r)
+    return kept
+
+
+def _refine_retarded_poles(candidates, det_at, scale, verbose=False):
+    """Newton-refine each candidate root of det K(omega) and keep the true,
+    retarded, distinct ones (sorted by (Im, Re)): the numerical tiers' one
+    acceptance rule (RED-08 merged the two drifted copies).  A refined root
+    is a pole when det K vanishes relative to its neighbourhood
+    (``_singular_at``) or relative to det K at probe frequencies 10-20 times
+    the system scale (|det| <= 1e-9 of it), it is retarded
+    (``_is_retarded``), and it is not within 1e-7 (relative) of a kept
+    pole.  ``scale``: ``_omega_scale`` of the candidates."""
+    import numpy as np
+    probes = [10.0 * scale * (1 + 0.1j), 20.0 * scale * (1 + 0.1j),
+              -15.0 * scale * (1 + 0.1j)]
+    probe_dets = []
+    for om in probes:
+        try:
+            v = abs(det_at(om))
+        except Exception:
+            continue
+        if np.isfinite(v):
+            probe_dets.append(v)
+    det_scale = max(probe_dets) if probe_dets else 0.0
+    refined, rejected = [], []
+    for pk in candidates:
+        r = _newton_det(det_at, pk, scale=scale)
+        if r is None:
+            rejected.append((pk, None, 'no-converge'))
+            continue
+        try:
+            dv = abs(det_at(r))
+        except Exception:
+            rejected.append((pk, None, 'det-eval-fail'))
+            continue
+        if not np.isfinite(dv):
+            rejected.append((pk, dv, 'det-not-finite'))
+            continue
+        if not _is_retarded(r, scale):
+            rejected.append((pk, dv, 'drifted-to-LHP'))
+            continue
+        if not (dv <= 1e-9 * det_scale or _singular_at(det_at, r, scale)):
+            rejected.append((pk, dv, '|det| too large'))
+            continue
+        if any(abs(r - q) <= 1e-7 * max(abs(r), abs(q)) for q in refined):
+            continue
+        refined.append(r)
+    if verbose:
+        print(f'      Newton-refined: {len(refined)} kept, {len(rejected)} '
+              f'rejected (det scale = {det_scale:.2e}, omega scale = '
+              f'{scale:.2e})')
+        for pk, dv, why in rejected:
+            dv_s = f'{dv:.2e}' if dv is not None else 'n/a'
+            print(f'        omega = {pk.real:+.6g}{pk.imag:+.6g}i: '
+                  f'|det| = {dv_s}  [{why}]')
+    return sorted(refined, key=lambda r: (r.imag, r.real))
+
+
+def _structural_zero_entries(nonzero):
+    """``Z[i][j]`` True when ``G = K^{-1}``'s entry ``(i, j)`` is a
+    STRUCTURAL zero: the cofactor of ``K[j, i]`` vanishes for every value of
+    the nonzero entries, i.e. ``K`` without row ``j`` and column ``i`` has no
+    perfect matching on its nonzero pattern (``nonzero[a][b]``: ``K[a, b]``
+    is not identically zero).  Exact, unit-free."""
+    n = len(nonzero)
+
+    def has_perfect_matching(rows, cols):
+        match = {}
+
+        def augment(a, seen):
+            for b in cols:
+                if nonzero[a][b] and b not in seen:
+                    seen.add(b)
+                    if b not in match or augment(match[b], seen):
+                        match[b] = a
+                        return True
+            return False
+        return all(augment(a, set()) for a in rows)
+    Z = [[False] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            rows = [a for a in range(n) if a != j]
+            cols = [b for b in range(n) if b != i]
+            Z[i][j] = not has_perfect_matching(rows, cols)
+    return Z
+
+
+#: A numerical-tier residue entry below this fraction of the SAME entry's
+#: size near its pole (``_numerical_residues``) is rounding noise.
+NUMERIC_RESIDUE_RTOL = 1e-10
+
+
+def _numerical_residues(pole_vals, K_at, nonzero, roots, nf):
+    """Residue matrices ``C_k = i adj K(omega_k) / det'(omega_k)`` of the
+    numerical tiers (cofactor adjugate, central-difference det').
+
+    Noise entries are decided per ENTRY, never against the largest entry of
+    the matrix (audit W4b, ACC-61: that clip, 1e-12 of the largest, zeroed a
+    genuine 1e-14 coupling residue -- a field in other units -- on every
+    engine's ``propagator['C_mats']``): a structural zero of ``G``
+    (``_structural_zero_entries``) is an exact 0; any other entry is noise
+    when ``|C_k[i, j]|`` is at most ``NUMERIC_RESIDUE_RTOL`` of
+    ``rho_k max |G_ij|`` on a circle of radius ``rho_k`` (a quarter of the
+    distance to the nearest other root) around the pole -- by Cauchy that
+    bounds the entry's residue there, so the test is relative to the entry
+    itself in any field or time unit.  It zeroes the rounding residue of an
+    entry at a pole it does not have (a pure delta entry at every pole)."""
+    import numpy as np
+    from sage.all import CDF, matrix as _matrix
+    Z = _structural_zero_entries(nonzero)
+    scale = _omega_scale(roots)
+
+    def det_at(om):
+        return complex(np.linalg.det(K_at(om)))
+
+    def cofactor_adj(M):
+        n = M.shape[0]
+        A = np.zeros_like(M)
+        for i in range(n):
+            for j in range(n):
+                minor = np.delete(np.delete(M, j, axis=0), i, axis=1)
+                A[i, j] = ((-1) ** (i + j)) * np.linalg.det(minor)
+        return A
+
+    C_mats = []
+    for pk in pole_vals:
+        adj = cofactor_adj(K_at(pk))
+        h = 1e-6 * _local_unit(pk, scale)
+        d_prime = (det_at(pk + h) - det_at(pk - h)) / (2 * h)
+        if d_prime == 0 or not np.isfinite(d_prime):
+            # Shouldn't happen for non-degenerate poles: a zero
+            # residue matrix, never silently
+            _warn_zero_residue(pk)
+            C_mats.append(_matrix(CDF, [[0j] * nf for _ in range(nf)]))
+            continue
+        C_np = 1j * adj / d_prime
+        others = [abs(complex(r) - pk) for r in roots
+                  if abs(complex(r) - pk) > 1e-7 * _local_unit(pk, scale)]
+        rho = 0.25 * min(others) if others else 0.5 * _local_unit(pk, scale)
+        ring = np.zeros((nf, nf))
+        for k in range(8):
+            try:
+                G = np.linalg.inv(K_at(pk + rho * np.exp(2j * np.pi * (k + 0.5) / 8)))
+            except np.linalg.LinAlgError:
+                continue
+            ring = np.maximum(ring, np.abs(G))
+        keep = np.abs(C_np) > NUMERIC_RESIDUE_RTOL * rho * ring
+        for i in range(nf):
+            for j in range(nf):
+                if Z[i][j]:
+                    keep[i, j] = False
+        C_np = np.where(keep, C_np, 0)
+        C_mats.append(_matrix(CDF, [[complex(C_np[i, j]) for j in range(nf)]
+                                    for i in range(nf)]))
+    return C_mats
 
 
 def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
@@ -1378,8 +1603,10 @@ def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
     poles (Erlang-16: degree 17 -> 13, most poles lost).  The retarded roots
     of the untrimmed polynomial are Newton-refined on det K(omega) and
     returned when K is singular there (``_singular_at``) and the trimmed
-    candidates have nothing within 1e-7 (1 + |omega|); a noise coefficient's
-    roots are not zeros of det K, so a true noise trim is unchanged."""
+    candidates have nothing within 1e-7 (relative); a noise coefficient's
+    roots are not zeros of det K, so a true noise trim is unchanged.  The
+    retarded test and the steps are relative to the frequency scale of the
+    untrimmed roots (audit W4b)."""
     import numpy as np
     from sage.all import PolynomialRing, CDF
     try:
@@ -1390,14 +1617,16 @@ def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
 
     def det_at(om):
         return complex(np.linalg.det(K_at(om)))
+    scale = _omega_scale(full)
     extra = []
     for r0 in full:
-        if r0.imag <= 1e-9:
+        if not _is_retarded(r0, scale):
             continue
-        r = _newton_det(det_at, r0)
-        if r is None or r.imag <= 1e-9 or not _singular_at(det_at, r):
+        r = _newton_det(det_at, r0, scale=scale)
+        if (r is None or not _is_retarded(r, scale)
+                or not _singular_at(det_at, r, scale)):
             continue
-        if any(abs(r - q) <= 1e-7 * (1 + abs(r))
+        if any(abs(r - q) <= 1e-7 * max(abs(r), abs(q))
                for q in list(roots_trim) + extra):
             continue
         extra.append(r)
@@ -1466,6 +1695,19 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             tau_max=tau_max))
     # the exact pole record for the analyzer's G3 gate (empty when the
     # exact path failed before Q(omega); bookkeeping only)
+    tier1_why = pole_analysis.pop('_tier1_fallback_reason', None)
+    if (pole_vals_tier1 is None and tier1_why is not None
+            and pole_analysis.get('residue_route') != 'failed'):
+        import warnings
+        warnings.warn(
+            f'the exact propagator tier returned no residues ({tier1_why}): '
+            'the poles and residues come from the numerical cofactor tier '
+            '(double precision, no accuracy certificate).',
+            PoleResidueWarning, stacklevel=2)
+        if 'degree' in pole_analysis:
+            # the analyzer's G3 gate reports it (G3_RESIDUES_NUMERICAL_TIER)
+            pole_analysis['residue_route'] = 'failed'
+            pole_analysis['residue_route_reason'] = tier1_why
     prop['pole_analysis'] = pole_analysis or None
     _an = cluster_out.get('analysis') if cluster_out else None
     if _an is not None:
@@ -1700,35 +1942,17 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             except Exception:
                 candidate_roots = []
 
-            def _newton_refine(omega_0, max_iter=20, tol_pos=1e-13):
-                om = complex(omega_0)
-                for _ in range(max_iter):
-                    d = _det_at(om)
-                    if not (np.isfinite(d.real)
-                            and np.isfinite(d.imag)):
-                        return None
-                    if abs(d) < tol_pos:
-                        return om
-                    h = 1e-7 * (1 + abs(om))
-                    d_plus  = _det_at(om + h)
-                    d_minus = _det_at(om - h)
-                    d_prime = (d_plus - d_minus) / (2 * h)
-                    if d_prime == 0 or not np.isfinite(d_prime):
-                        return None
-                    step = d / d_prime
-                    om -= step
-                    if abs(step) < tol_pos:
-                        return om
-                return om
-
+            fit_scale = _omega_scale(candidate_roots)
             refined = []
             for r0 in candidate_roots:
-                r = _newton_refine(r0)
+                r = _newton_det(_det_at, r0, scale=fit_scale)
                 if r is None:
                     continue
                 try:
-                    if r.imag > 1e-9 and _singular_at(_det_at, r):
-                        if not any(abs(r - q) < 1e-7 for q in refined):
+                    if (_is_retarded(r, fit_scale)
+                            and _singular_at(_det_at, r, fit_scale)):
+                        if not any(abs(r - q) <= 1e-7 * max(abs(r), abs(q))
+                                   for q in refined):
                             refined.append(r)
                 except Exception:
                     pass
@@ -1868,326 +2092,40 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
 
     # Retarded convention: Im(ω) > 0 in this codebase's FT
     # (fourier_transform uses e^{-iωt} → poles in upper half plane
-    # → causal closure of the inverse-FT contour).  Pre-dedup at the
-    # polynomial-root-finder accuracy scale (~1e-5).  Newton refinement
-    # below tightens each kept candidate to machine precision and
-    # provides the authoritative dedup pass.
-    pruned = []
-    for r in roots_all:
-        if r.imag <= 1e-9:
-            continue
-        if any(abs(r - q) < 1e-5 for q in pruned):
-            continue
-        pruned.append(r)
-    pole_vals = sorted(pruned, key=lambda r: (r.imag, r.real))
+    # → causal closure of the inverse-FT contour).  Every threshold below is
+    # relative to the frequency scale of the candidate roots (audit W4b,
+    # ACC-62: an absolute 1e-9 retarded floor, a 1e-5 pre-Newton dedup and
+    # probe frequencies max(1, Im omega) lost a pole of the same model
+    # written in slow units).  Newton refinement on det K(omega) tightens
+    # each candidate to machine precision, rejects the spurious ones and
+    # deduplicates (``_refine_retarded_poles``, shared by both paths).
+    w_scale = _omega_scale(roots_all)
+    candidates = sorted((r for r in roots_all if _is_retarded(r, w_scale)),
+                        key=lambda r: (r.imag, r.real))
 
-    # Newton-refine each candidate on the numerical determinant.
-    # Sage's char-poly root finder is accurate to ~1e-5 absolute for
-    # this problem class.  A true zero of det(K) has |det| at machine
-    # precision after Newton; a "spurious" root either diverges or
-    # converges to a non-zero residual.  This separates the two
-    # cleanly without needing a parameter-dependent threshold.
+    def _det_K(om):
+        return complex(np.linalg.det(_K_at(om)))
     try:
-        # Reference scale for the |det| acceptance check.
-        max_pole_imag = max((p.imag for p in pole_vals), default=1.0)
-        probe_omegas = [10.0 * max(1.0, max_pole_imag) * (1 + 0.1j),
-                        20.0 * max(1.0, max_pole_imag) * (1 + 0.1j),
-                        -15.0 * max(1.0, max_pole_imag) * (1 + 0.1j)]
-        probe_dets = []
-        for om in probe_omegas:
-            try:
-                probe_dets.append(abs(complex(
-                    np.linalg.det(_K_at(om)))))
-            except Exception:
-                pass
-        det_scale = max(probe_dets) if probe_dets else 1.0
-
-        def _newton_refine(omega_0, max_iter=25, tol_pos=1e-13):
-            om = complex(omega_0)
-            for _ in range(max_iter):
-                try:
-                    d = complex(np.linalg.det(_K_at(om)))
-                except Exception:
-                    return None
-                if not (np.isfinite(d.real) and np.isfinite(d.imag)):
-                    return None
-                if abs(d) < tol_pos:
-                    return om
-                h = 1e-7 * (1 + abs(om))
-                try:
-                    d_plus  = complex(np.linalg.det(_K_at(om + h)))
-                    d_minus = complex(np.linalg.det(_K_at(om - h)))
-                except Exception:
-                    return None
-                d_prime = (d_plus - d_minus) / (2 * h)
-                if d_prime == 0 or not np.isfinite(d_prime):
-                    return None
-                step = d / d_prime
-                om -= step
-                if abs(step) < tol_pos:
-                    return om
-            return om
-
-        # Acceptance: |det(K(ω_refined))| / det_scale < 1e-9.  Newton
-        # on a true pole converges to |det| at machine precision
-        # (relative ratio 1e-15 to 1e-19); roots that converge to
-        # |det|/scale ~ 1e-7 or worse are spurious.  Clean 6+ order
-        # of magnitude gap between true and spurious.
-        tol_rel = 1e-9
-        refined = []
-        rejected = []
-        for pk in pole_vals:
-            r_ref = _newton_refine(pk)
-            if r_ref is None:
-                rejected.append((pk, None, 'no-converge'))
-                continue
-            try:
-                det_at = abs(complex(np.linalg.det(_K_at(r_ref))))
-            except Exception:
-                rejected.append((pk, None, 'det-eval-fail'))
-                continue
-            if not np.isfinite(det_at):
-                rejected.append((pk, det_at, 'det-not-finite'))
-                continue
-            # Newton can drift to the conjugate root in the lower half
-            # plane — reject those (not retarded).
-            if r_ref.imag <= 1e-9:
-                rejected.append((pk, det_at, 'drifted-to-LHP'))
-                continue
-            if det_at > tol_rel * det_scale:
-                rejected.append((pk, det_at, '|det| too large'))
-                continue
-            # Dedup after refinement: two candidates that Newton
-            # converges to the same root within ~1e-7 are duplicates
-            # of one physical pole.
-            if any(abs(r_ref - q) < 1e-7 for q in refined):
-                continue
-            refined.append(r_ref)
-        if verbose:
-            if rejected:
-                print(f'      Newton-refined: {len(refined)} kept, '
-                      f'{len(rejected)} rejected '
-                      f'(scale = {det_scale:.2e}):')
-                for pk, dv, reason in rejected:
-                    pk_str = f'{pk.real:+.6f}{pk.imag:+.6f}i'
-                    dv_str = (f'{dv:.2e}' if dv is not None
-                              else 'n/a')
-                    print(f'        ω = {pk_str}: |det| = {dv_str}'
-                          f'  [{reason}]')
-            else:
-                print(f'      Newton-refined: {len(refined)} kept '
-                      f'(scale = {det_scale:.2e})')
-        pole_vals = sorted(refined, key=lambda r: (r.imag, r.real))
+        pole_vals = _refine_retarded_poles(candidates, _det_K, w_scale,
+                                           verbose)
     except Exception as exc:
         if verbose:
             print(f'      Newton refinement skipped ({exc!r})')
-
-    # For the heterogeneous-pop / numerical path: Newton-refine each
-    # candidate root to machine-precision pole accuracy.  Sage's
-    # polynomial root-finder (.roots(CDF)) is accurate for clean
-    # polynomials, but our det.numerator() has mixed-magnitude
-    # coefficients (leading ≈ 1.5e+7, trailing ≈ 1) — Sage gives
-    # roots accurate to ~1e-6 absolute, which translates to
-    # |det(K(root))| up to several at "near-zero" candidates.  This
-    # is too coarse for the residue formula
-    #   Res G = adj(K(ω_k)) / det'(ω_k)
-    # because adj(K(ω_k)) is sensitive to whether K is *exactly*
-    # singular at ω_k.  Newton on the numerical determinant
-    # converges to machine precision in 2–5 iterations.
-    if adj_ft is None or G_ft is None:
-
-        def _newton_refine(omega_0, max_iter=20, tol_pos=1e-13):
-            om = complex(omega_0)
-            for _ in range(max_iter):
-                d = complex(np.linalg.det(_K_at(om)))
-                if not (np.isfinite(d.real) and np.isfinite(d.imag)):
-                    return None
-                if abs(d) < tol_pos:
-                    return om
-                h = 1e-7 * (1 + abs(om))
-                d_plus = complex(np.linalg.det(_K_at(om + h)))
-                d_minus = complex(np.linalg.det(_K_at(om - h)))
-                d_prime = (d_plus - d_minus) / (2 * h)
-                if d_prime == 0 or not np.isfinite(d_prime):
-                    return None
-                step = d / d_prime
-                om -= step
-                if abs(step) < tol_pos:
-                    return om
-            # Return whatever we converged to (caller checks |det|).
-            return om
-
-        refined = []
-        rejected = []
-        for r in pole_vals:
-            r_ref = _newton_refine(r)
-            if r_ref is None:
-                rejected.append((r, None))
-                continue
-            try:
-                det_at = complex(np.linalg.det(_K_at(r_ref)))
-            except Exception:
-                rejected.append((r, None))
-                continue
-            if not (np.isfinite(det_at.real) and
-                    np.isfinite(det_at.imag)):
-                rejected.append((r, det_at))
-                continue
-            # Final acceptance: must have |det| ≈ 0 (well below the
-            # typical det magnitude) AND must remain in the upper
-            # half plane after refinement (Newton sometimes drifts
-            # to the conjugate root, which is not retarded).
-            # (an absolute |det| bound alone rejects true poles of a
-            # high-degree det, whose rounding exceeds it: also accept a
-            # root where det K vanishes relative to its neighbourhood)
-            if abs(det_at) > 1e-6 and not _singular_at(
-                    lambda om: complex(np.linalg.det(_K_at(om))), r_ref):
-                rejected.append((r, det_at))
-                continue
-            if r_ref.imag <= 1e-9:
-                rejected.append((r, det_at))
-                continue
-            # Dedup against already-accepted refined roots.
-            if any(abs(r_ref - q) < 1e-7 for q in refined):
-                continue
-            refined.append(r_ref)
-        if verbose:
-            print(f'      Newton-refined to {len(refined)} accurate poles '
-                  f'({len(rejected)} rejected)')
-        pole_vals = sorted(refined, key=lambda r: (r.imag, r.real))
+        pole_vals = _dedup_roots(candidates, 1e-5)
 
     # ── Residues ────────────────────────────────────────────────
-    if adj_ft is None or G_ft is None:
-        # Numerical residue extraction using cofactor adjugate.
-        #
-        # At a pole ω_k:  Res G(ω_k) = adj(K(ω_k)) / det'(K(ω_k)).
-        # C_k convention:  C_k = i · Res G(ω_k).
-        #
-        # K(ω_k) is singular (det = 0), so K^-1 doesn't exist — but
-        # adj(K(ω_k)) does, via direct cofactor expansion.  For an
-        # 8×8 numerical matrix this is 64 calls to np.linalg.det on
-        # 7×7 minors (cheap).  det'(ω_k) is computed by central
-        # difference on the determinant.
-        #
-        # Previous attempt used Laurent extraction ``C_k = i·ε·G(ω_k+ε)``,
-        # which has O(ε) error from nearby-pole leakage:
-        #   ε·G(ω_k+ε) = Res_k + ε · Σ_{j≠k} Res_j/(ω_k - ω_j) + O(ε)
-        # For closely-spaced conjugate-pair poles (min_sep ~ 1e-3 in
-        # multipop), this gives ~0.5–1% error per residue.  The
-        # cofactor approach has no such leak.
-
-        def _det_at(omega_val):
-            return complex(np.linalg.det(_K_at(omega_val)))
-
-        def _cofactor_adj(M):
-            """adj(M) = transpose of cofactor matrix.
-            adj[i,j] = (-1)^(i+j) · det(M with row j and col i removed)."""
-            n = M.shape[0]
-            A = np.zeros_like(M)
-            for i in range(n):
-                for j in range(n):
-                    minor = np.delete(np.delete(M, j, axis=0), i, axis=1)
-                    A[i, j] = ((-1) ** (i + j)) * np.linalg.det(minor)
-            return A
-
-        C_mats = []
-        for pk in pole_vals:
-            K_at_pk = _K_at(pk)
-            adj_at_pk = _cofactor_adj(K_at_pk)
-            # det'(pk) via central difference.  Scale h to the pole
-            # magnitude so we stay well within the local analytic
-            # region for det(K).
-            h = 1e-6 * (1 + abs(pk))
-            d_prime = (_det_at(pk + h) - _det_at(pk - h)) / (2 * h)
-            if d_prime == 0 or not np.isfinite(d_prime):
-                # Shouldn't happen for non-degenerate poles: a zero
-                # residue matrix, never silently
-                _warn_zero_residue(pk)
-                C_mats.append(_matrix(CDF,
-                    [[0j] * nf for _ in range(nf)]))
-                continue
-            C_np = 1j * adj_at_pk / d_prime
-            # Threshold numerical noise.
-            atol = 1e-12 * np.max(np.abs(C_np))
-            C_np = np.where(np.abs(C_np) > atol, C_np, 0)
-            C_entries = [[complex(C_np[i, j])
-                          for j in range(nf)] for i in range(nf)]
-            C_mats.append(_matrix(CDF, C_entries))
-    else:
-        # ── Lean symbolic path — numerical residue evaluation ──────
-        # Even though we have a symbolic adj_ft / G_ft from K_ft.inverse(),
-        # we DO NOT use them for residue computation.  Sage stores
-        # adj_ft entries as sum-of-rationals — each summand has a
-        # denominator like ``1/(1+iω·taug_ij)`` that diverges by 10³–10⁴
-        # when pk lies near a kernel pole ω = i/taug_ij.  The terms
-        # then catastrophically cancel against each other at pk,
-        # losing 3–5 digits of floating-point precision per residue
-        # entry (measured: 11–42% relative error on quad's residues
-        # depending on which pole).
-        #
-        # Numpy LU on the numerical K_ft(pk) matrix builds the
-        # 3×3 minors directly and computes their determinants without
-        # any sum-of-rationals cancellation.  Same algorithm as the
-        # ``rich`` path above.
-        K_ft_num_coeffs_num = [[None] * nf for _ in range(nf)]
-        K_ft_num_coeffs_den = [[None] * nf for _ in range(nf)]
-        for i in range(nf):
-            for j in range(nf):
-                e = SR(K_ft_num[i, j])
-                if e.is_zero():
-                    K_ft_num_coeffs_num[i][j] = [0j]
-                    K_ft_num_coeffs_den[i][j] = [1+0j]
-                    continue
-                try:
-                    n_p = e.numerator()
-                    d_p = e.denominator()
-                    K_ft_num_coeffs_num[i][j] = [complex(c)
-                        for c in n_p.coefficients(omega, sparse=False)]
-                    K_ft_num_coeffs_den[i][j] = [complex(c)
-                        for c in d_p.coefficients(omega, sparse=False)]
-                except Exception:
-                    K_ft_num_coeffs_num[i][j] = [complex(e)]
-                    K_ft_num_coeffs_den[i][j] = [1+0j]
-
-        def _K_at_lean(omega_val):
-            K_at = np.zeros((nf, nf), dtype=complex)
-            for i in range(nf):
-                for j in range(nf):
-                    n = _horner(K_ft_num_coeffs_num[i][j], omega_val)
-                    d = _horner(K_ft_num_coeffs_den[i][j], omega_val)
-                    K_at[i, j] = n / d if d != 0 else 0j
-            return K_at
-
-        def _det_at_lean(omega_val):
-            return complex(np.linalg.det(_K_at_lean(omega_val)))
-
-        def _cofactor_adj_lean(M):
-            n = M.shape[0]
-            A = np.zeros_like(M)
-            for i in range(n):
-                for j in range(n):
-                    minor = np.delete(np.delete(M, j, axis=0), i, axis=1)
-                    A[i, j] = ((-1) ** (i + j)) * np.linalg.det(minor)
-            return A
-
-        C_mats = []
-        for pk in pole_vals:
-            K_at_pk = _K_at_lean(pk)
-            adj_at_pk = _cofactor_adj_lean(K_at_pk)
-            # det'(pk) via central difference, scaled to pk magnitude
-            h = 1e-6 * (1 + abs(pk))
-            d_prime = (_det_at_lean(pk + h) - _det_at_lean(pk - h)) / (2 * h)
-            if d_prime == 0 or not np.isfinite(d_prime):
-                _warn_zero_residue(pk)
-                C_mats.append(_matrix(CDF,
-                    [[0j] * nf for _ in range(nf)]))
-                continue
-            C_np = 1j * adj_at_pk / d_prime
-            atol = 1e-12 * np.max(np.abs(C_np))
-            C_np = np.where(np.abs(C_np) > atol, C_np, 0)
-            C_entries = [[complex(C_np[i, j])
-                          for j in range(nf)] for i in range(nf)]
-            C_mats.append(_matrix(CDF, C_entries))
+    # Numerical residue extraction using the cofactor adjugate on the
+    # numerical K(omega_k) (``_numerical_residues``), for both paths:
+    #   Res G(ω_k) = adj(K(ω_k)) / det'(K(ω_k)),  C_k = i · Res G(ω_k).
+    # The rich path never had a symbolic inverse; on the lean path the
+    # symbolic adj_ft / G_ft are NOT used either: Sage stores adj_ft
+    # entries as sum-of-rationals whose terms catastrophically cancel near
+    # kernel poles (11–42% relative error measured), while numpy LU on the
+    # numerical K builds the minors directly.  (A Laurent extraction
+    # ``C_k = i·ε·G(ω_k+ε)`` leaks O(ε) from nearby poles.)
+    nonzero = [[bool(any(c != 0 for c in K_num_coeffs[i][j]))
+                for j in range(nf)] for i in range(nf)]
+    C_mats = _numerical_residues(pole_vals, _K_at, nonzero, roots_all, nf)
 
     prop['pole_vals'] = pole_vals
     prop['C_mats']    = C_mats
