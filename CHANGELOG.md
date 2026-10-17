@@ -34,6 +34,119 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   a coefficient that does not reduce to a number (missing parameter or saddle,
   momentum-dependent noise) raises; it used to become 0 silently.
 
+#### Fixed: audit fix wave 1 -- simulation estimators (F1 group 4)
+
+Regression tests: `tests/test_audit_wave1_estimators.py` and the transposed oracle check in
+`tests/test_coupled_rd_sim.py`. Package numbers do not move. Simulation reference curves that validation compares
+against do.
+- **`cumulant_estimator`: factorial cumulants are now connected.**
+  - **Coincident legs.** m same-population spike legs in one bin are centred with the factorial analogue of
+    ∏(r − μ), Σ_j C(m, j)(−μ)^(m−j) n^(j)/dt^j. The old `n^(m)/dt^m − mean` gave κ3 + 2μ C2 at the default base point.
+    The k = 4 pair subtraction is now consistent with it. The same rule applies to `compute_kpoint_slice_direct`,
+    which is now vectorized and limited to k ≤ 3.
+  - **Coincident sweep lags.** Where the sweep leg meets a fixed leg of its own spike train, the point used to carry
+    the shot noise: rate/dt_bin at k = 2, rate/dt² at k = 3. That point is now recomputed with the sweep leg merged
+    into the factorial group.
+  - **Check.** On a Cox process with a Gaussian OU intensity (κ3 = 0, C2 known):
+    - k = 2 matches C2 at every lag, τ = 0 included. The old τ = 0 point was 50σ² off.
+    - k = 3 is ≤ 0.1 × 2μC2. The old value was ≈ 2μC2.
+- **`cumulant_estimator`: field types.** An unrecognised field type is refused. It used to be treated as spike
+  counts.
+- **`coupled_rd_1d_sim` uses the package leg order** C_ij(x, τ) = ⟨φ_i(x, t) φ_j(x + x_lag, t + τ)⟩, in both the
+  estimator and the oracle. It used the transpose, so off-diagonal entries of a non-symmetric M at τ ≠ 0 were swapped
+  relative to the pipeline.
+
+#### Fixed: audit fix wave 1 -- outputs (F1 group 3)
+
+Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's reproducer and fails on the old code.
+- **`symbolic_out`:**
+  - **User values are no longer snapped to 0.** `values=` floats below 1e-12 used to be replaced by 0, e.g. D = 1e-13
+    gave C0 = 0.
+  - **Saddle snapping is relative.** Solved saddle values are snapped relative to the run's largest number, not at an
+    absolute 1e-12.
+  - **Legacy route, a parameter named `tau`.** `inverse_transform(..., legacy=True)` now names the lag `tau_lag`, as
+    the C2 route does. The parameter and the lag used to merge into one symbol.
+  - **No values at a moved reference.** When poles coincide at the reference, the retry used to hand back numbers at
+    the point it moved to. A ModeSum now keeps the user's reference, and evaluating at it is refused by the
+    coincidence assumptions. A pairing's value at the moved point is dropped, and `reason` says why.
+  - **`even` is decided relative to |C|.** It used an absolute 1e-9, so a small-amplitude asymmetric entry was called
+    even. With RootOf modes the test now runs on the 256-bit modes, at lags scaled by the slowest and fastest rate.
+    Fixed lags used to underflow to 0 == 0 at rates above ~2e3.
+  - **Misspelled names are refused.** A name equal to one the modes depend on up to case is now an error in
+    `ModeSum.evaluate` / `__call__`. Other names absent from C stay
+    ignored, so a model's whole parameter dict can be passed. In `tree_covariance(values=...)` every name that is
+    neither a model parameter nor a symbol of K / G / D is refused, as `tree_covariance_from_matrices` already did.
+    Both used to be dropped silently.
+- **`symbolic_loop`: relative floors.** The saddle-movement and saddle closed-form checks use a floor of 1e-6 × the
+  run's largest number instead of max(1, |x|). The δ-coefficient and subset-prefactor checks are fully relative.
+- **`me_output`:**
+  - A finite chamber's `SideME` refuses u > u_max. It used to answer with another chamber's leg order.
+  - `slice_me` refuses a NaN base lag. It used to be pinned at the left limit.
+- **`save_csv` writes 17 significant digits** (round-trip exact), instead of 10.
+
+#### Fixed: audit fix wave 1 -- noise library front end (F1 group 2)
+
+Regression tests: `tests/test_audit_wave1_noise.py`. No computed number moves. A run that was silently wrong is
+now refused, and so are invalid noise declarations.
+- **Uniform jumps: the series order is enforced.** The uniform jump's CGF has a removable singularity, so the action
+  carries its Taylor polynomial (`SDE.series_order`, default 8). Cumulants needing a noise vertex above that order
+  came out without it, silently.
+  - `SDE.build()` now records `model['noise_series_order']`.
+  - `compute_cumulants` refuses `k + 2*max_ell` above it and names the order to set. `k + 2*max_ell` bounds the order
+    of any vertex of a k-point, `max_ell`-loop diagram.
+- **θ in a jump-law parameter is refused**, as in a source parameter. For example, `CompoundPoisson(1, Dirac('theta'))`
+  built a different CGF.
+- **Sequence parameters refuse a string.** This covers `Cumulants`, `FinitePMF`, `Hyperexponential` and `PhaseType`.
+  For example, `Cumulants('Dn')` gave κ2 = D, κ3 = n.
+- **Domain checks for the round-1 laws** (numeric values only):
+  - `Gaussian` var ≥ 0 and `Poisson` rate ≥ 0;
+  - `GammaProcess` shape_rate > 0; `InverseGaussianProcess` mean_rate, shape > 0;
+  - `Cumulants` κ2 ≥ 0 and `Gamma` shape > 0;
+  - `Bernoulli` 0 ≤ p ≤ 1;
+  - `FinitePMF` probabilities ≥ 0;
+  - `Uniform` lo ≠ hi. This was a raw ZeroDivisionError before.
+
+  A negative scale or mean (the reflected, negative-jump laws `Exponential(-1)`, `Gamma(k, -s)`, `GammaProcess(r, -s)`)
+  stays valid.
+
+#### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
+
+Every fix has a regression test in `tests/test_audit_wave1.py`. Zoo A/B (11 public entries, separate processes,
+warm-up discarded, `use_cache=False`, base main 4a9e932):
+- 9 entries are bit-identical (values and analyzer codes);
+- `quadratic_hawkes_alpha` moves 2.0e-16 and `spike_reset` k = 2 moves 1.4e-15, both inside main's own scatter on
+  these entries (`spike_reset`: 2.6e-14 between main 4a9e932 and main 147f402, whose difference is spatial-only).
+
+- **New opt-in `DAEDALUS_TAU0=exact`: k = 2 τ = 0 at the exact Itô left limit C(0⁻)** (`api.compute._tau0_mode`).
+  The τ = 0 grid point (and `total_C(t, t)`, and the exact delayed tree's τ = 0) is sampled at τ = −1e-6, so its
+  relative error is rate × 1e-6. That is unit dependent: 1e-3 at a rate of 1e3. With `exact` it is evaluated at equal
+  times, where Phase J's exact tie rule (`final_integral._const_row_verdict`) gives the left limit.
+  - Measured against independent mpmath references (the audit's oracle cases, all of ss / poles / grouped, ℓ ≤ 3):
+    τ = 0 error ≤ 3.1e-14 (`nudge`: 4.6e-7 .. 3.0e-6). τ ≠ 0 points are unchanged.
+  - The default stays `nudge`, so no number moves. Making `exact` the default is a pending decision; it moves every
+    k = 2 τ = 0 value by its rate × 1e-6.
+  - k ≥ 3 slices (`daedalus._kpoint_slice_times`, `me_output.slice_me`) keep the −1e-6 placement. The engine's tie
+    order is that slice's left limit only for some leg orders.
+- **Exact delayed tree is unit invariant** (`api._delay_exact`). The boundary-value problem's Jacobian was a finite
+  difference `resid(e) - resid(0)`. It cancelled the O(N) constant (field scale squared): 8e-6 relative off at a field
+  scale of 1e6, with no warning. Now:
+  - the Jacobian is the exact linear part;
+  - the state is solved in balanced coordinates, and re-solved in noise-scaled coordinates when the variances spread by
+    more than 16.
+  - Mixed units up to a 1e9 ratio used to be refused as singular or come out 4e-6 off; they now agree to ≤ 8e-15.
+- **Several delays: the approximant's error is in G6_ACCURACY** (`api.delay._fold_delay_into_g6`). The Padé estimate
+  `est_rel_error` (|C_n − C_2n|) is added to the accuracy estimate R, and G6_ACCURACY_LOW is raised above the threshold.
+  Before, a run with a 6.5e-5 Padé tree error reported R = 2e-14. On a tree-only run, DelayOrderWarning now says "the
+  tree" instead of "the loops".
+- **A non-white `noise_structure` is refused.** Phase J never applies a temporal noise kernel. A legacy dict with
+  `noise_structure={'temporal_type': 'colored', ...}` was computed as white noise *and* without the source amplitude
+  (status ok, off by the factor D). The refusal comes from the analyzer (`G2_NOISE_STRUCTURE`, error) and from a hard
+  stop in `compute_cumulants`. `classify_coefficient_factors` now always puts the constant source amplitude in the
+  scalar prefactor; `source_time_info[v]['amplitude']` holds only what stays in the integrand.
+- **gentreeg's exit status is checked** (`loop_diagram_enumeration._trees_of_order_fast`). A generator that died
+  mid-stream left a silently truncated tree list. Fewer prediagrams were then written to a correctly stamped cache
+  file. It now raises `RuntimeError` with gentreeg's stderr.
+
 #### Spatial engine: k=2 completion, lag convention, total_C (audit wave 2)
 
 Numbers move (silent-wrong before):
