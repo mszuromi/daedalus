@@ -2242,13 +2242,16 @@ class _CGFKernelCallable:
     An empty kernel text is the fully local ``prod_k dirac_delta(tau_k)``
     (white noise, as ``declare_cgf_term`` documents), not a constant.
     """
-    __slots__ = ('_coeff_text', '_kernel_text', '_order')
+    __slots__ = ('_coeff_text', '_kernel_text', '_order', '_cross_field')
 
     def __init__(self, coeff_text: str, kernel_text: str | None,
-                 order: int):
+                 order: int, legs=None):
         self._coeff_text  = (coeff_text or '').strip() or '0'
         self._kernel_text = (kernel_text or '').strip()
         self._order       = int(order)
+        # legs on different response fields: the framework also evaluates
+        # the row with the fields (and so the leg indices) permuted
+        self._cross_field = bool(legs) and len(set(legs)) > 1
 
     def __call__(self, ns, *args):
         order = self._order
@@ -2259,6 +2262,41 @@ class _CGFKernelCallable:
                 f"CGF kernel expects {order - 1} τ symbol(s) at order "
                 f"{order}; got {len(tau_syms)}."
             )
+        value, uses_index = self._evaluate(ns, leg_indices, tau_syms)
+        if self._cross_field and uses_index:
+            # The framework evaluates a cross-field row once per distinct
+            # order of its fields, passing the leg indices in that order,
+            # so ``i`` reads the second field's unit on the reversed pass.
+            # Exact only when the index expression is symmetric: refuse
+            # anything else rather than average it silently.
+            from itertools import permutations
+            for perm in permutations(range(order)):
+                if list(perm) == list(range(order)):
+                    continue
+                swapped = [leg_indices[p] for p in perm]
+                try:
+                    other, _ = self._evaluate(ns, swapped, tau_syms)
+                    diff = SR(value - other).expand()
+                    same = diff.is_trivial_zero() or bool(diff.simplify_full().is_zero())
+                except Exception:
+                    same = False
+                if not same:
+                    raise ValueError(
+                        f"cross-field CGF row (coefficient {self._coeff_text!r}, "
+                        f"kernel {self._kernel_text or None!r}): its leg-index "
+                        f"expression is not symmetric under exchanging the legs "
+                        f"(leg indices {tuple(int(x) for x in leg_indices)} vs "
+                        f"{tuple(int(x) for x in swapped)}).  A cross-field row is "
+                        f"evaluated for both orders of its fields, so only "
+                        f"index-symmetric expressions (kronecker_delta(i, j), "
+                        f"shared(i, j), functions of both) are exact; write "
+                        f"other unit structures with per-unit fields or rows.")
+        return value
+
+    def _evaluate(self, ns, leg_indices, tau_syms):
+        """``(coefficient * kernel, whether the texts used a leg index)``
+        at the given leg indices."""
+        order = self._order
 
         eval_ns: dict = {}
         for attr in dir(ns):
@@ -2277,25 +2315,36 @@ class _CGFKernelCallable:
         # leg indices (a declared name of the same spelling keeps its meaning)
         idx_names = _cgf_index_names(order)
         idx_vals = [int(x) for x in leg_indices]
+        used = _identifiers(self._coeff_text) | _identifiers(self._kernel_text)
         bound = set()
+        shadowed = set()
         for nm in idx_names:
             if nm in eval_ns:
+                shadowed.add(nm)
                 continue
             pos = {'i': 0, 'j': 1}.get(nm)
             eval_ns[nm] = ZZ(idx_vals[pos if pos is not None else int(nm[1:]) - 1])
             bound.add(nm)
         if any(v != 0 for v in idx_vals):
-            used = _identifiers(self._coeff_text) | _identifiers(self._kernel_text)
+            names = ', '.join(idx_names)
+            pair = 'i, j' if order == 2 else ', '.join(f'i{k}' for k in range(1, order + 1))
+            if used & shadowed:
+                raise ValueError(
+                    f"CGF row (coefficient {self._coeff_text!r}, kernel "
+                    f"{self._kernel_text or None!r}): {sorted(used & shadowed)} "
+                    f"is a declared name and also a leg-index name on this "
+                    f"multi-unit field; rename the declaration (leg indices: "
+                    f"{names}).")
             if not (used & bound):
                 raise ValueError(
                     f"CGF row (coefficient {self._coeff_text!r}, kernel "
                     f"{self._kernel_text or None!r}) sits on a response field with "
                     f"more than one unit but does not say how the units' noises "
                     f"are related (its texts use no leg index).  Write the unit "
-                    f"structure explicitly: multiply by kronecker_delta(i, j) for "
-                    f"independent per-unit noise (each unit its own copy), or by "
-                    f"shared(i, j) for one noise common to all units; leg indices "
-                    f"are 0-based ({', '.join(sorted(bound))})."
+                    f"structure explicitly: multiply by kronecker_delta({pair}) "
+                    f"for independent per-unit noise (each unit its own copy), "
+                    f"or by shared({pair}) for one noise common to all units; "
+                    f"leg indices are 0-based ({names})."
                 )
 
         eval_ns.setdefault('dirac_delta', dirac_delta)
@@ -2318,9 +2367,9 @@ class _CGFKernelCallable:
             kernel_val = SR(1)
             for t in tau_syms:
                 kernel_val = kernel_val * dirac_delta(t)
-            return SR(coeff_val) * kernel_val
-        kernel_val = _safe_eval(self._kernel_text, eval_ns, 'CGF kernel')
-        return SR(coeff_val) * SR(kernel_val)
+        else:
+            kernel_val = _safe_eval(self._kernel_text, eval_ns, 'CGF kernel')
+        return SR(coeff_val) * SR(kernel_val), bool(used & bound)
 
     def __repr__(self):
         return (f'<_CGFKernelCallable order={self._order} '
@@ -2349,7 +2398,7 @@ class _CGFKernelSum:
 
 
 def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
-                               order: int):
+                               order: int, legs=None):
     """Build a picklable callable evaluating ``coeff_text * kernel_text``.
 
     Thin factory wrapping ``_CGFKernelCallable``.  Kept as a function
@@ -2357,7 +2406,7 @@ def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
     previous closure-based form.  See the class docstring for the
     runtime signature.
     """
-    return _CGFKernelCallable(coeff_text, kernel_text, order)
+    return _CGFKernelCallable(coeff_text, kernel_text, order, legs)
 
 
 def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
@@ -2454,13 +2503,15 @@ def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
     # multi-row inputs (e.g. GTaS κ² with auto + cross terms) merge
     # cleanly into one κ² kernel_fn the framework can call.
     for (name, order), rows in acc.items():
+        legs = out[name]['response_legs'][order]
         if len(rows) == 1:
             r = rows[0]
             out[name]['cumulants'][order] = _build_cgf_kernel_callable(
-                r['coefficient'], r['kernel'], order)
+                r['coefficient'], r['kernel'], order, legs)
         else:
             kernels = [
-                _build_cgf_kernel_callable(r['coefficient'], r['kernel'], order)
+                _build_cgf_kernel_callable(r['coefficient'], r['kernel'], order,
+                                           legs)
                 for r in rows
             ]
             # Use the picklable _CGFKernelSum class instead of a local

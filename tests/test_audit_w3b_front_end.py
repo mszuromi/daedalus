@@ -130,6 +130,45 @@ def test_cgf_row_without_unit_structure_is_refused():
     _cc(_ou_cgf('dirac_delta(tau)'), [('x', 1), ('x', 1)], {'mu': 0.8, 'D': 0.3})
 
 
+def _two_pop_cross(cxy, extra_param=None):
+    b = (TemporalModelBuilder('cross pops').population('A', size=2).population('B', size=2)
+         .physical_field('x', population='A').physical_field('y', population='B')
+         .parameter('mu', default=0.7, domain='positive')
+         .parameter('D', default=0.4, domain='positive')
+         .parameter('rho', default=0.3).markovianize(False))
+    if extra_param:
+        b = b.parameter(extra_param, default=0.25)
+    for name, legs, coeff in (('Cxx', ['xt', 'xt'], '2*D*kronecker_delta(i, j)'),
+                              ('Cyy', ['yt', 'yt'], '2*D*kronecker_delta(i, j)'),
+                              ('Cxy', ['xt', 'yt'], cxy)):
+        b = b.declare_cgf_term(name, response_legs=legs, order=2, coefficient=coeff,
+                               kernel='dirac_delta(tau)')
+    return (b.set_action_text('sum(xt[i]*((Dt+mu)*x[i]) for i in pop_A) + '
+                              'sum(yt[i]*((Dt+mu)*y[i]) for i in pop_B)')
+            .set_mf_equation('xstar', '0').set_mf_equation('ystar', '0').build())
+
+
+def test_cgf_cross_field_population_rows():
+    mu, D, rho = 0.7, 0.4, 0.3
+    fund = {'mu': mu, 'D': D, 'rho': rho}
+    ref = D / mu * np.exp(-mu * np.array(TAUS))
+    m = _two_pop_cross('2*D*rho*kronecker_delta(i, j)')
+    for ext, f in (([('x', 2), ('y', 2)], rho), ([('x', 1), ('y', 2)], 0.0),
+                   ([('x', 2), ('x', 2)], 1.0), ([('y', 1), ('x', 1)], rho)):
+        assert np.max(np.abs(_real(_cc(m, ext, fund)) - f * ref)) < 1e-12, ext
+    # an index expression that is not symmetric under exchanging the legs
+    # would be averaged by the framework's reversed pass: refused
+    with pytest.raises(ValueError, match='not symmetric'):
+        _cc(_two_pop_cross('D*kronecker_delta(i, 0)*kronecker_delta(j, 1)'),
+            [('x', 1), ('y', 2)], fund)
+
+
+def test_cgf_index_name_shadowed_by_a_parameter_is_refused():
+    with pytest.raises(ValueError, match='leg-index name'):
+        _cc(_two_pop_cross('2*D*rho*kronecker_delta(i, j)', extra_param='j'),
+            [('x', 1), ('y', 1)], {'mu': 0.7, 'D': 0.4, 'rho': 0.3, 'j': 0.25})
+
+
 # ── ACC-06: Markovian embedding, layout independent ─────────────────────
 
 
@@ -248,6 +287,14 @@ def test_redeclared_kernel_replaces_the_old_spec():
         return (b.set_action_text('xt*((Dt+mu)*x - J*Conv(g, x)) - D*xt^2')
                 .equation(lhs='(Dt+mu)*x', rhs='J*x').build()), b
 
+    # the symbol keeps its place and a custom registration
+    b2 = (TemporalModelBuilder('kernel symbols').kernel('h').kernel('g', sage_name='z_custom')
+          .define_kernel('g', freq_image='1/(1 + I*omega)'))
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        b2 = b2.define_kernel('g', freq_image='1/(1 + 2*I*omega)', indexed='vector')
+    assert [(k.name, k.sage_name, k.indexed) for k in b2.kernels] == [
+        ('h', 'z_h', False), ('g', 'z_custom', True)]
     m, b = build(True)
     assert [k['name'] for k in b._kernel_specs] == ['g']
     assert 'delay' not in b._kernel_specs[0] and len(b.kernels) == 1

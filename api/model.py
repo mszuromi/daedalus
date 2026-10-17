@@ -425,7 +425,16 @@ class _TemporalMethods:
                 UserWarning, stacklevel=2)
             self._kernel_specs = [k for k in self._kernel_specs
                                   if k.get('name') != name]
-            self.kernels = [k for k in self.kernels if k.name != name]
+            # the symbol takes the new indexing; its position, a custom
+            # sage name / latex / description and a .kernel() image stay
+            pos = next(i for i, k in enumerate(self.kernels) if k.name == name)
+            old = self.kernels.pop(pos)
+            self.kernel(name, frequency_image=old.frequency_image,
+                        sage_name=sage_name or old.sage_name,
+                        latex_name=latex_name or old.latex_name,
+                        description=description or old.description,
+                        indexed=indexed, indexed_by=indexed_by)
+            self.kernels.insert(pos, self.kernels.pop())
         # Register the kernel symbol with the regular .kernel() call.
         # ``indexed_by`` (when given) takes precedence over ``indexed=``.
         if not any(k.name == name for k in self.kernels):
@@ -1620,6 +1629,9 @@ class _BaseModelBuilder:
                           + ((k['delay'],) if k.get('delay') else ())
                           for k in (self._kernel_specs or [])],
             'cgf':       [str(c) for c in (self._cgf_terms or [])],
+            # the CGF rows' meaning changed (no kernel = white, leg indices,
+            # additive embedding): caches of rows read the old way are stale
+            **({'cgf_semantics': 2} if self._cgf_terms else {}),
             'fields':    [(f.name, getattr(f, 'population', None),
                            int(getattr(f, 'spatial_dim', 0) or 0))
                           for f in self.physical_fields],
