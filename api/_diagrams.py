@@ -140,7 +140,7 @@ def enumerate_unique_diagrams(
         If True, fan the per-prediagram type-assignment stage across a
         fork-based ``multiprocessing.Pool`` (see
         ``engine.diagrams.type_assignment.enumerate_all``).  Skipped on
-        cache hits.
+        cache hits; serial on macOS, which never forks.
     n_workers : int or None, default None
         Worker count when ``parallel=True``.  ``None`` lets the
         underlying enumerator pick
