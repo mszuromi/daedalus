@@ -721,10 +721,13 @@ def _sr_nonzero(c) -> bool:
         return False
     # the same large coefficient is tested once per typed diagram
     # (``classify_coefficient_factors``): the verdict is memoised on its
-    # GiNaC hash (exact float bits) and ``repr``, and the assumptions in
-    # force (never ``==`` on SR, which can itself go to Maxima)
+    # GiNaC hash (exact float bits), a digest of its ``repr`` and the
+    # assumptions in force (never ``==`` on SR, which can itself go to
+    # Maxima)
+    import hashlib
     from sage.symbolic.assumptions import assumptions
-    key = (hash(c), repr(c), repr(assumptions()))
+    key = (hash(c), hashlib.sha1(repr(c).encode()).digest(),
+           repr(assumptions()))
     hit = _NONZERO_MEMO.get(key)
     if hit is not None:
         return hit
