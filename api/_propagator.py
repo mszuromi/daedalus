@@ -944,6 +944,12 @@ def _omega_inf_limit_fast(expr, omega_var):
     return SR(num_lc) / SR(den_lc)
 
 
+#: Largest entry (``repr`` length) of the symbolic inverse for which
+#: :func:`build_propagator` takes the omega -> infinity limit symbolically
+#: (the model zoo's largest is ~800 characters).
+_SYMBOLIC_DDELTA_MAX_CHARS = 4000
+
+
 def _sr_is_zero(e) -> bool:
     """``SR(e).is_zero()`` (the same verdict), with the certified nonzero
     fast path of :func:`engine.core.field_theory._sr_nonzero`: a float or
@@ -1264,7 +1270,16 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             if verbose:
                 print(f'      symbolic inverse/adj/det took '
                       f'{_time.perf_counter() - t0:.2f}s')
-            # Symbolic D_delta via fast leading-coefficient ratio.
+            # Symbolic D_delta via fast leading-coefficient ratio, for
+            # entries of moderate size: ``numerator()`` of a large nested
+            # entry is a full normalisation (minutes per entry on a 3x3
+            # jump-process kernel matrix with float rates); D_delta is then
+            # left to the exact tier of ``compute_poles_and_residues``.
+            if max(len(repr(e)) for e in G.list()) > _SYMBOLIC_DDELTA_MAX_CHARS:
+                if verbose:
+                    print('      symbolic D_delta skipped (large entries): '
+                          'compute_poles_and_residues fills it')
+                return G, D_om, adj, None
             Dd_data = [[SR(0)] * nf for _ in range(nf)]
             for i in range(nf):
                 for j in range(nf):
