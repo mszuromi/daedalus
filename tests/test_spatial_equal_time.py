@@ -181,3 +181,98 @@ def test_equal_time_switch_and_high_dimension_note(monkeypatch):
     assert led['calls'] == 0 and led['grid_calls'] >= 1
     assert 'not certified' in led['grid_note']
     assert np.all(np.isfinite(g))
+
+
+# ── accuracy that is not certified is never 'ok' ──────────────────────
+def _kpz():
+    return (ModelBuilder('kpz', n_populations=0)
+            .physical_field('p', spatial_dim=1)
+            .parameter('mu', default=1.0, domain='positive')
+            .parameter('D', default=0.7, domain='positive')
+            .parameter('c', default=0.3, domain='real')
+            .parameter('T', default=1.0, domain='positive')
+            .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='0')
+            .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)-(c/2)*Dx(p,0)^2)-T*pt^2')
+            .operator_ir().boundary('infinite').initial('stationary').build())
+
+
+def test_derivative_vertex_loop_is_approximate_with_its_spread():
+    """The form factor makes the loop-shrink corner an integrable
+    rho^(-1/2) singularity: the product grid converges ~n^-2 at every tau
+    (KPZ C-C bubble at q = 0.5, tau = 1: 2.81e-3 / 2.70e-3 / 2.68e-3 at
+    22/24, 44/48, 66/72).  Such a result is 'approximate' with the measured
+    0.7x-coarser spread, a G6 finding, and strict policy raises."""
+    from api.compute import SpatialAccuracyError
+    kw = dict(k=2, max_ell=1, external_fields=[('p', 1)] * 2,
+              tau_grid=np.array([0.0, 1.0]), spatial_grid=np.array([0.5]),
+              use_cache=False, parallel=False, spatial_parallel=False,
+              verbose=False)
+    with pytest.warns(UserWarning, match='approximate'):
+        r = compute_cumulants(_kpz(), **kw)
+    assert r['status'] == 'approximate'
+    rec, = r['spatial_accuracy']
+    assert rec['reason'] == 'derivative_vertex_loop'
+    assert 0.0 < rec['coarse_spread'] < 1e-2
+    assert any(f.code == 'G6_SPATIAL_DERIVATIVE_LOOP'
+               for f in r['analysis'].findings)
+    with pytest.raises(SpatialAccuracyError):
+        compute_cumulants(_kpz(), policy={'mode': 'strict'}, **kw)
+    # a plain-vertex result stays ok
+    r2 = compute_cumulants(_q2(), **kw)
+    assert r2['status'] == 'ok' and r2['spatial_accuracy'] == []
+
+
+def test_uv_count_includes_the_form_factor_powers():
+    """omega = (V-1) + n_C - dL/2 - r/2 with r the (even part of the)
+    form-factor degree along the subgraph's loop directions: the KPZ C-C
+    bubble l^2 (l+q)^2 is finite (omega = +1/2); the same record with the
+    square of that form factor (r = 8) is divergent."""
+    from engine.core.field_theory import FieldTheory
+    from api._propagator import build_propagator
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
+    m = _kpz()
+    ft = FieldTheory(m, taylor_order=4)
+    ft.expand()
+    prop = build_propagator(ft, m, use_cache=False, verbose=False)
+    _, pidx = build_field_index_map(list(ft._ns._ring_var_names), ft._n_tilde)
+    ext = _legs_to_phys_idx([('p', 1)] * 2, pidx)
+    vt = [{'weight': float(SR(t['weight']).subs({SR.var('c'): 0.3})),
+           'n_phys': t['n_phys'], 'chain': t['chain'], 'mode': t['mode']}
+          for t in ft._ns._operator_ir_vertex_terms]
+    seen = 0
+    for td, _p in build_pipeline_records(ft, m, prop, ext, max_ell=1).get(1, []):
+        ff = _formfactor_callable(td, vt, d=1)
+        if getattr(ff, 'rcal', None) is None or ff.rcal == 0:
+            continue
+        dd = diagram_to_cstack(td)
+        assert FI.uv_divergent_subgraphs(dd, 1, ff) == []
+        if ff.rcal.as_poly().total_degree() >= 4:
+
+            class _Sq:
+                rcal = ff.rcal ** 2
+            bad = FI.uv_divergent_subgraphs(dd, 1, _Sq())
+            assert bad and min(om for _s, om in bad) < 0
+            seen += 1
+    assert seen
+
+
+def test_coupled_equal_time_loop_is_marked():
+    """The coupled (spectral) loop driver keeps the product grid at tau = 0:
+    its result says so."""
+    spec = importlib.util.spec_from_file_location(
+        'crd', os.path.join(_MODELS, 'coupled_rd_2species_1d.model.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    with pytest.warns(UserWarning, match='approximate'):
+        r = compute_cumulants(mod.build(), k=2, max_ell=1,
+                              external_fields=[('a', 1), ('a', 1)],
+                              tau_grid=np.array([0.0]),
+                              spatial_grid=np.array([0.0, 1.0]),
+                              use_cache=False, parallel=False,
+                              spatial_parallel=False, verbose=False)
+    assert r['status'] == 'approximate'
+    assert [x['reason'] for x in r['spatial_accuracy']] == [
+        'equal_time_coupled_loop']
