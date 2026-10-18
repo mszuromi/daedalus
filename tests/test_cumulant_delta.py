@@ -174,19 +174,9 @@ def test_one_loop_delta_weight_is_the_one_loop_mean(spike_reset_runs):
                if d.loop_order == 1)
 
 
-def test_integrated_records_never_touch_C_tau(monkeypatch, spike_reset_runs):
-    import engine.integration.time_domain.final_integral as FI
-    monkeypatch.setattr(FI, 'USE_SHOTNOISE_INTEGRATED', False)
-    r = _run('single_population_spike_reset_test', 2, 1,
-             [('n', 1), ('n', 1)], P_SPIKE)
-    on = spike_reset_runs['k2']
-    for ell in (0, 1):
-        assert np.array_equal(r['C_tau_by_ell'][ell], on['C_tau_by_ell'][ell])
-    c = dd.cumulant(r)
-    assert not c.complete and 1 not in c.delta_weights_by_ell()
-    assert r['phase_j_by_ell'][1]['n_delta_subsets_dropped'] > 0
-    with pytest.warns(DeltaRecordsIncompleteWarning):
-        c.total_on_grid(mode='bin')
+# (``test_integrated_records_never_touch_C_tau``, the switch-off check of
+# ``USE_SHOTNOISE_INTEGRATED``, whose off path dropped the integrated
+# shot-noise subsets, went with that switch in audit W7.)
 
 
 def test_records_survive_the_pole_cluster_deformation(monkeypatch):
@@ -292,7 +282,7 @@ def test_save_load_round_trip(tmp_path):
     assert str(d['delta_equality'][0]) == 't_1 - t_2 = 0'
     assert json.loads(str(d['delta_provenance'][0]))['source'] == \
         'phase_j_per_diagram'
-    assert 'USE_SHOTNOISE_INTEGRATED=1' in str(d['phase_j_flags'][0])
+    assert 'PHASE_J_T_MIN=' in str(d['phase_j_flags'][0])
     c = Cumulant.from_saved(d)
     assert c.complete and c.deltas[0].weight == d['delta_weight'][0]
     assert np.array_equal(c.total_on_grid(mode='exclude'), d['C_total'])

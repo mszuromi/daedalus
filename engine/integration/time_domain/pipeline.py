@@ -39,7 +39,6 @@ from engine.integration.time_domain.final_integral import (
     integrate_diagram,
     PropagatorTD,
     _loop_number_from_graph,
-    _setup_lever_on,
 )
 
 
@@ -148,13 +147,10 @@ def _ss_grid(points):
     imported).  Only the serial evaluation paths use it (a forked worker
     would evaluate the whole grid for its share of it)."""
     import contextlib
-    import os
-    raw = os.environ.get('DAEDALUS_PHASE_J_ENGINE')
-    if raw is not None and raw.strip().lower() == 'poles':
+    from engine import _env
+    if _env.phase_j_engine() == 'poles':
         return contextlib.nullcontext()
     from engine.integration.time_domain import statespace as _ss
-    if not _ss.engine_requested():
-        return contextlib.nullcontext()
     return _ss.tau_grid_prefetch(points)
 
 
@@ -322,6 +318,9 @@ def compute_correction_td(
         from engine.integration.time_domain.final_integral import (
             _divergence_policy)
         _divergence_policy(on_divergence)               # validate early
+    from engine.integration.time_domain.final_integral import (
+        _warn_retired_env)
+    _warn_retired_env()
     if kernel_groups is not None:
         raise TypeError(
             'compute_correction_td(kernel_groups=...) is retired: pass '
@@ -340,8 +339,8 @@ def compute_correction_td(
     # G(t) matrix, the poles and residues); it dies with the call, so the
     # spatial bridge's per-q re-solve of the poles cannot be served stale.
     prop_td = (PropagatorTD(propagator_data, num_params)
-               if (typed_diagrams and hasattr(propagator_data, 'get')
-                   and _setup_lever_on('USE_SETUP_PROP_TD')) else None)
+               if (typed_diagrams and hasattr(propagator_data, 'get'))
+               else None)
 
     tree_callables = []
     groups_out = []

@@ -79,9 +79,8 @@ def _load_recording(path, **kw):
 
 @pytest.fixture(autouse=True)
 def _hermetic(monkeypatch):
-    """Fresh warn-once registry and the default Phase J mode per test."""
+    """Fresh warn-once registry per test."""
     monkeypatch.setattr(save, '_STALE_WARNED', set())
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
 
 
 # ── version strings agree ─────────────────────────────────────────────
@@ -187,32 +186,28 @@ def test_csv_header_carries_the_stamp(tmp_path):
     assert f'# phase_j_convention: {save.PHASE_J_CONVENTION}' in header
 
 
-def test_legacy_mode_is_stamped_and_warns_on_load(tmp_path, monkeypatch):
-    # A result dict without a compute-time record (hand-built): the rule in
-    # force when the file is written.
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
-    out = save.save_npz(_minimal_result(), str(tmp_path / 'legacy.npz'))
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
+def test_a_legacy_clip_result_is_stamped_and_warns_on_load(tmp_path):
+    """A result computed under the 'legacy_clip' Θ(0) mode (before audit W7
+    retired it) keeps its label in the file, and loading it warns."""
+    res = _minimal_result()
+    res['config']['phase_j_convention'] = 'theta0_legacy_clip'
+    out = save.save_npz(res, str(tmp_path / 'legacy.npz'))
     data, stale = _load_recording(out)
     assert data['phase_j_convention'].tolist() == ['theta0_legacy_clip']
     assert len(stale) == 1
     assert 'legacy' in str(stale[0].message)
 
 
-@pytest.mark.parametrize('computed, saved_under', [
-    ('theta0_legacy_clip', 'ito'),
-    ('theta0_ito_const_rows', 'legacy_clip'),
-])
+@pytest.mark.parametrize('computed', ['theta0_legacy_clip',
+                                      'theta0_ito_const_rows'])
 def test_stamp_is_the_convention_the_numbers_were_computed_with(
-        tmp_path, monkeypatch, computed, saved_under):
+        tmp_path, computed):
     # compute_cumulants records the rule in result['config'] when it
-    # computes; changing the flags before saving must not relabel the file.
+    # computes; the file carries that label, not the one in force now.
     res = _minimal_result()
     res['config']['phase_j_convention'] = computed
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', saved_under)
     out = save.save_npz(res, str(tmp_path / 'r.npz'))
     csv = save.save_csv(res, str(tmp_path / 'r.csv'))
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
     data, stale = _load_recording(out)
     assert data['phase_j_convention'].tolist() == [computed]
     assert len(stale) == (1 if computed == 'theta0_legacy_clip' else 0)
@@ -220,29 +215,15 @@ def test_stamp_is_the_convention_the_numbers_were_computed_with(
         assert f'# phase_j_convention: {computed}\n' in f.read()
 
 
-def test_convention_follows_the_environment_when_phase_j_not_loaded(
-        monkeypatch):
-    # Without final_integral in sys.modules the environment decides.
-    monkeypatch.delitem(sys.modules, save._FI_MODULE)
-    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY', raising=False)
-    monkeypatch.delenv('DAEDALUS_PHASE_J_THETA0_CONST_ROW', raising=False)
+def test_the_convention_in_force_is_the_ito_one(monkeypatch):
+    """One convention since audit W7, whether Phase J is loaded or not; the
+    retired switches (``DAEDALUS_PHASE_J_LEGACY``,
+    ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``) no longer select another."""
     assert save._phase_j_convention() == 'theta0_ito_const_rows'
+    monkeypatch.delitem(sys.modules, save._FI_MODULE)
     monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY', '1')
-    assert save._phase_j_convention() == 'theta0_legacy_clip'
-
-
-@pytest.mark.parametrize('env', [
-    {},
-    {'DAEDALUS_PHASE_J_LEGACY': '1'},
-    {'DAEDALUS_PHASE_J_LEGACY': 'true', 'DAEDALUS_PHASE_J_THETA0_CONST_ROW': 'ito'},
-    {'DAEDALUS_PHASE_J_LEGACY': '0', 'DAEDALUS_PHASE_J_THETA0_CONST_ROW': 'legacy_clip'},
-    {'DAEDALUS_PHASE_J_LEGACY': 'off'},
-    {'DAEDALUS_PHASE_J_THETA0_CONST_ROW': ' ITO '},
-    {'DAEDALUS_PHASE_J_THETA0_CONST_ROW': ''},
-])
-def test_env_mirror_matches_final_integral(env):
-    assert (save._theta0_mode_from_env(env)
-            == FI._initial_phase_j_flags(env)['THETA0_CONST_ROW_MODE'])
+    monkeypatch.setenv('DAEDALUS_PHASE_J_THETA0_CONST_ROW', 'legacy_clip')
+    assert save._phase_j_convention() == 'theta0_ito_const_rows'
 
 
 # ── warning on load ───────────────────────────────────────────────────
@@ -323,9 +304,9 @@ from tests.test_phase_j_theta0 import (                    # noqa: E402,F401
 
 def test_compute_records_the_convention_it_used(spike1_model):
     """``compute_cumulants`` stamps ``config['phase_j_convention']`` with the
-    rule the numbers were computed with (``api.save`` copies it)."""
-    for mode, label in (('ito', save.PHASE_J_CONVENTION),
-                        ('legacy_clip', 'theta0_legacy_clip')):
-        res, _c = _spike1(spike1_model, 2, 1, mode=mode)
-        assert res['config']['phase_j_convention'] == label
-        assert save._result_stamp(res)['phase_j_convention'] == label
+    rule the numbers were computed with (``api.save`` copies it).  (The
+    retired 'legacy_clip' mode stamped 'theta0_legacy_clip'.)"""
+    res, _c = _spike1(spike1_model, 2, 1)
+    label = save.PHASE_J_CONVENTION
+    assert res['config']['phase_j_convention'] == label
+    assert save._result_stamp(res)['phase_j_convention'] == label

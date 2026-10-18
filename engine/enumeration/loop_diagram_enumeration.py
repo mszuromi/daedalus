@@ -426,9 +426,15 @@ def check_topology_constraints(G, k, ell=None):
 #                     vector (forced endpoints first), every spanning tree.
 #   'multiset'     -- the former enumerate-every-multiset-then-screen path.
 # All three yield the same set of topologies (tests/test_degree_first_edges.py,
-# tests/test_canonical_cotree.py).  Env ``DAEDALUS_EDGE_GENERATOR`` overrides.
-import os as _os
-EDGE_GENERATOR = _os.environ.get('DAEDALUS_EDGE_GENERATOR', 'canonical')
+# tests/test_canonical_cotree.py): the other two are kept as the canonical
+# generator's independent references (tests set this attribute).  The env
+# switch ``DAEDALUS_EDGE_GENERATOR`` is retired (audit W7: it only warns).
+
+from engine import _env
+_env.retired('DAEDALUS_EDGE_GENERATOR',
+             "the 'canonical' generator is the only route; the 'degree_first' "
+             "and 'multiset' generators remain as test references")
+EDGE_GENERATOR = 'canonical'
 
 
 def process_tree_parallel(args, raw=False):
@@ -579,7 +585,10 @@ def _realizations(vs, rem, forbidden):
 # vector).  Worth it without the co-tree filter; with it, the filter already
 # removes most repeats and the per-vector labelling costs more than the extra
 # certificates it saves (measured: see tests/test_canonical_cotree.py header).
-DELTA_ORBIT_DEDUP = _os.environ.get('DAEDALUS_DELTA_ORBIT_DEDUP', 'auto')
+# 'auto' | '1' | '0' (tests set it; the env switch is retired, audit W7).
+_env.retired('DAEDALUS_DELTA_ORBIT_DEDUP',
+             "'auto' (on only without the co-tree filter) is the only setting")
+DELTA_ORBIT_DEDUP = 'auto'
 
 
 def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None, raw=False):
@@ -798,9 +807,11 @@ def process_tree_multiset(args):
 # canonical_label() of the multigraph (~100 us).  All are complete isomorphism
 # invariants in the same (order, sorted_edges) format, but their BYTES differ
 # for the same class: compare certificate sets across backends only via
-# prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND overrides.
+# prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND = fast | sage
+# overrides (any other value raises: 'nauty' used to mean 'sage' silently).
 from engine.enumeration import fastenum as _fe
-CERT_BACKEND = _os.environ.get('DAEDALUS_CERT_BACKEND', 'fast' if _fe.available else 'sage')
+CERT_BACKEND = _env.choice('DAEDALUS_CERT_BACKEND', ('fast', 'sage'),
+                           'fast' if _fe.available else 'sage')
 if CERT_BACKEND == 'fast' and not _fe.available:
     CERT_BACKEND = 'sage'
 
@@ -976,8 +987,13 @@ def check_orientation_constraints(D, leaves):
 #                for the ~12% of patterns that pass;
 #   'sage'    -- the former path: build a DiGraph per pattern, check with Sage.
 # Same output (tests/test_orientation_integer.py); measured 2-2.6x faster
-# stage at (3,2), (4,2), (2,3).  Env ``DAEDALUS_ORIENTATION_CHECKER`` overrides.
-ORIENTATION_CHECKER = _os.environ.get('DAEDALUS_ORIENTATION_CHECKER', 'integer')
+# stage at (3,2), (4,2), (2,3).  'sage' is kept as the reference (tests set
+# this attribute); the env switch ``DAEDALUS_ORIENTATION_CHECKER`` is retired
+# (audit W7: it only warns).
+_env.retired('DAEDALUS_ORIENTATION_CHECKER',
+             "the 'integer' checker is the only route; 'sage' remains as a "
+             "test reference")
+ORIENTATION_CHECKER = 'integer'
 
 
 def enumerate_orientations(G, leaves):

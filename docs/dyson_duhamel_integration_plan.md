@@ -118,7 +118,8 @@ where the `{n_e}` sum runs over each retarded edge's `0…N` (the truncation ord
 
 `Φ_n(t; ν_1,…,ν_n) = ∫_{σ_n} t^n e^{−t Σ u_i ν_i} d𝐮` = divided difference of
 `e^{−τt}` on `{m_α}`. **The temporal pipeline already computes this class of
-nested‑exponential simplex integral** (`final_integral._exp_over_chain_simplex`, and
+nested‑exponential simplex integral** (`expdd.chain_simplex`; the older
+`final_integral._exp_over_chain_simplex` was retired in audit W7, and
 the proposed Opitz‑via‑`expm`‑of‑a‑bidiagonal primitive for confluent nodes —
 `docs/m_ge3_chain_simplex_fix_proposal.md`). Adapt it to `Φ_n` (this is one of the
 spatial←temporal lessons in `docs/temporal_lessons_from_spatial.md`).

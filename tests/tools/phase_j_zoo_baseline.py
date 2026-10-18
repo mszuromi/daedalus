@@ -2,9 +2,11 @@
 tests/tools/phase_j_zoo_baseline.py
 ===================================
 Model-zoo baseline for Phase J (the internal Phase J plan (not distributed) §4.3,
-milestone M0.3).  It records the pre-change reference data that the legacy
-rollback umbrella test (``DAEDALUS_PHASE_J_LEGACY=1``, M1 onward) compares
-against forever.
+milestone M0.3).  It recorded the pre-change reference data that the legacy
+rollback umbrella test (``DAEDALUS_PHASE_J_LEGACY=1``, M1 until audit W7
+retired the umbrella) compared against; the baseline files stay frozen and
+tests/test_phase_j_legacy_baseline.py checks the current defaults against
+the entries whose numbers did not move.
 
 For every zoo entry (model × config) it records:
 
@@ -181,9 +183,9 @@ SEP = '::'                   # npz key separator: '<entry>::<array>'
 #   'moves'      measured to move;
 #   'unchanged'  measured bit-identical (no c_eff == 0 zero-normal polygon rows);
 #   'unknown'    not measured (timed out / not scanned).
-# The legacy umbrella test must reproduce EVERY entry under
-# DAEDALUS_PHASE_J_LEGACY=1; with the new defaults only 'unchanged' entries
-# may be compared directly.
+# The legacy umbrella test reproduced EVERY entry under
+# DAEDALUS_PHASE_J_LEGACY=1 (retired in audit W7); with the defaults only
+# 'unchanged' entries may be compared directly.
 
 
 def _E(name, *, model=None, model_file=None, kind='temporal', k=2, max_ell=1,
@@ -527,22 +529,18 @@ def _library_versions():
 
 def _numeric_flags():
     import engine.integration.time_domain.final_integral as FI
-    names = ('USE_POLYGON_M2_INTEGRATOR', 'POLYGON_BBOX_CAP',
+    # (records made before audit W7 also list the retired switches
+    # POLYGON_BBOX_CAP, USE_NUMBA_CHAIN_SIMPLEX,
+    # USE_CHAIN_SIMPLEX_PRECISION_FIX, _HAVE_NUMBA, THETA0_CONST_ROW_MODE,
+    # STRUCTURAL_ZEROS, NQUAD_HARDENED and USE_DBM_FALLBACK)
+    names = ('USE_POLYGON_M2_INTEGRATOR',
              'POSET_PHYSICAL_MARGIN', 'USE_1D_INTEGRATOR',
-             'USE_NUMBA_CHAIN_SIMPLEX', 'USE_CHAIN_SIMPLEX_PRECISION_FIX',
              'USE_POSET_INTEGRATOR', 'USE_POSET_CAP_MATCH_SCIPY',
              'USE_POSET_MPMATH_ACCUMULATION', 'TAU_KERNEL_CAP', 'QUAD_OPTS',
-             '_HAVE_NUMBA',
-             # M1 call-time flag ('<absent>' in pre-M1 records)
-             'THETA0_CONST_ROW_MODE',
-             # M2a call-time flag ('<absent>' in pre-M2a records)
-             'STRUCTURAL_ZEROS',
-             # M2b call-time flag and the hardened fallback's tolerances
-             # ('<absent>' in pre-M2b records)
-             'NQUAD_HARDENED', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL',
-             'NQUAD_LIMIT', 'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP',
-             # M3 call-time flag ('<absent>' in pre-M3 records)
-             'USE_DBM_FALLBACK')
+             # the hardened fallback's tolerances ('<absent>' in pre-M2b
+             # records)
+             'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL',
+             'NQUAD_LIMIT', 'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
     out = {}
     for n in names:
         v = getattr(FI, n, '<absent>')
@@ -1279,7 +1277,7 @@ M1_VALUE_KEYS = ('theta0_const_empty', 'theta0_const_drop',
 #: a constant row decided inside an analytic path does not.
 M1_ROUTE_KEYS = ('theta0_subsets_pruned', 'polygon_zero_area',
                  'poset_empty_cycle')
-#: The M2a structural zeros (``final_integral.STRUCTURAL_ZEROS``): an
+#: The M2a structural zeros (the retired ``STRUCTURAL_ZEROS``): an
 #: ``_integrate_polytope`` region with an order cycle whose shifts sum to <= 0
 #: answered 0 (``polytope_empty_cycle``), and δ-subsets never built because
 #: they keep an identically-zero edge smooth (``forced_delta_pruned``).  Both
@@ -1291,13 +1289,13 @@ M2A_VALUE_KEYS = ('polytope_empty_cycle', 'forced_delta_pruned')
 #: evaluated, so its analytic / nquad attempts disappear (a cycle answered
 #: at the entry of ``_integrate_polytope`` is still counted there).
 M2A_ROUTE_KEYS = ('forced_delta_pruned',)
-#: The M2b hardened quadrature fallback (``final_integral.NQUAD_HARDENED``):
+#: The M2b hardened quadrature fallback (the retired ``NQUAD_HARDENED``):
 #: every region served by it may move at the accuracy of the pre-M2b
 #: default-tolerance scipy.nquad (measured up to 6.8e-5 relative per region),
 #: so a value may move wherever this counter is nonzero; routes do not
 #: change (the same regions reach the fallback).
 M2B_VALUE_KEYS = ('nquad_hardened_calls',)
-#: M3 (``final_integral.USE_DBM_FALLBACK``): an m>=3 region refused by the
+#: M3 (the retired ``USE_DBM_FALLBACK``): an m>=3 region refused by the
 #: poset lower-bound inheritance rule moves (it was integrated over too small
 #: a region), and every region the exact DBM route answers may move at the
 #: accuracy of the fallback that served it before (or by the ±200 box, see

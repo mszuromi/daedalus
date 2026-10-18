@@ -10,11 +10,14 @@ reference that shares no code with it:
   bounded regions;
 * the open-top chain (mirror image) against mpmath.
 
-Engine level (``final_integral`` with the M7 flags, all OFF by default):
-flag hygiene and the legacy umbrella, the routed polygon / interval / poset /
-DBM paths in both the plan and the no-plan branch against the legacy paths
-and references, the one-sided final-exponent check, the finite lower bound
-``PHASE_J_T_MIN``, and end-to-end models against exact oracles.
+Engine level (``final_integral``; since audit W7 the box-free routes are the
+only ones, their switches ``USE_PHASE_J_DD_KERNELS`` / ``SEMIINF_CHAIN`` /
+``UNBOUNDED_2D`` retired): the polygon / interval / poset / DBM paths in
+both the plan and the no-plan branch against references, the one-sided
+final-exponent check, the finite lower bound ``PHASE_J_T_MIN``, and
+end-to-end models against exact oracles.  Where a test used to compute the
+retired boxed route live as a "before" value, that value is a frozen literal
+(captured at the last commit with the boxed routes, before audit W7).
 """
 import cmath
 import itertools
@@ -407,19 +410,8 @@ def FI():
     return fi
 
 
-def _set_flags(monkeypatch, fi, dd=False, semiinf=False, u2='box',
-               t_min=-math.inf):
-    monkeypatch.setattr(fi, 'USE_PHASE_J_DD_KERNELS', dd)
-    monkeypatch.setattr(fi, 'SEMIINF_CHAIN', semiinf)
-    monkeypatch.setattr(fi, 'UNBOUNDED_2D', u2)
+def _set_flags(monkeypatch, fi, t_min=-math.inf):
     monkeypatch.setattr(fi, 'PHASE_J_T_MIN', t_min)
-
-
-_ROUTES = {
-    'legacy': dict(),
-    'dd_box': dict(dd=True),
-    'box_free': dict(dd=True, semiinf=True, u2='exact'),
-}
 
 
 def _ems(fi, modes):
@@ -470,48 +462,44 @@ def _polygon(fi, rows, modes, free, plan=False):
 
 
 @pytest.mark.parametrize('plan', [False, True])
-def test_polygon_routes_agree_on_a_fast_wedge(FI, monkeypatch, plan):
+def test_polygon_routes_agree_on_a_fast_wedge(FI, plan):
     free = (0.7,)
     ref = _poly_ref(_WEDGE_ROWS, _WEDGE_FAST, free)
-    vals = {}
-    for name, kw in _ROUTES.items():
-        _set_flags(monkeypatch, FI, **kw)
-        vals[name] = _polygon(FI, _WEDGE_ROWS, _WEDGE_FAST, free, plan)
-    for name, v in vals.items():
-        assert abs(v - ref) <= 1e-12 * abs(ref), name
+    v = _polygon(FI, _WEDGE_ROWS, _WEDGE_FAST, free, plan)
+    assert abs(v - ref) <= 1e-12 * abs(ref)
+
+
+# The value of the slow wedge on the retired boxed DD route (±200 box,
+# ``UNBOUNDED_2D='box'``; frozen at audit W7).
+_SLOW_WEDGE_BOXED = (-0.953395515862667 + 2.4916442533467866j)
 
 
 def test_polygon_box_discriminator_on_a_slow_wedge(FI, monkeypatch):
-    """Decay rate 0.06 along a ray: the ±200 box truncates visibly
-    (e^{-12}); the exact route does not."""
+    """Decay rate 0.06 along a ray: the ±200 box truncated visibly
+    (e^{-12}; frozen value of the retired boxed route); the exact route
+    does not."""
     free = (0.7,)
     ref = _poly_ref(_WEDGE_ROWS, _WEDGE_SLOW, free)
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     exact = _polygon(FI, _WEDGE_ROWS, _WEDGE_SLOW, free)
-    _set_flags(monkeypatch, FI, **_ROUTES['dd_box'])
-    boxed = _polygon(FI, _WEDGE_ROWS, _WEDGE_SLOW, free)
     assert abs(exact - ref) <= 1e-12 * abs(ref)
-    assert abs(boxed - ref) > 1e-7 * abs(ref)
+    assert abs(_SLOW_WEDGE_BOXED - ref) > 1e-7 * abs(ref)
     FI._reset_runtime_counters()
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     _polygon(FI, _WEDGE_ROWS, _WEDGE_SLOW, free, plan=True)
     assert FI._RUNTIME_COUNTERS['polygon_exact_unbounded'] == 1
 
 
 def test_polygon_dd_needs_no_bilateral_guard(FI, monkeypatch):
-    """Fast modes on the ±200 box: the legacy triangle guard bails (|Re p|
-    > 600 at the far corners); the DD route returns the value."""
+    """Fast modes: the retired legacy triangle route bailed here on its
+    guard (|Re p| > 600 at the far corners of the ±200 box:
+    'polygon_triangle_guard'); the DD route returns the value."""
     free = (0.0,)
     modes = [[(1.0, -12.0)], [(1.0, -12.0 + 2j)], [(1.0, -12.0)]]
     ref = _poly_ref(_WEDGE_ROWS, modes, free)
     _set_flags(monkeypatch, FI)
-    FI._pop_bail_reason()
-    assert _polygon(FI, _WEDGE_ROWS, modes, free) is None
-    assert FI._pop_bail_reason() == 'polygon_triangle_guard'
-    for name in ('dd_box', 'box_free'):
-        _set_flags(monkeypatch, FI, **_ROUTES[name])
-        v = _polygon(FI, _WEDGE_ROWS, modes, free)
-        assert abs(v - ref) <= 1e-12 * abs(ref), name
+    v = _polygon(FI, _WEDGE_ROWS, modes, free)
+    assert abs(v - ref) <= 1e-12 * abs(ref)
 
 
 def test_polygon_dd_overflow_and_divergence_are_explicit(FI, monkeypatch):
@@ -520,17 +508,16 @@ def test_polygon_dd_overflow_and_divergence_are_explicit(FI, monkeypatch):
     rows = [((1.0, 0.0), (0.0,), 100.0), ((0.0, 1.0), (0.0,), 100.0),
             ((-1.0, 0.0), (1.0,), 0.0), ((0.0, -1.0), (1.0,), 0.0)]
     modes = [[(1.0, 4.0)], [(1.0, 4.0)], [(1.0, 0.0)], [(1.0, 0.0)]]
-    for name in ('dd_box', 'box_free'):
-        _set_flags(monkeypatch, FI, **_ROUTES[name])
-        FI._reset_runtime_counters()
-        FI._pop_bail_reason()
-        assert _polygon(FI, rows, modes, free) is None
-        assert FI._pop_bail_reason() == 'polygon_dd_overflow'
-        assert FI._RUNTIME_COUNTERS['dd_overflow'] == 1
+    _set_flags(monkeypatch, FI)
+    FI._reset_runtime_counters()
+    FI._pop_bail_reason()
+    assert _polygon(FI, rows, modes, free) is None
+    assert FI._pop_bail_reason() == 'polygon_dd_overflow'
+    assert FI._RUNTIME_COUNTERS['dd_overflow'] == 1
     # growing along the ray (-1, -1) of the exact region: Δt1 and Δt3 grow
     # there, at the net rate 1.5 - 1.0 > 0
     modes = [[(1.0, 1.5)], [(1.0, -1.0)], [(1.0, -1.0)]]
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     FI._reset_runtime_counters()
     assert _polygon(FI, _WEDGE_ROWS, modes, (0.0,)) is None
     assert FI._pop_bail_reason() == 'polygon_divergent'
@@ -541,7 +528,7 @@ def test_polygon_constant_rows_follow_theta0_on_the_exact_route(FI,
                                                                 monkeypatch):
     """A constant row c_eff = 0 (Θ(0) = 0) empties the region; c_eff > 0
     drops it from the geometry but keeps exp(λ c) in γ."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     free = (0.7,)
     zero = ((0.0, 0.0), (0.0,), 0.0)
     assert _polygon(FI, _WEDGE_ROWS + [zero], _WEDGE_FAST + [[(1.0, -1.0)]],
@@ -566,47 +553,43 @@ def _interval(fi, rows, modes, free, plan=False):
         pole_tuples=None if p is None else p['pole_tuples'], plan=p)
 
 
+# The small-α interval on the retired legacy (difference-quotient) route
+# (``USE_PHASE_J_DD_KERNELS=0``; frozen at audit W7, plan and no plan).
+_SMALL_ALPHA_LEGACY = (0.18945542355945375 - 0.027065060508493395j)
+
+
 @pytest.mark.parametrize('plan', [False, True])
-def test_interval_routes_agree_and_the_small_alpha_case(FI, monkeypatch,
-                                                        plan):
+def test_interval_routes_agree_and_the_small_alpha_case(FI, plan):
     free = (0.4,)
     modes = [[(1.0, -1.3 + 0.2j), (0.4, -0.5)], [(0.9, -0.8 + 1j)]]
-    vals = {}
-    for name, kw in _ROUTES.items():
-        _set_flags(monkeypatch, FI, **kw)
-        vals[name] = _interval(FI, _INTERVAL_ROWS, modes, free, plan)
+    v = _interval(FI, _INTERVAL_ROWS, modes, free, plan)
     ref = 0j
     for C, (l1, l2) in _tuples(modes):
         ref += (0.7 - 0.1j) * C * _mp_interval(
             -l1 + l2, l1 * 0.4 + l2 * (-0.4 + 2.0), 0.4 - 2.0, 0.4)
-    for name, v in vals.items():
-        assert abs(v - ref) <= 1e-13 * abs(ref), name
-    # α = -λ1 + λ2 = 1e-12: the legacy difference quotient cancels
+    assert abs(v - ref) <= 1e-13 * abs(ref)
+    # α = -λ1 + λ2 = 1e-12: the legacy difference quotient cancelled
     modes = [[(1.0, -1.0)], [(1.0, -1.0 + 1e-12)]]
     ref = (0.7 - 0.1j) * _mp_interval(1e-12, -0.4 + (-1.0 + 1e-12) * 1.6,
                                       -1.6, 0.4)
-    _set_flags(monkeypatch, FI, dd=True)
     v_dd = _interval(FI, _INTERVAL_ROWS, modes, free, plan)
-    _set_flags(monkeypatch, FI)
-    v_leg = _interval(FI, _INTERVAL_ROWS, modes, free, plan)
     assert abs(v_dd - ref) <= 1e-14 * abs(ref)
-    assert abs(v_leg - ref) > 1e-10 * abs(ref)
+    assert abs(_SMALL_ALPHA_LEGACY - ref) > 1e-10 * abs(ref)
 
 
 def test_semi_infinite_interval_routes_agree_with_the_exact_integral(
         FI, monkeypatch):
-    """The semi-infinite side (only the t - s row): -inf < s < t, on every
-    route (ported from the retired grouped m = 1 test)."""
+    """The semi-infinite side (only the t - s row): -inf < s < t (ported
+    from the retired grouped m = 1 test)."""
     free = (0.4,)
     rows1 = _INTERVAL_ROWS[:1]
     modes = [[(1.0, -0.7 + 0.3j), (0.5, -2.0)]]
     ref = (0.7 - 0.1j) * sum(
         C * _mp_interval(-lam, lam * 0.4, -math.inf, 0.4)
         for C, lam in modes[0])
-    for name, kw in _ROUTES.items():
-        _set_flags(monkeypatch, FI, **kw)
-        v = _interval(FI, rows1, modes, free)
-        assert abs(v - ref) <= 1e-14 * abs(ref), (name, v, ref)
+    _set_flags(monkeypatch, FI)
+    v = _interval(FI, rows1, modes, free)
+    assert abs(v - ref) <= 1e-14 * abs(ref), (v, ref)
 
 
 # ── m >= 3 ────────────────────────────────────────────────────────────
@@ -640,22 +623,19 @@ def test_semi_infinite_chain_is_exact(FI, monkeypatch, plan):
     free = (0.7,)
     fast = [[(1.0, -2.0 + 1j), (0.3, -1.1)], [(0.8, -1.5)], [(1.0, -3.0)]]
     ref = _increments_exact(fast)
-    vals = {}
-    for name, kw in _ROUTES.items():
-        _set_flags(monkeypatch, FI, **kw)
-        vals[name] = _poset(FI, _CHAIN_ROWS, fast, free, plan)
-    for name, v in vals.items():
-        assert abs(v - ref) <= 1e-13 * abs(ref), name
-    # slow: the legacy margin-50 lower bound truncates (e^{-0.05·50} ~ 8 %)
+    _set_flags(monkeypatch, FI)
+    v = _poset(FI, _CHAIN_ROWS, fast, free, plan)
+    assert abs(v - ref) <= 1e-13 * abs(ref)
+    # slow: the retired margin-50 lower bound truncated (e^{-0.05·50} ~ 8 %;
+    # frozen value of the boxed DD route, ``SEMIINF_CHAIN=0``, audit W7)
     slow = [[(1.0, -0.05)], [(0.8, -1.5)], [(1.0, -3.0)]]
     ref = _increments_exact(slow)
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     FI._reset_runtime_counters()
     v = _poset(FI, _CHAIN_ROWS, slow, free, plan)
     assert abs(v - ref) <= 1e-14 * abs(ref)
     assert FI._RUNTIME_COUNTERS['poset_semiinf_chains'] == 1
-    _set_flags(monkeypatch, FI, **_ROUTES['dd_box'])
-    assert abs(_poset(FI, _CHAIN_ROWS, slow, free, plan) - ref) > 1e-2 * abs(ref)
+    margin50 = 3.259076886184265 + 0j
+    assert abs(margin50 - ref) > 1e-2 * abs(ref)
 
 
 def test_semi_infinite_chain_far_lower_limit(FI, monkeypatch):
@@ -664,32 +644,36 @@ def test_semi_infinite_chain_far_lower_limit(FI, monkeypatch):
     e^{-κ·60}·(...) is below rounding for κ >= 1, and against mpmath."""
     free = (0.7,)
     modes = [[(1.0, -1.0 + 1j)], [(0.8, -1.5)], [(1.0, -3.0 - 0.5j)]]
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     v_inf = _poset(FI, _CHAIN_ROWS, modes, free)
-    _set_flags(monkeypatch, FI, t_min=-60.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=-60.0)
     v_60 = _poset(FI, _CHAIN_ROWS, modes, free)
     ref = _increments_exact(modes)
     assert abs(v_inf - ref) <= 1e-14 * abs(ref)
     assert abs(v_60 - v_inf) <= 1e-13 * abs(ref)
 
 
+# The finite-L routes retired in audit W7 on the slow chain below, their
+# lower bound earliest_ext - POSET_PHYSICAL_MARGIN (frozen; plan and no plan
+# gave the same values): the legacy chain-simplex kernels and the DD kernels
+# on the legacy box.
+_MARGIN50_LEGACY = (5.879734548079079 + 14.986364525794217j)
+_MARGIN50_DD_BOX = (5.879734548079085 + 14.986364525794233j)
+
+
 @pytest.mark.parametrize('plan', [False, True])
 def test_finite_lower_bound_reproduces_the_legacy_margin(FI, monkeypatch,
                                                          plan):
     """PHASE_J_T_MIN = earliest_ext - POSET_PHYSICAL_MARGIN on the box-free
-    route gives the value of the finite-L routes (legacy kernels and the DD
-    kernels on the legacy box), whose lower bound is exactly that."""
+    route gives the value of the retired finite-L routes, whose lower bound
+    was exactly that (bit for bit the DD-kernel one when it was live)."""
     free = (0.7,)
     slow = [[(1.0, -0.05 + 0.1j)], [(0.8, -1.5)], [(1.0, -0.3)]]
     L = min(0.0, free[0]) - FI.POSET_PHYSICAL_MARGIN
-    _set_flags(monkeypatch, FI)
-    v_leg = _poset(FI, _CHAIN_ROWS, slow, free, plan)
-    _set_flags(monkeypatch, FI, **_ROUTES['dd_box'])
-    v_dd = _poset(FI, _CHAIN_ROWS, slow, free, plan)
-    _set_flags(monkeypatch, FI, t_min=L, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=L)
     v_tmin = _poset(FI, _CHAIN_ROWS, slow, free, plan)
-    assert v_tmin == v_dd
-    assert abs(v_tmin - v_leg) <= 1e-12 * abs(v_leg)
+    assert abs(v_tmin - _MARGIN50_DD_BOX) <= 1e-14 * abs(_MARGIN50_DD_BOX)
+    assert abs(v_tmin - _MARGIN50_LEGACY) <= 1e-12 * abs(_MARGIN50_LEGACY)
 
 
 def test_open_top_chain_in_the_poset(FI, monkeypatch):
@@ -701,19 +685,13 @@ def test_open_top_chain_in_the_poset(FI, monkeypatch):
     modes = [[(1.0, -2.0)], [(0.8, -0.7 + 1j)], [(1.0, -0.4)]]
     free = (0.7,)
     ref = _increments_exact(modes)
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     v = _poset(FI, rows, modes, free)
     assert abs(v - ref) <= 1e-14 * abs(ref)
-    _set_flags(monkeypatch, FI)
-    v_leg = _poset(FI, rows, modes, free)
-    assert abs(v_leg - ref) <= 1e-12 * abs(ref)    # fast enough for U = 200
 
 
 def test_t_min_is_validated_and_never_ignored(FI, monkeypatch):
-    _set_flags(monkeypatch, FI, dd=True, t_min=-5.0)
-    with pytest.raises(ValueError, match='PHASE_J_T_MIN'):
-        FI._t_min()
-    _set_flags(monkeypatch, FI, t_min=-5.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=-5.0)
     assert FI._t_min() == -5.0
     with pytest.raises(ValueError, match='PHASE_J_T_MIN'):
         FI._integrate_polytope(lambda *a: 1.0, [([1.0], 0.0)], [], 1)
@@ -744,7 +722,6 @@ def test_dbm_box_free_and_slow_mode_box(FI, monkeypatch, plan):
     fast = [[(1.0, -1.0 + 1j)], [(0.8, -1.5)], [(1.0, -0.9)], [(0.6, -2.0)]]
     _set_flags(monkeypatch, FI)
     far = _dbm(FI, fast, free, cap=3000.0, plan=plan)
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     FI._reset_runtime_counters()
     v = _dbm(FI, fast, free, plan=plan)
     assert FI._RUNTIME_COUNTERS['dbm_box_free'] == 1
@@ -753,21 +730,21 @@ def test_dbm_box_free_and_slow_mode_box(FI, monkeypatch, plan):
     p = _poset(FI, _DBM_ROWS, fast, free, plan)
     assert abs(p - v) <= 1e-13 * abs(v)
     # slow modes on the ray (0, -1, 0) (s1 -> -inf: Δt2 and Δt3 grow, net
-    # rate 0.02): the ±200 box truncates; ±max(200, 40/κ_min) does not
+    # rate 0.02): the ±200 box of the pre-0.2.0 route (``cap=200.0``, its
+    # default) truncates; the box-free route does not.  (The retired boxed
+    # DD route's ±max(200, 40/κ_min) agreed with the box-free value to
+    # 1e-13; an explicit cap at that distance, 40/0.01 = 4000, is the same
+    # independent reference.)
     slow = [[(1.0, -1.0)], [(0.8, -0.01)], [(1.0, -0.01 + 0.3j)], [(0.6, -2.0)]]
     v_free = _dbm(FI, slow, free, plan=plan)
-    _set_flags(monkeypatch, FI)
-    v_200 = _dbm(FI, slow, free, plan=plan)
-    _set_flags(monkeypatch, FI, **_ROUTES['dd_box'])
-    FI._reset_runtime_counters()
-    v_slow = _dbm(FI, slow, free, plan=plan)
-    assert FI._RUNTIME_COUNTERS['dbm_slow_mode_box'] == 1
-    assert abs(v_slow - v_free) <= 1e-13 * abs(v_free)
+    v_200 = _dbm(FI, slow, free, cap=200.0, plan=plan)
+    v_far = _dbm(FI, slow, free, cap=4000.0, plan=plan)
+    assert abs(v_far - v_free) <= 1e-13 * abs(v_free)
     assert abs(v_200 - v_free) > 1e-3 * abs(v_free)
 
 
 def test_dbm_box_free_divergence_is_reported(FI, monkeypatch):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     # the ray (0, -1, 0) grows at the net rate 1.0 - 0.5 > 0
     grow = [[(1.0, -1.0)], [(0.8, 1.0)], [(1.0, -0.5)], [(0.6, -2.0)]]
     FI._reset_runtime_counters()
@@ -777,80 +754,7 @@ def test_dbm_box_free_divergence_is_reported(FI, monkeypatch):
     assert FI._RUNTIME_COUNTERS['dbm_declined_divergent'] == 1
 
 
-# ── flags ─────────────────────────────────────────────────────────────
-def test_m7_flags_from_the_environment(FI):
-    # M9: unset, the box-free switches follow the DD kernels (on by default)
-    assert FI._initial_m7_flags({}) == {'SEMIINF_CHAIN': True,
-                                        'UNBOUNDED_2D': 'exact'}
-    off = {'DAEDALUS_PHASE_J_DD_KERNELS': '0'}
-    assert FI._initial_m7_flags(off) == {'SEMIINF_CHAIN': False,
-                                         'UNBOUNDED_2D': 'box'}
-    on = {'DAEDALUS_PHASE_J_DD_KERNELS': '1',
-          'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '1',
-          'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'exact'}
-    assert FI._initial_m7_flags(on) == {'SEMIINF_CHAIN': True,
-                                        'UNBOUNDED_2D': 'exact'}
-    mixed = {'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '0'}
-    assert FI._initial_m7_flags(mixed) == {'SEMIINF_CHAIN': False,
-                                           'UNBOUNDED_2D': 'exact'}
-    for bad in ({'DAEDALUS_PHASE_J_DD_KERNELS': '0',
-                 'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '1'},
-                {'DAEDALUS_PHASE_J_DD_KERNELS': '0',
-                 'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'exact'},
-                {'DAEDALUS_PHASE_J_SEMIINF_CHAIN': 'maybe'},
-                {'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'tight'}):
-        with pytest.raises(ValueError, match='DAEDALUS_PHASE_J_'):
-            FI._initial_m7_flags(bad)
-
-
-def test_the_umbrella_resets_every_m7_and_m6_flag(FI):
-    env = {'DAEDALUS_PHASE_J_LEGACY': '1',
-           'DAEDALUS_PHASE_J_DD_KERNELS': '1',
-           'DAEDALUS_PHASE_J_SEMIINF_CHAIN': '1',
-           'DAEDALUS_PHASE_J_UNBOUNDED_2D': 'exact',
-           'DAEDALUS_CHAIN_UPPERS_KERNEL': 'transfer'}
-    assert FI._initial_m7_flags(env) == {'SEMIINF_CHAIN': False,
-                                         'UNBOUNDED_2D': 'box'}
-    assert FI._initial_phase_j_dd_kernels_flag(env) is False
-    assert FI._initial_chain_uppers_kernel(env) == 'legacy'
-    # garbage is still rejected under the umbrella
-    with pytest.raises(ValueError):
-        FI._initial_chain_uppers_kernel(
-            {'DAEDALUS_PHASE_J_LEGACY': '1',
-             'DAEDALUS_CHAIN_UPPERS_KERNEL': 'expm'})
-
-
-def test_box_free_switches_need_the_dd_kernels_at_call_time(FI, monkeypatch):
-    _set_flags(monkeypatch, FI, semiinf=True)
-    with pytest.raises(ValueError, match='SEMIINF_CHAIN'):
-        FI._semiinf_chain_on()
-    _set_flags(monkeypatch, FI, u2='exact')
-    with pytest.raises(ValueError, match='UNBOUNDED_2D'):
-        FI._unbounded_2d_exact()
-    _set_flags(monkeypatch, FI, dd=True, u2='both')
-    with pytest.raises(ValueError, match='UNBOUNDED_2D'):
-        FI._unbounded_2d_exact()
-
-
-def test_defaults_are_on(FI):
-    # (the suite runs without the M7 environment variables; M9 flipped them)
-    assert FI.USE_PHASE_J_DD_KERNELS is True
-    assert FI.SEMIINF_CHAIN is True
-    assert FI.UNBOUNDED_2D == 'exact'
-    assert FI.PHASE_J_T_MIN == -math.inf
-    assert FI.CHAIN_UPPERS_KERNEL == 'legacy'     # read by the legacy route
-    # every flag the umbrella sets, and its legacy value
-    assert FI._legacy_umbrella_flags() == {
-        'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False,
-        'NQUAD_HARDENED': False, 'USE_DBM_FALLBACK': False,
-        'USE_PHASE_J_DD_KERNELS': False, 'CHAIN_UPPERS_KERNEL': 'legacy',
-        'SEMIINF_CHAIN': False, 'UNBOUNDED_2D': 'box'}
-
-
 # ── end to end ────────────────────────────────────────────────────────
-_ALL_ON = dict(dd=True, semiinf=True, u2='exact')
-
-
 def _zoo_run(entry):
     import tests.tools.phase_j_zoo_baseline as Z
     rec = Z.run_entry(entry, with_provenance=False)
@@ -858,55 +762,24 @@ def _zoo_run(entry):
     return Z.result_arrays(rec), rec['counters']
 
 
-def test_ou_quartic_unchanged_with_every_route_on(FI, monkeypatch):
-    """Pure-pole model: the box-free routes reproduce the legacy numbers to
-    1e-12 (ell <= 2, k = 2) with 0 scipy calls and no legacy chain call
-    (the pole engine's routes: S3 makes the state-space route the
-    default)."""
+def test_ou_quartic_routes(FI, monkeypatch):
+    """Pure-pole model on the box-free routes (ell <= 2, k = 2): 0 scipy
+    calls, every m >= 3 subset on the semi-infinite DD chain (the pole
+    engine's routes: S3 makes the state-space route the default).  (Before
+    audit W7 retired them, the legacy routes gave the same numbers to
+    1e-12 here.)"""
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     import tests.tools.phase_j_zoo_baseline as Z
     entry = Z._E('t-m7-ou', model='ou_quartic', k=2, max_ell=2,
                  ext=[('dx', 1), ('dx', 1)], params=Z.P_OU,
                  tau_grid=[0.0, 0.5, 2.0])
     _set_flags(monkeypatch, FI)
-    off, _ = _zoo_run(entry)
-    _set_flags(monkeypatch, FI, **_ALL_ON)
     on, ctr = _zoo_run(entry)
     assert ctr['nquad_calls'] == 0
-    assert ctr['chain_simplex_polynomial_called'] == 0
     assert ctr['dd_poset'] > 0 and ctr['poset_semiinf_chains'] > 0
-    for k in off:
-        if k == 'tau_grid':
-            continue
-        scale = np.max(np.abs(off[k]))
-        assert np.max(np.abs(on[k] - off[k])) <= 1e-12 * scale, k
-
-
-def test_coupled_moment_oracles_with_every_route_on(FI, monkeypatch):
-    """The two non-gradient two-field cases of the moment-hierarchy oracle
-    (tests/test_phase_j_moment_oracle.py), whose oracle comparison that file
-    makes at 2e-6 (it includes the Itô τ = 0 nudge).  With every route on
-    the values equal the legacy ones once the legacy margin-50 lower bound
-    of the m = 4 chains is pushed out (150): the quadratic-drift one-loop
-    (slowest rate 0.416) carries a 7.7e-9 relative truncation at margin 50
-    that the semi-infinite chain removes."""
-    from tests import test_phase_j_moment_oracle as MO
-    par = {'mu1': 1.0, 'mu2': 1.7, 'J1': 0.5, 'J2': 0.3, 'D1': 1.0,
-           'D2': 0.6, 'eps': 0.05}
-    cases = [(MO._coupled_cubic_model(), par, 1e-12),
-             (MO._quadratic_drift_model(0.246224870792, 0.123112435396),
-              None, 1e-12)]
-    for model, p, tol_margin50 in cases:
-        _set_flags(monkeypatch, FI)
-        off = MO._cov_ell(model, 1, p)
-        monkeypatch.setattr(FI, 'POSET_PHYSICAL_MARGIN', 150.0)
-        off_far = MO._cov_ell(model, 1, p)
-        monkeypatch.setattr(FI, 'POSET_PHYSICAL_MARGIN', 50.0)
-        _set_flags(monkeypatch, FI, **_ALL_ON)
-        on = MO._cov_ell(model, 1, p)
-        for ell in off:
-            assert abs(on[ell] - off_far[ell]) <= 1e-12 * abs(off[ell]), ell
-            assert abs(on[ell] - off[ell]) <= tol_margin50 * abs(off[ell]), ell
+    # main's numbers (dca8804, frozen; the legacy routes agreed to 1e-12)
+    from tests.test_phase_j_structural_zeros import _frozen_close
+    _frozen_close('ou_routes|', {k: v for k, v in on.items()})
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1014,19 +887,18 @@ def test_poset_chain_far_from_the_origin(FI, monkeypatch):
     ~800), the integral is the same at every t."""
     modes = [[(1.0, -1.0 + 0.5j)], [(1.0, -2.0)], [(1.0, -10.0)]]
     ref = _increments_exact(modes)
-    for name in ('dd_box', 'box_free'):
-        _set_flags(monkeypatch, FI, **_ROUTES[name])
-        for t in (80.0, 200.0, -400.0, -1000.0):
-            for plan in (False, True):
-                v = _poset(FI, _CHAIN_ROWS, modes, (t,), plan)
-                assert v is not None, (name, t, FI._pop_bail_reason())
-                assert abs(v - ref) <= 1e-12 * abs(ref), (name, t)
+    _set_flags(monkeypatch, FI)
+    for t in (80.0, 200.0, -400.0, -1000.0):
+        for plan in (False, True):
+            v = _poset(FI, _CHAIN_ROWS, modes, (t,), plan)
+            assert v is not None, (t, FI._pop_bail_reason())
+            assert abs(v - ref) <= 1e-12 * abs(ref), t
 
 
 def test_t_min_on_every_route_against_references(FI, monkeypatch):
     """A finite PHASE_J_T_MIN (all switches on) bounds every time from
     below, on the m=1, m=2 (exact), m>=3 and DBM routes."""
-    _set_flags(monkeypatch, FI, t_min=-1.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=-1.0)
     # m = 1: -1 < s < t
     modes1 = [[(1.0, -0.7 + 0.2j)], [(1.0, -0.3)]]
     rows1 = [((-1.0,), (1.0,), 0.0), ((-1.0,), (1.0,), 0.5)]
@@ -1052,26 +924,26 @@ def test_t_min_on_every_route_against_references(FI, monkeypatch):
     d = _dbm(FI, modes, (0.7,))
     d_cap = _dbm(FI, modes, (0.7,), cap=3000.0)     # explicit cap: rows kept
     assert abs(p - d) <= 1e-13 * abs(d) and abs(d_cap - d) <= 1e-13 * abs(d)
-    _set_flags(monkeypatch, FI, t_min=-2.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=-2.0)
     assert abs(_dbm(FI, modes, (0.7,)) - d) > 1e-3 * abs(d)
 
 
 def test_t_min_is_absolute_time_in_every_wick_frame(FI, monkeypatch):
     """contribution() moves the origin leg of each permutation to 0; the
     bound follows it.  The same region in two frames gives one value."""
-    _set_flags(monkeypatch, FI, t_min=-1.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=-1.0)
     modes1 = [[(1.0, -0.7)]]
     rows1 = [((-1.0,), (1.0,), 0.0)]                  # s < t_free
     ems = [_ems(FI, m) for m in modes1]
     absolute = FI._integrate_1d_polytope_modesum(ems, 1.0, rows1, [0.4])
     # the same evaluation seen from a permutation whose origin leg is at 3
     tie = FI._TieContext((3.0, 3.4), (1,), 0)
-    _set_flags(monkeypatch, FI, t_min=2.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=2.0)
     shifted = FI._integrate_1d_polytope_modesum(ems, 1.0, rows1, [0.4],
                                                 tie_ctx=tie)
     assert shifted == absolute
     with pytest.raises(ValueError, match='before the switch-on'):
-        _set_flags(monkeypatch, FI, t_min=3.2, **_ROUTES['box_free'])
+        _set_flags(monkeypatch, FI, t_min=3.2)
         FI._integrate_1d_polytope_modesum(ems, 1.0, rows1, [0.4],
                                           tie_ctx=tie)
 
@@ -1082,11 +954,11 @@ def test_switch_on_transient_of_the_ou_tree(FI, monkeypatch):
     import tests.tools.phase_j_zoo_baseline as Z
     entry = Z._E('t-m7-switch-on', model='ou_quartic', k=2, max_ell=0,
                  ext=[('dx', 1), ('dx', 1)], params=Z.P_OU, tau_grid=[2.0])
-    _set_flags(monkeypatch, FI, t_min=-3.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=-3.0)
     arr, _ctr = _zoo_run(entry)
     assert abs(arr['ell0'][0] - math.exp(-2.0) * (1 - math.exp(-6.0))) \
         <= 1e-13
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     arr, _ctr = _zoo_run(entry)
     assert abs(arr['ell0'][0] - math.exp(-2.0)) <= 1e-13
 
@@ -1096,7 +968,7 @@ def test_dbm_translation_invariant_subset_with_t_min_is_divergent(FI,
     """Two times tied only to each other (s1 > s0 > T): the integrand is
     constant along (1, 1) up to a rounding residue, which must not pass as
     decay."""
-    _set_flags(monkeypatch, FI, t_min=-5.0, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI, t_min=-5.0)
     rows = [((-1.0, 1.0), (0.0,), 0.0)]               # s1 - s0 > 0
     for lam in (-0.3 + 0.1j, -0.1, -7.0 + 2j):
         modes = [[(1.0, lam)]]
@@ -1112,16 +984,6 @@ def test_dbm_cancelled_term_on_an_open_side(FI):
     seeds = [(1.0, 0j, (0j, 0j)), (-1.0, 0j, (0j, 0j)), (1.0, 0j, (0j, -1.0))]
     res = DBM.integrate_exp_sum(rows, 2, seeds, math.inf)
     assert res.status == DBM.STATUS_OK and abs(res.value - math.e) <= 1e-13
-
-
-def test_dbm_slow_mode_box_ignores_non_decaying_modes(FI, monkeypatch):
-    """A λ = 0 mode next to a slow one: κ_min is the slow decay rate, not 0."""
-    _set_flags(monkeypatch, FI, **_ROUTES['dd_box'])
-    modes = [[(1.0, -1.0)], [(0.8, -0.01), (0.3, 0j)], [(1.0, -0.01 + 0.3j)],
-             [(0.6, -2.0)]]
-    FI._reset_runtime_counters()
-    _dbm(FI, modes, (0.7,))
-    assert FI._RUNTIME_COUNTERS['dbm_slow_mode_box'] == 1
 
 
 def test_kernel_input_validation():
@@ -1157,7 +1019,7 @@ def test_t_min_at_the_fallback_explains_itself(FI, monkeypatch):
     honour it) raises with the region, the external times, the DBM's
     ill-conditioned declines and the remedy (M7 report: spike reset with T
     within ~2 of the earliest external time)."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'], t_min=-1.0)
+    _set_flags(monkeypatch, FI, t_min=-1.0)
     FI._reset_runtime_counters()
     with pytest.raises(ValueError,
                        match=r'PHASE_J_T_MIN \(= -1\.0\).*cannot honour it'
@@ -1173,7 +1035,7 @@ def test_dd_error_accounting(FI, monkeypatch):
     the value unchanged.  Half line s < t: slow modes (rate 1e-7) with
     nearly opposite residues make two ~1e7 terms cancel to O(1e-2) next to a
     fast mode (rate 100): flagged; the fast mode alone: not."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     half_line = [((-1.0,), (1.0,), 0.0)]
 
     def run(modes):

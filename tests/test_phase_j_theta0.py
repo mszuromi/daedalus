@@ -21,8 +21,10 @@ An m=2 polygon with two exactly opposite rows whose constants sum to <= 0
 (or an exactly zero area) and an m >= 3 order cycle whose shifts sum to <= 0
 are empty as well; both tests are exact, so a genuine thin region (e.g. a
 strip between external times 1e-12 apart) is integrated as before M1.
-``THETA0_CONST_ROW_MODE = 'legacy_clip'`` (or ``DAEDALUS_PHASE_J_LEGACY=1``)
-restores the pre-M1 behaviour.
+(``THETA0_CONST_ROW_MODE = 'legacy_clip'`` / ``DAEDALUS_PHASE_J_LEGACY=1``,
+which restored the pre-M1 behaviour, were retired in audit W7; the pre-M1
+values of the end-to-end tests are frozen literals: ``_BEFORE`` of
+tests/test_phase_j_subset_hook.py and ``_CROSS_FIELD_LEGACY`` below.)
 
 Everything here is model-free (hand-built constraint rows and single-pole
 modes whose integrals are known in closed form, and two hand-built typed
@@ -105,20 +107,6 @@ def _any_const_row_empty(rows, free_ext_vals, row_kinds=None, tie_ctx=None):
         for idx, (a_int, a_ext, c0) in enumerate(rows))
 
 
-_LEGACY_ROUTES = (('USE_PHASE_J_DD_KERNELS', False), ('SEMIINF_CHAIN', False),
-                  ('UNBOUNDED_2D', 'box'))
-
-
-@pytest.fixture
-def legacy(monkeypatch):
-    """Switch to the pre-M1 behaviour for one test (call-time flags): the
-    legacy Θ(0) rule on the legacy (boxed) routes, which are not the default
-    since M9."""
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
-    for flag, value in _LEGACY_ROUTES:
-        monkeypatch.setattr(FI, flag, value)
-
-
 def _never_called(*_a, **_k):
     raise AssertionError('integrand evaluated on an EMPTY region')
 
@@ -160,13 +148,14 @@ def test_constants_and_signature_defaults():
     assert FI._ROW_COEF_ATOL == 1e-12
     # no area tolerance either (M1 review): polygon emptiness is exact
     assert not hasattr(FI, '_ZERO_AREA_RTOL')
-    # the three analytic integrators resolve the box at CALL time and take
-    # the row provenance and the tie context as keywords
+    # the three analytic integrators take the row provenance and the tie
+    # context as keywords, and no box (the box-free routes; ``bbox_cap``
+    # went with the boxed ones, audit W7)
     for fn in (FI._integrate_1d_polytope_modesum,
                FI._integrate_2d_polygon_modesum,
                FI._integrate_nd_polytope_poset_modesum):
         params = inspect.signature(fn).parameters
-        assert params['bbox_cap'].default is None
+        assert 'bbox_cap' not in params
         assert params['row_kinds'].default is None
         assert params['tie_ctx'].default is None
     # no snapping of external times anywhere (M1 review): the translation
@@ -439,7 +428,7 @@ def test_integrate_diagram_labels_every_row(build, expected, monkeypatch):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# B. analytic integrators: EMPTY -> 0, DROP keeps γ, ties, legacy
+# B. analytic integrators: EMPTY -> 0, DROP keeps γ, ties
 # ═══════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize('m', [1, 2, 3])
@@ -454,7 +443,9 @@ def test_base_values(m, variant):
 @pytest.mark.parametrize('variant', VARIANTS)
 def test_empty_const_row_gives_exact_zero(m, variant):
     """([0..0], [0], 0): exactly 0, matching ``_integrate_polytope`` (which
-    decides without evaluating the integrand)."""
+    decides without evaluating the integrand).  (Pre-M1 the m=2 polygon
+    clip kept this row, Θ(0) = 1, and gave C·e^{0} times the base value --
+    the bug M1 fixed; that 'legacy_clip' mode was retired in audit W7.)"""
     fn, modes, rows = _with_const_row(m, 0.0)
     FI._reset_runtime_counters()
     v = fn(variant, modes, rows, (0.0,))
@@ -501,31 +492,6 @@ def test_ordered_external_tie(m, variant):
             assert fn(variant, modes, rows, (0.0,)) == 0         # no ctx
 
 
-@pytest.mark.parametrize('variant', VARIANTS)
-def test_legacy_clip_polygon_keeps_theta0_equal_one(variant, legacy):
-    """Pre-M1 (Θ(0) = 1 in the polygon clip): the EMPTY row of
-    ``test_empty_const_row_gives_exact_zero`` keeps the whole region, so the
-    value is C·e^{0} times the base value -- the bug M1 fixes."""
-    _fn, modes, rows = _with_const_row(2, 0.0)
-    v = _m2(variant, modes, rows, (0.0,))
-    assert abs(v - EXTRA[0]) < 1e-12, v
-    # ... and legacy never consults the tie context
-    _fn, modes, rows = _with_const_row(2, 0.0, a_ext=(1.0,))
-    v = _m2(variant, modes, rows, (0.0,), tie_ctx=IDENTITY)
-    assert abs(v - EXTRA[0]) < 1e-12, v
-
-
-@pytest.mark.parametrize('variant', ['plan', 'noplan'])
-def test_legacy_clip_m1_and_poset(variant, legacy):
-    """Pre-M1 elsewhere: m=1 already used Θ(0) = 0; the poset extractor
-    returned ``None`` (bail to scipy.nquad) on a violated constant row."""
-    fn, modes, rows = _with_const_row(1, 0.0)
-    assert fn(variant, modes, rows, (0.0,)) == 0
-    fn, modes, rows = _with_const_row(3, 0.0)
-    assert fn(variant, modes, rows, (0.0,)) is None
-    assert FI._pop_bail_reason() == 'poset_extract_none'
-
-
 def test_m0_rows():
     """m = 0 (every row constant): ``_integrate_polytope`` -- exact rule,
     and the tie context orders an external tie."""
@@ -543,12 +509,6 @@ def test_m0_rows():
     assert FI._const_row_verdict((), (1.0, 1.0, -1.0), 0.0,
                                  [0.1, 0.2, 0.3]) == 'DROP'
     assert FI._const_row_verdict((), (1.0,), 0.0, [0.5]) == 'DROP'
-
-
-def test_m0_legacy(legacy):
-    tie = [((), (1.0,), 0.0)]
-    assert FI._integrate_polytope(lambda *a: 7.0, [([], 0.0)], [0.0], 0,
-                                  raw_rows=tie, tie_ctx=SWAPPED) == 0
 
 
 def test_nquad_fallback_applies_the_helper():
@@ -586,32 +546,13 @@ FAST = _ems((1.0, -12.0))
 
 @pytest.mark.parametrize('variant', VARIANTS)
 def test_zero_area_two_cycle_polygon_is_empty(variant):
-    assert FI._polygon_from_2d_constraints(TWO_CYCLE, [0.2], 200.0) == []
+    """(Pre-M1 the clipped polygon kept a zero-area segment here and its fan
+    tripped the triangle guard, a bail to nquad.)"""
     FI._reset_runtime_counters()
     v = _m2(variant, [FAST] * 4, TWO_CYCLE, (0.2,))
     assert v == 0 and FI._pop_bail_reason() is None
     assert _counter('polygon_zero_area') == 1
     assert _counter('nquad_calls') == 0
-
-
-def test_zero_area_two_cycle_polygon_legacy(legacy):
-    """Pre-M1: a non-empty zero-area segment, and a guard bail (-> nquad)."""
-    poly = FI._polygon_from_2d_constraints(TWO_CYCLE, [0.2], 200.0)
-    assert len(poly) >= 3
-    assert _m2('plan', [FAST] * 4, TWO_CYCLE, (0.2,)) is None
-    assert FI._pop_bail_reason() == 'polygon_triangle_guard'
-
-
-def test_zero_area_check_keeps_thin_genuine_regions():
-    """A strip of width 1e-6 (the τ_eval scale) is not degenerate; the
-    degeneracy test is exact (a segment is, a sliver of area 1e-30 is not)."""
-    rows = [((1.0, 0.0), (0.0,), 1e-6), ((-1.0, 0.0), (0.0,), 0.0)]
-    poly = FI._polygon_from_2d_constraints(rows, [0.0], 200.0)
-    assert len(poly) == 4 and not FI._polygon_has_zero_area(poly)
-    assert FI._polygon_has_zero_area([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
-    assert FI._polygon_has_zero_area([(0.0, 0.0), (1.0, 1.0)])
-    assert not FI._polygon_has_zero_area([(0.0, 0.0), (1.0, 0.0),
-                                          (1.0, 1e-30)])
 
 
 def test_opposite_rows_empty_is_exact():
@@ -628,9 +569,10 @@ def test_opposite_rows_empty_is_exact():
 
 # A strip of width w = t_b − t_a between two external times and no constant
 # row: s0 − t_a > 0, t_b − s0 > 0, s0 − s1 > 0 (s1 unbounded below, cut by
-# the box).  Its integral is w·e^{−w} (to e^{−200}).  Before the M1 review
-# an area tolerance zeroed it for w below ~1e-12; the exact tests keep the
-# pre-M1 value bit-for-bit (legacy_clip, whose clip is the pre-M1 one).
+# the box).  Its integral is w·e^{−w}.  Before the M1 review an area
+# tolerance zeroed it for w below ~1e-12; the exact tests keep it (and gave
+# the value of the pre-M1 'legacy_clip' mode bit for bit, until that mode
+# was retired in audit W7).
 def _strip_rows():
     return [((1.0, 0.0), (-1.0, 0.0), 0.0),
             ((-1.0, 0.0), (0.0, 1.0), 0.0),
@@ -639,17 +581,14 @@ def _strip_rows():
 
 @pytest.mark.parametrize('variant', VARIANTS)
 @pytest.mark.parametrize('w', [1e-9, 3e-12, 1e-12, 3e-13, 1e-13, 1e-15])
-def test_thin_strip_without_constant_rows_equals_legacy(variant, w,
-                                                        monkeypatch):
+def test_thin_strip_without_constant_rows_is_exact(variant, w):
     modes = [_ems((1.0, -1.0))] * 3
     free = (0.7, 0.7 + w)
     FI._reset_runtime_counters()
     new = _m2(variant, modes, _strip_rows(), free)
     ctrs = {k: _counter(k) for k in ('zero_normal_rows_seen',
                                      'polygon_zero_area', 'nquad_calls')}
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
-    old = _m2(variant, modes, _strip_rows(), free)
-    assert new is not None and new == old, (w, new, old)
+    assert new is not None
     assert ctrs == {'zero_normal_rows_seen': 0, 'polygon_zero_area': 0,
                     'nquad_calls': 0}
     wt = free[1] - free[0]
@@ -671,12 +610,6 @@ def test_strip_between_coincident_times_is_empty(variant):
         assert _m2(variant, modes, _strip_rows(), free) == 0
         assert _counter('polygon_zero_area') == 1
         assert _counter('zero_normal_rows_seen') == 0
-
-
-def test_clip_rejects_a_zero_normal():
-    square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
-    with pytest.raises(ValueError, match='zero normal'):
-        FI._clip_polygon_to_halfplane(square, 0.0, 0.0, 1.0)
 
 
 CYCLE3 = BASE3 + [((1.0, -1.0, 0.0), (0.0,), 0.0)]      # s0 > s1 and s1 > s0
@@ -744,12 +677,6 @@ def test_order_rows_infeasible():
     assert f(3, [(0, 1, -1e-16), (1, 0, 0.0)])
 
 
-def test_poset_cycle_legacy(legacy):
-    assert _m3('plan', [_ems((1.0, LAM))] * 4, CYCLE3, (0.0,)) is None
-    assert FI._pop_bail_reason() == 'poset_no_extension'
-    assert FI._extract_causal_poset(CYCLE3, [0.0], 3) is not FI._EMPTY_POSET
-
-
 def test_causal_chambers_unchanged():
     """``spatial/causal_chambers`` reuses ``_CausalPoset`` and
     ``_enumerate_linear_extensions``: pin its chamber enumeration on the
@@ -771,111 +698,6 @@ def test_causal_chambers_unchanged():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# D. flags: call time, the umbrella, the default
-# ═══════════════════════════════════════════════════════════════════════
-
-def test_flag_initialisation_from_the_environment():
-    # (the other Phase J flags of the same dict are checked by their own
-    # tests, e.g. STRUCTURAL_ZEROS in tests/test_phase_j_structural_zeros.py)
-    def f(env):
-        return {'THETA0_CONST_ROW_MODE':
-                FI._initial_phase_j_flags(env)['THETA0_CONST_ROW_MODE']}
-    assert f({}) == {'THETA0_CONST_ROW_MODE': 'ito'}
-    assert f({'DAEDALUS_PHASE_J_THETA0_CONST_ROW': 'legacy_clip'}) == {
-        'THETA0_CONST_ROW_MODE': 'legacy_clip'}
-    for v in ('1', 'true', 'yes'):
-        assert f({'DAEDALUS_PHASE_J_LEGACY': v,
-                  'DAEDALUS_PHASE_J_THETA0_CONST_ROW': 'ito'}) == {
-            'THETA0_CONST_ROW_MODE': 'legacy_clip'}
-    assert f({'DAEDALUS_PHASE_J_LEGACY': '0'})['THETA0_CONST_ROW_MODE'] \
-        == 'ito'
-    with pytest.raises(ValueError):
-        f({'DAEDALUS_PHASE_J_THETA0_CONST_ROW': 'stratonovich'})
-
-
-def test_default_configuration_is_never_legacy():
-    """Guard: the shipped default is the Itô rule.  (If this process was
-    started with a Phase J override in the environment, the module values
-    are the override's; the environment-free default is checked either
-    way.)"""
-    assert FI._initial_phase_j_flags({})['THETA0_CONST_ROW_MODE'] == 'ito'
-    overridden = any(k in os.environ for k in (
-        'DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_THETA0_CONST_ROW'))
-    if not overridden:
-        assert FI.THETA0_CONST_ROW_MODE == 'ito'
-        assert not FI._theta0_legacy()
-
-
-def test_invalid_mode_attribute_raises(monkeypatch):
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'stratonovich')
-    with pytest.raises(ValueError):
-        _m2('plan', [_ems((1.0, LAM))] * 2, BASE2, (0.0,))
-
-
-@pytest.mark.parametrize('variant', VARIANTS)
-def test_mode_is_read_at_call_time_by_a_built_plan(variant, monkeypatch):
-    """A plan built under one mode, evaluated under the other."""
-    _fn, modes, rows = _with_const_row(2, 0.0)
-    plan = FI._build_modesum_plan(modes, rows, 2, 1)
-    kw = dict(smooth_edge_modes=modes, prefactor_complex=1.0 + 0j,
-              subset_constraint_data=rows, free_ext_vals=[0.0])
-    if variant == 'plan':
-        kw['plan'] = plan
-    assert FI._integrate_2d_polygon_modesum(**kw) == 0
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
-    assert abs(FI._integrate_2d_polygon_modesum(**kw) - EXTRA[0]) < 1e-12
-
-
-# An unbounded wedge with slow decay (λ = -0.05): ∫_{s0<s1<0} = 400 on the
-# infinite domain, so the ±cap box visibly matters.
-SLOW = _ems((1.0, -0.05))
-# A chain s0 < s1 < s2 with s0 > t and no upper row: the poset integrates up
-# to the box (upper fallback), so the value depends on it.
-UPPER_OPEN = [((-1.0, 1.0, 0.0), (0.0,), 0.0), ((0.0, -1.0, 1.0), (0.0,), 0.0),
-              ((1.0, 0.0, 0.0), (-1.0,), 0.0)]
-
-
-@pytest.mark.parametrize('variant', VARIANTS)
-@pytest.mark.parametrize('mode', ['ito', 'legacy_clip'])
-def test_bbox_cap_is_read_at_call_time(variant, mode, monkeypatch):
-    """In both modes: the legacy umbrella also reads the cap at call time,
-    so it reproduces a pre-M1 run at any cap (plan §3.1: the cap-12 trap
-    through the call-time cap).  The cap is the boxed routes' (M9: not the
-    default ones)."""
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', mode)
-    for flag, value in _LEGACY_ROUTES:
-        monkeypatch.setattr(FI, flag, value)
-
-    def values():
-        return (_m2(variant, [SLOW, SLOW], BASE2, (0.0,)),
-                _m3(variant, [_ems((1.0, LAM))] * 3, UPPER_OPEN, (0.0,)))
-    v200 = values()
-    assert abs(v200[0] - 399.80024030904514) < 1e-12 * 399.8
-    monkeypatch.setattr(FI, 'POLYGON_BBOX_CAP', 12.0)
-    v12 = values()
-    assert abs(v12[0] - 48.760552899823075) < 1e-12 * 48.76
-    assert v12[1] != v200[1]
-
-
-@pytest.mark.parametrize('variant', VARIANTS)
-def test_legacy_theta0_value_follows_the_call_time_cap(variant, legacy,
-                                                       monkeypatch):
-    """The trap mechanism, model-free: under 'legacy_clip' the tied
-    constant row keeps the whole (box-bounded) region, so the value moves
-    with the cap; the umbrella must see that through the call-time cap."""
-    _fn, modes, rows = _with_const_row(2, 0.0)
-    modes = [SLOW, SLOW, _ems(EXTRA)]
-    v200 = _m2(variant, modes, rows, (0.0,))
-    monkeypatch.setattr(FI, 'POLYGON_BBOX_CAP', 12.0)
-    v12 = _m2(variant, modes, rows, (0.0,))
-    C = EXTRA[0]
-    assert abs(v200 - C * 399.80024030904514) < 1e-12 * abs(v200)
-    assert abs(v12 - C * 48.760552899823075) < 1e-12 * abs(v12)
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
-    assert _m2(variant, modes, rows, (0.0,)) == 0
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # E. one rule, one place: no other ad-hoc constant-row checks (§2.4 item 1)
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -891,13 +713,7 @@ _ALLOWED_CONST_ROW_CHECKS = {
     'final_integral.py': {
         # the rule itself
         '_const_row_decision': 2,
-        # 'legacy_clip' branches (pre-M1 behaviour, kept verbatim)
-        '_polygon_from_2d_constraints': 1,
-        '_extract_causal_poset': 1,
-        '_integrate_1d_polytope_modesum': 1,
-        # M7: the 'legacy_clip' branch of the exact (box-free) polygon,
-        # the same rule as ``_polygon_from_2d_constraints``'s
-        '_polygon_region_dd': 1,
+        # (the pre-M1 'legacy_clip' branches went with that mode, audit W7)
         # the scipy.nquad fallback: downstream of the helper in
         # ``_integrate_polytope`` (which returns 0 for an EMPTY row and
         # removes a tie ordered as holding), so for 'ito' these only ever
@@ -976,36 +792,19 @@ def spike1_model(private_cwd):
     return _spike_reset_one_population()
 
 
-def _spike1(model, k, max_ell, tau_grid=(0.0, 3.0), mode='ito'):
+def _spike1(model, k, max_ell, tau_grid=(0.0, 3.0)):
     # the engine is part of the key (S3: some tests pin the pole engine)
-    key = (k, max_ell, tuple(tau_grid), mode,
+    key = (k, max_ell, tuple(tau_grid),
            os.environ.get('DAEDALUS_PHASE_J_ENGINE', ''),
            os.environ.get('DAEDALUS_TAU0', ''))
     if key not in _E2E:
         from api import compute_cumulants
-        saved = {n: getattr(FI, n) for n in (
-            'THETA0_CONST_ROW_MODE', 'NQUAD_HARDENED') + tuple(
-                n for n, _v in _LEGACY_ROUTES)}
-        saved_nh = FI.NQUAD_HARDENED
-        FI.THETA0_CONST_ROW_MODE = mode
-        # 'legacy_clip' reaches the scipy quadrature fallback here: the
-        # pre-M1 captures were made with the pre-M2b (default-tolerance)
-        # fallback, so it is used too (M2b, NQUAD_HARDENED), on the legacy
-        # routes (M9: not the default ones).
-        FI.NQUAD_HARDENED = saved_nh if mode == 'ito' else False
-        if mode != 'ito':
-            for flag, value in _LEGACY_ROUTES:
-                setattr(FI, flag, value)
         FI._reset_runtime_counters()
-        try:
-            res = compute_cumulants(
-                model, k=k, max_ell=max_ell,
-                external_fields=[('n', 1)] * k, parameters=_SPIKE1_PARAMS,
-                tau_grid=np.array(tau_grid), use_cache=True, parallel=False,
-                verbose=False)
-        finally:
-            for n, v in saved.items():
-                setattr(FI, n, v)
+        res = compute_cumulants(
+            model, k=k, max_ell=max_ell,
+            external_fields=[('n', 1)] * k, parameters=_SPIKE1_PARAMS,
+            tau_grid=np.array(tau_grid), use_cache=True, parallel=False,
+            verbose=False)
         counters = {k_: (dict(v) if isinstance(v, dict) else v)
                     for k_, v in FI._RUNTIME_COUNTERS.items()}
         _E2E[key] = (res, counters)
@@ -1017,59 +816,27 @@ def _arrays(res):
             for ell, v in res['C_tau_by_ell'].items()}
 
 
-def test_spike1_legacy_reproduces_pre_m1_values(spike1_model):
-    """'legacy_clip' reproduces the values captured before M0.1/M1 (rtol
-    1e-13: cross-process ulp jitter, plan §4.4)."""
-    from tests.test_phase_j_subset_hook import _BEFORE
-    res, _c = _spike1(spike1_model, 2, 1, mode='legacy_clip')
-    got = _arrays(res)
-    for ell, vals in _BEFORE['spike1'].items():
-        np.testing.assert_allclose(got[ell], np.array(vals, dtype=complex),
-                                   rtol=1e-13, atol=0)
-
-
 def test_spike1_ito_moves_one_loop_only_and_never_reaches_nquad(
         spike1_model, monkeypatch):
-    """M1 moves the one-loop (Θ(0) rows in the polygon path), not the tree;
-    with the Itô rule every subset is answered analytically.  (Both modes at
-    the same τ = 0 sample: 'legacy_clip' keeps τ = −1e−6, see
-    ``api.compute._tau0_lag``.)"""
+    """M1 moved the one-loop (Θ(0) rows in the polygon path), not the tree;
+    with the Itô rule every subset is answered analytically.  The pre-M1
+    values are the frozen captures ``_BEFORE['spike1']`` of
+    tests/test_phase_j_subset_hook.py (the retired 'legacy_clip' mode
+    reproduced them, through the scipy fallback, until audit W7); both at
+    the τ = 0 sample τ = −1e−6 (``DAEDALUS_TAU0=nudge``)."""
+    from tests.test_phase_j_subset_hook import _BEFORE
     monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
     res_i, c_i = _spike1(spike1_model, 2, 1)
-    res_l, c_l = _spike1(spike1_model, 2, 1, mode='legacy_clip')
-    ito, leg = _arrays(res_i), _arrays(res_l)
-    np.testing.assert_allclose(ito[0], leg[0], rtol=1e-14, atol=0)
+    ito = _arrays(res_i)
+    leg = {ell: np.array(v, dtype=complex)
+           for ell, v in _BEFORE['spike1'].items()}
+    np.testing.assert_allclose(ito[0], leg[0], rtol=1e-13, atol=0)
     assert np.all(np.abs(ito[1] - leg[1]) > 1e-3 * np.abs(leg[1]))
-    assert c_i['nquad_calls'] == 0 < c_l['nquad_calls']
+    assert c_i['nquad_calls'] == 0
     assert c_i['theta0_const_empty'] > 0
     # δ-subsets with a τ-independent EMPTY row return 0 without
-    # integration (Itô only; the flag is read at call time)
+    # integration
     assert c_i['theta0_subsets_pruned'] > 0
-    for key in ('theta0_const_empty', 'theta0_const_drop', 'theta0_tie',
-                'theta0_tie_ordered', 'theta0_subsets_pruned',
-                'polygon_zero_area', 'poset_empty_const',
-                'poset_empty_cycle'):
-        assert c_l[key] == 0, key
-
-
-def test_spike1_mode_flip_after_the_build(spike1_model, monkeypatch):
-    """The mode is read at CALL time, also for the τ-independent EMPTY
-    subsets: a callable built under one mode and evaluated under the other
-    equals the callable built under the other mode."""
-    fn_i = _spike1(spike1_model, 2, 1)[0]['total_C_by_ell'][1]
-    fn_l = _spike1(spike1_model, 2, 1,
-                   mode='legacy_clip')[0]['total_C_by_ell'][1]
-    pts = [(0.0, -1e-6), (0.0, 3.0)]
-    out = {}
-    for mode in ('ito', 'legacy_clip'):
-        monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', mode)
-        out[mode] = (np.array([complex(fn_i(*p)) for p in pts]),
-                     np.array([complex(fn_l(*p)) for p in pts]))
-    for mode, (built_ito, built_legacy) in out.items():
-        np.testing.assert_allclose(built_ito, built_legacy, rtol=1e-13,
-                                   atol=0, err_msg=mode)
-    assert np.all(np.abs(out['ito'][0] - out['legacy_clip'][0])
-                  > 1e-3 * np.abs(out['legacy_clip'][0]))
 
 
 def test_spike1_hook_records_row_kinds(spike1_model):
@@ -1095,9 +862,7 @@ def test_spike1_hook_records_row_kinds(spike1_model):
     assert run['counters']['nquad_calls'] == 0
 
 
-@pytest.mark.parametrize('mode', ['ito', 'legacy_clip'])
-def test_callables_accept_the_pre_0_2_0_time_arguments(spike1_model, mode,
-                                                       monkeypatch):
+def test_callables_accept_the_pre_0_2_0_time_arguments(spike1_model):
     """The raw per-ℓ callables take every time argument the pre-0.2.0 code
     took (review round 3): ``contribution()`` no longer converts the times
     to float up front (the tie context keeps them as passed), so at k=1,
@@ -1106,7 +871,6 @@ def test_callables_accept_the_pre_0_2_0_time_arguments(spike1_model, mode,
     Itô mode through the tie order at an exact symbolic tie."""
     from sage.all import SR
     t = SR.var('t')
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', mode)
     res1, _c = _spike1(spike1_model, 1, 1, tau_grid=(0.0,))
     fn1 = res1['phase_j_by_ell'][1]['total_C']
     ref = complex(fn1(0.0))
@@ -1121,7 +885,7 @@ def test_callables_accept_the_pre_0_2_0_time_arguments(spike1_model, mode,
         FI._reset_runtime_counters()
         assert complex(fn(t, t)) == tie, ell
         assert _counter('theta0_tie_ordered') == n_num, ell
-        assert (n_num > 0) == (mode == 'ito'), ell
+        assert n_num > 0, ell
         assert complex(fn(t, t + 3)) == complex(fn(0.0, 3.0))
 
 
@@ -1195,13 +959,13 @@ def test_k3_translation_invariance(k3_tree):
         assert abs(f(*shifted) - f(*pt)) <= rtol * abs(f(*pt)), pt
 
 
-def test_ou_quartic_near_ties_do_not_depend_on_the_mode(private_cwd,
-                                                       monkeypatch):
-    """A model without δ parts has no constant rows, so the Θ(0) mode and
-    the tie handling can never change its numbers: bit-identical in-process
-    at exact ties and rounding-level near-ties (no time is ever altered).
-    On the pole engine: S3's default route hands a 'legacy_clip' call to
-    the pole route, which differs from its own Itô value by rounding."""
+def test_ou_quartic_near_ties_reach_no_constant_row(private_cwd,
+                                                   monkeypatch):
+    """A model without δ parts has no constant rows, so the Θ(0) rule and
+    the tie handling can never change its numbers: no zero-normal row and no
+    fallback at exact ties and rounding-level near-ties (no time is ever
+    altered).  (Until audit W7 retired it, the 'legacy_clip' mode gave
+    bit-identical values here.)"""
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     import daedalus as dd
     from api import compute_cumulants
@@ -1214,20 +978,11 @@ def test_ou_quartic_near_ties_do_not_depend_on_the_mode(private_cwd,
     fns = res['total_C_by_ell']
     pts = [(0.3, 0.1 + 0.2, 0.6, 0.9), (10.0, 10.0 + 1e-13, 10.5, 11.0),
            (0.0, 0.5, 0.5, 0.5), (1e6, 1e6, 1e6 + 0.5, 1e6 + 1.0)]
-    vals = {}
-    saved = FI.THETA0_CONST_ROW_MODE
-    try:
-        for mode in ('ito', 'legacy_clip'):
-            FI.THETA0_CONST_ROW_MODE = mode
-            FI._reset_runtime_counters()
-            vals[mode] = np.array([[complex(fns[ell](*p)) for p in pts]
-                                   for ell in (0, 1)])
-            assert _counter('zero_normal_rows_seen') == 0
-            assert _counter('nquad_calls') == 0
-    finally:
-        FI.THETA0_CONST_ROW_MODE = saved
-    assert np.array_equal(vals['ito'], vals['legacy_clip'])
-    assert np.all(np.abs(vals['ito'][1]) > 0)
+    FI._reset_runtime_counters()
+    vals = np.array([[complex(fns[ell](*p)) for p in pts] for ell in (0, 1)])
+    assert _counter('zero_normal_rows_seen') == 0
+    assert _counter('nquad_calls') == 0
+    assert np.all(np.abs(vals[1]) > 0)
 
 
 # Legs of DIFFERENT fields: the regular part of ⟨n1 n2 n1⟩ jumps where
@@ -1258,25 +1013,31 @@ def ld_cross_k3(private_cwd):
 _H_API = np.array([1e-7, 1e-8, 1e-9])
 
 
-@pytest.mark.parametrize('tie, larger_index_earlier, other_side, hs', [
-    ((0.0, 0.7, 0.7), lambda h: (0.0, 0.7, 0.7 - h),
+# The pre-M1 value at each tie: the retired 'legacy_clip' mode on this
+# callable (frozen at audit W7; neither one-sided limit).
+_CROSS_FIELD_LEGACY = {'legs12': 8.07042890983328e-05,
+                       'legs01': 2.561663772365063e-05,
+                       'grid_origin': 2.6425956563170364e-05}
+
+
+@pytest.mark.parametrize('tid, tie, larger_index_earlier, other_side, hs', [
+    ('legs12', (0.0, 0.7, 0.7), lambda h: (0.0, 0.7, 0.7 - h),
      lambda h: (0.0, 0.7, 0.7 + h), _H),
-    ((0.3, 0.3, 0.7), lambda h: (0.3, 0.3 - h, 0.7),
+    ('legs01', (0.3, 0.3, 0.7), lambda h: (0.3, 0.3 - h, 0.7),
      lambda h: (0.3, 0.3 + h, 0.7), _H),
     # dd.run's full-grid origin (the pre-0.2.0 k=3 slice point at τ = 0)
-    ((0.0, -1e-6, -1e-6), lambda h: (0.0, -1e-6, -1e-6 - h),
+    ('grid_origin', (0.0, -1e-6, -1e-6), lambda h: (0.0, -1e-6, -1e-6 - h),
      lambda h: (0.0, -1e-6, -1e-6 + h), _H_API),
 ], ids=['legs12', 'legs01', 'grid_origin'])
 def test_cross_field_tie_takes_the_tie_order_side(
-        ld_cross_k3, monkeypatch, tie, larger_index_earlier, other_side, hs):
+        ld_cross_k3, tid, tie, larger_index_earlier, other_side, hs):
     f = ld_cross_k3
     value = f(*tie)
     lim = _richardson([f(*larger_index_earlier(h)) for h in hs], hs)
     other = _richardson([f(*other_side(h)) for h in hs], hs)
     assert abs(other - lim) > 1e-2 * abs(lim)          # a genuine jump
     assert abs(value - lim) <= 1e-12 * abs(lim)
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
-    legacy = f(*tie)
+    legacy = _CROSS_FIELD_LEGACY[tid]
     assert abs(legacy - lim) > 1e-2 * abs(lim)
     assert abs(legacy - other) > 1e-2 * abs(other)
 

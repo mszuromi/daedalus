@@ -2073,15 +2073,10 @@ def compute_spatial_correlator_generic(
                    and _osg.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') != '1')
     # unset: the RAM-aware default of the Phase J guard (at most 6 GB, less
     # on a small machine: final_integral.default_mem_budget); an explicit
-    # value is used as given
-    if 'SPATIAL_MEM_BUDGET_GB' in _osg.environ:
-        _budget_gb = float(_osg.environ['SPATIAL_MEM_BUDGET_GB'])
-        _budget_rule = f'SPATIAL_MEM_BUDGET_GB={_budget_gb:g}'
-    else:
-        from engine.integration.time_domain.final_integral import (
-            default_mem_budget as _dmb)
-        _b, _budget_rule = _dmb()
-        _budget_gb = _b / 1e9
+    # value is used as given (one parser: full_integrator._spatial_mem_budget)
+    from engine.integration.spatial.full_integrator import _spatial_mem_budget
+    _b, _budget_rule = _spatial_mem_budget()
+    _budget_gb = _b / 1e9
     _peak_gb, _worst = 0.0, None
     from engine.integration.spatial.full_integrator import (
         time_grid_split_factor, external_times_2pt, chamber_peak_bytes)
