@@ -663,7 +663,57 @@ class SpatialUVDivergenceError(NotImplementedError):
     would be set by the quadrature grid, not by the model."""
 
 
-def uv_divergent_subgraphs(descr, spatial_dim):
+def _form_factor_degree(formfactor, descr, sub):
+    """Even part of the degree of a derivative-vertex form factor along the
+    loop momenta that flow only through the edges ``sub`` (the directions
+    that grow when the subgraph shrinks); 0 for no / a plain form factor.
+    Odd powers average out over the loop-momentum Gaussian, so the count
+    uses ``2 * floor(r / 2)``.  Cached on the form factor."""
+    R = getattr(formfactor, 'rcal', None)
+    if formfactor is None or R is None:
+        return 0
+    cache = formfactor.__dict__.setdefault('_uv_degree_cache', {})
+    key = (tuple((e.u, e.v, e.kind, tuple(e.a)) for e in descr.edges), sub)
+    if key in cache:
+        return cache[key]
+    import sympy as _sp
+    # exact arithmetic: the routing coefficients are integers, and a float
+    # direction leaves ~1e-17 residues of cancelled powers in the degree
+    E = len(descr.edges)
+    rows = [[_sp.Rational(int(round(c))) for c in np.atleast_1d(e.a)]
+            for i, e in enumerate(descr.edges) if i not in set(sub)]
+    L = len(np.atleast_1d(descr.edges[0].a)) if E else 0
+    basis = (_sp.Matrix(rows).nullspace() if rows
+             else [_sp.Matrix([1 if j == i else 0 for j in range(L)])
+                   for i in range(L)])
+    r = 0
+    if basis:
+        rng = np.random.default_rng(12345)
+        v = sum((int(rng.integers(1, 7)) * bv for bv in basis),
+                _sp.zeros(L, 1))
+        t = _sp.Symbol('_uv_t')
+        sub_map = {}
+        for sym in R.free_symbols:
+            nm = str(sym)
+            c0 = _sp.Rational(int(rng.integers(-9, 10)), int(rng.integers(1, 9)))
+            if nm[:1] == 'l':
+                parts = nm[1:].split('_')
+                i = int(parts[0])
+                ax = int(parts[1]) if len(parts) > 1 else 0
+                u_ax = (_sp.Integer(1), _sp.Rational(3, 5), _sp.Rational(-2, 7))[ax % 3]
+                sub_map[sym] = c0 + t * v[i] * u_ax
+            else:
+                sub_map[sym] = c0
+        Rx = _sp.nsimplify(R, rational=True)
+        try:
+            r = int(_sp.Poly(_sp.expand(Rx.subs(sub_map)), t).degree())
+        except Exception:
+            r = 0
+    cache[key] = 2 * (max(r, 0) // 2)
+    return cache[key]
+
+
+def uv_divergent_subgraphs(descr, spatial_dim, formfactor=None):
     """Connected loop subgraphs of ``descr`` that are UV-divergent at
     ``spatial_dim`` by dynamic power counting (plain vertices).
 
@@ -674,8 +724,12 @@ def uv_divergent_subgraphs(descr, spatial_dim):
     E.g. the self-loop (tadpole) ``ω = 1 − d/2`` diverges for ``d ≥ 2``, the
     one-loop bubble ``ω = 2 − d/2`` only for ``d ≥ 4``, the φ⁴ sunset
     ``ω = 3 − d`` for ``d ≥ 3``.  Only internal (loop-momentum-carrying)
-    edges form subgraphs.  Derivative-vertex form factors add momentum powers
-    this count does not include.  Returns a list of ``(edge_indices, ω)``."""
+    edges form subgraphs.  A derivative-vertex ``formfactor`` adds its
+    momentum powers along the subgraph's own loop directions,
+    ``ω -= r_γ / 2`` (:func:`_form_factor_degree`; e.g. the KPZ C–C bubble
+    ``ℓ²(ℓ+q)²``: ``ω = 3 − d/2 − 2``, finite at d = 1 but with a
+    ``ρ^{−1/2}`` loop-shrink singularity).  Returns a list of
+    ``(edge_indices, ω)``."""
     import itertools as _it
     d = float(spatial_dim)
     if d <= 0:
@@ -703,16 +757,19 @@ def uv_divergent_subgraphs(descr, spatial_dim):
             if L < 1:
                 continue
             n_C = sum(1 for e in es if e.kind == 'C')
-            omega = (len(verts) - 1) + n_C - 0.5 * d * L
+            omega = ((len(verts) - 1) + n_C - 0.5 * d * L
+                     - 0.5 * _form_factor_degree(formfactor, descr, sub))
             if omega <= 0:
                 out.append((sub, omega))
     return out
 
 
-def _refuse_uv_divergent(descr, spatial_dim):
-    if spatial_dim is None or spatial_dim < 2:
+def _refuse_uv_divergent(descr, spatial_dim, formfactor=None):
+    if spatial_dim is None:
         return
-    bad = uv_divergent_subgraphs(descr, spatial_dim)
+    if spatial_dim < 2 and getattr(formfactor, 'rcal', None) is None:
+        return                       # plain vertices never diverge at d = 1
+    bad = uv_divergent_subgraphs(descr, spatial_dim, formfactor)
     if bad:
         sub, om = min(bad, key=lambda t: t[1])
         kinds = [descr.edges[i].kind + ('(self-loop)' if descr.edges[i].u ==
@@ -721,7 +778,8 @@ def _refuse_uv_divergent(descr, spatial_dim):
         raise SpatialUVDivergenceError(
             f'spatial loop diagram is UV-divergent at d={spatial_dim}: the '
             f'subgraph with edges {kinds} has superficial degree '
-            f'omega={om:g} <= 0 (e.g. a tadpole <phi^2>_0 for d>=2).  Its '
+            f'omega={om:g} <= 0 (e.g. a tadpole <phi^2>_0 for d>=2; a '
+            f'derivative vertex counts its momentum powers).  Its '
             f'value would be set by the quadrature grid (it grows without '
             f'limit as SPATIAL_GRID_NS increases), not by the model.  A '
             f'declared UV cutoff / renormalized mass is not implemented; use '
@@ -988,7 +1046,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber.
     Refuses (:class:`SpatialUVDivergenceError`) a diagram with a UV-divergent
     loop subgraph at ``spatial_dim`` (:func:`uv_divergent_subgraphs`)."""
-    _refuse_uv_divergent(descr, spatial_dim)
+    _refuse_uv_divergent(descr, spatial_dim, formfactor)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)
     n_V = len(internal)

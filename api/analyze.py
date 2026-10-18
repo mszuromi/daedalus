@@ -186,6 +186,11 @@ FINDING_CODES = {
     # the realization was exactly Hurwitz but numerically unusable (graded
     # beyond double precision): the pole route took the run
     'G6_SS_ILL_CONDITIONED':     ('G6', 'warning'),
+    # spatial quadrature not certified (result['status'] = 'approximate'):
+    # derivative-vertex loops, equal-time diagrams left on the product grid
+    'G6_SPATIAL_DERIVATIVE_LOOP': ('G6', 'warning'),
+    'G6_SPATIAL_EQUAL_TIME':     ('G6', 'warning'),
+    'G6_SPATIAL_ACCURACY':       ('G6', 'warning'),
     # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
@@ -3452,6 +3457,24 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                 f'First reason: {str(first.get("reason"))[:200]}',
                 'see result["phase_j_incomplete"]; the numbers are '
                 'incomplete until every diagram evaluates')
+    # spatial quadrature accuracy (api.compute._spatial_accuracy): a result
+    # the integrator cannot certify is 'approximate', named here
+    for rec in ((result.get('spatial_accuracy') or [])
+                if isinstance(result, dict) else []):
+        sp = rec.get('coarse_spread')
+        code = {'derivative_vertex_loop': 'G6_SPATIAL_DERIVATIVE_LOOP',
+                'equal_time_grid': 'G6_SPATIAL_EQUAL_TIME',
+                'equal_time_coupled_loop': 'G6_SPATIAL_EQUAL_TIME'}.get(
+                    rec.get('reason'), 'G6_SPATIAL_ACCURACY')
+        ctx.add(code,
+                f"{rec.get('note')}"
+                + (f'; 0.7x-coarser grid spread {sp:.2e} of max|C|'
+                   if sp is not None else '')
+                + ' (result["status"] = "approximate").',
+                'refine SPATIAL_GRID_NT / SPATIAL_GRID_NS to watch it converge')
+        ctx.ledger_add('assertion', 'spatial_accuracy',
+                       f"{rec.get('reason')}: {rec.get('note')}",
+                       satisfied=False)
     if not evaluated:
         ctx.add('G6_NOT_EVALUATED',
                 'no Phase J tau-grid evaluation ran inside compute_cumulants '
