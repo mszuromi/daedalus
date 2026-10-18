@@ -857,7 +857,16 @@ def _normalize_expr_text(text: str) -> str:
     # parses as one expression.  Sage syntax doesn't depend on
     # newlines, so this is safe.
     text = ' '.join(text.split())
+    # numpy >= 2 scalar reprs (``f'{x!r}'`` of an ``np.float64``) are
+    # ``np.float64(0.25)``: read them as the number they print
+    text = _NUMPY_SCALAR_REPR.sub(r'(\1)', text)
     return text
+
+
+_NUMPY_SCALAR_REPR = re.compile(
+    r'\b(?:np|numpy)\.(?:float(?:16|32|64|128)?|longdouble|double|'
+    r'u?int(?:8|16|32|64)?)\(\s*([-+]?(?:\d+\.?\d*|\.\d+)'
+    r'(?:[eE][-+]?\d+)?)\s*\)')
 
 
 def _safe_eval(text: str, locals_dict: dict, what: str) -> Any:
