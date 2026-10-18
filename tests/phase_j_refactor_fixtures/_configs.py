@@ -29,7 +29,6 @@ class FixtureConfig:
     # Optional knobs that affect the result:
     origin_leaf_idx: Optional[int] = 0
     taylor_order: Optional[int] = None        # None → pipeline default
-    use_grouped_phase_j: bool = False
     # Tolerance for the regression test (set per-fixture in case some
     # configs are inherently noisier than others — e.g. models with
     # very small C(τ) where machine ε dominates).
@@ -49,7 +48,7 @@ _FUNDAMENTAL_SPIKE_RESET = {
     # synapse kernel from per-pair exp to scalar dirac_delta, so the
     # taug parameter is no longer declared by the model.  Leaving
     # the stale key in caused propagator-symbol failures in the
-    # grouped-vs-perdiag suite — see memory note
+    # (since retired) grouped-vs-perdiag suite — see memory note
     # ``project_spike_reset_fixture_drift.md``.
     'w':    [[0.55, 0.65], [0.7, 0.8]],
 }

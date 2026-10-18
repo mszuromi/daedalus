@@ -11,12 +11,11 @@ What it does
    and ``parallel=False`` (a hook set in this process never sees calls made in
    forked ``total_C_batch`` workers).  Every (diagram build, δ-subset,
    free_ext_vals, Wick permutation) evaluation of the per-diagram dispatch
-   (``integrate_diagram``) and of the grouped dispatch
-   (``integrate_grouped_diagram``) becomes one record: m, constraint rows,
+   (``integrate_diagram``) becomes one record: m, constraint rows,
    free_ext_vals, which path answered (``m0``/``m1``/``polygon``/``poset``/
    ``dbm`` (M3: the exact route after a poset bail)/``nquad``;
-   ``plan``/``noplan``/``grouped`` branch; ``per_diagram``/
-   ``grouped`` source), the fine-grained bail reason when an analytic path
+   ``plan``/``noplan`` branch; ``per_diagram`` source; the retired grouped
+   dispatch recorded ``grouped``), the fine-grained bail reason when an analytic path
    returned ``None``, the value, prefactor, pole/residue summary, and the Wick
    context (external times, perm index, compensation).
 2. **Reconstruction check.**  Σ value / compensation over the records of the
@@ -41,8 +40,8 @@ What it does
             Exact nested bounds; breakpoints at the external times (0 and
             free_ext_vals) and at every vertex projection of the slice
             polytope (this covers the chain top).  ``scale`` =
-            |prefactor| · Π_e Σ_k |C_e,k| (per-diagram) or Σ_α |B_α|
-            (grouped), i.e. the integrand bound for Δt ≥ 0; 1.0 when the
+            |prefactor| · Π_e Σ_k |C_e,k| (per-diagram; Σ_α |B_α| for merged
+            pole tuples), i.e. the integrand bound for Δt ≥ 0; 1.0 when the
             subset has no pole data (non-rational kernels).
    ``b``    the same on the ±12 box.
    ``c``    m=2 only: 50-digit mpmath fan formula (anchored at the
@@ -89,8 +88,7 @@ What it does
    levels (``--stub-level``, ``run(stub_level=...)``):
 
    ``entry`` (default; the level of the M0/M1 censuses) replaces
-            ``_integrate_polytope`` itself (in final_integral AND
-            grouped_integral, which imports it by name); m=0 passes through
+            ``_integrate_polytope`` itself (in final_integral); m=0 passes through
             (a direct evaluation, not quadrature).  The stubbed calls never
             reach the real entry, so ``nquad_calls`` and
             ``scipy_nquad_called_*`` stay 0; they are in ``stub_calls`` (by
@@ -207,11 +205,6 @@ FIXTURE_NAMES = ('spike_reset_k1_ell1', 'spike_reset_k2_ell0',
 def _fi():
     import engine.integration.time_domain.final_integral as FI
     return FI
-
-
-def _gi():
-    import engine.integration.time_domain.grouped_integral as GI
-    return GI
 
 
 def _zero_normal(a_int):
@@ -391,7 +384,7 @@ class NquadStub:
 
     @contextlib.contextmanager
     def installed(self):
-        FI, GI = _fi(), _gi()
+        FI = _fi()
         if self.level == 'quadrature':
             saved = {n: getattr(FI, n) for n in _QUADRATURE_ROUTINES}
             for n in _QUADRATURE_ROUTINES:
@@ -402,14 +395,12 @@ class NquadStub:
                 for n, f in saved.items():
                     setattr(FI, n, f)
             return
-        self._orig = FI._integrate_polytope
-        saved = (FI._integrate_polytope, GI._integrate_polytope)
+        self._orig = saved = FI._integrate_polytope
         FI._integrate_polytope = self
-        GI._integrate_polytope = self
         try:
             yield self
         finally:
-            FI._integrate_polytope, GI._integrate_polytope = saved
+            FI._integrate_polytope = saved
 
 
 def _grid_point(k, t, lag0):
@@ -476,7 +467,7 @@ def recorded_diagram_sources():
 
 
 def run(model, *, k, max_ell, external_fields, parameters=None,
-        tau_grid=None, points=None, use_grouped_phase_j=False,
+        tau_grid=None, points=None,
         stub_nquad=False, keep_live=True, compute_kwargs=None, label=None,
         stub_level='entry'):
     """Run ``compute_cumulants`` with the hook installed and return a run
@@ -502,8 +493,7 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
     rec = SubsetRecorder(keep_live=keep_live)
     stub = NquadStub(stub_level) if stub_nquad else None
     kw = dict(k=k, max_ell=max_ell, external_fields=list(external_fields),
-              use_cache=True, verbose=False,
-              use_grouped_phase_j=use_grouped_phase_j)
+              use_cache=True, verbose=False)
     if parameters is not None:
         kw['parameters'] = parameters
     if tau_grid is not None:
@@ -554,7 +544,6 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
             else [float(t) for t in tau_grid],
             'points': None if points is None
             else [tuple(map(float, p)) for p in points],
-            'use_grouped_phase_j': use_grouped_phase_j,
             'stub_nquad': stub_nquad,
             'stub_level': stub_level if stub_nquad else None,
             'ito_eps': _ITO_EPS,
@@ -1130,7 +1119,6 @@ def format_report(run_, *, max_worst=15):
     cfg = run_['config']
     lines.append(f"== phase_j_subset_diff: {run_.get('label') or ''}  "
                  f"k={cfg['k']} max_ell={cfg['max_ell']} "
-                 f"grouped={cfg['use_grouped_phase_j']} "
                  f"stub_nquad={cfg['stub_nquad']}  wall={run_['wall']:.1f}s  "
                  f"records={len(run_['records'])}")
     c = run_['counters']
@@ -1373,7 +1361,6 @@ def main(argv=None):
                          'also given')
     ap.add_argument('--fields', help="e.g. 'dx:1,dx:1'")
     ap.add_argument('--params', default=None, help='JSON dict')
-    ap.add_argument('--grouped', action='store_true')
     ap.add_argument('--stub-nquad', action='store_true')
     ap.add_argument('--stub-level', default='entry', choices=list(STUB_LEVELS),
                     help="what --stub-nquad replaces: 'entry' "
@@ -1416,7 +1403,6 @@ def main(argv=None):
                external_fields=_parse_fields(args.fields),
                parameters=json.loads(args.params) if args.params else None,
                tau_grid=taus, points=points,
-               use_grouped_phase_j=args.grouped,
                stub_nquad=args.stub_nquad, label=label,
                stub_level=args.stub_level)
     kinds = tuple(x for x in args.refs.split(',') if x)
@@ -1428,7 +1414,6 @@ def main(argv=None):
     out = args.out or os.path.join(
         DEFAULT_OUT_DIR,
         f"{label}_k{args.k}_l{args.max_ell}"
-        f"{'_grouped' if args.grouped else ''}"
         f"{'_stub' if args.stub_nquad else ''}_{time.strftime('%Y%m%d-%H%M%S')}")
     paths = save(run_, out)
     print('wrote', *paths)

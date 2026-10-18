@@ -3,18 +3,15 @@ A diagram Phase J cannot evaluate is never dropped silently.
 
 Before this, a diagram whose ``integrate_diagram`` returned a failure status
 was recorded in ``phase_j_by_ell[ell]['skipped_kernel_ids']`` and simply left
-out of ``C_tau``; ``compute_cumulants`` raised nothing and said nothing (and
-the grouped route lost the per-diagram fallback's skips altogether).  Now
-every route (per-diagram, grouped, the near-degenerate-pole deformation)
+out of ``C_tau``; ``compute_cumulants`` raised nothing and said nothing.  Now
+every route (per-diagram, the near-degenerate-pole deformation)
 returns ``result['status'] == 'incomplete'`` with the diagrams and the reason
 in ``result['phase_j_incomplete']``, warns with ``PhaseJIncompleteWarning``,
 adds the analyzer finding ``G6_DIAGRAMS_SKIPPED``, and ``policy={'mode':
 'strict'}`` raises ``PhaseJIncompleteError``.
 
 The broken diagram is made deliberately: the per-diagram integrator is wrapped
-so that it reports a failure for every loop diagram (and, on the grouped
-route, the grouped integrator refuses every group, so the failure happens
-inside the per-diagram fallback).
+so that it reports a failure for every loop diagram.
 """
 from __future__ import annotations
 
@@ -32,7 +29,6 @@ from api.compute import PhaseJIncompleteError, PhaseJIncompleteWarning  # noqa: 
 from api.cumulant import Cumulant                                   # noqa: E402
 from api.model import TemporalModelBuilder                          # noqa: E402
 import engine.integration.time_domain.pipeline as PL                # noqa: E402
-import api._grouped_phase_j as GPJ                                  # noqa: E402
 
 TAU = np.array([0.0, 1.0])
 REASON = 'deliberately broken diagram (test)'
@@ -80,13 +76,6 @@ def broken_loops(monkeypatch):
 
     monkeypatch.setattr(PL, 'integrate_diagram', fake)
 
-    def refuse(**kw):
-        return {'status': 'failed', 'contribution': None,
-                'n_diagrams': len(kw['typed_diagrams']),
-                'reason': 'grouped evaluator refused (test)'}
-
-    monkeypatch.setattr(GPJ, 'integrate_grouped_diagram', refuse)
-
 
 def _run(model, field='x', **kw):
     with warnings.catch_warnings(record=True) as caught:
@@ -118,15 +107,6 @@ def test_complete_run_says_ok():
 
 def test_per_diagram_route_reports_a_broken_diagram(broken_loops):
     _assert_reported(*_run(_ou_quartic()))
-
-
-def test_grouped_route_reports_a_broken_diagram(broken_loops):
-    # the failure happens inside the grouped route's per-diagram fallback,
-    # whose skips used to be discarded
-    res, warns = _run(_ou_quartic(), use_grouped_phase_j=True)
-    _assert_reported(res, warns)
-    assert all('per-diagram fallback' in r['reason']
-               for r in res['phase_j_incomplete'][1])
 
 
 def test_pole_cluster_route_reports_a_broken_diagram(broken_loops,

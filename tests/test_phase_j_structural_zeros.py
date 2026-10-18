@@ -13,7 +13,7 @@ Two kinds of Phase J work that is identically zero are skipped while
   ``0 < Σ shift <= 0``: the region is empty.  This covers every caller that
   reaches the fallback without the analytic paths' own emptiness tests: an
   m=2 guard bail, a poset extraction that bailed before its cycle test, a
-  rows/modes mismatch, grouped m2/m≥3, the SR path of a non-analytic subset
+  rows/modes mismatch, the SR path of a non-analytic subset
   and direct callers.  Before M2a the fallback handed such a region to
   scipy.nquad, which integrated the identically-zero filtered integrand, or
   raised OverflowError evaluating the unfiltered one outside the region
@@ -26,14 +26,9 @@ Two kinds of Phase J work that is identically zero are skipped while
   or more than 20 free symbols, the stored residues decide, and only an
   exact zero counts: a tiny nonzero residue is never pruned) contributes
   nothing when kept smooth, so the δ-subsets that keep one smooth are never
-  built (``_forced_delta_edges``; counter ``forced_delta_pruned``), per
-  diagram and in grouped builds.  An entry whose residues are exact zeros only
-  because its own mode was dropped (its ``G_ft`` entry still has ω) is
-  kept.  In a grouped build a subset is skipped
-  only when every contributing typed diagram keeps such an edge smooth and
-  the δ-solve would not mark it shot-noise (``_delta_solve_leaves_residual``
-  replays that solve), so the per-diagram fallback decision of the group is
-  unchanged.
+  built (``_forced_delta_edges``; counter ``forced_delta_pruned``).  An
+  entry whose residues are exact zeros only because its own mode was
+  dropped (its ``G_ft`` entry still has ω) is kept.
 * **Propagators without any pole.**  An empty pole list is not evidence of
   a zero smooth part: the builder drops non-retarded modes (λ = 0 at q = 0
   for a massless field).  Such a propagator is decided from ``G_ft``: an
@@ -41,7 +36,7 @@ Two kinds of Phase J work that is identically zero are skipped while
   pure δ (forced-δ, e.g. the linear delta spike model with every coupling
   0); a diagram that uses any other entry raises
   ``PoleFreePropagatorError`` (the per-diagram path used to fail with a
-  bare IndexError there, the grouped path to drop the smooth part).
+  bare IndexError there).
 
 Both skips remove exact zeros only, so values are bit-identical with the
 flag on and off, except where the pre-M2a code raised or returned NaN on a
@@ -55,8 +50,8 @@ model with population 2 receiving no input (``w = [[0, 0.25], [0, 0]]``: its
 spike train is then a constant-rate process whose own propagator entry is
 pure δ) and with every coupling 0 (a propagator without any pole), the
 public ``single_population_spike_reset_test`` with population 2 receiving no
-input (``w = [[0.55, 0.65], [0, 0]]``: groups whose typings are zero on
-different subsets), the massless ``edwards_wilkinson_1d`` probe of the model
+input (``w = [[0.55, 0.65], [0, 0]]``: typings that are zero on different
+subsets), the massless ``edwards_wilkinson_1d`` probe of the model
 zoo (a λ = 0 mode at q = 0), and the public one-population spike-reset model
 of ``tests/test_phase_j_subset_hook.py``, each in a private empty cwd
 (section G in a child process, in the test's ``tmp_path``).
@@ -65,7 +60,6 @@ Run:  sage -python -m pytest tests/test_phase_j_structural_zeros.py -q
 """
 import contextlib
 import os
-import random
 import subprocess
 import sys
 import textwrap
@@ -83,10 +77,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
 import engine.integration.time_domain.final_integral as FI       # noqa: E402
-import engine.integration.time_domain.grouped_integral as GI     # noqa: E402
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-VARIANTS = ('plan', 'noplan', 'grouped')
+VARIANTS = ('plan', 'noplan')
 
 
 def _counter(name):
@@ -315,8 +308,7 @@ def test_flag_is_read_at_call_time(monkeypatch, pre_m2b_nquad):
 
 def _analytic(variant, modes, rows, free, m):
     """The analytic modesum integrator in one of the production call
-    shapes (per-diagram with / without a plan; grouped: merged pole tuples,
-    no plan)."""
+    shapes (per-diagram with / without a plan)."""
     fn = (FI._integrate_2d_polygon_modesum if m == 2
           else FI._integrate_nd_polytope_poset_modesum)
     kw = dict(smooth_edge_modes=list(modes), prefactor_complex=1.0 + 0j,
@@ -325,13 +317,11 @@ def _analytic(variant, modes, rows, free, m):
         kw['m'] = m
     if variant == 'plan':
         kw['plan'] = FI._build_modesum_plan(list(modes), rows, m, len(free))
-    elif variant == 'grouped':
-        kw['pole_tuples'] = list(FI._enumerate_pole_tuples(list(modes)))
     return fn(**kw)
 
 
 def _dispatch(variant, modes, rows, free, m):
-    """What the per-diagram / grouped ``_contrib`` closures do: the analytic
+    """What the per-diagram ``_contrib`` closure does: the analytic
     path first, the scipy.nquad fallback on a bail.  (Since M3 an m≥3 poset
     bail tries the exact DBM route in between, ``USE_DBM_FALLBACK``; it is
     left out here, as these tests pin the bail reasons and the fallback.)"""
@@ -518,7 +508,7 @@ def test_forced_delta_edges_need_an_omega_free_g_ft_entry():
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# E. hand-built typed diagrams (per-diagram and grouped builds)
+# E. hand-built typed diagrams (per-diagram builds)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _td(edges, leaves, internal, prediagram=None):
@@ -593,9 +583,8 @@ def test_perdiag_sr_path_cycle(monkeypatch):
 
 # A tree whose leaf-3 edge is pure δ: of its four δ-subsets (δ parts on
 # 0 -> 3 and 2 -> 1) the two that keep 0 -> 3 smooth are identically zero and
-# never built.  (No two δ edges share an internal vertex: the grouped
-# builder's one-pass substitutions would otherwise leave a stale variable
-# in the integrand and refuse the group -- a pre-existing limitation.)
+# never built.  (No two δ edges share an internal vertex: kept from the
+# retired grouped builder, whose one-pass substitutions refused that.)
 FD_TREE = {(0, 3): 'D', (0, 4): 'S', (1, 0): 'S', (2, 1): 'B'}
 
 
@@ -625,12 +614,12 @@ def test_perdiag_forced_delta_prune(monkeypatch):
 
 
 def test_a_dropped_mode_with_poles_is_not_pruned(monkeypatch):
-    """Per diagram and grouped: the pure-δ leaf edge of ``FD_TREE`` is
-    forced-δ with a consistent ``G_ft`` (2 subsets pruned per diagram and 2
-    grouped, values equal to the flag off) but not when its ``G_ft`` entry carries a dropped
+    """The pure-δ leaf edge of ``FD_TREE`` is
+    forced-δ with a consistent ``G_ft`` (2 subsets pruned, values equal to
+    the flag off) but not when its ``G_ft`` entry carries a dropped
     λ = 0 mode: then nothing is pruned and the flag changes nothing (the
     subsets are evaluated exactly as before M2a)."""
-    for dropped, n_pd, n_grp in ((False, 2, 2), (True, 0, 0)):
+    for dropped, n_pd in ((False, 2), (True, 0)):
         pd, _num = _prop_with_g_ft(dropped_mode=dropped)
         vals, pruned = {}, {}
         for sz in (True, False):
@@ -638,16 +627,11 @@ def test_a_dropped_mode_with_poles_is_not_pruned(monkeypatch):
             FI._reset_runtime_counters()
             r = FI.integrate_diagram(_td(FD_TREE, (3, 4), (0, 1, 2)), pd,
                                      1.0, _t2())
-            v_pd = complex(r['contribution'](0.0, 0.7))
-            p_pd = FI._RUNTIME_COUNTERS['forced_delta_pruned']
-            a = _td(FD_TREE, (3, 4), (0, 1, 2))
-            b = _td(FD_TREE, (3, 4), (0, 1, 2), prediagram=a.prediagram)
-            _r, v_g, c_g, _st = _grouped([a, b], [1.0, 0.5], pd)
-            vals[sz] = (v_pd, complex(v_g))
-            pruned[sz] = (p_pd, c_g['forced_delta_pruned'])
-        assert vals[True] == vals[False] and vals[True][0] != 0, vals
-        assert pruned[True] == (n_pd, n_grp), (dropped, pruned)
-        assert pruned[False] == (0, 0)
+            vals[sz] = complex(r['contribution'](0.0, 0.7))
+            pruned[sz] = FI._RUNTIME_COUNTERS['forced_delta_pruned']
+        assert vals[True] == vals[False] and vals[True] != 0, vals
+        assert pruned[True] == n_pd, (dropped, pruned)
+        assert pruned[False] == 0
 
 
 def _prop_cdf(delta_entry_residue):
@@ -666,7 +650,7 @@ def _prop_cdf(delta_entry_residue):
 def test_a_nan_residue_is_never_pruned(monkeypatch, residue):
     """A NaN residue must stay visible: it is not an exact zero, so no
     δ-subset is pruned and the value is NaN with the flag on, as with it
-    off (per diagram and grouped).  A CDF zero in the same place is pruned
+    off.  A CDF zero in the same place is pruned
     and changes nothing (control).  The value is that of the legacy routes;
     the box-free routes (the default since M9) refuse the non-finite
     exponent instead (``ValueError``, never a silent number), also visible."""
@@ -687,19 +671,14 @@ def test_a_nan_residue_is_never_pruned(monkeypatch, residue):
             FI._reset_runtime_counters()
             r = FI.integrate_diagram(_td(FD_TREE, (3, 4), (0, 1, 2)), pd,
                                      1.0, _t2())
-            v_pd = complex(r['contribution'](0.0, 0.7))
-            p_pd = FI._RUNTIME_COUNTERS['forced_delta_pruned']
-            a = _td(FD_TREE, (3, 4), (0, 1, 2))
-            b = _td(FD_TREE, (3, 4), (0, 1, 2), prediagram=a.prediagram)
-            _r, v_g, c_g, _st = _grouped([a, b], [1.0, 0.5], pd)
-            vals[sz] = (v_pd, complex(v_g))
-            pruned[sz] = (p_pd, c_g['forced_delta_pruned'])
+            vals[sz] = complex(r['contribution'](0.0, 0.7))
+            pruned[sz] = FI._RUNTIME_COUNTERS['forced_delta_pruned']
         if expect_nan:
-            assert all(np.isnan(v) for v in vals[True] + vals[False]), vals
-            assert pruned[True] == pruned[False] == (0, 0)
+            assert all(np.isnan(v) for v in (vals[True], vals[False])), vals
+            assert pruned[True] == pruned[False] == 0
         else:
-            assert vals[True] == vals[False] and vals[True][0] != 0
-            assert pruned[True] == (2, 2) and pruned[False] == (0, 0)
+            assert vals[True] == vals[False] and vals[True] != 0
+            assert pruned[True] == 2 and pruned[False] == 0
 
 
 @pytest.mark.parametrize('residue, symbolic', [
@@ -710,9 +689,9 @@ def test_a_tiny_nonzero_residue_is_never_pruned(monkeypatch, residue,
                                                 symbolic):
     """Only an EXACT zero residue counts: a tiny nonzero residue on the
     pure-δ leaf entry of ``FD_TREE`` (no ``G_ft``, so the stored residues
-    alone decide) prunes nothing, per diagram and grouped, and the values
+    alone decide) prunes nothing, and the values
     are bit-identical with the flag on and off.  (A tolerance in the
-    residue test would prune the (2, 2) subsets here and move the values,
+    residue test would prune 2 subsets here and move the values,
     e.g. for 1e-14 at (0, -0.4) from 8.4e-16 to 0.)  ``symbolic``: the
     residues are stored as SR numbers (``None``: the exact SR(10)**-40)."""
     from sage.all import SR, matrix
@@ -731,163 +710,11 @@ def test_a_tiny_nonzero_residue_is_never_pruned(monkeypatch, residue,
             FI._reset_runtime_counters()
             r = FI.integrate_diagram(_td(FD_TREE, (3, 4), (0, 1, 2)), pd,
                                      1.0, _t2())
-            v_pd = complex(r['contribution'](*t))
-            p_pd = FI._RUNTIME_COUNTERS['forced_delta_pruned']
-            a = _td(FD_TREE, (3, 4), (0, 1, 2))
-            b = _td(FD_TREE, (3, 4), (0, 1, 2), prediagram=a.prediagram)
-            _r, v_g, c_g, _st = _grouped([a, b], [1.0, 0.5], pd, t=t)
-            vals[sz] = np.array([v_pd, complex(v_g)])
-            pruned[sz] = (p_pd, c_g['forced_delta_pruned'])
-        assert pruned[True] == pruned[False] == (0, 0), (t, pruned)
+            vals[sz] = np.array([complex(r['contribution'](*t))])
+            pruned[sz] = FI._RUNTIME_COUNTERS['forced_delta_pruned']
+        assert pruned[True] == pruned[False] == 0, (t, pruned)
         assert np.array_equal(_bits(vals[True]), _bits(vals[False])), (
             t, vals)
-
-
-def _grouped(tds, cps, pd, num=None, t=(0.0, 0.7)):
-    FI._reset_runtime_counters()
-    r = GI.integrate_grouped_diagram(tds, cps, pd, _t2(), num_params=num)
-    assert r['status'] == 'ok', r.get('reason')
-    return (r, r['contribution'](*t), dict(FI._RUNTIME_COUNTERS),
-            sorted(d['status'] for d in r['subset_diagnostics']))
-
-
-def test_grouped_forced_delta_prune_and_cycle(monkeypatch):
-    """Two typed diagrams of one prediagram (a group), with the pure-δ leaf
-    edge: the zero subsets are skipped before the δ-solve, the values are
-    bit-identical, and with the m=2 analytic path off the cycle of ``CYC``
-    goes through the grouped fallback."""
-    pd, _ = _prop()
-    a = _td(FD_TREE, (3, 4), (0, 1, 2))
-    b = _td(FD_TREE, (3, 4), (0, 1, 2), prediagram=a.prediagram)
-    out = {}
-    for sz in (True, False):
-        monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', sz)
-        out[sz] = _grouped([a, b], [1.0, 0.5], pd)
-    assert out[True][1] == out[False][1] and out[True][1] != 0
-    assert out[True][2]['forced_delta_pruned'] == 2
-    assert out[False][2]['forced_delta_pruned'] == 0
-    assert 'forced_delta_pruned' in out[True][3]
-    assert 'forced_delta_pruned' not in out[False][3]
-    # the cycle through the grouped fallback (numeric residues, m=2 off)
-    monkeypatch.setattr(FI, 'USE_POLYGON_M2_INTEGRATOR', False)
-    c1 = _td(CYC, (3, 4), (0, 1, 2))
-    c2 = _td(CYC, (3, 4), (0, 1, 2), prediagram=c1.prediagram)
-    for sz in (True, False):
-        monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', sz)
-        out[sz] = _grouped([c1, c2], [1.0, 0.5], pd)
-    assert out[True][1] == out[False][1] and out[True][1] != 0
-    assert (out[True][2]['polytope_empty_cycle'],
-            out[False][2]['polytope_empty_cycle']) == (1, 0)
-
-
-# Two typings of one prediagram whose pure-δ entries sit on DIFFERENT leaf
-# edges: typing a has 0 -> 3 pure δ (``FD_TREE``), typing b has 0 -> 4 pure δ
-# and 0 -> 3 δ plus smooth.  A grouped subset may be skipped only when EVERY
-# contributing typing keeps one of its identically-zero edges smooth: the
-# subsets that keep both leaf edges smooth (2 of them), not the ones with a
-# δ part on 0 -> 3 only, where typing a is nonzero although typing b is zero.
-MIXED_A = FD_TREE
-MIXED_B = {(0, 3): 'B', (0, 4): 'D', (1, 0): 'S', (2, 1): 'B'}
-
-
-def test_grouped_prune_needs_every_contributing_typing(monkeypatch):
-    """Pruning a grouped subset when ANY contributing typing (instead of
-    every one) keeps an identically-zero edge smooth would drop typing a's
-    nonzero terms: 4 subsets pruned instead of 2 and a different value."""
-    pd, _ = _prop()
-    a = _td(MIXED_A, (3, 4), (0, 1, 2))
-    b = _td(MIXED_B, (3, 4), (0, 1, 2), prediagram=a.prediagram)
-    for t in ((0.0, 0.7), (0.0, -0.4), (0.0, 2.5)):
-        out = {}
-        for sz in (True, False):
-            monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', sz)
-            out[sz] = _grouped([a, b], [1.0, 0.5], pd, t=t)
-        v_on, v_off = complex(out[True][1]), complex(out[False][1])
-        assert np.array_equal(_bits(np.array([v_on])),
-                              _bits(np.array([v_off]))), (t, v_on, v_off)
-        assert v_on != 0
-        assert out[True][2]['forced_delta_pruned'] == 2
-        assert out[False][2]['forced_delta_pruned'] == 0
-        assert out[True][3].count('forced_delta_pruned') == 2
-
-
-# A group member with an identically-zero edge (entry '0': no δ part, no
-# smooth part).  Every subset keeps it smooth; the one whose δ edges tie the
-# two leaves together is a shot-noise subset, which the grouped prototype
-# marks -- and that mark sends the whole group to the per-diagram path.
-ZERO_EDGE_TREE = {(1, 0): '0', (0, 3): 'B', (0, 4): 'B', (2, 1): 'S'}
-
-
-def test_grouped_prune_keeps_the_shot_noise_fallback_decision(monkeypatch):
-    pd, _ = _prop()
-    td = _td(ZERO_EDGE_TREE, (3, 4), (0, 1, 2))
-    st = {}
-    for sz in (True, False):
-        monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', sz)
-        st[sz] = _grouped([td], [1.0], pd)
-    assert 'shotnoise_skipped_in_prototype' in st[True][3]
-    assert 'shotnoise_skipped_in_prototype' in st[False][3]
-    assert st[True][1] == st[False][1] == 0
-    assert st[True][2]['forced_delta_pruned'] == 3
-    # a replay that missed the residual would have pruned the shot-noise
-    # subset too, and the group would no longer fall back
-    monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', True)
-    monkeypatch.setattr(GI, '_delta_solve_leaves_residual',
-                        lambda *a: False)
-    assert 'shotnoise_skipped_in_prototype' not in _grouped([td], [1.0],
-                                                            pd)[3]
-
-
-def _replay_case(rng):
-    """A random edge list over internal vertices 0..n-1 and leaves, with the
-    vertex times of a grouped build (the first leaf 0 in most cases)."""
-    from sage.all import SR
-    n_int = rng.randint(2, 5)
-    leaves = list(range(n_int, n_int + rng.randint(1, 3)))
-    verts = list(range(n_int)) + leaves
-    edges = [tuple(rng.sample(verts, 2)) for _ in range(rng.randint(2, 7))]
-    delta = sorted(rng.sample(range(len(edges)), rng.randint(1, len(edges))))
-    origin = rng.random() < 0.7
-    times, vtok, ivars = {}, {}, []
-    for v in range(n_int):
-        times[v] = SR.var(f's_v{v}_td_')
-        vtok[v] = ('int', v)
-        ivars.append(times[v])
-    for j, lf in enumerate(leaves):
-        if origin and j == 0:
-            times[lf], vtok[lf] = SR(0), ('zero',)
-        else:
-            times[lf] = SR.var(f't_{j + 1}')
-            vtok[lf] = ('ext', str(times[lf]))
-    dts = [SR(times[v] - times[u]) for (u, v) in edges]
-    return edges, delta, dts, ivars, vtok, [('int', v) for v in range(n_int)]
-
-
-def test_token_replay_matches_the_grouped_delta_solve():
-    """``_delta_solve_leaves_residual`` against the real Sage elimination of
-    the grouped builder, on random graphs (multi-edges, leaf-leaf edges,
-    δ chains whose one-pass substitutions leave stale variables) and on a
-    stale-substitution case chosen by hand."""
-    rng = random.Random(20260929)
-    n_res = 0
-    for _ in range(120):
-        edges, delta, dts, ivars, vtok, order = _replay_case(rng)
-        solved = GI._grouped_delta_solve(dts, delta, ivars)
-        assert solved is not None
-        real = GI._has_nontrivial_equality(solved[2])
-        assert GI._delta_solve_leaves_residual(delta, edges, vtok, order) \
-            == real, (edges, delta)
-        n_res += real
-    assert 10 < n_res < 110
-    from sage.all import SR
-    s = [SR.var(f's_v{v}_td_') for v in range(4)]
-    edges = [(0, 1), (1, 2), (2, 3), (0, 1)]
-    dts = [SR(s[v] - s[u]) for (u, v) in edges]
-    solved = GI._grouped_delta_solve(dts, [0, 1, 2, 3], s)
-    assert GI._has_nontrivial_equality(solved[2])     # stale: s3 - s2 != 0
-    vtok = {v: ('int', v) for v in range(4)}
-    assert GI._delta_solve_leaves_residual(
-        [0, 1, 2, 3], edges, vtok, [('int', v) for v in range(4)])
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -912,20 +739,11 @@ def _pole_free_perdiag(pd, edges=FD_TREE, t=(0.0, 0.7)):
     return r, complex(r['contribution'](*t))
 
 
-def _pole_free_grouped(pd, t=(0.0, 0.7)):
-    a = _td(MIXED_A, (3, 4), (0, 1, 2))
-    b = _td(MIXED_B, (3, 4), (0, 1, 2), prediagram=a.prediagram)
-    FI._reset_runtime_counters()
-    r = GI.integrate_grouped_diagram([a, b], [1.0, 0.5], pd, _t2())
-    assert r['status'] == 'ok', r.get('reason')
-    return r, complex(r['contribution'](*t))
-
-
 def test_a_pure_delta_propagator_without_poles_is_evaluated(monkeypatch):
     """No pole, and every G_ft entry ω-free: a pure-δ propagator.  Every
     subset that keeps an edge smooth is identically zero and skipped; the
     all-δ subset survives (a shot-noise term), so the value at distinct
-    times is an exact 0 -- per diagram and grouped.  With the flag off the
+    times is an exact 0.  With the flag off the
     per-diagram path still fails as before M2a (a bare IndexError on the
     empty pole list)."""
     pd = _pole_free_prop(pure=True)
@@ -939,9 +757,6 @@ def test_a_pure_delta_propagator_without_poles_is_evaluated(monkeypatch):
         monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', False)
         got = _outcome(lambda: _pole_free_perdiag(pd, edges))
         assert got[:2] == ('raises', 'IndexError'), got
-    monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', True)
-    r, v = _pole_free_grouped(pd)
-    assert v == 0 and FI._RUNTIME_COUNTERS['forced_delta_pruned'] > 0
 
 
 @pytest.mark.parametrize('with_g_ft', [True, False], ids=['dropped_mode',
@@ -950,14 +765,14 @@ def test_a_pole_free_propagator_with_a_smooth_part_raises(monkeypatch,
                                                           with_g_ft):
     """No pole, but entry (pi=1, ri=0) is 1/(-i ω) (a dropped λ = 0 mode),
     or no G_ft at all to decide the entries from: the smooth part cannot be
-    evaluated, so no value is returned -- ``PoleFreePropagatorError``, per
-    diagram and grouped, naming the entry and the reason.  (Before this
+    evaluated, so no value is returned -- ``PoleFreePropagatorError``,
+    naming the entry and the reason.  (Before this
     rule an empty pole list counted as an identically-zero smooth part and
     the value became 0.)  Diagrams that use only provably pure-δ entries
     are still evaluated (``ALL_DELTA_TREE`` with ``G_ft``)."""
     pd = _pole_free_prop(pure=False, with_g_ft=with_g_ft)
     monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', True)
-    for fn in (lambda: _pole_free_perdiag(pd), lambda: _pole_free_grouped(pd)):
+    for fn in (lambda: _pole_free_perdiag(pd),):
         with pytest.raises(FI.PoleFreePropagatorError) as info:
             fn()
         err = info.value
@@ -1003,7 +818,7 @@ def ld_model(private_cwd):
     return dd.load_model(_LD)[0]
 
 
-def _run(model, sz, *, k, grouped, points=None, tau=None, max_ell=1,
+def _run(model, sz, *, k, points=None, tau=None, max_ell=1,
          params=None, fields=None):
     from api import compute_cumulants
     saved = FI.STRUCTURAL_ZEROS
@@ -1015,8 +830,7 @@ def _run(model, sz, *, k, grouped, points=None, tau=None, max_ell=1,
             external_fields=fields or ([('n', 1), ('n', 2), ('n', 1)][:k]),
             parameters=params or _LD_ONE_WAY,
             tau_grid=np.array(tau if tau is not None else [0.0]),
-            use_cache=True, parallel=False, verbose=False,
-            use_grouped_phase_j=grouped)
+            use_cache=True, parallel=False, verbose=False)
         if points is None:
             vals = {ell: np.asarray(a, dtype=complex)
                     for ell, a in res['C_tau_by_ell'].items()}
@@ -1043,36 +857,23 @@ K3_POINTS = [(0.0, 0.4, 1.0), (0.0, 0.7, 0.7), (0.0, -2e-6, -1e-6),
              (0.3, 0.1 + 0.2, 0.7)]
 
 
-@pytest.mark.parametrize('grouped', [False, True], ids=['perdiag', 'grouped'])
-def test_public_one_way_linear_delta_k2(ld_model, grouped):
+def test_public_one_way_linear_delta_k2(ld_model):
     tau = [0.0, 2.5, 10.0, -2.5]
-    on, c_on = _run(ld_model, True, k=2, grouped=grouped, tau=tau)
-    off, c_off = _run(ld_model, False, k=2, grouped=grouped, tau=tau)
+    on, c_on = _run(ld_model, True, k=2, tau=tau)
+    off, c_off = _run(ld_model, False, k=2, tau=tau)
     _assert_bit_identical(on, off)
     assert np.any(on[0] != 0)
     assert c_on['forced_delta_pruned'] > 0 == c_off['forced_delta_pruned']
 
 
 def test_public_one_way_linear_delta_k3(ld_model):
-    on, c_on = _run(ld_model, True, k=3, grouped=False, points=K3_POINTS,
-                    max_ell=0)
-    off, c_off = _run(ld_model, False, k=3, grouped=False, points=K3_POINTS,
-                      max_ell=0)
+    on, c_on = _run(ld_model, True, k=3, points=K3_POINTS, max_ell=0)
+    off, c_off = _run(ld_model, False, k=3, points=K3_POINTS, max_ell=0)
     _assert_bit_identical(on, off)
     assert np.any(on[0] != 0)
     # 31 of the 33 k=3 tree subsets keep a pure-δ edge smooth
     assert c_on['forced_delta_pruned'] == 31
     assert c_off['forced_delta_pruned'] == 0
-
-
-@pytest.mark.slow
-def test_public_one_way_linear_delta_k3_grouped(ld_model):
-    on, c_on = _run(ld_model, True, k=3, grouped=True, points=K3_POINTS,
-                    max_ell=0)
-    off, _c = _run(ld_model, False, k=3, grouped=True, points=K3_POINTS,
-                   max_ell=0)
-    _assert_bit_identical(on, off)
-    assert c_on['forced_delta_pruned'] > 0
 
 
 # Every coupling 0: two independent constant-rate spike trains.  The
@@ -1087,19 +888,18 @@ _LD_DECOUPLED = {'Em': [0.8, 0.78], 'tau': [10.0, 9.0],
 def test_public_pure_delta_propagator_without_poles(ld_model, fields):
     """The pole-free propagator of a decoupled spike model is a pure δ: its
     continuous cumulant at τ ≠ 0 (and at the τ = 0 grid point, sampled at
-    −1e−6) is exactly 0, per diagram and grouped.  Before M2a the
+    −1e−6) is exactly 0.  Before M2a the
     per-diagram path raised a bare IndexError on the empty pole list; it
     still does with the flag off."""
     tau = [0.0, 2.5, -2.5]
-    for grouped in (False, True):
-        on, c_on = _run(ld_model, True, k=2, grouped=grouped, tau=tau,
-                        max_ell=0, params=_LD_DECOUPLED, fields=fields)
-        assert np.array_equal(on[0], np.zeros(len(tau), dtype=complex))
-        assert c_on['forced_delta_pruned'] > 0
+    on, c_on = _run(ld_model, True, k=2, tau=tau,
+                    max_ell=0, params=_LD_DECOUPLED, fields=fields)
+    assert np.array_equal(on[0], np.zeros(len(tau), dtype=complex))
+    assert c_on['forced_delta_pruned'] > 0
     with pytest.raises(IndexError), pytest.MonkeyPatch.context() as mp_:
         # the pole engine's legacy path (S3: the default route takes it)
         mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
-        _run(ld_model, False, k=2, grouped=False, tau=tau, max_ell=0,
+        _run(ld_model, False, k=2, tau=tau, max_ell=0,
              params=_LD_DECOUPLED, fields=fields)
 
 
@@ -1142,7 +942,7 @@ _SPIKE = 'single_population_spike_reset_test'
 # Population 2 receives no input (row 2 of w is 0): the propagator entries
 # from population 1 into population 2 vanish, so some typings of a
 # prediagram keep an identically-zero edge smooth in a subset where other
-# typings of the same group do not.
+# typings of it do not.
 _SPIKE_ONE_WAY = {'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
                   'w': [[0.55, 0.65], [0.0, 0.0]]}
 
@@ -1170,18 +970,13 @@ def _in_dir(path):
     pytest.param(dict(k=3, max_ell=0, points=K3_POINTS[:2]), id='k3_tree'),
     pytest.param(dict(k=2, max_ell=1, tau=[0.0, 1.0, 3.0, -3.0]),
                  id='k2_ell1')])
-def test_public_spike_reset_mixed_groups(spike_dir, cfg):
-    """Grouped Phase J skips a subset only when EVERY contributing typing
-    keeps an identically-zero edge smooth.  This configuration has groups
-    in which only some typings do, so a prune on ANY typing would change
-    the values (measured with that mutant: 0.018529 -> 0.003796 at
-    (0, 0.4, 1) for the k = 3 tree, 0.341678 -> 0.406250 at τ = 0 for
-    k = 2, ℓ = 1); here the flag must leave them bit-identical.  (Slow:
-    ~13 s for the model build in a fresh cwd; the default tier covers the
-    same condition model-free,
-    ``test_grouped_prune_needs_every_contributing_typing``.)"""
+def test_public_spike_reset_one_way_unchanged(spike_dir, cfg):
+    """A prediagram whose typings are zero on different subsets (ported from
+    the retired grouped mixed-group test): each typed diagram prunes its own
+    forced-δ subsets, and the flag must leave the values bit-identical.
+    (Slow: ~13 s for the model build in a fresh cwd.)"""
     import daedalus as dd
-    kw = dict(k=cfg['k'], max_ell=cfg['max_ell'], grouped=True,
+    kw = dict(k=cfg['k'], max_ell=cfg['max_ell'],
               points=cfg.get('points'), tau=cfg.get('tau'),
               params=_SPIKE_ONE_WAY)
     with _in_dir(spike_dir):
@@ -1197,15 +992,14 @@ def test_public_spike_reset_mixed_groups(spike_dir, cfg):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize('grouped', [False, True], ids=['perdiag', 'grouped'])
-def test_public_spike1_unchanged(private_cwd, grouped, monkeypatch):
+def test_public_spike1_unchanged(private_cwd, monkeypatch):
     """A δ-model without forced-δ edges: the flag changes nothing, not even
     the route counters (the pole engine's routes: S3's default route
     differs)."""
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     from tests.test_phase_j_subset_hook import _spike_reset_one_population
     model = _spike_reset_one_population()
-    kw = dict(k=2, grouped=grouped, tau=[0.0, 1.0, 3.0],
+    kw = dict(k=2, tau=[0.0, 1.0, 3.0],
               params=_SPIKE1_PARAMS, fields=[('n', 1), ('n', 1)])
     on, c_on = _run(model, True, **kw)
     off, c_off = _run(model, False, **kw)
@@ -1238,17 +1032,15 @@ _CHILD = textwrap.dedent(r'''
     import daedalus as dd
     import engine.integration.time_domain as TD
     import engine.integration.time_domain.final_integral as FI0
-    import engine.integration.time_domain.grouped_integral as GI0
     import engine.integration.time_domain.pipeline as PL
-    import api._grouped_phase_j as GP
     from api import compute_cumulants
     rel = 'engine/integration/time_domain/'
     src = {n: subprocess.check_output(
         ['git', '-C', ROOT, 'show', f'{REV}:{rel}{n}.py']).decode()
-        for n in ('final_integral', 'grouped_integral')}
+        for n in ('final_integral',)}
     new = {n: open(os.path.join(ROOT, rel + n + '.py')).read()
-           for n in ('final_integral', 'grouped_integral')}
-    loaded = {'final_integral': [FI0], 'grouped_integral': [GI0]}
+           for n in ('final_integral',)}
+    loaded = {'final_integral': [FI0]}
 
     def load(which, env=None):
         for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
@@ -1260,7 +1052,7 @@ _CHILD = textwrap.dedent(r'''
             os.environ['DAEDALUS_PHASE_J_NQUAD_HARDENED'] = '0'
         os.environ.update(env or {})
         mods = {}
-        for n in ('final_integral', 'grouped_integral'):
+        for n in ('final_integral',):
             name = f'engine.integration.time_domain.{n}'
             m = types.ModuleType(name)
             m.__file__ = getattr(TD, n).__file__
@@ -1294,10 +1086,10 @@ _CHILD = textwrap.dedent(r'''
         for v in ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
                   'DAEDALUS_PHASE_J_NQUAD_HARDENED'):
             os.environ.pop(v, None)
-        fi, gi = mods['final_integral'], mods['grouped_integral']
+        fi = mods['final_integral']
         for mod in list(sys.modules.values()):
             d = getattr(mod, '__dict__', None)
-            if not isinstance(d, dict) or mod is fi or mod is gi:
+            if not isinstance(d, dict) or mod is fi:
                 continue
             for k, v in list(d.items()):
                 for n, m in mods.items():
@@ -1311,8 +1103,6 @@ _CHILD = textwrap.dedent(r'''
         for n, m in mods.items():
             loaded[n].append(m)
         assert PL.integrate_diagram is fi.integrate_diagram
-        assert GP.integrate_grouped_diagram is gi.integrate_grouped_diagram
-        assert gi._fi_mod is fi
         return fi
 
     os.chdir(CWD)                  # the test's tmp_path: removed by pytest
@@ -1336,19 +1126,17 @@ _CHILD = textwrap.dedent(r'''
     def run_all():
         out = {}
         for name, model, kw, pts in CFGS:
-            for grouped in (False, True):
-                res = compute_cumulants(
-                    model, tau_grid=np.array([0.0, 1.0, -2.5]), use_cache=True,
-                    parallel=False, verbose=False, use_grouped_phase_j=grouped,
-                    **kw)
-                if pts is None:
-                    v = np.concatenate([np.asarray(a, complex) for _l, a in
-                                        sorted(res['C_tau_by_ell'].items())])
-                else:
-                    v = np.array([complex(fn(*p)) for _l, fn in
-                                  sorted(res['total_C_by_ell'].items())
-                                  for p in pts])
-                out[(name, grouped)] = v.view(np.uint64).copy()
+            res = compute_cumulants(
+                model, tau_grid=np.array([0.0, 1.0, -2.5]), use_cache=True,
+                parallel=False, verbose=False, **kw)
+            if pts is None:
+                v = np.concatenate([np.asarray(a, complex) for _l, a in
+                                    sorted(res['C_tau_by_ell'].items())])
+            else:
+                v = np.array([complex(fn(*p)) for _l, fn in
+                              sorted(res['total_C_by_ell'].items())
+                              for p in pts])
+            out[name] = v.view(np.uint64).copy()
         return out
 
     load('new')
@@ -1379,7 +1167,7 @@ def test_bit_identical_to_the_pre_m2a_engine(tmp_path, monkeypatch):
     """The flag on, the flag off, and the legacy umbrella against the engine
     files of ``_PRE_M2A_REV`` (and its umbrella), bit for bit, IN ONE
     PROCESS (plan §4.4: cross-process comparisons jitter at ~1e-16): the
-    old and new ``final_integral`` / ``grouped_integral`` sources are exec'd
+    old and new ``final_integral`` sources are exec'd
     into fresh module objects side by side, in a child process so this one
     stays untouched.  Skips without git or the revision.  The pole engine
     (S3: the child inherits ``DAEDALUS_PHASE_J_ENGINE=poles``)."""

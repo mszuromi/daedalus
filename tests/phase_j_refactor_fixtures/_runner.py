@@ -77,7 +77,6 @@ def evaluate(config: FixtureConfig) -> dict[str, Any]:
         parallel=False,
         verbose=False,
         use_cache=True,
-        use_grouped_phase_j=config.use_grouped_phase_j,
         origin_leaf_idx=config.origin_leaf_idx,
     )
     if config.taylor_order is not None:

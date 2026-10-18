@@ -130,36 +130,6 @@ def relabel_leaves_first(G):
     return G.relabel(relabel_dict, inplace=False), relabel_dict
 
 
-def graphs_isomorphic_with_labels(G1, leaves1, G2, leaves2):
-    if G1.order() != G2.order() or G1.size() != G2.size():
-        return False
-    if len(leaves1) != len(leaves2):
-        return False
-    leaves1_set = set(leaves1)
-    leaves2_set = set(leaves2)
-    G1c = G1.copy(); G2c = G2.copy()
-    for v in G1.vertices():
-        G1c.set_vertex(v, 0 if v in leaves1_set else 1)
-    for v in G2.vertices():
-        G2c.set_vertex(v, 0 if v in leaves2_set else 1)
-    return G1c.is_isomorphic(G2c)
-
-
-def directed_graphs_isomorphic_with_labels(D1, leaves1, D2, leaves2):
-    if D1.order() != D2.order() or D1.size() != D2.size():
-        return False
-    if len(leaves1) != len(leaves2):
-        return False
-    leaves1_set = set(leaves1)
-    leaves2_set = set(leaves2)
-    D1c = D1.copy(); D2c = D2.copy()
-    for v in D1.vertices():
-        D1c.set_vertex(v, 0 if v in leaves1_set else 1)
-    for v in D2.vertices():
-        D2c.set_vertex(v, 0 if v in leaves2_set else 1)
-    return D1c.is_isomorphic(D2c)
-
-
 # ===========================================================================
 # Tree generation
 # ===========================================================================

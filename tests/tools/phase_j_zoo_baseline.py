@@ -40,7 +40,7 @@ For every zoo entry (model × config) it records:
   for the M0.3 baseline (added afterwards); those runs were made from the
   repo root with ``use_cache=True``, i.e. from the developer's local caches.
 * provenance: git HEAD, the dirty tracked files, sha256 of ``final_integral.py``
-  / ``grouped_integral.py`` / the model file, the numeric flags, library
+  / the model file, the numeric flags, library
   versions and ``PYTHONHASHSEED``, which is required to be ``0``.
 
 Each entry runs in its OWN subprocess with a hard timeout.  The default is
@@ -188,7 +188,7 @@ SEP = '::'                   # npz key separator: '<entry>::<array>'
 
 def _E(name, *, model=None, model_file=None, kind='temporal', k=2, max_ell=1,
        ext=None, params=None, tau_grid=None, points=None, chi_grid=None,
-       grouped=False, timeout=DEFAULT_TIMEOUT, row='', m1='unknown',
+       timeout=DEFAULT_TIMEOUT, row='', m1='unknown',
        notes='', stub_nquad=False, local_only=False, spatial_n_q=None,
        lane=None):
     return dict(
@@ -200,7 +200,7 @@ def _E(name, *, model=None, model_file=None, kind='temporal', k=2, max_ell=1,
         points=None if points is None else [[float(x) for x in p]
                                             for p in points],
         chi_grid=None if chi_grid is None else [float(x) for x in chi_grid],
-        grouped=bool(grouped), timeout=float(timeout), row=row, m1=m1,
+        timeout=float(timeout), row=row, m1=m1,
         notes=notes, stub_nquad=bool(stub_nquad), local_only=bool(local_only),
         spatial_n_q=spatial_n_q, lane=lane)
 
@@ -279,10 +279,6 @@ ZOO = [
     # ── spike-reset family: live Θ(0) bug, P3 inheritance ──
     _E('spike_reset-k2-l1', model='single_population_spike_reset_test', k=2,
        max_ell=1, ext=[('n', 1), ('n', 2)], params=P_SPIKE, tau_grid=T_SPIKE,
-       row='single_population_spike_reset_test', m1='moves'),
-    _E('spike_reset-k2-l1-grouped', model='single_population_spike_reset_test',
-       k=2, max_ell=1, ext=[('n', 1), ('n', 2)], params=P_SPIKE,
-       tau_grid=T_SPIKE, grouped=True,
        row='single_population_spike_reset_test', m1='moves'),
     _E('spike_reset-k1-l1', model='single_population_spike_reset_test', k=1,
        max_ell=1, ext=[('n', 1)], params=P_SPIKE, tau_grid=[0.0],
@@ -506,14 +502,11 @@ def code_provenance():
     _, dirty = _git('status', '--porcelain', '--untracked-files=no')
     fi = os.path.join(_REPO_ROOT, 'engine', 'integration', 'time_domain',
                       'final_integral.py')
-    gi = os.path.join(_REPO_ROOT, 'engine', 'integration', 'time_domain',
-                      'grouped_integral.py')
     return {
         'git_head': head.strip() if rc == 0 else None,
         'git_branch': branch.strip(),
         'git_dirty_tracked': [ln for ln in dirty.splitlines() if ln.strip()],
         'sha256_final_integral': _sha256(fi),
-        'sha256_grouped_integral': _sha256(gi),
     }
 
 
@@ -647,7 +640,7 @@ def resolve_params(entry, model, module):
 
 class _NquadStub:
     """Counting stand-in for ``_integrate_polytope`` (m>=1 -> 0j; m=0 passes
-    through).  Installed in final_integral AND grouped_integral."""
+    through).  Installed in final_integral."""
 
     def __init__(self):
         self.calls = {}
@@ -666,15 +659,12 @@ class _NquadStub:
     @contextlib.contextmanager
     def installed(self):
         import engine.integration.time_domain.final_integral as FI
-        import engine.integration.time_domain.grouped_integral as GI
-        self._orig = FI._integrate_polytope
-        saved = (FI._integrate_polytope, GI._integrate_polytope)
+        self._orig = saved = FI._integrate_polytope
         FI._integrate_polytope = self
-        GI._integrate_polytope = self
         try:
             yield self
         finally:
-            FI._integrate_polytope, GI._integrate_polytope = saved
+            FI._integrate_polytope = saved
 
 
 def migrate_counters(c, semantics):
@@ -764,7 +754,7 @@ def run_entry(entry, *, with_provenance=True):
     ext = [tuple(e) for e in entry['ext']]
     kw = dict(k=entry['k'], max_ell=entry['max_ell'], external_fields=ext,
               parameters=params, parallel=False, verbose=False,
-              use_cache=True, use_grouped_phase_j=entry['grouped'])
+              use_cache=True)
     if entry['kind'] == 'spatial':
         kw['tau_grid'] = np.asarray(entry['tau_grid'], dtype=float)
         kw['chi_grid'] = np.asarray(entry['chi_grid'], dtype=float)
@@ -1020,7 +1010,7 @@ def _summarise(rec):
     e = rec.get('entry') or {}
     s['config'] = {k: e.get(k) for k in (
         'model', 'model_file', 'kind', 'k', 'max_ell', 'ext', 'tau_grid',
-        'points', 'chi_grid', 'grouped', 'stub_nquad', 'timeout')}
+        'points', 'chi_grid', 'stub_nquad', 'timeout')}
     s['row'] = e.get('row')
     s['m1_expected'] = e.get('m1')
     s['notes'] = e.get('notes')
@@ -1131,8 +1121,10 @@ def assemble(run_dir=WORK_DIR, *, tracked_npz=TRACKED_NPZ,
             rec = json.load(fh)
         summ[e['name']] = _summarise(rec)
         if rec.get('code'):
+            # (records written before W7 also carry the retired
+            # 'sha256_grouped_integral'; it is not compared)
             code_at_run = {k: rec['code'].get(k) for k in (
-                'git_head', 'sha256_final_integral', 'sha256_grouped_integral')}
+                'git_head', 'sha256_final_integral')}
             rec = dict(rec, code_at_run=code_at_run)
         for key in ('flags', 'versions', 'env', 'code_at_run'):
             if key in rec:

@@ -101,15 +101,6 @@ def _slugify(name: str) -> str:
 
 # ── Builder-method emitters ───────────────────────────────────────────
 
-def _emit_response_field(f: dict) -> str:
-    return '.response_field(' + _kw_chain(
-        ('', None),  # placeholder; first arg is positional
-    ) + (
-        f'{_py_repr(f["name"])}, '
-        f'{_kw_chain(("indexed", f.get("indexed", True)), ("latex", f.get("latex")), ("description", f.get("description")))})'
-    )
-
-
 def _emit_field(method: str, f: dict, *, with_natural: bool) -> str:
     """Emit a ``.<method>('name', kwarg=...)`` line.
 

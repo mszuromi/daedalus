@@ -452,14 +452,6 @@ class Kernel:
         return f'Kernel(freq_image={self.freq_image!r}, delay={self.delay!r})'
 
 
-def delayed_image_text(freq_image: Optional[str], delay: Optional[str]) -> Optional[str]:
-    """The frequency-image text of a kernel with an optional delay."""
-    if delay is None:
-        return freq_image
-    base = freq_image if freq_image not in (None, '', '1') else None
-    return f'exp(-I*omega*({delay}))' + (f'*({base})' if base else '')
-
-
 def wrap_hook_with_delays(hook, delayed: dict, param_names=()):
     """``hook`` (``(ns, omega) -> {symbol: image}``) with the images of the
     kernels named in ``delayed`` (``{kernel name: delay text}``) multiplied by

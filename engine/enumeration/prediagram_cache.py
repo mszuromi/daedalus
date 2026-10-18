@@ -469,10 +469,6 @@ def fetch_cache(cells='core', dest=None, base_url=None, *, manifest=None,
 MANIFEST_NAME = 'MANIFEST.json'
 
 
-def manifest_path():
-    return os.path.join(SHIPPED_DIR, MANIFEST_NAME)
-
-
 def _sha256(path):
     import hashlib
     h = hashlib.sha256()

@@ -326,6 +326,6 @@ def test_compute_records_the_convention_it_used(spike1_model):
     rule the numbers were computed with (``api.save`` copies it)."""
     for mode, label in (('ito', save.PHASE_J_CONVENTION),
                         ('legacy_clip', 'theta0_legacy_clip')):
-        res, _c = _spike1(spike1_model, 2, 1, False, mode=mode)
+        res, _c = _spike1(spike1_model, 2, 1, mode=mode)
         assert res['config']['phase_j_convention'] == label
         assert save._result_stamp(res)['phase_j_convention'] == label

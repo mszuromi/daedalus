@@ -2,7 +2,7 @@
 tests/test_loop_dyson.py
 ========================
 The 1-loop Dyson assembly for the spatial bubble
-(``engine.integration.spatial.loop_dyson``).
+(``tests.oracles.loop_dyson``).
 
 Pins that the closed-form equal-time ``δC(q,0)`` matches an independent
 frequency-route Dyson computation (representation independence → the assembly
@@ -23,7 +23,7 @@ from scipy import integrate
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.integration.spatial.loop_dyson import (
+from tests.oracles.loop_dyson import (
     bubble_delta_S, bubble_delta_phi2, sigma_R_time, sigma_K_time,
     _dyson_terms, C_R, C_K, bubble_delta_C_q_tau,
 )
