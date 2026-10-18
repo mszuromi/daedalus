@@ -345,7 +345,7 @@ def _peak_and_estimate(dd, ff, d, xs, n_t, n_s, q=0.8):
     return peak, est
 
 
-def test_chamber_estimate_covers_the_measured_peak():
+def test_chamber_estimate_covers_the_measured_peak(monkeypatch):
     """Plain x-path (n_x = 30) and the d = 2 form-factor q-path (its
     Gauss–Hermite grid): the per-chamber estimate is above the tracemalloc
     peak and not wildly above it."""
@@ -359,6 +359,10 @@ def test_chamber_estimate_covers_the_measured_peak():
                                 2, 1, rhs='c*Laplacian*p^2')
             if r[1] is not None and not uv_divergent_subgraphs(r[0], 2)]
     dd, ff = max(recs, key=lambda r: getattr(r[1], 'gh_order_needed', 1))
+    # array sizes only: the d = 2 derivative bubble is log-divergent once the
+    # form factor's momentum powers are counted (ω = 0; refused in a run)
+    from engine.integration.spatial import full_integrator as _FI
+    monkeypatch.setattr(_FI, '_refuse_uv_divergent', lambda *a, **k: None)
     peak, est = _peak_and_estimate(dd, ff, 2, None, 22, 24)
     assert 0.3 * est <= peak <= est, (peak, est)
 
@@ -388,6 +392,7 @@ def test_kpoint_and_gh_paths_are_guarded(monkeypatch):
                                 2, 1, rhs='c*Laplacian*p^2')
             if r[1] is not None and not uv_divergent_subgraphs(r[0], 2)]
     dd, ff = recs[0]
+    monkeypatch.setattr(FI, '_refuse_uv_divergent', lambda *a, **k: None)
     with pytest.raises(SpatialMemoryBudgetError, match='chamber'):
         FI.diagram_kinematic(dd, [0.8], FI.external_times_2pt(dd, 0.5), 1.0,
                              1.0, spatial_dim=2, formfactor=ff)

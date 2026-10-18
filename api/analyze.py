@@ -190,7 +190,6 @@ FINDING_CODES = {
     # derivative-vertex loops, equal-time diagrams left on the product grid
     'G6_SPATIAL_DERIVATIVE_LOOP': ('G6', 'warning'),
     'G6_SPATIAL_EQUAL_TIME':     ('G6', 'warning'),
-    'G6_SPATIAL_ACCURACY':       ('G6', 'warning'),
     # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
@@ -3462,10 +3461,9 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     for rec in ((result.get('spatial_accuracy') or [])
                 if isinstance(result, dict) else []):
         sp = rec.get('coarse_spread')
-        code = {'derivative_vertex_loop': 'G6_SPATIAL_DERIVATIVE_LOOP',
-                'equal_time_grid': 'G6_SPATIAL_EQUAL_TIME',
-                'equal_time_coupled_loop': 'G6_SPATIAL_EQUAL_TIME'}.get(
-                    rec.get('reason'), 'G6_SPATIAL_ACCURACY')
+        code = ('G6_SPATIAL_DERIVATIVE_LOOP'
+                if rec.get('reason') == 'derivative_vertex_loop'
+                else 'G6_SPATIAL_EQUAL_TIME')
         ctx.add(code,
                 f"{rec.get('note')}"
                 + (f'; 0.7x-coarser grid spread {sp:.2e} of max|C|'
