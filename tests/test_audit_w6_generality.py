@@ -449,3 +449,77 @@ def test_loud02_cgmy_symbolic_exponent_mean_is_closed_form():
     k2 = C_ * math.gamma(2 - Y_) * (M_**(Y_ - 2) + G_**(Y_ - 2))
     assert r['mf_values']['xstar'][0] == pytest.approx(mean, rel=1e-15)
     assert c[0].real == pytest.approx(k2 / 2, rel=1e-14)
+
+
+def test_gen02_deeply_negative_compound_saddle_falls_back_to_iteration_saddles():
+    """A voltage saddle at -100 lies outside the default seed box of the full
+    saddle system; the solver falls back to the iteration saddles alone (the
+    compound one substituted), as the former iteration solver did."""
+    from engine.core.field_theory import FieldTheory
+    from api._mean_field import solve_mean_field
+    E, w = -100.0, 0.3
+    m = (ModelBuilder('w6 deep negative saddle')
+         .population('P', size=2)
+         .physical_field('n', population='P').physical_field('v', population='P')
+         .parameter('E', default=[E, E], indexed_by=['P'])
+         .parameter('w', default=[[w, 0.1], [0.1, w]], indexed_by=['P', 'P'])
+         .parameter('tau', default=1.0, domain='positive')
+         .define_function('phi', args=['v'], expression='1/(1+exp(-v))', population='P')
+         .set_action_text('sum(nt[i]*n[i] - (exp(nt[i]) - 1)*phi[i](v[i]) + vt[i]*((tau*Dt + 1)*v[i]'
+                          ' - E[i] - sum(w[i, j]*n[j] for j in P)) for i in P)')
+         .set_mf_equation('vstar', 'E[i] + sum(w[i, j] * nstar[j] for j in P)')
+         .set_mf_equation('nstar', 'phi[i](vstar[i])').build())
+    ft = FieldTheory(m)
+    ft.expand()
+    r = solve_mean_field(ft, m, {}, verbose=False)
+    n_ref = 0.0
+    for _ in range(50):                       # independent fixed-point iteration
+        v_ref = E + (w + 0.1) * n_ref
+        n_ref = 1.0 / (1.0 + math.exp(-v_ref))
+    assert r['mf_values']['nstar'] == [pytest.approx(n_ref, rel=1e-14)] * 2
+    assert r['mf_values']['vstar'] == [pytest.approx(v_ref, rel=1e-15)] * 2
+
+
+def test_gen04_custom_saddle_survives_save_and_load(tmp_path):
+    from api.model_serialize import load_spec_from_file, render_model_file
+    src = '''from api.model import ModelBuilder
+
+
+def build():
+    return (ModelBuilder('w6 rt saddle')
+        .physical_field('x', auto_saddle=False)
+        .parameter('rate_mf', indexed=True, mean_field=True, natural_name='x')
+        .parameter('mu', default=1.0, domain='positive')
+        .parameter('h', default=0.4)
+        .parameter('D', default=0.1, domain='positive')
+        .set_action_text('xt*((Dt + mu)*x + 0.2*x^3 - h) - D*xt^2')
+        .equation(lhs='(Dt + mu)*x', rhs='h - 0.2*x^3')
+        .build())
+'''
+    f = tmp_path / 'w6_rt.model.py'
+    f.write_text(src)
+    txt = render_model_file(load_spec_from_file(str(f)))
+    ns = {}
+    exec(compile(txt, 'rendered', 'exec'), ns)
+    m = ns['build']()
+    sad = [p['name'] for p in m['parameters'] if p.get('mean_field')]
+    assert sad == ['rate_mf'], sad
+    c1, _ = _C(m, [('x', 1), ('x', 1)])
+    c0, _ = _C(_named_saddle('rate_mf'), [('x', 1), ('x', 1)])
+    assert np.max(np.abs(c1 - c0)) == 0.0
+
+
+def test_permuted_cumulant_kernel_reads_the_rows_own_leg_order():
+    from engine.core.field_theory import _PermutedKernel
+    calls = []
+
+    def k3(ns, i, j, k, t1, t2):
+        calls.append((i, j, k))
+        return SR(1)
+    _PermutedKernel(k3, (2, 0, 1))(None, 'a', 'b', 'c', var('t1'), var('t2'))
+    assert calls == [('b', 'c', 'a')]          # position k holds row leg perm[k]
+    t = var('t')
+    k2 = lambda ns, i, j, tau: (i - j) * SR(var('c2')) * dirac_delta(tau) + (i + 2 * j) * tau
+    out = _PermutedKernel(k2, (1, 0))(None, 1, 5, t)
+    assert (out - k2(None, 5, 1, -t).subs({dirac_delta(-t): dirac_delta(t)})).expand() == 0
+    assert out.coefficient(dirac_delta(t)) == 4 * var('c2')

@@ -741,19 +741,32 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
 # ``correlated_noises`` block, append -W_m[mt] to the action symbolically)
 # ---------------------------------------------------------------------------
 
-class _SwappedKernel:
-    """An order-2 cumulant kernel read in the swapped leg order:
-    ``K'(ns, i, j, tau) = K(ns, j, i, -tau)`` (a delta of ``-tau`` written
-    back as one of ``tau``: the delta extraction matches ``delta(tau)``
-    only).  Module level so it pickles like the kernel it wraps."""
-    __slots__ = ('inner',)
+class _PermutedKernel:
+    """A cumulant kernel read for a reconstructed leg-field permutation
+    ``perm`` of its row (``perm[k]``: the row's leg sitting at position
+    ``k``): the leg indices are put back in the row's own order, and at
+    order 2 the swapped pair reads ``K(j, i, -tau)`` (``tau = t_first -
+    t_second``; a delta of ``-tau`` written back as one of ``tau``, the form
+    the delta extraction matches).  At order >= 3 only the fully local
+    (delta-product) part is used, which no permutation of the times
+    changes.  Module level so it pickles like the kernel it wraps."""
+    __slots__ = ('inner', 'perm')
 
-    def __init__(self, inner):
+    def __init__(self, inner, perm):
         self.inner = inner
+        self.perm = tuple(perm)
 
-    def __call__(self, ns, i, j, tau):
-        K = SR(self.inner(ns, j, i, -SR(tau)))
-        return K.subs({dirac_delta(-SR(tau)): dirac_delta(SR(tau))})
+    def __call__(self, ns, *args):
+        n = len(self.perm)
+        idx, taus = args[:n], list(args[n:])
+        canon = [None] * n
+        for k, p in enumerate(self.perm):
+            canon[p] = idx[k]
+        if n == 2 and self.perm == (1, 0) and len(taus) == 1:
+            t = SR(taus[0])
+            K = SR(self.inner(ns, *canon, -t))
+            return K.subs({dirac_delta(-t): dirac_delta(t)})
+        return self.inner(ns, *canon, *taus)
 
 
 def _build_cumulant_action(ns, model):
@@ -900,8 +913,7 @@ def _build_cumulant_action(ns, model):
                     'fields': perm_fields,
                     'arrays': perm_arrays,
                     'ranges': perm_ranges,
-                    'swapped': (order == 2
-                                and tuple(perm_indices) == (1, 0)),
+                    'perm': tuple(perm_indices),
                 })
 
             for perm_spec in distinct_field_perms:
@@ -909,12 +921,12 @@ def _build_cumulant_action(ns, model):
               perm_leg_ranges = perm_spec['ranges']
               perm_leg_fields = list(perm_spec['fields'])
               # The row's kernel K(i, j, tau) is written for its own leg
-              # order (tau = t_first - t_second); the reconstructed swapped
-              # order (yt, xt) of an order-2 cross-field row is
-              # K(j, i, -tau), so every registered spec carries its own
-              # orientation (Phase J evaluates each spec in it; audit W6).
-              kfn = (_SwappedKernel(kernel_fn) if perm_spec['swapped']
-                     else kernel_fn)
+              # order (tau = t_first - t_second); a reconstructed order is
+              # read with the indices put back (order 2: K(j, i, -tau)), so
+              # every registered spec carries its own orientation (Phase J
+              # evaluates each spec in it; audit W6).
+              kfn = (kernel_fn if perm_spec['perm'] == tuple(range(order))
+                     else _PermutedKernel(kernel_fn, perm_spec['perm']))
               for idx_tuple in _iter_product(*perm_leg_ranges):
                 # Evaluate the kernel at placeholder τ symbols.
                 try:

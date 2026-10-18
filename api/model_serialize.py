@@ -371,9 +371,19 @@ def render_model_file(spec: dict) -> str:
     physical_natural = {f.get('natural_name') or f['name']
                         for f in physical_fields}
     auto_saddle_names = {f'{nat}star' for nat in physical_natural}
+    # A saddle declared under another name (``rate_mf`` for field x) is
+    # kept, and its field written with auto_saddle=False (it was dropped:
+    # the reloaded model had no saddle for the field, audit W6 / GEN-04).
+    custom = {p['natural_name']: p for p in parameters
+              if p.get('mean_field') and p.get('natural_name')
+              and p['name'] != f"{p['natural_name']}star"}
+    physical_fields = [dict(f, auto_saddle=False)
+                       if (f.get('natural_name') or f['name']) in custom else f
+                       for f in physical_fields]
     parameters = [p for p in parameters
-                  if not p.get('mean_field')
-                  and p['name'] not in auto_saddle_names]
+                  if (not p.get('mean_field')
+                      and p['name'] not in auto_saddle_names)
+                  or p is custom.get(p.get('natural_name'))]
     functions       = spec.get('functions', [])       or []
     kernels         = spec.get('kernels', [])         or []
     cgf_terms       = spec.get('cgf_terms', [])       or []

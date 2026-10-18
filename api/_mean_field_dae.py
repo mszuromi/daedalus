@@ -989,7 +989,7 @@ def _compile_float(expr, syms):
     return g
 
 
-def _saddle_system(model, fundamental, ns):
+def _saddle_system(model, fundamental, ns, reduced=False):
     """The saddle equations ``s - rhs_s(saddles) = 0`` of a model declared
     with ``.set_mf_equation`` (``model['mf_bg_conditions'](ns)``: one RHS
     per saddle element, the parameters and each kernel at its integral
@@ -997,7 +997,16 @@ def _saddle_system(model, fundamental, ns):
     shape of the ``.equation`` system: one state variable per saddle with
     an equation, labelled by its field's natural name (that is what
     ``seed_box`` and the domain lookups use) or by its own name, physical
-    fields' saddles first in field order (the root sort key)."""
+    fields' saddles first in field order (the root sort key).
+
+    ``reduced=True``: the unknowns are the iteration (closure) saddles only
+    (``model['iteration_saddles']``), every other saddle substituted by its
+    equation (as the former iteration solver did); the fallback when the
+    full system has no root on the default search (a compound saddle far on
+    the negative axis, e.g. a voltage of -100, outside the seed box).
+    Returns a sixth item ``extras(x) -> {compound saddle: [values]}``
+    (``None`` for the full system), or ``None`` altogether when the model
+    cannot be reduced."""
     from sage.all import SR
     from sage.symbolic.operators import add_vararg
     from api._mean_field import _kernel_saddle_subs, complete_parameters
@@ -1013,6 +1022,13 @@ def _saddle_system(model, fundamental, ns):
             'mean-field solve: the model declares no mean-field equation '
             '(no .equation(...) rows and no .set_mf_equation(...) for a '
             'saddle parameter).')
+    compound = {}
+    if reduced:
+        iters = [n for n in (model.get('iteration_saddles') or [])
+                 if n in unknown]
+        if not iters or len(iters) == len(unknown):
+            return None
+        compound = {n: unknown.pop(n) for n in list(unknown) if n not in iters}
     field_order = [f.get('natural_name') or f['name']
                    for f in model.get('physical_fields') or []]
 
@@ -1035,12 +1051,24 @@ def _saddle_system(model, fundamental, ns):
     syms = [s for name in names for s in unknown[name]]
 
     psubs = _param_subs(model, fundamental, _pop_sizes(model, ns))
+    csyms = [c for arr in compound.values() for c in arr]
     ksubs = _kernel_saddle_subs(ns, model, _kernel_symbols(model, ns),
-                                [mf_bg[s] for s in syms])
+                                [mf_bg[s] for s in syms + csyms])
+    # compound saddles as functions of the unknowns (substituted until none
+    # is left; a cycle among them means the model cannot be reduced)
+    csub = {c: SR(mf_bg[c]).subs(ksubs).subs(psubs) for c in csyms}
+    for _ in range(len(csyms) + 1):
+        if not any(set(e.variables()) & set(csyms) for e in csub.values()):
+            break
+        csub = {c: e.subs(csub) for c, e in csub.items()}
+    else:
+        return None
     rows, terms, labels = [], [], []
     for name in names:
         for i, s in enumerate(unknown[name]):
             rhs = SR(mf_bg[s]).subs(ksubs).subs(psubs)
+            if csub:
+                rhs = rhs.subs(csub)
             free = sorted(str(v) for v in set(rhs.variables()) - set(syms))
             if free:
                 raise NameError(
@@ -1081,7 +1109,16 @@ def _saddle_system(model, fundamental, ns):
                     mag[k] = _PENALTY
         return out
 
-    return state_vars, slices, R, labels, keys
+    extras = None
+    if compound:
+        cfun = {name: [_compile_float(csub[c], syms) for c in arr]
+                for name, arr in compound.items()}
+
+        def extras(x):
+            vals = [float(v) for v in x]
+            return {name: [float(f(*vals)) for f in fs]
+                    for name, fs in cfun.items()}
+    return state_vars, slices, R, labels, keys, extras
 
 
 def solve_mean_field_dae(
@@ -1096,6 +1133,7 @@ def solve_mean_field_dae(
         verbose: bool = False,
         rng_seed: int = 0,
         ns=None,
+        _reduced: bool = False,
 ) -> dict:
     """Solve the mean-field system of a model: the ``Dt -> 0`` limit of its
     ``ModelBuilder.equation(...)`` rows, or, for a model declared with
@@ -1165,14 +1203,15 @@ def solve_mean_field_dae(
         R, expanded = _build_residual(
             model, params_np, phi_callables, idx_sets, state_vars, slices)
         keys = _saddle_keys(model, state_vars)
+        extras = None
     else:
         if ns is None:
             raise ValueError(
                 "solve_mean_field_dae: the model declares no "
                 ".equation(...) rows; its .set_mf_equation(...) saddle "
                 "equations need the FieldTheory namespace (ns=).")
-        state_vars, slices, R, expanded, keys = _saddle_system(
-            model, fundamental, ns)
+        system = _saddle_system(model, fundamental, ns, reduced=_reduced)
+        state_vars, slices, R, expanded, keys, extras = system
     total = sum(size for _, _, size in state_vars)
 
     # Sanity: number of residuals must match number of unknowns.
@@ -1249,6 +1288,15 @@ def solve_mean_field_dae(
     deduped = [deduped[q] for q in order]
     root_errs = [root_errs[q] for q in order]
 
+    if not deduped and not model.get('equations') and not _reduced and (
+            _saddle_system(model, fundamental, ns, reduced=True) is not None):
+        # the iteration saddles alone (compound ones substituted): their
+        # roots do not depend on where a compound saddle lies
+        return solve_mean_field_dae(
+            model, fundamental, n_starts=n_starts,
+            fixed_point_index=fixed_point_index, seed_box=seed_box,
+            rtol=rtol, atol=atol, verbose=verbose, rng_seed=rng_seed, ns=ns,
+            _reduced=True)
     if not deduped:
         raise ValueError(
             f"solve_mean_field_dae: no MF fixed point found from "
@@ -1256,9 +1304,14 @@ def solve_mean_field_dae(
             f"explicit seed_box, or checking the equations for typos."
         )
 
-    def _build_root_dict(x):
-        return {keys[var]: x[slices[var][0]:slices[var][1]].tolist()
-                for var, _, _ in state_vars}
+    def _build_root_dict(x, err=False):
+        out = {keys[var]: x[slices[var][0]:slices[var][1]].tolist()
+               for var, _, _ in state_vars}
+        if extras is not None:
+            ex = extras(x)
+            out.update({k: [0.0] * len(v) for k, v in ex.items()} if err
+                       else ex)
+        return out
 
     # Stability classification is gated by ``model['stability_analysis']``
     # (default: False).  Models whose equations are ALL algebraic
@@ -1310,7 +1363,7 @@ def solve_mean_field_dae(
                 'stable':              bool(stab.get('stable', False)),
                 'eigenvalues_finite':  np.asarray(stab.get('eigenvalues_finite', [])),
             })
-            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe)
+            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe, err=True)
     else:
         # Skip stability entirely.  Tag each record with ``stable=None``
         # so callers can distinguish "not classified" from "classified
@@ -1321,7 +1374,7 @@ def solve_mean_field_dae(
                 'stable':              None,
                 'eigenvalues_finite':  np.array([], dtype=complex),
             })
-            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe)
+            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe, err=True)
 
     if stab_on:
         # Pre-filter to stable subset.

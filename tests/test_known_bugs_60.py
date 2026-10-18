@@ -294,8 +294,8 @@ def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
     from api.model import ModelBuilder
     m = (ModelBuilder('bug60 saddle nan').physical_field('x')
          .parameter('D', default=0.1, domain='positive')
-         .set_action_text('xt*((Dt + 1)*x - 0.5 - 0*exp(800*x)) - D*xt^2')
-         .set_mf_equation('xstar', '0.5 + 0*exp(800*xstar)').build())
+         .set_action_text('xt*((Dt + 1)*x - 0.5 - 1e-300*exp(800*x)) - D*xt^2')
+         .set_mf_equation('xstar', '0.5 + 1e-300*exp(800*xstar)').build())
     import api._mean_field_dae as MD2
     MD2._saddle_system = spy
     try:
@@ -304,8 +304,8 @@ def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
     finally:
         MD2._saddle_system = orig
     assert abs(r['mf_values']['xstar'][0] - 0.5) < 1e-12
-    assert cap['R'](np.array([0.5]))[0] == 0.0
-    assert cap['R'](np.array([2.0]))[0] == MD._PENALTY
+    assert abs(cap['R'](np.array([0.5]))[0]) < 1e-15
+    assert cap['R'](np.array([2.0]))[0] == MD._PENALTY       # exp(1600) overflows
 
 
 # ── bug 9: an invalid DAEDALUS_PHASE_J_ENGINE fails at the API entry ─────────
