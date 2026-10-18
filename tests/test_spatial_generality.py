@@ -382,3 +382,161 @@ def test_kpoint_and_gh_paths_are_guarded(monkeypatch):
     with pytest.raises(SpatialMemoryBudgetError, match='chamber'):
         FI.diagram_kinematic(dd, [0.8], FI.external_times_2pt(dd, 0.5), 1.0,
                              1.0, spatial_dim=2, formfactor=ff)
+
+
+# ── ACC-44: the unequal-D (Dyson) tree has no q-grid / mode cap ───────
+def test_laguerre_gauss_transform_closed_form():
+    """F_p(x; a) = ∫dᵈq/(2π)ᵈ e^{iq·x}|q|^{2p}e^{−aq²} against direct
+    quadrature (cosine, Hankel J0, spherical sinc), and the two periodic
+    branches (images / dual modes) against each other."""
+    from scipy.integrate import quad
+    from scipy.special import j0
+    from engine.integration.spatial.dyson_dressing import _F_p, _periodic_1d
+    a = 0.37
+    for p in range(4):
+        for r in (0.0, 0.6, 1.7):
+            got = [float(_F_p(p, np.array([r]), a, d)[0]) for d in (1, 2, 3)]
+            g = lambda q: q ** (2 * p) * np.exp(-a * q * q)
+            ref1 = quad(lambda q: np.cos(q * r) * g(q), 0, np.inf)[0] / np.pi
+            ref2 = quad(lambda q: q * j0(q * r) * g(q), 0, np.inf)[0] / (2 * np.pi)
+            ref3 = quad(lambda q: q * q * np.sinc(q * r / np.pi) * g(q), 0,
+                        np.inf)[0] / (2 * np.pi ** 2)
+            for gv, rv in zip(got, (ref1, ref2, ref3)):
+                assert abs(gv - rv) <= 1e-10 * max(abs(rv), 1e-3), (p, r, gv, rv)
+    L, xs = 3.0, np.array([0.0, 0.4, 1.5, 2.9])
+    for p in range(3):
+        img = _periodic_1d(p, xs, 0.999 * L * L / (4 * np.pi), L)  # images
+        mod = _periodic_1d(p, xs, 1.001 * L * L / (4 * np.pi), L)  # modes
+        # a changes by 0.2 % across the switch: compare each against its own
+        # opposite-branch evaluation at the same a via the closed image sum
+        a_m = 1.001 * L * L / (4 * np.pi)
+        img_m = sum(_F_p(p, xs + n * L, a_m, 1) for n in range(-60, 61))
+        assert np.max(np.abs(mod - img_m)) <= 1e-12 * np.max(np.abs(img_m))
+        assert np.all(np.isfinite(img))
+
+
+def _exact_unequal_D_line(M, Dm, N, tau, x, legs):
+    from scipy.integrate import quad
+    from scipy.linalg import expm, solve_continuous_lyapunov
+    i, j = legs
+    ii, jj = (j, i) if tau >= 0 else (i, j)
+
+    def Cq(q):
+        A = M + Dm * q * q
+        return np.real((expm(-A * abs(tau))
+                        @ solve_continuous_lyapunov(A, N))[ii, jj])
+    if x == 0.0:
+        return quad(Cq, 0, np.inf, limit=400, epsabs=1e-14)[0] / np.pi
+    return quad(Cq, 0, np.inf, weight='cos', wvar=abs(x), limit=400)[0] / np.pi
+
+
+def test_dressed_tree_x_converges_to_the_exact_unequal_D_tree():
+    """The x-space Dyson tree vs the exact Lyapunov tree on the line and on
+    a periodic box (image sum of the line): the truncation error falls
+    geometrically with the order; no fixed-grid floor."""
+    from engine.integration.spatial.dyson_dressing import dressed_tree_C_x
+    M = np.array([[1.5, 0.4], [-0.3, 1.2]])
+    Dm = np.diag([0.6, 1.0])
+    D0 = 0.8
+    N = np.diag([2.0, 1.4])
+    legs, xs = (0, 1), np.array([0.0, 0.5, 2.0])
+    for tau in (0.7, -0.7):
+        ex = np.array([_exact_unequal_D_line(M, Dm, N, tau, x, legs)
+                       for x in xs])
+        errs = [np.max(np.abs(np.real(dressed_tree_C_x(
+            xs, tau, M, Dm - D0 * np.eye(2), D0, N, n, legs)) - ex))
+            for n in (1, 3, 6)]
+        assert errs[0] > errs[1] > errs[2] and errs[2] < 3e-8, errs
+    L, tau = 3.0, 0.4
+    ex = np.array([sum(_exact_unequal_D_line(M, Dm, N, tau, x + n * L, legs)
+                       for n in range(-8, 9)) for x in xs])
+    got = np.real(dressed_tree_C_x(xs, tau, M, Dm - D0 * np.eye(2), D0, N, 6,
+                                   legs, L=L))
+    assert np.max(np.abs(got - ex)) < 3e-8, (got, ex)
+
+
+# ── k >= 3 derivative vertices: the form factor reaches the k-point driver ─
+def _k3_model(term, rhs):
+    return (ModelBuilder('k3 form factor', n_populations=0)
+            .physical_field('p', spatial_dim=1)
+            .parameter('mu', default=1.0, domain='positive')
+            .parameter('D', default=1.0, domain='positive')
+            .parameter('c', default=0.3, domain='real')
+            .parameter('T', default=1.0, domain='positive')
+            .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs=rhs)
+            .set_action_text(f'pt*(Dt(p)+mu*p-D*Lap(p)+{term})-T*pt^2')
+            .operator_ir().boundary('infinite').initial('stationary').build())
+
+
+_MB = ('-c*Lap(p^2)', 'c*Laplacian*p^2')
+_PL = ('c*p^2', '-c*p^2')
+
+
+def _k3(model, pts):
+    return compute_cumulants(model, k=3, max_ell=0, spatial_points=pts,
+                             use_cache=False, parallel=False, verbose=False,
+                             external_fields=[('p', 1)] * 3)['C_kpoint']
+
+
+def test_kpoint_applies_the_derivative_form_factor():
+    """compute_spatial_kpoint used to drop the form factor: Model B's
+    conserved c*Lap(p^2) came out as exactly minus the plain c*p^2 twin."""
+    import sympy as sp
+    pts = np.array([[[0.5, 0.3], [-0.4, 0.0]], [[1.2, 0.3], [0.2, 0.0]],
+                    [[0.0, 0.6], [0.9, 0.2]]])
+    CB, CP = _k3(_k3_model(*_MB), pts), _k3(_k3_model(*_PL), pts)
+    assert np.max(np.abs(CB + CP)) > 0.1 * np.max(np.abs(CP)), (CB, CP)
+    # every tree record: the multivariate moment exists and each external
+    # symbol q_j is read from q[j] (by index, not by position)
+    from sage.all import SR as _SR
+    from engine.core.field_theory import FieldTheory
+    from api._propagator import build_propagator
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _formfactor_callable, diagram_form_factor)
+    m = _k3_model(*_MB)
+    ft = FieldTheory(m, taylor_order=5)
+    ft.expand()
+    prop = build_propagator(ft, m, use_cache=False, verbose=False)
+    _, pidx = build_field_index_map(list(ft._ns._ring_var_names), ft._n_tilde)
+    ext = _legs_to_phys_idx([('p', 1)] * 3, pidx)
+    base = {_SR.var('c'): 0.3}
+    vt = [{'weight': float(_SR(t['weight']).subs(base)), 'n_phys': t['n_phys'],
+           'chain': t['chain'], 'mode': t['mode']}
+          for t in ft._ns._operator_ir_vertex_terms]
+    seen_partial = False
+    for td, _p in build_pipeline_records(ft, m, prop, ext, max_ell=0,
+                                         k=3).get(0, []):
+        ff = _formfactor_callable(td, vt, d=1)
+        R = sp.expand(diagram_form_factor(td, vt, d=1))
+        if R == 0:
+            continue
+        assert ff.moment_x_multi is not None
+        q = [0.3, 1.1]
+        want = complex(R.subs({sp.Symbol('q0'): q[0], sp.Symbol('q1'): q[1]}))
+        got = complex(np.asarray(ff(np.zeros((1, 0)), q)).ravel()[0])
+        assert abs(got - want) <= 1e-12 * max(abs(want), 1.0), (R, got, want)
+        # a form factor in fewer than all k-1 external momenta (the Model B
+        # tree uses q0 only) used to get no multivariate moment
+        seen_partial |= len([s for s in R.free_symbols
+                             if str(s)[0] == 'q']) < 2
+    assert seen_partial
+
+
+@pytest.mark.slow
+def test_kpoint_model_b_conservation_sum_rule():
+    """int dx1 dx2 kappa3 = kappa3(q = 0) = 0 for the conserved vertex (the
+    O(h^2) trapezoid residual shrinks 4x per halving); the plain twin's
+    integral is O(1).  Main (form factor dropped) gave +1.00 of int|kappa3|."""
+    def ratio(model, h):
+        xg = np.arange(-10, 10 + h / 2, h)
+        tot = ab = 0.0
+        for x1 in xg:
+            pts = np.zeros((len(xg), 2, 2))
+            pts[:, 0, 0], pts[:, 0, 1], pts[:, 1, 0] = x1, 0.3, xg
+            v = _k3(model, pts)
+            tot, ab = tot + np.sum(v), ab + np.sum(np.abs(v))
+        return tot / ab
+    r5, r25 = ratio(_k3_model(*_MB), 0.5), ratio(_k3_model(*_MB), 0.25)
+    assert abs(r5) < 0.06 and abs(r25) < 0.02 and abs(r25) < abs(r5) / 3
+    assert abs(ratio(_k3_model(*_PL), 0.5)) > 0.9

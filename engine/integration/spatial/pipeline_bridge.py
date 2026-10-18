@@ -1218,12 +1218,16 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         ls = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'l'], key=str)
         qs = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'q'], key=str)
         fn = _sp.lambdify(tuple(ls) + tuple(qs), Rcal, 'numpy')
-        nl, nq = len(ls), len(qs)
+        nl = len(ls)
+        # each symbol by its OWN index (l_i -> ell[..., i], q_j -> q[j]); a
+        # form factor that uses only q1 must not read q[0]
+        lix = [int(str(sy)[1:]) for sy in ls]
+        qix = [int(str(sy)[1:]) for sy in qs]
 
         def ff(ell, q):
             qvec = np.atleast_1d(np.asarray(q, dtype=float))
-            args = ([ell[..., i] for i in range(nl)]
-                    + [float(qvec[j]) for j in range(nq)])
+            args = ([ell[..., i] for i in lix]
+                    + [float(qvec[j]) for j in qix])
             return fn(*args) * np.ones(ell.shape[:-1])   # complex if Rcal has i (∂_x)
         # Minimal EXACT Gauss–Hermite order: GH(n) integrates degree ≤ 2n−1
         # exactly.  Use the TOTAL degree of Rcal in the loop momenta (NOT max per-
@@ -1247,10 +1251,14 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         # n_ext>=2 (k>=3): the multivariate joint-(ℓ,Q)-Gaussian moment
         # for the analytic IFT (vector complex Gaussian
         # Q ~ N((i/2)·Binv·X, Binv/2)).
+        # over ALL k-1 external momenta q0..q_{k-2} (a form factor that uses
+        # only some of them still needs the full Gaussian vector)
         ff.moment_x_multi = None
-        if len(qs) >= 2:
+        n_ext = len(td.external_legs) - 1
+        if n_ext >= 2:
+            qs_full = [_sp.Symbol(f'q{j}') for j in range(n_ext)]
             try:
-                ff.moment_x_multi = _build_wick_moment_multi(Rcal, ls, qs)
+                ff.moment_x_multi = _build_wick_moment_multi(Rcal, ls, qs_full)
             except Exception:
                 ff.moment_x_multi = None
         return ff
@@ -2301,6 +2309,18 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items()
                   if str(kk) != 'Laplacian'}
+    # derivative vertices (operator IR): each diagram's momentum form factor,
+    # as on the k=2 driver (it used to be dropped here: a KPZ / Model B
+    # vertex was integrated as a plain phi^2 vertex)
+    _vt_sym = getattr(ft._ns, '_operator_ir_vertex_terms', None) or []
+
+    def _num_w(w):
+        try:
+            return float(_np.real(complex(_SR(w).subs(base_np_sr))))
+        except (ValueError, ZeroDivisionError, TypeError):
+            return 0.0
+    _vterms = [{'weight': _num_w(t['weight']), 'n_phys': t['n_phys'],
+                'chain': t['chain'], 'mode': t['mode']} for t in _vt_sym]
     per_ell = {}
     total = _np.zeros(n_pts)
     # group evaluation points by tau-configuration (slot 0 at tau=0)
@@ -2329,6 +2349,9 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             n_V = len(d.internal_vertices)
             kw = {} if n_V < 3 else {'n_t': int(n_t_loop),
                                      'n_s': int(n_s_loop)}
+            if _vterms:
+                kw['formfactor'] = _formfactor_callable(td, _vterms,
+                                                        d=spatial_dim)
             for tkey, idxs in tau_groups.items():
                 x_pts = _np.zeros((len(idxs), k))
                 for col, j in enumerate(range(1, k)):
