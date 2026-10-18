@@ -53,7 +53,7 @@ Everything here is model-free (hand-built constraint rows and modes) except
 section F and the slow section G child, all built in a private cwd.
 Section F uses the public ``single_population_spike_reset_test`` (its
 guard-bailed m = 2 regions, served by the fallback, against the exact fan
-formula; the warning aggregated over the grouped k = 2 τ-grid of
+formula; the warning aggregated over the k = 2 τ-grid of
 ``compute_cumulants``; and, slow, over a call of the k = 3 tree's
 callable) and the public ``ou_quartic`` (a cheap ``compute_cumulants``
 build whose callables must open the warning scope).  The section G child
@@ -80,6 +80,7 @@ import contextlib
 import math
 import os
 import random
+import re
 import subprocess
 import sys
 import textwrap
@@ -106,7 +107,6 @@ _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 # legacy value in the child of section G (or retire these comparisons).
 _PRE_M2B_REV = '16b5564'
 _FI_REL = 'engine/integration/time_domain/final_integral.py'
-_GI_REL = 'engine/integration/time_domain/grouped_integral.py'
 
 
 def _counter(name):
@@ -273,7 +273,8 @@ def test_narrow_peak_hardened_matches_the_exact_value(case, hardened):
 
 
 def _pole_tuples(modes):
-    """The grouped form of a product of mode sums: every combination of one
+    """The merged (pole-tuple) form of a product of mode sums -- the call
+    shape of the retired grouped dispatch: every combination of one
     mode per edge, ``(Π C, (λ per edge))``."""
     import itertools
     out = []
@@ -287,8 +288,8 @@ def _pole_tuples(modes):
 
 @pytest.mark.parametrize('case', sorted(PEAKS))
 def test_grouped_mode_data_give_the_same_value(case, hardened):
-    """The grouped dispatch passes its merged pole tuples (``kind='sum'``)
-    with an integrand that carries no mode data."""
+    """Merged pole tuples (``kind='sum'``, as the retired grouped dispatch
+    passed them) with an integrand that carries no mode data."""
     rows, modes, t, ref, m = PEAKS[case]
     fe = _fast_eval(modes, rows, m)
 
@@ -1882,7 +1883,7 @@ def private_cwd(tmp_path_factory):
         os.chdir(prev)
 
 
-def _spike_harness(taus, grouped=False):
+def _spike_harness(taus):
     from tests.tools import phase_j_subset_diff as H
     from tests.tools import phase_j_zoo_baseline as Z
     model = H.load_model('single_population_spike_reset_test')
@@ -1890,16 +1891,15 @@ def _spike_harness(taus, grouped=False):
         warnings.simplefilter('ignore', FI.PhaseJNquadFallbackWarning)
         run = H.run(model, k=2, max_ell=1, external_fields=[('n', 1),
                                                              ('n', 2)],
-                    parameters=Z.P_SPIKE, tau_grid=list(taus),
-                    use_grouped_phase_j=grouped)
+                    parameters=Z.P_SPIKE, tau_grid=list(taus))
     H.compute_references(run, kinds=('c',), ref_max_m=2, scope='fallback')
     return H, run
 
 
-def _check_spike(taus, grouped, monkeypatch):
+def _check_spike(taus, monkeypatch):
     # a fresh registry: the key must come from THIS run (and its source)
     monkeypatch.setattr(FI, '_NQUAD_WARNED', set())
-    H, run = _spike_harness(taus, grouped)
+    H, run = _spike_harness(taus)
     rows, _orph = H.reconstruction_check(run)
     assert all(r['ok'] for r in rows)
     by_key = H._first_record_by_ref_key(run)
@@ -1917,10 +1917,9 @@ def _check_spike(taus, grouped, monkeypatch):
     assert c['nquad_hardened_calls'] == c['nquad_calls'] > 0
     assert c['nquad_hardened_quad_flags'] == 0
     # compute_cumulants names the model in the warnings' key (model,
-    # source, loop order, then the diagrams and the parameter point), for
-    # the per-diagram and the grouped build alike
+    # source, loop order, then the diagrams and the parameter point)
     name = H.load_model('single_population_spike_reset_test')['name']
-    src = 'grouped' if grouped else 'per_diagram'
+    src = 'per_diagram'
     assert any(k[:4] == ('fallback', ('model', name), src, 1)
                for k in FI._NQUAD_WARNED), sorted(
         map(repr, FI._NQUAD_WARNED))
@@ -1938,18 +1937,16 @@ def _legacy_routes(monkeypatch):
         monkeypatch.setattr(FI, flag, value)
 
 
-@pytest.mark.parametrize('grouped', (False, True), ids=('perdiag',
-                                                        'grouped'))
-def test_spike_reset_fallback_regions_match_the_exact_fan(grouped, hardened,
+def test_spike_reset_fallback_regions_match_the_exact_fan(hardened,
                                                           private_cwd,
                                                           monkeypatch):
     """Every m = 2 region the fallback served at τ = 0 (evaluated at
     −1e-6) and τ = 10 is within max(1e-8·|ref|, 1e-14) of the 50-digit fan
-    formula (box 150 and box 400), per diagram and grouped.  Before M2b the
+    formula (box 150 and box 400), per diagram.  Before M2b the
     same regions were off by up to 6.8e-5 relative / 1.5e-10 absolute (18
     of 40 over the five-point grid; measured with the harness, plan §10)."""
     _legacy_routes(monkeypatch)
-    _check_spike([0.0, 10.0], grouped=grouped, monkeypatch=monkeypatch)
+    _check_spike([0.0, 10.0], monkeypatch=monkeypatch)
 
 
 def test_compute_cumulants_scopes_its_callables(hardened, private_cwd,
@@ -1981,9 +1978,10 @@ def test_compute_cumulants_aggregates_its_tau_grid(hardened, private_cwd,
                                                    fresh_warning_state,
                                                    monkeypatch):
     """``compute_cumulants``' own τ-grid evaluation is one evaluation (an
-    ``nquad_warning_scope`` around ``total_C_batch``): the grouped
-    spike-reset k = 2, ℓ = 1 build at τ = 0 and 10 serves 4 regions of 2
-    grouped diagrams, reported by ONE warning with those counts.  (Without
+    ``nquad_warning_scope`` around ``total_C_batch``): the per-diagram
+    spike-reset k = 2, ℓ = 1 build at τ = 0 and 10 serves several fallback
+    regions of several diagrams (the retired grouped build: 4 regions of 2
+    grouped diagrams), reported by ONE warning with those counts.  (Without
     the scope the first region warned at once, alone: '1 integration
     region(s) of 1 diagram(s)'.)"""
     from api import compute_cumulants
@@ -1995,12 +1993,15 @@ def test_compute_cumulants_aggregates_its_tau_grid(hardened, private_cwd,
     msgs = _warnings_of([lambda: compute_cumulants(
         model, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
         parameters=Z.P_SPIKE, use_cache=True, parallel=False,
-        verbose=False, tau_grid=np.array([0.0, 10.0]),
-        use_grouped_phase_j=True)])
-    assert _counter('nquad_hardened_calls') == 4
+        verbose=False, tau_grid=np.array([0.0, 10.0]))])
+    n = _counter('nquad_hardened_calls')
+    assert n > 1
     assert len(msgs) == 1, msgs
-    assert ('answered 4 integration region(s) of 2 diagram(s) of model '
-            f"'{model['name']}' (grouped, loop order 1)") in msgs[0], msgs[0]
+    m = re.search(r'answered (\d+) integration region\(s\) of (\d+) '
+                  r'diagram\(s\) of model ', msgs[0])
+    assert m and int(m.group(1)) == n and int(m.group(2)) >= 1, msgs[0]
+    assert (f"of model '{model['name']}' (per_diagram, loop order 1)"
+            in msgs[0]), msgs[0]
 
 
 @pytest.mark.slow
@@ -2035,13 +2036,10 @@ def test_public_callables_aggregate_the_warnings(hardened, private_cwd,
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize('grouped', (False, True), ids=('perdiag',
-                                                        'grouped'))
-def test_spike_reset_fallback_regions_full_grid(grouped, hardened,
-                                                private_cwd, monkeypatch):
+def test_spike_reset_fallback_regions_full_grid(hardened, private_cwd,
+                                                monkeypatch):
     _legacy_routes(monkeypatch)
-    _check_spike([0.0, 1.0, 3.0, 5.0, 10.0], grouped=grouped,
-                 monkeypatch=monkeypatch)
+    _check_spike([0.0, 1.0, 3.0, 5.0, 10.0], monkeypatch=monkeypatch)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2120,25 +2118,23 @@ _CHILD = textwrap.dedent(r'''
     import daedalus as dd
     import engine.integration.time_domain as TD
     import engine.integration.time_domain.final_integral as FI0
-    import engine.integration.time_domain.grouped_integral as GI0
     import engine.integration.time_domain.pipeline as PL
-    import api._grouped_phase_j as GP
     from api import compute_cumulants
     from tests.tools import phase_j_zoo_baseline as Z
     rel = 'engine/integration/time_domain/'
     src = {n: subprocess.check_output(
         ['git', '-C', ROOT, 'show', f'{REV}:{rel}{n}.py']).decode()
-        for n in ('final_integral', 'grouped_integral')}
+        for n in ('final_integral',)}
     new = {n: open(os.path.join(ROOT, rel + n + '.py')).read()
-           for n in ('final_integral', 'grouped_integral')}
-    loaded = {'final_integral': [FI0], 'grouped_integral': [GI0]}
+           for n in ('final_integral',)}
+    loaded = {'final_integral': [FI0]}
 
     def load(which, env=None):
         for v in ENVV:
             os.environ.pop(v, None)
         os.environ.update(env or {})
         mods = {}
-        for n in ('final_integral', 'grouped_integral'):
+        for n in ('final_integral',):
             name = f'engine.integration.time_domain.{n}'
             m = types.ModuleType(name)
             m.__file__ = getattr(TD, n).__file__
@@ -2171,10 +2167,10 @@ _CHILD = textwrap.dedent(r'''
             mods['final_integral'].USE_DBM_FALLBACK = False
         for v in ENVV:
             os.environ.pop(v, None)
-        fi, gi = mods['final_integral'], mods['grouped_integral']
+        fi = mods['final_integral']
         for mod in list(sys.modules.values()):
             d = getattr(mod, '__dict__', None)
-            if not isinstance(d, dict) or mod is fi or mod is gi:
+            if not isinstance(d, dict) or mod is fi:
                 continue
             for k, v in list(d.items()):
                 for n, m in mods.items():
@@ -2188,8 +2184,6 @@ _CHILD = textwrap.dedent(r'''
         for n, m in mods.items():
             loaded[n].append(m)
         assert PL.integrate_diagram is fi.integrate_diagram
-        assert GP.integrate_grouped_diagram is gi.integrate_grouped_diagram
-        assert gi._fi_mod is fi
         return fi
 
     os.chdir(CWD)
@@ -2223,16 +2217,14 @@ _CHILD = textwrap.dedent(r'''
             if which == 'off' and on:
                 continue
             model = MODELS.setdefault(mname, dd.load_model(mname)[0])
-            for grouped in (False, True):
-                fi._reset_runtime_counters()
-                res = compute_cumulants(
-                    model, tau_grid=np.array([0.0, 2.5, 10.0]),
-                    use_cache=True, parallel=False, verbose=False,
-                    use_grouped_phase_j=grouped, **kw)
-                v = np.concatenate([np.asarray(a, complex) for _l, a in
-                                    sorted(res['C_tau_by_ell'].items())])
-                calls = fi._RUNTIME_COUNTERS['nquad_calls']
-                out[(name, grouped)] = (v.view(np.uint64).copy(), calls)
+            fi._reset_runtime_counters()
+            res = compute_cumulants(
+                model, tau_grid=np.array([0.0, 2.5, 10.0]),
+                use_cache=True, parallel=False, verbose=False, **kw)
+            v = np.concatenate([np.asarray(a, complex) for _l, a in
+                                sorted(res['C_tau_by_ell'].items())])
+            calls = fi._RUNTIME_COUNTERS['nquad_calls']
+            out[name] = (v.view(np.uint64).copy(), calls)
         return out
 
     fi = load('new')
@@ -2275,7 +2267,7 @@ def test_bit_identical_to_the_pre_m2b_engine(tmp_path):
     ``multipopulation_test``): the default engine (flag on) equals the
     engine of ``_PRE_M2B_REV`` bit for bit.  The spike-reset model (served
     by the fallback): the flag-off engine equals it, and so does the legacy
-    umbrella.  Per diagram and grouped, IN ONE PROCESS (the sources are
+    umbrella.  Per diagram, IN ONE PROCESS (the sources are
     exec'd into fresh module objects side by side, in a child process)."""
     _git_source(_FI_REL, _PRE_M2B_REV)                  # skip without git
     child = tmp_path / 'ab_child.py'

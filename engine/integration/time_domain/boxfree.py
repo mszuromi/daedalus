@@ -220,18 +220,10 @@ def _abs_det_exact(ax, ay, bx, by):
     return abs(float(d))
 
 
-def _opposite_rows_empty(rows):
-    """Exactly opposite normals whose half-planes do not overlap (``c_i +
-    c_j <= 0``): the region is empty or a segment (measure zero).  Exact
-    comparisons only (as ``final_integral._opposite_rows_empty``)."""
-    n = len(rows)
-    for i in range(n):
-        a0, a1, ci = rows[i]
-        for j in range(i + 1, n):
-            b0, b1, cj = rows[j]
-            if b0 == -a0 and b1 == -a1 and ci + cj <= 0.0:
-                return True
-    return False
+# one copy (audit W7, RED-07): exactly opposite normals whose half-planes
+# do not overlap, exact comparisons only
+from engine.integration.time_domain.final_integral import (  # noqa: E402
+    _opposite_rows_empty)
 
 
 def _cross(u, w):

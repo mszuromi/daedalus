@@ -131,11 +131,12 @@ def test_two_edges_cartesian_product():
     assert abs(val - expected) < 1e-13
 
 
-# ─── Override via pole_tuples (grouped path API) ───────────────────
+# ─── Override via pole_tuples (merged pole-tuple API) ──────────────
 def test_pole_tuples_override():
     """The pole_tuples parameter must take precedence over the
     Cartesian iterator built from smooth_edge_modes.  Inject custom
-    coefficients (the merged-residue tensor in real grouped use)."""
+    coefficients (the merged-residue tensor of the retired grouped
+    path)."""
     edges = [_ems([(1.0 + 0.0j, -0.5 + 0.0j)]),
              _ems([(1.0 + 0.0j, -0.7 + 0.0j)])]
     cdata = [

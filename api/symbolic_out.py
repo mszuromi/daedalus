@@ -1390,7 +1390,7 @@ class KernelPairing:
         return float(np.real(self.value))
 
 
-def _conjugate_real(L_tilde, omega, bridge_hint=None):
+def _conjugate_real(L_tilde, omega):
     """conj(L(omega)) for real omega and real parameters: s -> -s."""
     L = SR(L_tilde)
     b = _Bridge([L], omega)
@@ -2463,8 +2463,7 @@ class _ModeData:
     """Families, assumptions and root presentation of a rational function
     of s (a bridge field element) at a reference point."""
 
-    def __init__(self, f, bridge: _Bridge, ctx: _AlgCtx, ref_pt,
-                 laurent_order: Optional[int] = None):
+    def __init__(self, f, bridge: _Bridge, ctx: _AlgCtx, ref_pt):
         self.bridge, self.ctx = bridge, ctx
         num, den = f.numerator(), f.denominator()
         N, Dn = ctx.from_R(num), ctx.from_R(den)

@@ -21,8 +21,7 @@ public models only:
   the budget) runs on the route, charged its own estimate;
 * the pole-cluster deformation is bypassed when the route covers the run
   (an exact double pole), and runs after all when a subset declines;
-* grouped Phase J on the route (per diagram), the τ batch inside
-  ``total_C_batch``, informational G3 findings.
+* the τ batch inside ``total_C_batch``, informational G3 findings.
 
 Runs compared bit for bit get a discarded warm-up.
 """
@@ -345,16 +344,7 @@ def test_unresolved_cluster_is_informational_on_the_route(monkeypatch):
     assert an.diagnostics['accuracy_estimate'] < 1e-12
 
 
-# ── grouped Phase J and the τ batch ─────────────────────────────────────
-
-def test_grouped_groups_go_per_diagram_on_the_route():
-    pd = _cc(ou_cubic(), 2, 1, X2)
-    gr = _cc(ou_cubic(), 2, 1, X2, use_grouped_phase_j=True)
-    for ell in (0, 1):
-        assert {g['handled_by'] for g in gr['phase_j_by_ell'][ell]['groups']
-                } == {'statespace_perdiag'}
-        assert np.array_equal(_arr(pd, ell), _arr(gr, ell))
-
+# ── the τ batch ─────────────────────────────────────────────────────────
 
 def test_total_c_batch_batches_the_grid():
     taus = np.linspace(-4.0, 4.0, 33)

@@ -22,7 +22,7 @@ import math
 import re
 
 from sage.all import (
-    SR, matrix, dirac_delta, diff, oo, limit as _sage_limit,
+    SR, matrix, dirac_delta, diff, oo,
     QQ, RR, CDF, PolynomialRing, CyclotomicField,
 )
 

@@ -25,7 +25,7 @@ import sys
 import warnings
 
 from sage.all import (
-    SR, PolynomialRing, factorial, QQ, latex, LatexExpr,
+    SR, PolynomialRing, factorial, QQ, latex,
     diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
 )
 from IPython.display import display, Math as _Math
@@ -71,26 +71,6 @@ def fourier_transform(f, t, s):
         except (ValueError, RuntimeError, TypeError):
             continue
     return integrate(integrand, t, a, b)
-
-
-def inverse_fourier_transform(F, s, t):
-    r"""
-    Inverse Fourier transform (angular-frequency convention):
-
-        f(t) = \frac{1}{2\pi} \int_{-\infty}^{\infty} F(s) e^{i s t} ds
-
-    Paired with fourier_transform():  FT uses e^{-ist}, IFT uses e^{+ist}/(2π).
-    Tries SymPy backend first (handles symbolic parameters without asking for
-    assumptions), falls back to Maxima.
-    """
-    integrand = F * exp(I * s * t)
-    for algo in ('sympy', 'maxima'):
-        try:
-            return integrate(integrand, s, -oo, oo, algorithm=algo) / (2 * pi)
-        except (ValueError, RuntimeError):
-            continue
-    # Last resort: return unevaluated integral
-    return integrate(integrand, s, -oo, oo) / (2 * pi)
 
 
 def _show(expr):

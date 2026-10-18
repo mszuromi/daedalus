@@ -7,7 +7,7 @@ What is new here, relative to the existing suite
   (tree + 1-loop, drift a x^2 + b x^3) and kappa_4 (tree + 1-loop, drift
   eps x^3) against the Boltzmann series, by calling ``integrate_diagram``
   directly at all-zero times.  It never goes through ``compute_cumulants``,
-  never through the grouped path, and never evaluates a PARTIAL tie.
+  and never evaluates a PARTIAL tie.
 * ``test_identical_externals_wick.py`` / ``test_fix_tau0enum.py`` cover
   k=2 only (tau=0 left limit, Wick permutations).
 * ``test_daedalus_moments.py`` checks moment assembly identities, not
@@ -17,8 +17,8 @@ This file adds:
 
 1. k=4 (``ou_quartic``: dx = -(mu x + eps x^3) dt + sqrt(2D) dW) and k=3
    (asymmetric OU, drift a x^2 + b x^3, since the symmetric model has
-   kappa_3 == 0) through ``compute_cumulants``, on the per-diagram AND the
-   grouped Phase J path, with non-unit mu and D so the (D/mu)^{k/2} scaling
+   kappa_3 == 0) through ``compute_cumulants`` (the per-diagram Phase J
+   path), with non-unit mu and D so the (D/mu)^{k/2} scaling
    is checked too:
    - fully tied times (t0=...=t_{k-1}) against the Boltzmann equal-time
      cumulant, per loop order, both at the exact tie and at the Itô nudge
@@ -104,9 +104,6 @@ _P3 = {'mu': 1.25, 'T': 0.8, 'a': 0.05, 'b': 0.05}    # asymmetric OU
 # k=4 at 2 loops: mu must stay <= 1.2 (see the xfail test at the end).
 _P4_L2 = {'mu': 1.1, 'D': 0.8, 'eps': 0.05}
 _P4_L2_CLIFF = {'mu': 1.25, 'D': 0.8, 'eps': 0.05}
-
-_PATHS = [False, True]
-_PATH_IDS = ['perdiag', 'grouped']
 
 
 # ---------------------------------------------------------------------------
@@ -224,23 +221,23 @@ def _asym_model():
             .build())
 
 
-def _compute(k, grouped, max_ell, params):
+def _compute(k, max_ell, params):
     model = dd.load_model('ou_quartic')[0] if k == 4 else _asym_model()
     return compute_cumulants(
         model, k=k, max_ell=max_ell, external_fields=[('dx', 1)] * k,
         parameters=dict(params), tau_grid=np.array([0.0]), verbose=False,
-        use_cache=False, parallel=False, use_grouped_phase_j=grouped)
+        use_cache=False, parallel=False)
 
 
 @functools.lru_cache(maxsize=None)
-def _run(k, grouped, max_ell, params):
-    return _compute(k, grouped, max_ell, params)
+def _run(k, max_ell, params):
+    return _compute(k, max_ell, params)
 
 
-def _fns(k, grouped, max_ell=1, params=None):
+def _fns(k, max_ell=1, params=None):
     if params is None:
         params = _P4 if k == 4 else _P3
-    fns = _run(k, grouped, max_ell, tuple(sorted(params.items())))[
+    fns = _run(k, max_ell, tuple(sorted(params.items())))[
         'total_C_by_ell']
     assert sorted(fns) == list(range(max_ell + 1))
     return fns
@@ -299,12 +296,11 @@ def _assert_rel(got, ref, rtol, what):
 # 1. Fully tied times vs the Boltzmann equal-time cumulant (ell <= 1)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('grouped', _PATHS, ids=_PATH_IDS)
 @pytest.mark.parametrize('k', [3, 4])
-def test_full_tie_matches_boltzmann(k, grouped):
+def test_full_tie_matches_boltzmann(k):
     """kappa_k(t, ..., t) per loop order = Boltzmann coefficient, at the exact
     tie and at the API's Itô nudge (0, -eps, ..., -eps)."""
-    fns = _fns(k, grouped)
+    fns = _fns(k)
     oracle = _oracle4 if k == 4 else _oracle3
     _reset_nquad()
     for ell in (0, 1):
@@ -350,21 +346,19 @@ def _check_tie_limits(fns, tie, dirs, label):
                         f'{label} ell={ell} tie {tie} vs limit along {d}')
 
 
-@pytest.mark.parametrize('grouped', _PATHS, ids=_PATH_IDS)
 @pytest.mark.parametrize('case', list(_K4_TIES))
-def test_k4_tie_equals_ito_left_limit(case, grouped):
+def test_k4_tie_equals_ito_left_limit(case):
     tie, dirs = _K4_TIES[case]
     _reset_nquad()
-    _check_tie_limits(_fns(4, grouped), tie, dirs, f'k=4 {case}')
+    _check_tie_limits(_fns(4), tie, dirs, f'k=4 {case}')
     _assert_no_nquad()
 
 
-@pytest.mark.parametrize('grouped', _PATHS, ids=_PATH_IDS)
 @pytest.mark.parametrize('case', list(_K3_TIES))
-def test_k3_tie_equals_ito_left_limit(case, grouped):
+def test_k3_tie_equals_ito_left_limit(case):
     tie, dirs = _K3_TIES[case]
     _reset_nquad()
-    _check_tie_limits(_fns(3, grouped), tie, dirs, f'k=3 {case}')
+    _check_tie_limits(_fns(3), tie, dirs, f'k=3 {case}')
     _assert_no_nquad()
 
 
@@ -515,7 +509,7 @@ def test_k4_two_loop_full_tie_matches_boltzmann():
     ~35 s of it enumeration/setup.  Partial ties are not repeated at 2 loops:
     a nudged k=4 ell=2 evaluation costs ~17 s (measured), so a Richardson
     triple would break the < 60 s budget."""
-    fns = _fns(4, False, max_ell=2, params=_P4_L2)
+    fns = _fns(4, max_ell=2, params=_P4_L2)
     _reset_nquad()
     ref = _oracle4(2, _P4_L2)
     _assert_rel(_val(fns[2], (0.0,) * 4), ref, _RTOL_ORACLE, 'k=4 ell=2 tie')
@@ -548,7 +542,7 @@ def test_k4_two_loop_no_nquad_fallback_above_mu_1p2(monkeypatch):
 
     monkeypatch.setattr(scipy.integrate, 'nquad', _stub_nquad)
     monkeypatch.setattr(FI, '_integrate_polytope_hardened', _stub_hardened)
-    fns = _compute(4, False, 2, tuple(sorted(_P4_L2_CLIFF.items())))[
+    fns = _compute(4, 2, tuple(sorted(_P4_L2_CLIFF.items())))[
         'total_C_by_ell']
     got = _val(fns[2], (0.0,) * 4)
     assert not calls, (f'{len(calls)} scipy.nquad calls (integration dims '
@@ -562,7 +556,7 @@ def test_k3_two_loop_full_tie_matches_boltzmann():
     """kappa_3 at 2 loops (-700a^5 + 1908a^3 b - 894 a b^2, scaled) at the
     exact tie and at the Itô nudge.  ~20 s.  (A nudged k=3 ell=2 evaluation
     off the full tie costs ~20 s, so partial ties stay at ell <= 1.)"""
-    fns = _fns(3, False, max_ell=2)
+    fns = _fns(3, max_ell=2)
     _reset_nquad()
     ref = _oracle3(2)
     _assert_rel(_val(fns[2], (0.0,) * 3), ref, _RTOL_ORACLE, 'k=3 ell=2 tie')

@@ -209,7 +209,7 @@ def test_policy_verdicts(FI, monkeypatch):
 
 
 def _diverge_every_interval(FI, monkeypatch):
-    """Every m = 1 subset on the DD route (per-diagram and grouped) reports
+    """Every m = 1 subset on the DD route reports
     a divergence: the code under test is the dispatch, not the
     certificate (``ou_quartic`` has m = 1 and m >= 3 regions only)."""
     bf = FI._bf()
@@ -231,23 +231,21 @@ def _ou_k2(FI, **kw):
         parallel=False, verbose=False, **kw)
 
 
-@pytest.mark.parametrize('grouped', [False, True])
-def test_policy_end_to_end(FI, monkeypatch, grouped):
+def test_policy_end_to_end(FI, monkeypatch):
     """The dispatch consults the policy before the boxed fallback, on the
-    per-diagram and the grouped path: 'raise' raises, 'fallback' gives the
+    per-diagram path: 'raise' raises, 'fallback' gives the
     fallback's value with the counter and the category."""
     _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     _diverge_every_interval(FI, monkeypatch)
     monkeypatch.setattr(FI, 'PHASE_J_ON_DIVERGENCE', 'raise')
-    reason = 'grouped_m1_divergent' if grouped else 'interval_divergent'
-    with pytest.raises(FI.PhaseJDivergenceError, match=reason):
-        _ou_k2(FI, use_grouped_phase_j=grouped)
+    with pytest.raises(FI.PhaseJDivergenceError, match='interval_divergent'):
+        _ou_k2(FI)
     monkeypatch.setattr(FI, 'PHASE_J_ON_DIVERGENCE', 'fallback')
     monkeypatch.setattr(FI, '_DIVERGENCE_FALLBACK_WARNED', [False])
     FI._reset_runtime_counters()
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter('default')
-        res = _ou_k2(FI, use_grouped_phase_j=grouped)
+        res = _ou_k2(FI)
     assert sum(issubclass(x.category, FI.PhaseJDivergenceWarning)
                for x in w) == 1
     c = FI._RUNTIME_COUNTERS
@@ -319,23 +317,18 @@ def test_duplicated_alphas_that_do_not_cancel_are_kept(FI, monkeypatch, plan):
     assert abs(v1 - v2) <= 1e-14 * abs(v2)
 
 
-@pytest.mark.parametrize('grouped', [False, True])
-def test_a_divergence_found_by_the_dbm_reaches_the_policy(FI, monkeypatch,
-                                                          grouped):
+def test_a_divergence_found_by_the_dbm_reaches_the_policy(FI, monkeypatch):
     """The chain route can bail for another reason (here: rows it cannot
     order) and leave the divergence verdict to the exact DBM route; that
     verdict goes through the policy too."""
-    import engine.integration.time_domain.grouped_integral as GI
     _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
-    # the grouped module imports the chain route by name
-    for mod in (FI, GI):
-        monkeypatch.setattr(mod, '_integrate_nd_polytope_poset_modesum',
-                            lambda *a, **k: FI._bail('poset_extract_none'))
+    monkeypatch.setattr(FI, '_integrate_nd_polytope_poset_modesum',
+                        lambda *a, **k: FI._bail('poset_extract_none'))
     monkeypatch.setattr(FI, '_integrate_subset_dbm',
                         lambda *a, **k: FI._bail('dbm_divergent'))
     monkeypatch.setattr(FI, 'PHASE_J_ON_DIVERGENCE', 'raise')
     with pytest.raises(FI.PhaseJDivergenceError, match='dbm_divergent'):
-        _ou_k2(FI, use_grouped_phase_j=grouped)
+        _ou_k2(FI)
 
 
 def test_the_legacy_interval_divergences_reach_the_policy(FI, monkeypatch):
@@ -379,17 +372,8 @@ def test_a_region_with_a_line_cancels_or_diverges(FI, monkeypatch):
 
 def test_the_policy_is_validated_at_every_entry_point(FI):
     from engine.integration.time_domain.pipeline import compute_correction_td
-    from engine.integration.time_domain.grouped_integral import (
-        integrate_grouped_diagram)
-    from api._grouped_phase_j import compute_correction_td_grouped
     with pytest.raises(ValueError, match='on_divergence'):
         compute_correction_td(on_divergence='drop')
-    with pytest.raises(ValueError, match='on_divergence'):
-        integrate_grouped_diagram(None, None, None, None,
-                                  on_divergence='drop')
-    with pytest.raises(ValueError, match='on_divergence'):
-        compute_correction_td_grouped(None, None, None, 2,
-                                      on_divergence='drop')
 
 
 # S3: the state-space route is the default; these tests pin the pole

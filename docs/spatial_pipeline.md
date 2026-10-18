@@ -90,12 +90,12 @@ and the back half diverges into the integrator instead of the ω-domain Phase J.
 | `msrjd/integration/spatial/diagram_descriptor.py` | `diagram_to_cstack(td)` — typed diagram → C-stack (contract noise sources, classify edges). |
 | `msrjd/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator: analytic-IFT vs numerical-FT gate, the memory guard, the `SPATIAL_INTEGRATOR` backend switch), `_formfactor_callable` + `_build_wick_moment` (the joint-`(ℓ,q)` Wick form-factor moment → `ff.moment_x`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
 | `pipeline/compute.py` | `compute_cumulants` spatial branch + the `q→x` transforms. |
-| `msrjd/integration/spatial/spatial_reduce.py` | Symanzik U/F polynomials. |
 
-**Oracle-only (NOT on the production path)**, kept as independent cross-checks:
-`loop_dyson.py`, `generic_evaluator.py`, `loop_parametric.py`, `temporal_integrate.py`.
-These predate `full_integrator` and are reached only by their own tests — see their module
-headers.
+**Oracle-only (NOT on the production path)**, kept as independent cross-checks in
+`tests/oracles/` (moved out of the library in audit W7): `loop_dyson.py`,
+`generic_evaluator.py`, `loop_parametric.py`, `temporal_integrate.py`, `spatial_reduce.py`
+(Symanzik U/F polynomials). These predate `full_integrator` and are reached only by their own
+tests — see their module headers.
 
 ## Supported scope
 

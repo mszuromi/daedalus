@@ -171,7 +171,7 @@ def test_formfactor_bubble_vs_oracle():
     from engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
     from engine.integration.spatial.full_integrator import diagram_correlator
-    from engine.integration.spatial import loop_dyson
+    from tests.oracles import loop_dyson
     from engine.diagrams.type_assignment import build_field_index_map
 
     path = os.path.join(_REPO, 'models',

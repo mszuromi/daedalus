@@ -500,22 +500,19 @@ def test_cache_off_sources_of_the_temporal_and_spatial_paths(monkeypatch):
 #: ``TEMPORAL_CACHE_OFF_STREAMS``.
 _FALLBACK_GATE_CASES = [
     pytest.param(
-        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), False,
+        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0),
         id='spike_reset-perdiag'),
     pytest.param(
-        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), True,
-        id='spike_reset-grouped'),
-    pytest.param(
-        'single_population_quad_exp_test', 'P_SP', (0.0, 1.0, 5.0), False,
+        'single_population_quad_exp_test', 'P_SP', (0.0, 1.0, 5.0),
         id='quad_exp-perdiag'),
 ]
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize('model_name, params, taus, grouped',
+@pytest.mark.parametrize('model_name, params, taus',
                          _FALLBACK_GATE_CASES)
 def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
-        model_name, params, taus, grouped, monkeypatch):
+        model_name, params, taus, monkeypatch):
     """The gate of ``TEMPORAL_CACHE_OFF_STREAMS``: streamed and eager records
     give the same totals to rtol 1e-13 on the models whose regions reached
     the ``scipy.nquad`` fallback before 0.2.0."""
@@ -532,8 +529,7 @@ def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
         res = compute_cumulants(
             model, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
             parameters=getattr(zoo, params), tau_grid=np.asarray(taus),
-            use_cache=False, parallel=False, verbose=False,
-            use_grouped_phase_j=grouped)
+            use_cache=False, parallel=False, verbose=False)
         curves[env] = np.asarray(res['C_tau'])
     e, s = curves['1'], curves['0']
     assert np.all(np.isfinite(e)) and np.all(e != 0)

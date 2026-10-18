@@ -235,7 +235,7 @@ def compute_correction_td(
     external_fields=None,
     # Spatial loop integrator (Stage C.5): td -> per-edge EdgeModeSum builder.
     edge_mode_sums_builder_fn=None,
-    # Legacy support: accept kernel_groups as first arg
+    # retired (audit W7, ACC-67): raises; pass typed_diagrams + prefactors
     kernel_groups=None,
     # M8: divergence policy of the box-free routes (``integrate_diagram``)
     on_divergence=None,
@@ -248,9 +248,10 @@ def compute_correction_td(
     integration (closed forms on numeric poles; see
     ``final_integral.integrate_diagram``).
 
-    Accepts EITHER:
-    - ``typed_diagrams`` + ``prefactors``: direct diagram list (preferred)
-    - ``kernel_groups``: legacy format from ``group_diagrams_by_kernel``
+    Takes ``typed_diagrams`` + ``prefactors`` (one prefactor per diagram).
+    The legacy ``kernel_groups=`` input is retired: it integrated every
+    diagram of a group with the group's summed prefactor (audit ACC-67) and
+    now raises ``TypeError``.
 
     For each tree-level diagram, calls ``integrate_tree_diagram``
     directly.  Loop diagrams are marked as skipped.
@@ -321,15 +322,11 @@ def compute_correction_td(
         from engine.integration.time_domain.final_integral import (
             _divergence_policy)
         _divergence_policy(on_divergence)               # validate early
-    # ── Legacy support: unpack kernel_groups format ──
-    if typed_diagrams is None and kernel_groups is not None:
-        typed_diagrams = []
-        prefactors = []
-        for g in kernel_groups:
-            for td in g.get('diagrams', []):
-                typed_diagrams.append(td)
-                prefactors.append(g.get('combined_prefactor'))
-    elif typed_diagrams is None:
+    if kernel_groups is not None:
+        raise TypeError(
+            'compute_correction_td(kernel_groups=...) is retired: pass '
+            'typed_diagrams= and prefactors= (one prefactor per diagram)')
+    if typed_diagrams is None:
         typed_diagrams = []
         prefactors = []
 

@@ -29,11 +29,8 @@ from IPython.display import display, HTML
 
 from api.ui.widgets import (
     DynamicTable,
-    expression_input,
-    matrix_input,
     paste_button,
     textarea_input,
-    vector_input,
 )
 from api.model_serialize import (
     save_model_to_file,
@@ -2368,20 +2365,6 @@ class ModelUI:
 
     # ── Form-state collection ─────────────────────────────────────
     def _collect(self) -> dict:
-        # Parse default-fundamental and metadata as Python literals.
-        def _eval_dict(text: str, label: str) -> dict:
-            text = (text or '').strip()
-            if not text:
-                return {}
-            try:
-                obj = eval(text, {'__builtins__': {}}, {})
-            except Exception as e:
-                raise ValueError(f'Could not parse {label}: {e}')
-            if not isinstance(obj, dict):
-                raise ValueError(f'{label} must be a dict literal; got '
-                                 f'{type(obj).__name__}')
-            return obj
-
         _NONE = '—'
 
         def _index_list(row: dict) -> list[str]:

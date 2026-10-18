@@ -2244,12 +2244,6 @@ class SubsetSS:
         return out
 
     # ── C0 output (S4): the subset on a line as one matrix exponential ───
-    def me_ray(self, free_unit, tie_ctx=None):
-        """:meth:`me_line` on the ray ``free_vals = u * free_unit``, ``u >
-        0`` (k = 2: the lag on one side of 0), anchored at ``u = 0``."""
-        n = len(free_unit)
-        return self.me_line([0.0] * n, free_unit, 0.0, 1.0, tie_ctx)
-
     def me_line(self, free_base, free_dir, t_anchor, t_ref, tie_ctx=None):
         """The subset integral (WITHOUT prefactor) on the line ``free_vals =
         free_base + t * free_dir`` inside the chamber that contains

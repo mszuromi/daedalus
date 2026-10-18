@@ -20,9 +20,11 @@ The schema is k-/ell-/model-adaptive:
   version that wrote the file), ``phase_j_convention`` (the Phase J
   equal-time rule the numbers were computed with; ``PHASE_J_CONVENTION``
   for the default rules) and ``phase_j_flags`` (M7: the value of every
-  ``final_integral`` / ``grouped_integral`` switch that can move a Phase J
-  number, and ``use_grouped_phase_j``, as ``NAME=value`` pairs joined by
-  ``;``; recorded for provenance only, :func:`load_npz` does not check
+  ``final_integral`` switch that can move a Phase J number, as
+  ``NAME=value`` pairs joined by ``;``; files written by 0.2.1 and
+  earlier also list the retired ``grouped_integral`` switch and
+  ``use_grouped_phase_j``;
+  recorded for provenance only, :func:`load_npz` does not check
   it).  ``compute_cumulants`` records that rule in
   ``result['config']['phase_j_convention']`` when it computes the numbers,
   and the stamp copies it, so changing the Phase J flags between computing
@@ -115,67 +117,8 @@ _FI_MODULE = 'engine.integration.time_domain.final_integral'
 _FALSY_ENV = ('', '0', 'false', 'no', 'off')
 
 
-def _ensure_warning_shown(category, action='always', message=None,
-                          module=None, stacklevel=None):
-    """Show ``category`` also where the ENVIRONMENT ignores warnings: the
-    Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning in
-    ``sage -python`` and the Sage Jupyter kernel.  Only that case is
-    overridden: a filter for this category, and every filter set in code or
-    by an ``error`` option (e.g. ``-W error``), is left alone -- a filter is
-    added only when the first filter that applies to the warning is the
-    environment's own ignore-all.  The action is 'always': callers
-    deduplicate their own warnings.  (The engine keeps the
-    same rule in ``final_integral._ensure_warning_shown``.)
-
-    ``message`` (the text about to be warned) and ``module`` (the module the
-    warning is attributed to; or ``stacklevel`` as in ``warnings.warn``,
-    counted from the caller) let the helper skip filters aimed at OTHER
-    warnings: Sage installs message-specific ``ignore`` filters for numpy at
-    startup, and without the message such a filter was taken for a user's
-    decision and hid the warning.  A filter whose message / module pattern
-    matches, or any category-wide ``ignore``, is still respected; with the
-    message (module) unknown, message- (module-) specific filters are
-    respected."""
-    opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
-    if not (opts and opts[-1] in ('ignore', 'i')):
-        return
-    filters = warnings.filters
-    # the environment's ignore-all is the LAST unconditional ignore (startup
-    # puts it behind every filter set later in code).  A plain
-    # simplefilter('ignore') set in code IS that same filter (Python merges
-    # identical filters), so it cannot be told apart and is overridden.
-    env = [i for i, f in enumerate(filters)
-           if f[0] == 'ignore' and f[1] is None and f[2] is Warning
-           and f[3] is None and not f[4]]
-    if not env:
-        return
-    if module is None and stacklevel is not None:
-        try:
-            module = sys._getframe(stacklevel).f_globals.get('__name__')
-        except ValueError:
-            module = None
-    text = None if message is None else str(message)
-    for i, (_action, msg, cat, mod, lineno) in enumerate(filters):
-        if not issubclass(category, cat):
-            continue
-        if msg is not None:
-            if text is not None and not msg.match(text):
-                continue    # aimed at other warnings: not ours to decide
-            return          # a targeted filter set in code: respect it
-        if mod is not None:
-            if module is not None and not mod.match(module):
-                continue
-            return
-        if lineno:
-            return
-        if i == env[-1]:
-            if text is None:
-                warnings.filterwarnings(action, category=category)
-            else:           # this warning only: later ones get their own turn
-                warnings.filterwarnings(
-                    action, message='(?s)' + re.escape(text),
-                    category=category)
-        return              # the first applicable filter decides
+from engine._warn_helpers import (                    # noqa: E402
+    ensure_warning_shown as _ensure_warning_shown)
 
 
 class StaleResultWarning(UserWarning):
@@ -237,7 +180,7 @@ def _phase_j_convention() -> str:
 
 #: The ``final_integral`` switches and tolerances that can move a Phase J
 #: number, in stamp order (M7; the memo flags are pure speed switches and
-#: are not listed), and the ``grouped_integral`` one.
+#: are not listed).
 _PHASE_J_STAMP_FLAGS = (
     'THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
     'USE_DBM_FALLBACK', 'USE_PHASE_J_DD_KERNELS', 'CHAIN_UPPERS_KERNEL',
@@ -248,31 +191,23 @@ _PHASE_J_STAMP_FLAGS = (
     'USE_1D_INTEGRATOR', 'USE_POSET_INTEGRATOR', 'TAU_KERNEL_CAP',
     'QUAD_OPTS', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL', 'NQUAD_LIMIT',
     'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP', 'USE_SHOTNOISE_INTEGRATED')
-_GI_MODULE = 'engine.integration.time_domain.grouped_integral'
-_GI_STAMP_FLAGS = ('USE_GROUPED_ANALYTIC_MODESUM',)
 
 
-def _phase_j_flags(use_grouped_phase_j=None) -> str:
+def _phase_j_flags() -> str:
     """The Phase J flags in force (call time) as ``NAME=value;...``
-    (``_PHASE_J_STAMP_FLAGS``, ``_GI_STAMP_FLAGS`` when ``grouped_integral``
-    is loaded, and ``use_grouped_phase_j`` when given), read from
-    ``final_integral`` when it is loaded; ``'final_integral not loaded'``
+    (``_PHASE_J_STAMP_FLAGS``), read from ``final_integral`` when it is
+    loaded; ``'final_integral not loaded'``
     otherwise (the stamp then only says that no Phase J ran in this
     process)."""
     fi = sys.modules.get(_FI_MODULE)
     if fi is None:
         return 'final_integral not loaded'
     parts = []
-    gi = sys.modules.get(_GI_MODULE)
-    for mod, names in ((fi, _PHASE_J_STAMP_FLAGS), (gi, _GI_STAMP_FLAGS)):
-        for name in names:
-            v = (getattr(mod, name, '<absent>') if mod is not None
-                 else '<not loaded>')
-            if isinstance(v, bool):
-                v = int(v)
-            parts.append(f'{name}={v}')
-    if use_grouped_phase_j is not None:
-        parts.append(f'use_grouped_phase_j={int(bool(use_grouped_phase_j))}')
+    for name in _PHASE_J_STAMP_FLAGS:
+        v = getattr(fi, name, '<absent>')
+        if isinstance(v, bool):
+            v = int(v)
+        parts.append(f'{name}={v}')
     return ';'.join(parts)
 
 

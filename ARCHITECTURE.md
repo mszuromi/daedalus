@@ -63,7 +63,7 @@ The orchestration layer `dd` drives:
   noise, so the temporal integrator can handle it.
 - `model.py` (+ `model_compiler.py`, `model_serialize.py`, `model_templates.py`) — the
   declarative `ModelBuilder` authoring system that emits a model dict.
-- `_mean_field*.py`, `_propagator.py`, `_grouped_phase_j.py`, `_diagrams.py` — pipeline helpers.
+- `_mean_field*.py`, `_propagator.py`, `_diagrams.py` — pipeline helpers.
 - `report.py`, `save.py`, `access.py` — PDF reports, `.npz` / `.csv` output, natural-name accessors.
 - `ui/` — the `ModelUI` graphical builder.
 
@@ -71,13 +71,12 @@ The orchestration layer `dd` drives:
 
 The model-agnostic physics core:
 
-- `core/` — `field_theory.py` (the MSR–JD action algebra), `vertices.py`, `propagator.py`.
+- `core/` — `field_theory.py` (the MSR–JD action algebra), `vertices.py`.
 - `enumeration/` — Feynman-diagram enumeration.
 - `diagrams/` — typed-diagram bookkeeping, symmetry factors, prediagram plotting.
 - `integration/{time_domain,spatial}/` — the loop-integral evaluators: the temporal Phase J
   integrator, and the spatial Symanzik / causal-chamber / heat-kernel integrator.
-  Within `time_domain/`, besides the main Phase J chain (`pipeline.py`, `grouped_integral.py`,
-  `final_integral.py`):
+  Within `time_domain/`, besides the main Phase J chain (`pipeline.py`, `final_integral.py`):
   - `expdd.py` — divided-difference kernels: every closed-form Phase J integral of an
     exponential over a simplex written as a divided difference of `exp`, evaluated stably.
   - `boxfree.py` — the exact integrals built on those kernels, evaluated in the log domain, with

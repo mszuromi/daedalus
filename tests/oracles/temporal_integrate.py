@@ -3,8 +3,11 @@
 (see ``docs/spatial_pipeline.md``); reached only by its own test(s).  Kept as an
 independent numerical cross-check — ``compute_cumulants`` does NOT use this module.
 
-engine.integration.spatial.temporal_integrate
-=============================================
+tests.oracles.temporal_integrate
+================================
+Test-only reference (was ``engine.integration.spatial.temporal_integrate``; moved out of
+the library in audit W7: no production module imports it).
+
 Backend C — **C2 (the causal time-simplex)**.  After the C0/C1 momentum
 reduction (``spatial_reduce``), a self-energy diagram is internal vertices joined
 by retarded ``G_R`` and correlation ``C`` lines; C2 integrates over the edge
@@ -47,7 +50,7 @@ import math
 import numpy as np
 from scipy import integrate
 
-from engine.integration.spatial.spatial_reduce import momentum_integral
+from tests.oracles.spatial_reduce import momentum_integral
 
 _RET = ('R', 'retarded')
 _COR = ('C', 'correlation')
@@ -169,32 +172,3 @@ def bubble_delta_equal_time_via_C(q, mu, D, T, g=1.0, C_R=4.0, C_K=2.0,
     t2 = (1.0 / m) * np.trapz(sK * e, ag)
     return g * g * (C_R * t1 + C_K * t2)
 
-
-def bubble_delta_phi2_via_C(mu, D, T, g=1.0, spatial_dim=1, q_max=None, n_q=80,
-                            C_R=4.0, C_K=2.0):
-    """The momentum-integrated equal-time bubble correction to the variance,
-    ``δ⟨φ²⟩ = ∫dᵈq/(2π)ᵈ δC(q,0)`` = ``(S_{d−1}/(2π)ᵈ) ∫₀^∞ q^{d−1} δC(q,0) dq``
-    (``S_{d−1}`` = unit-sphere area: 2, 2π, 4π for d=1,2,3), with ``δC(q,0)`` from
-    :func:`bubble_delta_equal_time_via_C` in ``spatial_dim`` dimensions.
-
-    The d>1 analogue of ``loop_dyson.bubble_delta_phi2``; the end-to-end C-stack
-    prediction for the 1-loop variance shift, comparable to a simulation's
-    connected ``⟨φ²⟩`` shift at the SAME momentum cutoff ``q_max``.
-
-    COST: ``O(n_q·n_a)`` self-energy evaluations, dominated by the Σ_K ``dblquad``
-    inside :func:`sigma_parametric`; practical only at moderate grids pending a
-    vectorized ``sigma_parametric``.  Correctness does NOT rely on running this at
-    fine resolution: the d>1 bubble is exact by composition — Σ is validated vs
-    brute-force ``∫dᵈℓ`` and the C_R/C_K Dyson collapse is d-INDEPENDENT (validated
-    at d=1 to B≈0.99).
-    """
-    import math
-    if q_max is None:
-        q_max = math.sqrt(max(30.0 * mu / D, 30.0))      # ample band (Regime 1)
-    surf = {1: 2.0, 2: 2.0 * math.pi, 3: 4.0 * math.pi}[spatial_dim]
-    qg = np.linspace(q_max / (4 * n_q), q_max, n_q)
-    dC = np.array([bubble_delta_equal_time_via_C(
-        float(qi), mu, D, T, g=g, C_R=C_R, C_K=C_K, spatial_dim=spatial_dim)
-        for qi in qg])
-    integ = np.trapz(qg ** (spatial_dim - 1) * dC, qg)
-    return surf / (2.0 * math.pi) ** spatial_dim * integ

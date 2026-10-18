@@ -132,19 +132,6 @@ def dressed_tree_C(q, tau, M, Dhat, D0, N, order, n_s=48, s_cap_scale=32.0):
     return C if tau >= 0 else C.T
 
 
-def dressed_tree_C_q_grid(qs, taus, M, Dhat, D0, N, order, n_s=48):
-    """Vectorized convenience: ``C^{(N)}_{ij}`` over a q-grid × τ-grid —
-    returns ``(n_tau, n_q, nf, nf)`` complex (the tree driver's FT input)."""
-    qs = np.asarray(qs, dtype=float)
-    taus = np.asarray(taus, dtype=float)
-    nf = np.asarray(M).shape[0]
-    out = np.empty((taus.size, qs.size, nf, nf), dtype=complex)
-    for iq, q in enumerate(qs):
-        for it, tau in enumerate(taus):
-            out[it, iq] = dressed_tree_C(q, tau, M, Dhat, D0, N, order, n_s=n_s)
-    return out
-
-
 # ── exact q→x transform of the dressed tree (no q-grid) ───────────────
 # ``G_R^{(N)}(t,q) = e^{−D₀q²t} Σ_n (−q²)^n 𝓗_n(t)`` with q-INDEPENDENT 𝓗_n,
 # so every term of ``C^{(N)}(q,τ) = ∫_0^∞ G(|τ|+s) N G(s)ᵀ ds`` is a matrix

@@ -3,8 +3,11 @@
 (see ``docs/spatial_pipeline.md``); reached only by its own test(s).  Kept as an
 independent numerical cross-check — ``compute_cumulants`` does NOT use this module.
 
-engine.integration.spatial.generic_evaluator
-============================================
+tests.oracles.generic_evaluator
+===============================
+Test-only reference (was ``engine.integration.spatial.generic_evaluator``; moved out of
+the library in audit W7: no production module imports it).
+
 Backend C — **Phase 2 of the generic spatial loop pipeline**
 (``docs/spatial_generic_pipeline_plan.md``): evaluate one
 :class:`~engine.integration.spatial.diagram_descriptor.CStackDiagram`'s
@@ -19,7 +22,7 @@ the Symanzik polynomials, which are built mechanically from the edge list.
 Two entry points (built/validated incrementally):
   * :func:`loop_self_energy` — Phase 2a: the amputated 2-vertex self-energy of a
     diagram's loop edges, via the validated
-    :func:`~engine.integration.spatial.temporal_integrate.sigma_parametric`.  Used
+    :func:`~tests.oracles.temporal_integrate.sigma_parametric`.  Used
     to confirm the descriptor → C-stack edge mapping reproduces the hand-coded
     ``bubble_edges`` oracle.
   * :func:`evaluate_diagram` — Phase 2b: the FULL diagram value ``C_Γ(q,τ)``
@@ -37,7 +40,7 @@ import math
 
 import numpy as np
 
-from engine.integration.spatial.temporal_integrate import sigma_parametric
+from tests.oracles.temporal_integrate import sigma_parametric
 
 
 def loop_self_energy(descr, q, t, mu, D, T=1.0, spatial_dim=1, **quad):

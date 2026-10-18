@@ -3231,9 +3231,6 @@ class Preflight:
             raise AnalyzerError(_format_stop(errs, stage, exc),
                                 self.report(), errs, stage) from exc
 
-    def mean_field_failed(self, exc):
-        self.failed('mean_field', exc)
-
     def poles(self, prop, ss_route=None):
         """G3 + G5 on the propagator.  ``ss_route`` (S3, ``compute.
         _ss_route_prediction``): when the state-space Phase J route covers
