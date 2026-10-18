@@ -375,6 +375,8 @@ class NoiseSource:
                 raise NoiseError(
                     f'{type(self).__name__}: parameter {k} may not contain '
                     f'theta (reserved for the CGF variable).')
+        if self._k0_roundoff():
+            return
         K0 = self._value_at_zero()
         k0 = _numeric(K0)
         if k0 is not None:                              # float round-off at K(0), relative to the largest parameter
@@ -385,6 +387,11 @@ class NoiseSource:
             raise NoiseError(
                 f'{type(self).__name__}: K(0) = {K0} != 0; a per-unit-time '
                 f'CGF must vanish at theta = 0.')
+
+    def _k0_roundoff(self):
+        """True when ``K(0)`` is float round-off by a criterion of the
+        source's own (dimensionless) quantities; default False."""
+        return False
 
     def _value_at_zero(self):
         K = self._cgf()
@@ -748,6 +755,19 @@ class CompoundPoisson(NoiseSource):
                     f'CompoundPoisson: jump parameter {k} depends on the time '
                     f't; only time-independent sources are supported.')
         super()._check_common()
+
+    def _k0_roundoff(self):
+        """``K(0) = rate (M(0) - 1)``: round-off when the jump law's
+        dimensionless ``M(0)`` is 1 to 1e-12.  (The generic test needs a
+        numeric ``K(0)``: float probabilities summing to 1 - 1e-16 times a
+        symbolic rate were refused, and the rate's units entered the
+        tolerance -- audit UNIT-05.)"""
+        try:
+            m0 = _numeric(SR(self.jump.mgf()).subs({THETA: 0}))
+        except (ValueError, ZeroDivisionError, ArithmeticError, TypeError,
+                RuntimeError):
+            return False
+        return m0 is not None and abs(m0 - 1) <= 1e-12
 
     def __repr__(self):
         return f'CompoundPoisson(rate={expr_to_text(self.params["rate"])!r}, jump={self.jump!r})'
@@ -1146,25 +1166,35 @@ class PhaseType(JumpDistribution):
                 raise NoiseError(f'PhaseType: T[{i}][{i}] must be negative.')
             if any(row[j] < 0 for j in range(n) if j != i):
                 raise NoiseError(f'PhaseType: off-diagonal entries of T must be >= 0 (row {i}).')
-            if sum(row) > 1e-12:
+            # round-off relative to the row (an absolute 1e-12 refused valid
+            # rows of rates ~1e6 whose float sum is +1e-10)
+            if sum(row) > 1e-12 * sum(abs(x) for x in row):
                 raise NoiseError(f'PhaseType: row {i} of T sums to {sum(row):g} > 0 '
                                  f'(rows of a sub-generator sum to <= 0).')
         Tn = [[_numeric(self.params[f'T{i}_{j}']) for j in range(n)] for i in range(n)]
         if all(x is not None for r in Tn for x in r):
             import numpy as _np
             Tm = _np.array(Tn)
-            if abs(_np.linalg.det(Tm)) <= 1e-12 * max(1.0, float(_np.abs(Tm).max())) ** n:
+            # relative to the matrix's own scale (the floor max(1, |T|)^n
+            # refused every sub-generator with rates below ~1e-4: UNIT-05)
+            if abs(_np.linalg.det(Tm)) <= 1e-12 * float(_np.abs(Tm).max()) ** n:
                 raise NoiseError('PhaseType: T is singular, so the chain never absorbs '
                                  '(a sub-generator must be invertible).')
 
     def _mgf(self):
+        # M = 1 - sum(alpha) + alpha (-theta I - T)^(-1) t, t = -T 1, written
+        # as 1 + theta alpha (-theta I - T)^(-1) 1 (the same function): exactly
+        # 1 at theta = 0 whatever the float round-off of alpha and T (a
+        # residual 2e-16 * rate was refused as K(0) != 0), and formed from the
+        # adjugate and the determinant (Maxima's rational simplification
+        # overflowed on float rates ~1e6).
         n = self._n
         T = self._matrix()
         al = _matrix(SR, 1, n, [self.params[f'a{i}'] for i in range(n)])
-        t = -T * _matrix(SR, n, 1, [1] * n)
-        R = (-THETA * _matrix(SR, n, n, lambda i, j: 1 if i == j else 0) - T).inverse()
-        return SR(1 - sum(self.params[f'a{i}'] for i in range(n))
-                  + (al * R * t)[0, 0]).simplify_rational()
+        A = -THETA * _matrix(SR, n, n, lambda i, j: 1 if i == j else 0) - T
+        num = SR((al * A.adjugate() * _matrix(SR, n, 1, [1] * n))[0, 0]).expand()
+        den = SR(A.det()).expand()
+        return 1 + THETA * num / den
 
 
 class ChiSquared(Gamma):
