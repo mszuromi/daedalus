@@ -111,8 +111,13 @@ def _ito_nudge_callable(fn, k):
     # engine's tie rule)
     # (the tie is relative to the times themselves: an absolute 1e-12 tied
     # distinct times of a model in fast time units)
-    return lambda t0, t1: fn(
-        t0, t0 + lag if abs(t1 - t0) <= 1e-12 * max(abs(t0), abs(t1)) else t1)
+    # Only FINITE times can tie: with t1 = inf the relative threshold is itself
+    # infinite and would snap inf onto tau = 0; non-finite times go to the
+    # engine, which refuses them.
+    def _tied(t0, t1):
+        return (math.isfinite(t0) and math.isfinite(t1)
+                and abs(t1 - t0) <= 1e-12 * max(abs(t0), abs(t1)))
+    return lambda t0, t1: fn(t0, t0 + lag if _tied(t0, t1) else t1)
 
 
 def _phase_j_warning_scope():

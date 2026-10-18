@@ -273,6 +273,7 @@ def test_k2_total_c_callable_does_not_read_nan_as_equal_time(engine):
     # with tau = 0, not snapped onto it
     c0, c1 = np.real(r['total_C'](0.0, 0.0)), np.real(r['total_C'](0.0, 1e-13))
     assert abs(c1 - c0) <= 1e-12 * abs(c0)
+    # ...and the relative tie never swallows a non-finite time (1e-12 * inf = inf)
     for bad in (np.nan, np.inf):
         with pytest.raises(Exception, match='(?i)finite|bad limits|nan'):
             r['total_C'](0.0, bad)
