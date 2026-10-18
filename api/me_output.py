@@ -1491,10 +1491,11 @@ def _global_reasons(result, FI):
     # the triples are built now, with the live Phase J flags: they must be
     # the run's (``config['phase_j_flags']``)
     st = _stamped_flags(cfg)
-    for name in ('PHASE_J_T_MIN', 'THETA0_CONST_ROW_MODE'):
-        if name in st and str(getattr(FI, name, '<absent>')) != st[name]:
-            out.append(f'{name} changed since the run ({st[name]} -> '
-                       f'{getattr(FI, name, "<absent>")})')
+    name = 'PHASE_J_T_MIN'
+    if name in st and str(getattr(FI, name, '<absent>')) != st[name]:
+        out.append(f'{name} changed since the run ({st[name]} -> '
+                   f'{getattr(FI, name, "<absent>")})')
+    # a result made before the 'legacy_clip' mode was retired (audit W7)
     if st.get('THETA0_CONST_ROW_MODE') == 'legacy_clip':
         out.append("THETA0_CONST_ROW_MODE='legacy_clip'")
     if int((result.get('phase_j_engine') or {}).get('fallback_evals') or 0):

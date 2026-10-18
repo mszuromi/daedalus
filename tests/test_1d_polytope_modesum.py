@@ -91,7 +91,6 @@ def test_multi_pole_sum_finite_interval():
         prefactor_complex=2.0 - 1.0j,
         subset_constraint_data=cdata,
         free_ext_vals=[],
-        bbox_cap=50.0,       # not used because the helper now tracks ∞
     )
     # Expected: sum over poles of pref · C · (∫_0^∞ exp(λ·s) ds)
     # = sum over poles of pref · C · (-1/λ)   (since exp(λ·∞) = 0 for Re λ < 0)
@@ -131,11 +130,12 @@ def test_two_edges_cartesian_product():
     assert abs(val - expected) < 1e-13
 
 
-# ─── Override via pole_tuples (grouped path API) ───────────────────
+# ─── Override via pole_tuples (merged pole-tuple API) ──────────────
 def test_pole_tuples_override():
     """The pole_tuples parameter must take precedence over the
     Cartesian iterator built from smooth_edge_modes.  Inject custom
-    coefficients (the merged-residue tensor in real grouped use)."""
+    coefficients (the merged-residue tensor of the retired grouped
+    path)."""
     edges = [_ems([(1.0 + 0.0j, -0.5 + 0.0j)]),
              _ems([(1.0 + 0.0j, -0.7 + 0.0j)])]
     cdata = [

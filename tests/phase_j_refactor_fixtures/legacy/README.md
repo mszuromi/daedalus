@@ -20,9 +20,11 @@ polygon path. For example, `spike_reset_k2_ell1` still carries that bug.
 **Never refreeze these files.**
 - The parent-directory fixtures may be refrozen once, at M9. These copies stay
   as they are.
-- From M1, the legacy-umbrella test (`DAEDALUS_PHASE_J_LEGACY=1`) will compare
-  against them. Until then, `tests/test_phase_j_legacy_baseline.py` only
-  checks that they are byte-identical to the hashes above.
+- From M1 until audit W7, the legacy-umbrella test (`DAEDALUS_PHASE_J_LEGACY=1`)
+  compared against them. The umbrella was retired in audit W7 (the pre-0.2.0
+  routes are gone), so they are frozen history:
+  `tests/test_phase_j_legacy_baseline.py` checks that they are byte-identical
+  to the hashes above.
 - The per-milestone fixture delta report compares against them
   (`tests/tools/phase_j_subset_diff.py --fixture-report`).
 

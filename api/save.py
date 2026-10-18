@@ -20,9 +20,11 @@ The schema is k-/ell-/model-adaptive:
   version that wrote the file), ``phase_j_convention`` (the Phase J
   equal-time rule the numbers were computed with; ``PHASE_J_CONVENTION``
   for the default rules) and ``phase_j_flags`` (M7: the value of every
-  ``final_integral`` / ``grouped_integral`` switch that can move a Phase J
-  number, and ``use_grouped_phase_j``, as ``NAME=value`` pairs joined by
-  ``;``; recorded for provenance only, :func:`load_npz` does not check
+  ``final_integral`` switch that can move a Phase J number, as
+  ``NAME=value`` pairs joined by ``;``; files written by 0.2.1 and
+  earlier also list the retired ``grouped_integral`` switch and
+  ``use_grouped_phase_j``;
+  recorded for provenance only, :func:`load_npz` does not check
   it).  ``compute_cumulants`` records that rule in
   ``result['config']['phase_j_convention']`` when it computes the numbers,
   and the stamp copies it, so changing the Phase J flags between computing
@@ -99,10 +101,12 @@ import numpy as np
 #: external times, the external-time tie order for coincident times).
 PHASE_J_CONVENTION = 'theta0_ito_const_rows'
 
-# ``final_integral.THETA0_CONST_ROW_MODE`` -> stamp label.
+# The retired (audit W7) ``final_integral.THETA0_CONST_ROW_MODE`` -> the
+# stamp label it wrote; 'legacy_clip' files (``DAEDALUS_PHASE_J_LEGACY=1``
+# etc., before W7) still load, with a warning.
 _PHASE_J_CONVENTION_BY_MODE = {
     'ito':         PHASE_J_CONVENTION,
-    'legacy_clip': 'theta0_legacy_clip',   # DAEDALUS_PHASE_J_LEGACY=1 etc.
+    'legacy_clip': 'theta0_legacy_clip',
 }
 # Labels whose numbers follow the pre-0.2.0 rule (a load warns).
 _LEGACY_PHASE_J_CONVENTIONS = frozenset({'theta0_legacy_clip'})
@@ -112,70 +116,9 @@ _STAMP_MIN_VERSION = (0, 2, 0)
 
 _FI_MODULE = 'engine.integration.time_domain.final_integral'
 
-_FALSY_ENV = ('', '0', 'false', 'no', 'off')
 
-
-def _ensure_warning_shown(category, action='always', message=None,
-                          module=None, stacklevel=None):
-    """Show ``category`` also where the ENVIRONMENT ignores warnings: the
-    Sage launcher exports PYTHONWARNINGS=ignore, which hides every warning in
-    ``sage -python`` and the Sage Jupyter kernel.  Only that case is
-    overridden: a filter for this category, and every filter set in code or
-    by an ``error`` option (e.g. ``-W error``), is left alone -- a filter is
-    added only when the first filter that applies to the warning is the
-    environment's own ignore-all.  The action is 'always': callers
-    deduplicate their own warnings.  (The engine keeps the
-    same rule in ``final_integral._ensure_warning_shown``.)
-
-    ``message`` (the text about to be warned) and ``module`` (the module the
-    warning is attributed to; or ``stacklevel`` as in ``warnings.warn``,
-    counted from the caller) let the helper skip filters aimed at OTHER
-    warnings: Sage installs message-specific ``ignore`` filters for numpy at
-    startup, and without the message such a filter was taken for a user's
-    decision and hid the warning.  A filter whose message / module pattern
-    matches, or any category-wide ``ignore``, is still respected; with the
-    message (module) unknown, message- (module-) specific filters are
-    respected."""
-    opts = [o.split(':')[0].strip().lower() for o in sys.warnoptions]
-    if not (opts and opts[-1] in ('ignore', 'i')):
-        return
-    filters = warnings.filters
-    # the environment's ignore-all is the LAST unconditional ignore (startup
-    # puts it behind every filter set later in code).  A plain
-    # simplefilter('ignore') set in code IS that same filter (Python merges
-    # identical filters), so it cannot be told apart and is overridden.
-    env = [i for i, f in enumerate(filters)
-           if f[0] == 'ignore' and f[1] is None and f[2] is Warning
-           and f[3] is None and not f[4]]
-    if not env:
-        return
-    if module is None and stacklevel is not None:
-        try:
-            module = sys._getframe(stacklevel).f_globals.get('__name__')
-        except ValueError:
-            module = None
-    text = None if message is None else str(message)
-    for i, (_action, msg, cat, mod, lineno) in enumerate(filters):
-        if not issubclass(category, cat):
-            continue
-        if msg is not None:
-            if text is not None and not msg.match(text):
-                continue    # aimed at other warnings: not ours to decide
-            return          # a targeted filter set in code: respect it
-        if mod is not None:
-            if module is not None and not mod.match(module):
-                continue
-            return
-        if lineno:
-            return
-        if i == env[-1]:
-            if text is None:
-                warnings.filterwarnings(action, category=category)
-            else:           # this warning only: later ones get their own turn
-                warnings.filterwarnings(
-                    action, message='(?s)' + re.escape(text),
-                    category=category)
-        return              # the first applicable filter decides
+from engine._warn_helpers import (                    # noqa: E402
+    ensure_warning_shown as _ensure_warning_shown)
 
 
 class StaleResultWarning(UserWarning):
@@ -209,70 +152,47 @@ def _daedalus_version() -> str:
     return str(v) if v else 'unknown'
 
 
-def _theta0_mode_from_env(environ=None) -> str:
-    """The Θ(0) mode the environment selects at import of ``final_integral``
-    (mirrors ``final_integral._initial_phase_j_flags``, without importing
-    it): the umbrella ``DAEDALUS_PHASE_J_LEGACY`` wins, then
-    ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``, else ``'ito'``."""
-    env = os.environ if environ is None else environ
-    if env.get('DAEDALUS_PHASE_J_LEGACY', '').strip().lower() not in _FALSY_ENV:
-        return 'legacy_clip'
-    return (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
-            .strip().lower() or 'ito')
-
-
 def _phase_j_convention() -> str:
-    """Label of the Phase J convention in force (call time).
-
-    Reads ``final_integral.THETA0_CONST_ROW_MODE`` when that module is loaded
-    (it is whenever Phase J ran in this process, so a monkeypatched or
-    environment-selected legacy mode is stamped as such); otherwise the mode
-    the environment would select."""
-    fi = sys.modules.get(_FI_MODULE)
-    mode = getattr(fi, 'THETA0_CONST_ROW_MODE', None)
-    if mode is None:
-        mode = _theta0_mode_from_env()
-    return _PHASE_J_CONVENTION_BY_MODE.get(str(mode), f'theta0_{mode}')
+    """Label of the Phase J convention in force: ``PHASE_J_CONVENTION``, the
+    only one since the 'legacy_clip' Θ(0) mode was retired (audit W7; the
+    labels of ``_LEGACY_PHASE_J_CONVENTIONS`` remain for loading files
+    written before)."""
+    return PHASE_J_CONVENTION
 
 
 #: The ``final_integral`` switches and tolerances that can move a Phase J
 #: number, in stamp order (M7; the memo flags are pure speed switches and
-#: are not listed), and the ``grouped_integral`` one.
+#: are not listed).
 _PHASE_J_STAMP_FLAGS = (
-    'THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
-    'USE_DBM_FALLBACK', 'USE_PHASE_J_DD_KERNELS', 'CHAIN_UPPERS_KERNEL',
-    'SEMIINF_CHAIN', 'UNBOUNDED_2D', 'PHASE_J_T_MIN', 'POLYGON_BBOX_CAP',
-    'POSET_PHYSICAL_MARGIN', 'USE_POSET_CAP_MATCH_SCIPY',
-    'USE_POSET_MPMATH_ACCUMULATION', 'USE_CHAIN_SIMPLEX_PRECISION_FIX',
-    'USE_NUMBA_CHAIN_SIMPLEX', 'USE_POLYGON_M2_INTEGRATOR',
+    'PHASE_J_T_MIN', 'POSET_PHYSICAL_MARGIN', 'USE_POSET_CAP_MATCH_SCIPY',
+    'USE_POSET_MPMATH_ACCUMULATION', 'USE_POLYGON_M2_INTEGRATOR',
     'USE_1D_INTEGRATOR', 'USE_POSET_INTEGRATOR', 'TAU_KERNEL_CAP',
     'QUAD_OPTS', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL', 'NQUAD_LIMIT',
-    'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP', 'USE_SHOTNOISE_INTEGRATED')
-_GI_MODULE = 'engine.integration.time_domain.grouped_integral'
-_GI_STAMP_FLAGS = ('USE_GROUPED_ANALYTIC_MODESUM',)
+    'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
+# (Audit W7 retired the switches ``THETA0_CONST_ROW_MODE``,
+# ``STRUCTURAL_ZEROS``, ``NQUAD_HARDENED``, ``USE_DBM_FALLBACK``,
+# ``USE_PHASE_J_DD_KERNELS``, ``CHAIN_UPPERS_KERNEL``, ``SEMIINF_CHAIN``,
+# ``UNBOUNDED_2D``, ``USE_SHOTNOISE_INTEGRATED`` and the boxed-route
+# constants ``POLYGON_BBOX_CAP``, ``USE_CHAIN_SIMPLEX_PRECISION_FIX``,
+# ``USE_NUMBA_CHAIN_SIMPLEX``; a file written before carries them in its
+# ``phase_j_flags``.)
 
 
-def _phase_j_flags(use_grouped_phase_j=None) -> str:
+def _phase_j_flags() -> str:
     """The Phase J flags in force (call time) as ``NAME=value;...``
-    (``_PHASE_J_STAMP_FLAGS``, ``_GI_STAMP_FLAGS`` when ``grouped_integral``
-    is loaded, and ``use_grouped_phase_j`` when given), read from
-    ``final_integral`` when it is loaded; ``'final_integral not loaded'``
+    (``_PHASE_J_STAMP_FLAGS``), read from ``final_integral`` when it is
+    loaded; ``'final_integral not loaded'``
     otherwise (the stamp then only says that no Phase J ran in this
     process)."""
     fi = sys.modules.get(_FI_MODULE)
     if fi is None:
         return 'final_integral not loaded'
     parts = []
-    gi = sys.modules.get(_GI_MODULE)
-    for mod, names in ((fi, _PHASE_J_STAMP_FLAGS), (gi, _GI_STAMP_FLAGS)):
-        for name in names:
-            v = (getattr(mod, name, '<absent>') if mod is not None
-                 else '<not loaded>')
-            if isinstance(v, bool):
-                v = int(v)
-            parts.append(f'{name}={v}')
-    if use_grouped_phase_j is not None:
-        parts.append(f'use_grouped_phase_j={int(bool(use_grouped_phase_j))}')
+    for name in _PHASE_J_STAMP_FLAGS:
+        v = getattr(fi, name, '<absent>')
+        if isinstance(v, bool):
+            v = int(v)
+        parts.append(f'{name}={v}')
     return ';'.join(parts)
 
 
@@ -776,7 +696,7 @@ def save_csv(result: dict, path: str) -> str:
         # k=2, max_ell=1, model='Quadratic Hawkes ...'
         # daedalus_version: 0.2.0
         # phase_j_convention: theta0_ito_const_rows
-        # phase_j_flags: THETA0_CONST_ROW_MODE=ito;STRUCTURAL_ZEROS=1;...
+        # phase_j_flags: PHASE_J_T_MIN=-inf;POSET_PHYSICAL_MARGIN=50.0;...
         # parameters:
         #   E: [0.78, 0.81]
         #   ...

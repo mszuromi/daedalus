@@ -76,8 +76,9 @@ Runtime (measured): the default part builds linear delta spikes k = 2 and
 3 (tree), and ``ou_quartic`` k = 2 and 4, in a private cwd: 17 s of test
 time, 22 s wall, cold (29-38 s wall on a heavily loaded machine); the two
 moment tests of item 6 add about 3 s.  The slow
-part (spike reset and multipopulation k = 3, linear delta spikes k = 4, the
-grouped Phase J path) took ~7.5 min under heavy load, 6.4 min of it
+part (spike reset and multipopulation k = 3, linear delta spikes k = 4)
+took ~7.5 min under heavy load (with the since-retired grouped Phase J
+runs), 6.4 min of it
 multipopulation_test; the tie test of item 5 adds 35 s when it follows
 the multipopulation slice test (it reuses that build) and ~6 min alone.
 
@@ -371,36 +372,31 @@ def test_k2_never_reaches_the_slice_code(private_cwd, monkeypatch):
 _RUNS = {}
 
 
-def _run(which, k, grid, base=None, grouped=False, monkeypatch=None):
+def _run(which, k, grid, base=None):
     """``dd.run`` of the <a b a ...> tree-level slices, cached per config."""
-    key = (which, k, tuple(grid), None if base is None else tuple(base),
-           grouped)
+    key = (which, k, tuple(grid), None if base is None else tuple(base))
     if key not in _RUNS:
         name, params, _legs = _MODELS[which]
         model, mod = dd.load_model(name)
-        if grouped:
-            orig = api.compute_cumulants
-            monkeypatch.setattr(
-                api, 'compute_cumulants',
-                lambda **kw: orig(**{**kw, 'use_grouped_phase_j': True}))
         # multipopulation_test has two pole clusters, which compute_cumulants
         # resolves by averaging node runs (api._pole_clusters; ~9 times the
         # cost per k >= 3 evaluation, and the tree moves by up to 1.4e-4).
-        # These tests are about the slice / tie machinery, with values
-        # tabulated before item 21: the old pole sums.
-        saved = os.environ.get('DAEDALUS_POLE_CLUSTERS')
+        # These tests are about the slice / tie machinery (self-consistency
+        # of limits), so the clusters are left unresolved -- the exact
+        # residue tier made unavailable -- for the old pole sums.  (Before
+        # audit W7: the retired switch DAEDALUS_POLE_CLUSTERS=0.)
+        from api import _propagator as PR
+        saved = PR._compute_residues_via_polynomial_fracfield
         if which == 'mp':
-            os.environ['DAEDALUS_POLE_CLUSTERS'] = '0'
+            PR._compute_residues_via_polynomial_fracfield = (
+                lambda *a, **kw: (None, None, None))
         try:
             _RUNS[key] = dd.run(model, dd.Config(
                 k=k, max_ell=0, external_fields=_ext(which, k),
                 parameters=params, tau_grid=np.asarray(grid, dtype=float),
                 kpoint_base_lags=base), mod)
         finally:
-            if saved is None:
-                os.environ.pop('DAEDALUS_POLE_CLUSTERS', None)
-            else:
-                os.environ['DAEDALUS_POLE_CLUSTERS'] = saved
+            PR._compute_residues_via_polynomial_fracfield = saved
     return _RUNS[key]
 
 
@@ -552,18 +548,6 @@ def test_k4_linear_delta_tau0_is_the_left_limit_of_every_slice(private_cwd):
         # (slices 1, 2); slice 3's swept leg was already the earliest
         moved = abs(old - v) > _JUMP * abs(v)
         assert moved == (j in (1, 2)), (j, old, v)
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize('which, rtol', [('ld', _RTOL_ANALYTIC),
-                                         ('spike', _RTOL_NQUAD)],
-                         ids=['linear_delta_spikes', 'spike_reset'])
-def test_k3_tau0_left_limit_on_the_grouped_path(private_cwd, monkeypatch,
-                                                which, rtol):
-    res = _run(which, 3, _limit_grid(0.0), grouped=True,
-               monkeypatch=monkeypatch)
-    for j in (1, 2):
-        _check_left_limit(res, j, 3, rtol)
 
 
 # ═══════════════════════════════════════════════════════════════════════

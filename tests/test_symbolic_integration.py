@@ -1,7 +1,7 @@
 """
 tests/test_symbolic_integration.py
 ===================================
-Tests for engine.integration.symbolic — Build Phase H.
+Tests for tests.oracles.symbolic — Build Phase H.
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph, matrix, I, pi, var, exp
 
-from engine.integration.symbolic import (
+from tests.oracles.symbolic import (
     check_propagator_available,
     assign_frequencies,
     solve_conservation,
@@ -267,7 +267,7 @@ def test_source_vertex_conservation():
 
 def test_find_poles_explicit_and_residue():
     """An explicit pole is found and gives the right residue integral."""
-    from engine.integration.symbolic import _find_poles, _integrate_by_residues
+    from tests.oracles.symbolic import _find_poles, _integrate_by_residues
     w = SR.var('w_pole_test')
     expr = 1 / (w**2 + 1)
     poles = _find_poles(expr, w)
@@ -277,7 +277,7 @@ def test_find_poles_explicit_and_residue():
 
 
 def test_find_poles_no_root_returns_empty():
-    from engine.integration.symbolic import _find_poles
+    from tests.oracles.symbolic import _find_poles
     w = SR.var('w_pole_test')
     assert _find_poles(SR(3) / SR(2), w) == []
     assert _find_poles(w**2 + 1, w) == []   # polynomial: no pole
@@ -286,7 +286,7 @@ def test_find_poles_no_root_returns_empty():
 def test_find_poles_failed_search_raises(monkeypatch):
     import pytest
     import sage.all
-    from engine.integration.symbolic import _find_poles, PoleSearchError
+    from tests.oracles.symbolic import _find_poles, PoleSearchError
     w = SR.var('w_pole_test')
 
     def boom(*a, **k):
@@ -299,7 +299,7 @@ def test_find_poles_failed_search_raises(monkeypatch):
 def test_find_poles_implicit_solution_raises():
     """Degree-7 float-coefficient denominator: solve gives no explicit roots."""
     import pytest
-    from engine.integration.symbolic import _find_poles, PoleSearchError
+    from tests.oracles.symbolic import _find_poles, PoleSearchError
     w = SR.var('w_pole_test')
     den = w**7 + 1.3 * w**5 + 0.7 * w**3 + 2.1 * w + 1.7
     with pytest.raises(PoleSearchError):

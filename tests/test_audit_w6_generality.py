@@ -378,10 +378,9 @@ def test_two_population_spatial_nonlinear_solves_both_populations():
 
 
 # ── order-2 noise kernels in their own leg orientation (found with GEN-05) ─
-@pytest.mark.parametrize('engine,grouped', [('statespace', False),
-                                             ('poles', False), ('poles', True)])
+@pytest.mark.parametrize('engine', ['statespace', 'poles'])
 def test_gtas_cross_covariance_is_the_cluster_process_in_both_orders(
-        monkeypatch, engine, grouped):
+        monkeypatch, engine):
     """<m1(t) m2(t+tau)> of the GTaS noise field equals lambda p^2 N(tau;
     mu, s2) (cell 2 fires mu after cell 1) and the reverse order its mirror:
     the asymmetric cross kernel is no longer symmetrized."""
@@ -396,8 +395,8 @@ def test_gtas_cross_covariance_is_the_cluster_process_in_both_orders(
     taus = np.array([-1.0, 0.0, 1.0])
     g = lambda t, c: lam * p**2 * math.exp(-(t - c)**2 / (2 * s2)) / math.sqrt(2 * math.pi * s2)
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', engine)
-    c12, r = _C(m, [('m', 1), ('m', 2)], taus=taus, use_grouped_phase_j=grouped)
-    c21, _ = _C(m, [('m', 2), ('m', 1)], taus=taus, use_grouped_phase_j=grouped)
+    c12, r = _C(m, [('m', 1), ('m', 2)], taus=taus)
+    c21, _ = _C(m, [('m', 2), ('m', 1)], taus=taus)
     assert np.allclose(c12.real, [g(t, mu) for t in taus], rtol=1e-13, atol=0)
     assert np.allclose(c21.real, [g(t, -mu) for t in taus], rtol=1e-13, atol=0)
     assert r['mf_values']['mstar'] == [pytest.approx(lam * p)] * 2

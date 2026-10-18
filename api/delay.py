@@ -452,14 +452,6 @@ class Kernel:
         return f'Kernel(freq_image={self.freq_image!r}, delay={self.delay!r})'
 
 
-def delayed_image_text(freq_image: Optional[str], delay: Optional[str]) -> Optional[str]:
-    """The frequency-image text of a kernel with an optional delay."""
-    if delay is None:
-        return freq_image
-    base = freq_image if freq_image not in (None, '', '1') else None
-    return f'exp(-I*omega*({delay}))' + (f'*({base})' if base else '')
-
-
 def wrap_hook_with_delays(hook, delayed: dict, param_names=()):
     """``hook`` (``(ns, omega) -> {symbol: image}``) with the images of the
     kernels named in ``delayed`` (``{kernel name: delay text}``) multiplied by
@@ -503,7 +495,8 @@ def resolve_options(opts) -> dict:
             raise TypeError(f'delay options: unknown key(s) {unknown}; known: '
                             f'{sorted(DEFAULTS)}')
         o.update(opts)
-    if os.environ.get('DAEDALUS_DELAY_EXACT_TREE', '').strip() == '0':
+    from engine import _env
+    if not _env.flag('DAEDALUS_DELAY_EXACT_TREE', True):
         o['tree'] = 'pade'
     if o['tree'] not in ('exact', 'pade'):
         raise ValueError(f"delay tree must be 'exact' or 'pade', got {o['tree']!r}")

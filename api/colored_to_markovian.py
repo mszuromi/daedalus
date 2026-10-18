@@ -71,7 +71,6 @@ from typing import Optional
 
 from sage.all import (
     SR, sage_eval, exp, abs_symbolic, simplify,
-    sqrt as sage_sqrt,
 )
 
 

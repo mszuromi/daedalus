@@ -226,8 +226,6 @@ __all__ = [
 
 ENGINE_ENV = 'DAEDALUS_PHASE_J_ENGINE'
 FALLBACK_ENV = 'DAEDALUS_PHASE_J_SS_FALLBACK'
-_ENGINE_ON = ('', 'default', 'statespace')
-_ENGINE_OFF = ('poles',)
 
 #: dense generator (Taylor action with dense mat-vecs) up to this dimension;
 #: matrix-free beyond
@@ -277,6 +275,77 @@ MAX_DOWNSETS = 50000
 DENSE_CACHE_BYTES = 256 * 2 ** 20
 #: at most this many smooth edges (einsum labels)
 MAX_EDGES = 50
+
+
+#: Every reason the state-space route gives for not taking a model, a diagram
+#: or a subset (``ss_declined_by_reason`` / ``run_route``'s ``reason``), or
+#: for refusing an evaluation at call time (``ss_fallback_by_reason``), with
+#: what it means.  The pole engine evaluates whatever is declined.  Names
+#: starting with a ``DECLINE_PREFIXES`` key are families: ``realization_`` +
+#: an ``api._realization.RealizationRefused`` reason (or ``error``),
+#: ``kernel_`` + a kernel's refusal reason, ``numerical_`` + an exception
+#: type.  ``tests/test_ss_decline_reasons.py`` checks that every reason the
+#: code can produce is named here (audit W7, RED-01 stage 1).
+DECLINE_REASONS = {
+    # the run / the model (``model_route``, ``realization_for``)
+    'engine_poles': "DAEDALUS_PHASE_J_ENGINE=poles",
+    'realization_spatial_per_q': "the spatial certification's per-momentum "
+                                 "temporal calls (the spatial reference "
+                                 "stays on the pole routes)",
+    'not_hurwitz': 'the realization is not certified Hurwitz',
+    # a diagram / a vertex type (``diagram_route``, ``run_route``)
+    'noise_kernel_box': 'a noise source with a cumulant kernel (a '
+                        "'noise_box' row)",
+    # a subset (``subset_maker``)
+    'non_propagator_rows': 'a smooth row that is neither a propagator entry, '
+                           'a conductance kernel nor a dressed line',
+    'symbolic_prefactor': 'the prefactor is not a number',
+    'non_edge_rows': "a row kind other than 'edge' / 'conv_pseudo' (noise "
+                     "boxes, convolution tau rows)",
+    'row_count': 'the constraint rows and the smooth edges do not match',
+    'entry_missing': 'the realization has no entry for a propagator row',
+    'kernel_direct_term': 'a conductance kernel with a direct (delta) term '
+                          'on a kernel edge (dressed lines take it)',
+    'dressed_line_without_kernel': 'a dressed-line row without its kernel',
+    'stationary_over_budget': 'the stationary states do not fit the memory '
+                              'budget (and the pole plan does)',
+    # a subset's shape (``SSIneligible``)
+    'too_many_edges': f'more than MAX_EDGES ({MAX_EDGES}) smooth edges',
+    'row_shape': 'a row that is not a difference of two times',
+    'offset_row': 'a row with an external-time offset the route does not '
+                  'take',
+    'vertex_after_last_time': 'an internal vertex after the last external '
+                              'time',
+    'no_external_time': 'a subset without an external time',
+    'too_many_downsets': f'more than MAX_DOWNSETS ({MAX_DOWNSETS}) '
+                         'stationary downsets',
+    'finite_t_min': 'a finite PHASE_J_T_MIN where only the stationary '
+                    'start is implemented',
+    'row_crosses_zero': 'a constant row that changes sign on the evaluated '
+                        'line',
+    'several_lags': 'a C0 matrix-exponential output needs one moving '
+                    'segment',
+    # call time (``SSLateRefusal``; the dispatch falls back, counted)
+    'stiff_segment': 'a stiff segment beyond the triangular route',
+    'segment_too_large': 'a segment program too large to build',
+    'segment_memory': 'a segment over the memory budget '
+                      '(PhaseJResourceError)',
+    'non_finite': 'a non-finite value',
+}
+DECLINE_PREFIXES = {
+    'realization_': 'the propagator has no supported realization '
+                    '(api._realization.RealizationRefused.reason, or error)',
+    'kernel_': "a conductance kernel the route cannot realize (its "
+               "RealizationRefused reason, 'kernel_'-prefixed)",
+    'numerical_': 'a numerical exception at call time (its type name)',
+}
+
+
+def decline_reason_known(reason):
+    """True when ``reason`` is in ``DECLINE_REASONS`` or a
+    ``DECLINE_PREFIXES`` family."""
+    return reason in DECLINE_REASONS or any(
+        str(reason).startswith(p) for p in DECLINE_PREFIXES)
 
 
 class SSIneligible(Exception):
@@ -387,15 +456,10 @@ class _Refused:
 def engine_requested(environ=None):
     """True when ``DAEDALUS_PHASE_J_ENGINE`` selects the state-space route:
     unset, ``default`` or ``statespace`` (the default since S3); ``poles``:
-    False (the pole engine everywhere).  Any other value raises."""
-    env = os.environ if environ is None else environ
-    raw = str(env.get(ENGINE_ENV, '')).strip().lower()
-    if raw in _ENGINE_ON:
-        return True
-    if raw in _ENGINE_OFF:
-        return False
-    raise ValueError(f'{ENGINE_ENV}={raw!r}: expected statespace (the '
-                     f'default), default or poles (or unset)')
+    False (the pole engine everywhere).  Any other value raises (the one
+    parser: ``engine._env.phase_j_engine``)."""
+    from engine import _env
+    return _env.phase_j_engine(environ) == 'statespace'
 
 
 def engine_name(environ=None):
@@ -404,12 +468,11 @@ def engine_name(environ=None):
 
 
 def fallback_enabled(environ=None):
-    """``DAEDALUS_PHASE_J_SS_FALLBACK``: unset / anything but ``0`` /
-    ``off`` / ``false`` / ``no``: a late refusal falls back to the pole
-    route; off: it raises (S2's behaviour)."""
-    env = os.environ if environ is None else environ
-    return str(env.get(FALLBACK_ENV, '1')).strip().lower() not in (
-        '0', 'off', 'false', 'no')
+    """``DAEDALUS_PHASE_J_SS_FALLBACK``: on (default) a late refusal falls
+    back to the pole route; off (``0`` / ``off`` / ``false`` / ``no``): it
+    raises (S2's behaviour).  Any other value raises."""
+    from engine import _env
+    return _env.flag(FALLBACK_ENV, True, environ)
 
 
 # ─── counters (in final_integral._RUNTIME_COUNTERS, created on import) ────
@@ -567,7 +630,7 @@ def realization_for(propagator_data, num_params):
         except Exception as e:                  # never let S1 break a run
             real, exc = None, e
         if real is None:
-            reason = getattr(exc, 'reason', None) or 'realization_error'
+            reason = getattr(exc, 'reason', None) or 'error'
             ops, why = None, f'realization_{reason}'
             _count('ss_realization_refused')
         elif not (real.hurwitz is True or (real.hurwitz is None and
@@ -2261,12 +2324,6 @@ class SubsetSS:
         return out
 
     # ── C0 output (S4): the subset on a line as one matrix exponential ───
-    def me_ray(self, free_unit, tie_ctx=None):
-        """:meth:`me_line` on the ray ``free_vals = u * free_unit``, ``u >
-        0`` (k = 2: the lag on one side of 0), anchored at ``u = 0``."""
-        n = len(free_unit)
-        return self.me_line([0.0] * n, free_unit, 0.0, 1.0, tie_ctx)
-
     def me_line(self, free_base, free_dir, t_anchor, t_ref, tie_ctx=None):
         """The subset integral (WITHOUT prefactor) on the line ``free_vals =
         free_base + t * free_dir`` inside the chamber that contains
@@ -2787,8 +2844,6 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                                       f'{ENGINE_ENV}=poles')
         return None
     FI = _FI()
-    if FI._theta0_legacy():
-        return _decline('theta0_legacy')
     if not plain_edges:
         return _decline('non_propagator_rows')
     if prefactor is None:
@@ -2867,18 +2922,9 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                 return pole[0]
 
         def _contrib(free_vals, _hook_ctx=None, _tie_ctx=None):
-            if theta0_empty and not FI._theta0_legacy():
+            if theta0_empty:
                 FI._RUNTIME_COUNTERS['theta0_subsets_pruned'] += 1
                 return 0.0 + 0.0j
-            if FI._theta0_legacy():
-                # the mode was flipped after the build (a 'legacy_clip'
-                # build declines the route): the route implements the Itô
-                # rule only; the pole route has both (its legacy rule also
-                # clips zero-normal rows, not only constant ones)
-                return _pole_route(SSLateRefusal(
-                    'theta0_legacy', "THETA0_CONST_ROW_MODE='legacy_clip' "
-                    '(the route implements the Itô Θ(0) rule only)'))(
-                        free_vals, _hook_ctx, _tie_ctx)
             t_min = _t_min_frame(free_vals, _tie_ctx)
             try:
                 hit = _prefetched(sub, free_vals, _tie_ctx, t_min)
@@ -3029,8 +3075,6 @@ def model_route(propagator_data, num_params):
     subset (its row shapes, ``subset_maker``)."""
     if not engine_requested():
         return False, 'engine_poles'
-    if _FI()._theta0_legacy():
-        return False, 'theta0_legacy'
     # (the realization never reads the poles and residues, so a repeated
     # pole, ``jordan_incomplete``, does not matter here)
     ops, why = realization_for(propagator_data, num_params)

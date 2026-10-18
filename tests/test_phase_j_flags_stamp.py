@@ -1,7 +1,7 @@
-"""M7: the grouped path's warning for dropped δ(τ) records and the Phase J
-flags stamp of saved results (``api/_grouped_phase_j.py``, ``api/save.py``,
-``api/compute.py``).  No number changes: the grouped path does not carry the
-records (Feature B will), it only says so; the stamp is provenance only."""
+"""M7: the Phase J flags stamp of saved results (``api/save.py``,
+``api/compute.py``), the retired ``use_grouped_phase_j`` flag (W7: it only
+warns) and the visibility of the package warnings.  No number changes: the
+stamp is provenance only."""
 import math
 
 import numpy as np
@@ -15,58 +15,61 @@ def FI():
     return fi
 
 
-def _set_flags(monkeypatch, fi, dd=False, semiinf=False, u2='box',
-               t_min=-math.inf):
-    monkeypatch.setattr(fi, 'USE_PHASE_J_DD_KERNELS', dd)
-    monkeypatch.setattr(fi, 'SEMIINF_CHAIN', semiinf)
-    monkeypatch.setattr(fi, 'UNBOUNDED_2D', u2)
+def _set_flags(monkeypatch, fi, t_min=-math.inf):
     monkeypatch.setattr(fi, 'PHASE_J_T_MIN', t_min)
 
 
-_ALL_ON = dict(dd=True, semiinf=True, u2='exact')
+# The switches retired in audit W7: never in a new stamp.
+_RETIRED_STAMP_FLAGS = ('THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS',
+                        'NQUAD_HARDENED', 'USE_DBM_FALLBACK',
+                        'USE_PHASE_J_DD_KERNELS', 'CHAIN_UPPERS_KERNEL',
+                        'SEMIINF_CHAIN', 'UNBOUNDED_2D', 'POLYGON_BBOX_CAP',
+                        'USE_CHAIN_SIMPLEX_PRECISION_FIX',
+                        'USE_NUMBA_CHAIN_SIMPLEX', 'USE_SHOTNOISE_INTEGRATED')
 
 
-def test_grouped_path_carries_delta_records_without_warning():
-    """Linear Hawkes autocorrelation at tree level: the per-diagram path
-    returns one δ(τ) record; since Feature B the grouped path carries the
-    same record (its per-diagram fallback builds it), does not warn, and
-    C_tau is identical."""
+def test_retired_grouped_flag_warns_and_changes_nothing():
+    """Grouped Phase J is retired (W7): ``use_grouped_phase_j=True`` warns
+    (FutureWarning), runs the per-diagram integrator (the values, and the
+    tree-level δ(τ) record of the linear Hawkes autocorrelation, are
+    identical to the default call), records ``False`` in the config and
+    leaves no grouped entry in the flags stamp."""
     pytest.importorskip('sage.all')
-    import warnings
     import daedalus as dd
     import api.compute as AC
-    from api._grouped_phase_j import GroupedDeltaRecordsDroppedWarning
     model, _mod = dd.load_model('linear_hawkes')
-    out = {}
-    for grouped in (False, True):
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter('always')
-            res = AC.compute_cumulants(
-                model, k=2, max_ell=0, external_fields=[('n', 1), ('n', 1)],
-                tau_grid=np.array([0.0, 1.0]), parallel=False, verbose=False,
-                use_grouped_phase_j=grouped)
-        dropped = [x for x in w
-                   if issubclass(x.category, GroupedDeltaRecordsDroppedWarning)]
-        out[grouped] = (res, dropped)
-    res_pd, w_pd = out[False]
-    res_gr, w_gr = out[True]
-    rec_pd = res_pd['phase_j_by_ell'][0]['delta_contributions']
-    rec_gr = res_gr['phase_j_by_ell'][0]['delta_contributions']
-    assert len(rec_pd) == len(rec_gr) == 1
-    assert complex(rec_pd[0]['coeff_fc'](0.0)) == complex(
-        rec_gr[0]['coeff_fc'](0.0))
-    assert w_pd == [] and w_gr == []
-    assert res_gr['phase_j_by_ell'][0]['n_delta_records_dropped'] == 0
-    assert np.array_equal(res_pd['C_tau'], res_gr['C_tau'])
+    kw = dict(k=2, max_ell=0, external_fields=[('n', 1), ('n', 1)],
+              tau_grid=np.array([0.0, 1.0]), parallel=False, verbose=False,
+              use_cache=False)
+    ref = AC.compute_cumulants(model, **kw)
+    with pytest.warns(FutureWarning, match='use_grouped_phase_j is retired'):
+        res = AC.compute_cumulants(model, use_grouped_phase_j=True, **kw)
+    assert np.array_equal(res['C_tau'], ref['C_tau'])
+    for ell in ref['C_tau_by_ell']:
+        assert np.array_equal(res['C_tau_by_ell'][ell],
+                              ref['C_tau_by_ell'][ell])
+    rec_ref = ref['phase_j_by_ell'][0]['delta_contributions']
+    rec = res['phase_j_by_ell'][0]['delta_contributions']
+    assert len(rec_ref) == len(rec) == 1
+    assert complex(rec[0]['coeff_fc'](0.0)) == complex(
+        rec_ref[0]['coeff_fc'](0.0))
+    for r in (res, ref):
+        assert r['config']['use_grouped_phase_j'] is False
+        flags = r['config']['phase_j_flags']
+        assert 'use_grouped_phase_j' not in flags
+        assert 'USE_GROUPED_ANALYTIC_MODESUM' not in flags
+    assert res['config']['phase_j_flags'] == ref['config']['phase_j_flags']
 
 
 def test_save_stamp_records_the_phase_j_flags(FI, monkeypatch, tmp_path):
     from api import save as S
-    _set_flags(monkeypatch, FI, **_ALL_ON)
+    _set_flags(monkeypatch, FI)
     flags = S._phase_j_flags()
-    assert 'USE_PHASE_J_DD_KERNELS=1' in flags
-    assert 'SEMIINF_CHAIN=1' in flags and 'UNBOUNDED_2D=exact' in flags
-    assert 'USE_DBM_FALLBACK=1' in flags
+    assert 'PHASE_J_T_MIN=-inf' in flags
+    assert 'USE_POLYGON_M2_INTEGRATOR=1' in flags
+    names = {p.split('=')[0] for p in flags.split(';')}
+    assert not names & set(_RETIRED_STAMP_FLAGS)
+    assert '<absent>' not in flags
     # a result records the flags it was computed with; the stamp copies them
     res = {'config': {'k': 2, 'max_ell': 0, 'phase_j_convention':
                       S.PHASE_J_CONVENTION, 'phase_j_flags': 'X=1'},
@@ -74,8 +77,8 @@ def test_save_stamp_records_the_phase_j_flags(FI, monkeypatch, tmp_path):
            'C_tau_by_ell': {0: np.array([1.0 + 0j])}}
     assert S._result_stamp(res)['phase_j_flags'] == 'X=1'
     del res['config']['phase_j_flags']
-    _set_flags(monkeypatch, FI)
-    assert 'USE_PHASE_J_DD_KERNELS=0' in S._result_stamp(res)['phase_j_flags']
+    _set_flags(monkeypatch, FI, t_min=-5.0)
+    assert 'PHASE_J_T_MIN=-5.0' in S._result_stamp(res)['phase_j_flags']
 
 
 def test_npz_and_csv_carry_the_phase_j_flags(FI, monkeypatch, tmp_path):
@@ -99,66 +102,24 @@ def test_compute_cumulants_records_the_flags_it_ran_with(FI, monkeypatch):
     import api.compute as AC
     import daedalus as dd
     model, _mod = dd.load_model('ou_quartic')
-    _set_flags(monkeypatch, FI, **_ALL_ON)
+    _set_flags(monkeypatch, FI)
     res = AC.compute_cumulants(model, k=2, max_ell=0,
                                external_fields=[('dx', 1), ('dx', 1)],
                                tau_grid=np.array([0.0]), parallel=False,
-                               verbose=False, use_grouped_phase_j=True)
+                               verbose=False)
     flags = res['config']['phase_j_flags']
-    assert 'USE_PHASE_J_DD_KERNELS=1' in flags
-    assert flags.endswith('use_grouped_phase_j=1')
-    assert res['config']['use_grouped_phase_j'] is True
-
-
-def test_dropped_record_warning_counts_every_ell_and_beats_ignore(
-        monkeypatch):
-    pytest.importorskip('sage.all')
-    import sys
-    import warnings
-    from api._grouped_phase_j import (GroupedDeltaRecordsDroppedWarning,
-                                      warn_dropped_delta_records)
-    pj = {0: {'n_delta_records_dropped': 2}, 1: None,
-          2: {'n_delta_records_dropped': 3}}
-
-    def issued(w):
-        return [x for x in w if issubclass(
-            x.category, GroupedDeltaRecordsDroppedWarning)]
-
-    # the environment ignores warnings (the Sage launcher's
-    # PYTHONWARNINGS=ignore): shown anyway, once per call
-    monkeypatch.setattr(sys, 'warnoptions', ['ignore'])
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('ignore')
-        assert warn_dropped_delta_records(pj) == 5
-        assert warn_dropped_delta_records(pj) == 5
-        assert warn_dropped_delta_records({0: {}}) == 0
-    got = issued(w)
-    assert len(got) == 2 and 'dropped 5' in str(got[0].message)
-    # a filter set for the category itself is respected
-    with warnings.catch_warnings(record=True) as w:
-        warnings.filterwarnings('ignore',
-                                category=GroupedDeltaRecordsDroppedWarning)
-        warn_dropped_delta_records(pj)
-    assert not issued(w)
-    # filters set in code (no environment ignore) are respected, -W error too
-    monkeypatch.setattr(sys, 'warnoptions', [])
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter('ignore')
-        warn_dropped_delta_records(pj)
-    assert not issued(w)
-    monkeypatch.setattr(sys, 'warnoptions', ['error'])
-    with warnings.catch_warnings():
-        warnings.simplefilter('error')
-        with pytest.raises(GroupedDeltaRecordsDroppedWarning):
-            warn_dropped_delta_records(pj)
+    assert 'PHASE_J_T_MIN=-inf' in flags
+    assert 'use_grouped_phase_j' not in flags
+    assert 'USE_GROUPED_ANALYTIC_MODESUM' not in flags
+    assert res['config']['use_grouped_phase_j'] is False
 
 
 @pytest.mark.parametrize('which', ['stale', 'nquad'])
 def test_stale_and_nquad_warnings_beat_the_environment_ignore(monkeypatch,
                                                              which):
     """The Sage launcher exports PYTHONWARNINGS=ignore; StaleResultWarning
-    and PhaseJNquadFallbackWarning are shown anyway (as the grouped δ-record
-    warning), while a filter for the category itself is respected."""
+    and PhaseJNquadFallbackWarning are shown anyway, while a filter for the
+    category itself is respected."""
     import sys
     import warnings
     if which == 'stale':

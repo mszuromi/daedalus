@@ -39,7 +39,6 @@ from engine.integration.time_domain.final_integral import (
     integrate_diagram,
     PropagatorTD,
     _loop_number_from_graph,
-    _setup_lever_on,
 )
 
 
@@ -148,13 +147,10 @@ def _ss_grid(points):
     imported).  Only the serial evaluation paths use it (a forked worker
     would evaluate the whole grid for its share of it)."""
     import contextlib
-    import os
-    raw = os.environ.get('DAEDALUS_PHASE_J_ENGINE')
-    if raw is not None and raw.strip().lower() == 'poles':
+    from engine import _env
+    if _env.phase_j_engine() == 'poles':
         return contextlib.nullcontext()
     from engine.integration.time_domain import statespace as _ss
-    if not _ss.engine_requested():
-        return contextlib.nullcontext()
     return _ss.tau_grid_prefetch(points)
 
 
@@ -235,7 +231,7 @@ def compute_correction_td(
     external_fields=None,
     # Spatial loop integrator (Stage C.5): td -> per-edge EdgeModeSum builder.
     edge_mode_sums_builder_fn=None,
-    # Legacy support: accept kernel_groups as first arg
+    # retired (audit W7, ACC-67): raises; pass typed_diagrams + prefactors
     kernel_groups=None,
     # M8: divergence policy of the box-free routes (``integrate_diagram``)
     on_divergence=None,
@@ -248,9 +244,10 @@ def compute_correction_td(
     integration (closed forms on numeric poles; see
     ``final_integral.integrate_diagram``).
 
-    Accepts EITHER:
-    - ``typed_diagrams`` + ``prefactors``: direct diagram list (preferred)
-    - ``kernel_groups``: legacy format from ``group_diagrams_by_kernel``
+    Takes ``typed_diagrams`` + ``prefactors`` (one prefactor per diagram).
+    The legacy ``kernel_groups=`` input is retired: it integrated every
+    diagram of a group with the group's summed prefactor (audit ACC-67) and
+    now raises ``TypeError``.
 
     For each tree-level diagram, calls ``integrate_tree_diagram``
     directly.  Loop diagrams are marked as skipped.
@@ -321,15 +318,14 @@ def compute_correction_td(
         from engine.integration.time_domain.final_integral import (
             _divergence_policy)
         _divergence_policy(on_divergence)               # validate early
-    # ── Legacy support: unpack kernel_groups format ──
-    if typed_diagrams is None and kernel_groups is not None:
-        typed_diagrams = []
-        prefactors = []
-        for g in kernel_groups:
-            for td in g.get('diagrams', []):
-                typed_diagrams.append(td)
-                prefactors.append(g.get('combined_prefactor'))
-    elif typed_diagrams is None:
+    from engine.integration.time_domain.final_integral import (
+        _warn_retired_env)
+    _warn_retired_env()
+    if kernel_groups is not None:
+        raise TypeError(
+            'compute_correction_td(kernel_groups=...) is retired: pass '
+            'typed_diagrams= and prefactors= (one prefactor per diagram)')
+    if typed_diagrams is None:
         typed_diagrams = []
         prefactors = []
 
@@ -343,8 +339,8 @@ def compute_correction_td(
     # G(t) matrix, the poles and residues); it dies with the call, so the
     # spatial bridge's per-q re-solve of the poles cannot be served stale.
     prop_td = (PropagatorTD(propagator_data, num_params)
-               if (typed_diagrams and hasattr(propagator_data, 'get')
-                   and _setup_lever_on('USE_SETUP_PROP_TD')) else None)
+               if (typed_diagrams and hasattr(propagator_data, 'get'))
+               else None)
 
     tree_callables = []
     groups_out = []

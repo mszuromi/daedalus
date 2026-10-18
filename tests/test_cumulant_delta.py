@@ -7,8 +7,7 @@ Oracles:
 * a point process's autocorrelation spike weight is its mean rate at every
   loop order, so the ℓ = 1 δ weights sum to the k = 1, ℓ = 1 mean (spike
   reset); for k = 3 the coefficient of δ(t_1 − t_2) is the k = 2 smooth
-  cumulant at t_3 − t_1, and the t_1 = t_2 = t_3 point has weight λ̄;
-* the grouped path carries the same records as the per-diagram path.
+  cumulant at t_3 − t_1, and the t_1 = t_2 = t_3 point has weight λ̄.
 """
 import json
 import os
@@ -152,18 +151,18 @@ def spike_reset_runs():
     _run('single_population_spike_reset_test', 2, 1, [('n', 1), ('n', 1)],
          P_SPIKE)
     out = {}
-    for g in (False, True):
-        out[g] = _run('single_population_spike_reset_test', 2, 1,
-                      [('n', 1), ('n', 1)], P_SPIKE, use_grouped_phase_j=g)
+    out['k2'] = _run('single_population_spike_reset_test', 2, 1,
+                     [('n', 1), ('n', 1)], P_SPIKE)
     out['k1'] = _run('single_population_spike_reset_test', 1, 1,
                      [('n', 1)], P_SPIKE, tau=(0.0,))
     return out
 
 
 def test_one_loop_delta_weight_is_the_one_loop_mean(spike_reset_runs):
-    r = spike_reset_runs[False]
+    r = spike_reset_runs['k2']
     c = dd.cumulant(r)
     assert c.complete, c.incomplete_reasons
+    assert c.source == 'phase_j_per_diagram'
     w = c.delta_weights_by_ell()
     nstar = r['mf_values']['nstar'][0]
     assert abs(w[0][0.0] - nstar) <= 1e-10 * nstar
@@ -175,35 +174,9 @@ def test_one_loop_delta_weight_is_the_one_loop_mean(spike_reset_runs):
                if d.loop_order == 1)
 
 
-def test_grouped_records_equal_per_diagram(spike_reset_runs):
-    a = dd.cumulant(spike_reset_runs[False])
-    b = dd.cumulant(spike_reset_runs[True])
-    assert b.complete and b.source == 'phase_j_grouped'
-
-    def key(d):
-        return (d.loop_order, d.diagram_index, d.equality)
-    A = {key(d): d.weight for d in a.deltas}
-    B = {key(d): d.weight for d in b.deltas}
-    assert set(A) == set(B) and len(A) >= 2
-    for k_ in A:
-        assert abs(A[k_] - B[k_]) <= 1e-13 * abs(A[k_])
-    assert spike_reset_runs[True]['phase_j_by_ell'][1][
-        'n_delta_records_dropped'] == 0
-
-
-def test_integrated_records_never_touch_C_tau(monkeypatch, spike_reset_runs):
-    import engine.integration.time_domain.final_integral as FI
-    monkeypatch.setattr(FI, 'USE_SHOTNOISE_INTEGRATED', False)
-    r = _run('single_population_spike_reset_test', 2, 1,
-             [('n', 1), ('n', 1)], P_SPIKE)
-    on = spike_reset_runs[False]
-    for ell in (0, 1):
-        assert np.array_equal(r['C_tau_by_ell'][ell], on['C_tau_by_ell'][ell])
-    c = dd.cumulant(r)
-    assert not c.complete and 1 not in c.delta_weights_by_ell()
-    assert r['phase_j_by_ell'][1]['n_delta_subsets_dropped'] > 0
-    with pytest.warns(DeltaRecordsIncompleteWarning):
-        c.total_on_grid(mode='bin')
+# (``test_integrated_records_never_touch_C_tau``, the switch-off check of
+# ``USE_SHOTNOISE_INTEGRATED``, whose off path dropped the integrated
+# shot-noise subsets, went with that switch in audit W7.)
 
 
 def test_records_survive_the_pole_cluster_deformation(monkeypatch):
@@ -309,7 +282,7 @@ def test_save_load_round_trip(tmp_path):
     assert str(d['delta_equality'][0]) == 't_1 - t_2 = 0'
     assert json.loads(str(d['delta_provenance'][0]))['source'] == \
         'phase_j_per_diagram'
-    assert 'USE_SHOTNOISE_INTEGRATED=1' in str(d['phase_j_flags'][0])
+    assert 'PHASE_J_T_MIN=' in str(d['phase_j_flags'][0])
     c = Cumulant.from_saved(d)
     assert c.complete and c.deltas[0].weight == d['delta_weight'][0]
     assert np.array_equal(c.total_on_grid(mode='exclude'), d['C_total'])

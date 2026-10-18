@@ -1,10 +1,8 @@
 """Regression test for the Wick-permutation bug on identical external
-fields, in BOTH the per-diagram and grouped Phase J paths.
+fields in the per-diagram Phase J path.
 
-Before the fix, both ``integrate_diagram``'s ``contribution`` closure
-(``engine/integration/time_domain/final_integral.py``) and
-``integrate_grouped_diagram``'s ``contribution`` closure
-(``engine/integration/time_domain/grouped_integral.py``) enumerated 2!
+Before the fix, ``integrate_diagram``'s ``contribution`` closure
+(``engine/integration/time_domain/final_integral.py``) enumerated 2!
 Wick contractions for ⟨x(t1) x(t2)⟩ when both externals were the same
 field (e.g. ``[('x', 1), ('x', 1)]``) and re-fed ``ext_time_values``
 through each permutation.  With ``origin_leaf_idx`` pinning one leaf at
@@ -40,7 +38,7 @@ def _load_model(path):
     return mod.build()
 
 
-def _run_tree(use_grouped):
+def _run_tree():
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
     from api import compute_cumulants
@@ -52,7 +50,6 @@ def _run_tree(use_grouped):
         external_fields=[('x', 1), ('x', 1)],
         fundamental=fundamental,
         tau_max=3.0, tau_step=0.5,
-        use_grouped_phase_j=use_grouped,
         parallel=False, use_cache=False, verbose=False,
     )
 
@@ -82,19 +79,10 @@ def test_identical_externals_match_OU_perdiag():
 
     Before the Wick-permutation fix in ``final_integral.py`` this test
     failed by a factor that grew with |τ| (up to ~10× at τ=3)."""
-    _assert_matches_OU(_run_tree(use_grouped=False), 'per-diag')
+    _assert_matches_OU(_run_tree(), 'per-diag')
 
 
-def test_identical_externals_match_OU_grouped():
-    """Grouped Phase J path: same OU agreement as per-diagram.
-
-    The grouped path had the same Wick-permutation bug in its own
-    ``contribution`` closure (``engine/integration/time_domain/
-    grouped_integral.py``); this regression locks in the parallel fix."""
-    _assert_matches_OU(_run_tree(use_grouped=True), 'grouped')
-
-
-def _run_1loop(use_grouped):
+def _run_1loop():
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
     from api import compute_cumulants
@@ -105,7 +93,6 @@ def _run_1loop(use_grouped):
         external_fields=[('x', 1), ('x', 1)],
         fundamental=fundamental,
         tau_max=3.0, tau_step=0.5,
-        use_grouped_phase_j=use_grouped,
         parallel=False, use_cache=False, verbose=False,
     )
 
@@ -135,15 +122,10 @@ def _assert_1loop_symmetric(res, label):
 
 def test_1loop_symmetric_in_tau_perdiag():
     """Per-diagram path: 1-loop ⟨x(0)x(τ)⟩ symmetric in τ."""
-    _assert_1loop_symmetric(_run_1loop(use_grouped=False), 'per-diag')
+    _assert_1loop_symmetric(_run_1loop(), 'per-diag')
 
 
-def test_1loop_symmetric_in_tau_grouped():
-    """Grouped path: 1-loop ⟨x(0)x(τ)⟩ symmetric in τ."""
-    _assert_1loop_symmetric(_run_1loop(use_grouped=True), 'grouped')
-
-
-def _run_ou_quartic_2loop(eps, use_grouped=False):
+def _run_ou_quartic_2loop(eps):
     """Helper: run OU+εx³ to 2 loops at the symmetric saddle xstar=0.
 
     Uses the production model ``models/ou_quartic_double_well``
@@ -163,7 +145,6 @@ def _run_ou_quartic_2loop(eps, use_grouped=False):
         external_fields=[('x', 1), ('x', 1)],
         fundamental={'mu': 1.0, 'eps': eps, 'D': 1.0},
         tau_max=0.0, tau_step=1.0,
-        use_grouped_phase_j=use_grouped,
         parallel=False, use_cache=False, verbose=False,
     )
 
@@ -181,7 +162,7 @@ def test_ou_quartic_2loop_matches_boltzmann_perdiag():
     the two cubic vertices are interchangeable under the noise S_3).
     """
     for eps in (0.001, 0.01, 0.1):
-        res = _run_ou_quartic_2loop(eps, use_grouped=False)
+        res = _run_ou_quartic_2loop(eps)
         tree = res['C_tau_by_ell'][0].real[0]
         l1 = res['C_tau_by_ell'][1].real[0]
         l2 = res['C_tau_by_ell'][2].real[0]
@@ -193,30 +174,8 @@ def test_ou_quartic_2loop_matches_boltzmann_perdiag():
         )
 
 
-def test_ou_quartic_2loop_matches_boltzmann_grouped():
-    """Same as the per-diagram test, on the grouped Phase J path.
-
-    Locks in the parallel ``_compensation`` fix in
-    ``engine/integration/time_domain/grouped_integral.py``.
-    """
-    for eps in (0.001, 0.01, 0.1):
-        res = _run_ou_quartic_2loop(eps, use_grouped=True)
-        tree = res['C_tau_by_ell'][0].real[0]
-        l1 = res['C_tau_by_ell'][1].real[0]
-        l2 = res['C_tau_by_ell'][2].real[0]
-        total = tree + l1 + l2
-        boltz = 1 - 3*eps + 24*eps**2
-        assert abs(total - boltz) < 1e-12, (
-            f'OU+εx³ at ε={eps} (grouped): framework total {total} vs '
-            f'Boltzmann perturbative {boltz} differ by {total-boltz}'
-        )
-
-
 if __name__ == '__main__':
     test_identical_externals_match_OU_perdiag()
-    test_identical_externals_match_OU_grouped()
     test_1loop_symmetric_in_tau_perdiag()
-    test_1loop_symmetric_in_tau_grouped()
     test_ou_quartic_2loop_matches_boltzmann_perdiag()
-    test_ou_quartic_2loop_matches_boltzmann_grouped()
     print('OK')
