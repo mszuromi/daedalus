@@ -118,7 +118,7 @@ def test_phase_type_from_floats_matches_the_exact_moments():
     cpq = N.CompoundPoisson(1, N.PhaseType(['1/4', '3/4'], [[-1, '1/2'], [0, -3]]))
     for m in (1, 2, 3):
         f = _ph_moment(alpha, T, m)
-        assert SR(cpq.cumulant(m)) == SR(f.numerator()) / f.denominator(), m
+        assert SR(cpq.cumulant(m)) == SR(f.numerator) / f.denominator, m
 
 
 def test_hyperexponential_from_floats_and_phase_type_with_a_symbolic_rate():
