@@ -220,3 +220,25 @@ def test_chain_dense_map_refused_before_allocation(monkeypatch):
     SS._check_dense_map(2000, 2000)                  # 64 MB: fine
     with pytest.raises(fi.PhaseJResourceError, match='6.40 GB'):
         SS._check_dense_map(20000, 20000)            # was charged 1.9 MB
+
+
+# ── MEM-09: SideME.triple's dense form; the decomposition cache in bytes ──
+
+def test_dense_triple_and_decomposition_cache_are_bounded(monkeypatch):
+    import numpy as np
+    from api import me_output as me
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1')
+    me._check_dense_bytes(16 * 2000 ** 2, 'small')          # 64 MB
+    with pytest.raises(fi.PhaseJResourceError, match='6.40 GB'):
+        me._check_dense_bytes(16 * 20000 ** 2, 'the triple')  # MAX_DENSE_TOTAL
+    S = np.zeros((4000, 4000), dtype=complex)                # 256 MB each
+    me._DECOMP.clear()
+    me._DECOMP_BYTES[0] = 0
+    for i in range(3):
+        me._decomp_put(('k', i), (None, S, S, [], 0.0))     # 512 MB per entry
+    assert me._DECOMP_BYTES[0] <= 0.5e9 + 1 and len(me._DECOMP) == 0
+    small = np.zeros((10, 10), dtype=complex)
+    me._decomp_put(('s', 0), (None, small, small, [], 0.0))
+    assert len(me._DECOMP) == 1
+    me._DECOMP.clear()
+    me._DECOMP_BYTES[0] = 0

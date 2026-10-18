@@ -94,6 +94,20 @@ _FORM_CACHE = {'bytes': 0}
 _FORM_CACHE_LOCK = __import__('threading').Lock()
 
 
+def _check_dense_bytes(nbytes, what):
+    """Refuse (``PhaseJResourceError``) a dense form of ``nbytes`` larger than
+    the memory budget before it is allocated (audit MEM-09)."""
+    from engine.integration.time_domain import final_integral as FI
+    budget, rule = FI.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    if budget is None or nbytes <= budget:
+        return
+    raise FI.PhaseJResourceError(
+        f'{what} needs {FI._fmt_gb(nbytes)}, over the memory budget of '
+        f'{FI._fmt_budget(budget, rule)}; nothing was allocated.  Use the '
+        f'blocks (.blocks[i].triple()) or raise the budget: {FI._BUDGET_HOW}.',
+        {'bytes': nbytes, 'budget_bytes': budget})
+
+
 def _form_cache_release(nbytes):
     with _FORM_CACHE_LOCK:
         _FORM_CACHE['bytes'] -= nbytes
@@ -542,6 +556,28 @@ class MEChainBlock:
 
 
 _DECOMP = {}
+_DECOMP_BYTES = [0]
+
+
+def _decomp_put(key, hit):
+    """Cache a segment decomposition: at most 256 entries and, in bytes,
+    ``FORM_CACHE_BUDGET_FRACTION`` of the memory budget (each holds two
+    dense ``n x n`` transformations; by count alone 256 of them could be
+    tens of GB, audit MEM-09).  A full cache is cleared; an entry larger
+    than the whole allowance is not cached."""
+    from engine.integration.time_domain.final_integral import mem_budget
+    _seg, S, Si, cl, _cond = hit
+    nbytes = S.nbytes + Si.nbytes + sum(c[3].nbytes for c in cl)
+    budget = mem_budget('PHASE_J_MEM_BUDGET_GB')[0]
+    cap = None if budget is None else FORM_CACHE_BUDGET_FRACTION * budget
+    if cap is not None and nbytes > cap:
+        return
+    if len(_DECOMP) >= 256 or (cap is not None
+                               and _DECOMP_BYTES[0] + nbytes > cap):
+        _DECOMP.clear()
+        _DECOMP_BYTES[0] = 0
+    _DECOMP[key] = hit
+    _DECOMP_BYTES[0] += nbytes
 
 
 def _seg_decomposition(seg, rtol, horizon):
@@ -611,9 +647,8 @@ def _seg_decomposition(seg, rtol, horizon):
             lam = complex(np.mean(np.diag(A)))
             cl.append((r0, r1, lam, A - lam * np.eye(r1 - r0),
                        float(np.max(np.abs(np.diag(A) - lam)))))
-        if len(_DECOMP) > 256:
-            _DECOMP.clear()
-        hit = _DECOMP[key] = (seg, S, Si, cl, cond)
+        hit = (seg, S, Si, cl, cond)
+        _decomp_put(key, hit)
     _seg, S, Si, cl, cond = hit
     trunc = 0.0
     for r0, r1, lam, _N, delta in cl:
@@ -744,6 +779,9 @@ class SideME:
                                 f'block-diagonal triple is not formed '
                                 f'(MAX_DENSE_TOTAL={MAX_DENSE_TOTAL}); use '
                                 f'the blocks (.blocks[i].triple())')
+        _check_dense_bytes(16 * self.n_states ** 2,
+                           f'the dense block-diagonal triple of '
+                           f'{self.n_states:,} states')
         parts = [b.triple() for b in self.blocks]
         G = sl.block_diag(*[p[0] for p in parts])
         x = np.concatenate([p[1] for p in parts])
