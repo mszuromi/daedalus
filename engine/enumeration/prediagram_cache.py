@@ -890,11 +890,16 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     """
     from sage.all import load as sage_load
 
+    # the manifests' count (or an extrapolation): refuse before any file is
+    # read or any cert computed; the counted checks below catch the rest
+    _load_guard(k, ell, None)
     if not use_cache:
         if _cache_off_source(stream) == 'eager':
             return (list(_enumerate_eager(k=k, ell=ell, verbose=verbose)[2]),
                     'eager')
-        return records_from_certs(_streamed_certs(k, ell, verbose)), 'streamed'
+        certs = _streamed_certs(k, ell, verbose)
+        _load_guard(k, ell, len(certs))
+        return records_from_certs(certs), 'streamed'
 
     fmt = cache_format()
 
@@ -905,6 +910,7 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     if fmt in ('auto', 'v2') and v2_exists(root, k, ell):
         certs = load_v2_certs(root, k, ell)
         if _local_cell_ok(root, k, ell, len(certs), 'v2'):
+            _load_guard(k, ell, len(certs))
             return records_from_certs(certs), 'v2'
 
     if fmt in ('auto', 'v1') and v1_exists(root, k, ell):
@@ -914,6 +920,7 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
 
     if fmt in ('auto', 'v2') and shipped_exists(k, ell):
         certs, stamp = read_cert_file(shipped_path(k, ell), k, ell)
+        _load_guard(k, ell, len(certs))
         save_v2_certs(root, k, ell, certs,
                       (stamp or {}).get('cert_backend', 'sage'))
         return records_from_certs(certs), 'shipped'
@@ -922,7 +929,41 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
                                     verbose=verbose)
     if fmt in ('auto', 'v2'):
         save_v2_certs(root, k, ell, certs)
+    _load_guard(k, ell, len(certs))
     return records_from_certs(certs), 'computed'
+
+
+def _load_guard(k, ell, n):
+    """Refuse a cell whose records would not fit the run's memory budget
+    (``PHASE_J_MEM_BUDGET_GB``; default ``default_mem_budget``), BEFORE they
+    are built: :data:`_LOAD_BYTES_PER_CLASS` per class (two Sage graphs; the
+    records of (2,4) or (5,2) need 10-13 GB, of (4,3) / (6,2) 81 / 140 GB).
+    ``n``: the class count when known (the cert set is in hand), else the
+    manifests' count or an extrapolation (none: no check).  Raises
+    :class:`engine.integration.time_domain.final_integral.PhaseJResourceError`
+    (audit MEM-01)."""
+    if n is None:
+        n, how = estimate_class_count(k, ell)
+        if n is None:
+            return
+        how = 'known' if how == 'known' else 'estimated'
+    else:
+        how = 'counted'
+    need = int(n) * _LOAD_BYTES_PER_CLASS
+    from engine.integration.time_domain import final_integral as _fi
+    budget, rule = _fi.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    # an extrapolated count is good to a factor of two: refuse on it only
+    # beyond that (the count is checked again once the certs are in hand)
+    if budget is None or need <= budget * (2 if how == 'estimated' else 1):
+        return
+    raise _fi.PhaseJResourceError(
+        f'the prediagrams of (k={k}, ell={ell}) do not fit the memory budget: '
+        f'{int(n):,} classes ({how}) need ~{_fmt_bytes(need)} as records '
+        f'(~{_LOAD_BYTES_PER_CLASS:,} B per class), the budget is '
+        f'{_fi._fmt_budget(budget, rule)}; {_fi._BUDGET_HOW}.',
+        estimate={'k': k, 'ell': ell, 'classes': int(n), 'classes_how': how,
+                  'bytes': need, 'budget_bytes': budget,
+                  'where': 'prediagram records'})
 
 
 _KNOWN_COUNTS = []
