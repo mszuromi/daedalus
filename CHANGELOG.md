@@ -68,7 +68,7 @@ model's own scale; `tests/test_unit_invariance.py` checks twins rescaled by up t
   fast time units (rates 1e12, lags ~1e-13) returned C(0) at every lag below 1e-12 with status 'ok' (a
   two-field damped rotation: 30-85 % off).
 
-Numbers that move: only models that hit one of the cases above. Zoo A/B: ZOO_RESULT.
+Numbers that move: only models that hit one of the cases above. Zoo A/B: 23 runnable public entries (`use_cache=False`, warm-up discarded, base main c8b869c): 17 bit-identical; `dendritic_quad_soma_sigmoid` 1.5e-16, `multipopulation_test` 1.5e-16, `quadratic_hawkes_alpha` 2.0e-16, `spike_reset` k=1 1.8e-16 and k=2 1.4e-15 (two runs of main differ by the same 1.4e-15; the branch equals one of them); analyzer codes and wall times unchanged; 5 entries refuse identically on both sides (memory budget, UV, pole-free). No zoo number moves beyond main's own scatter.
 
 #### Front end: CGF rows, Markovian embedding, kernels, model files, delay controller (audit wave W3b)
 
