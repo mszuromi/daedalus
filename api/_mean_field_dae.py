@@ -247,6 +247,45 @@ def _numpy_params(model: dict, fundamental: dict) -> dict:
     return out
 
 
+def _kernel_values(model: dict, fundamental: dict, ns=None) -> dict:
+    """``{kernel name: value}`` with every kernel symbol at its integral
+    (``g_hat(0)``, the value it has at a stationary saddle; 1 for a
+    normalised kernel), shaped like the symbol (scalar / vector / matrix):
+    an ``.equation`` row may then mention the kernel as the action does
+    (it raised NameError).  Empty for a model without kernels."""
+    specs = [k for k in (model.get('kernels') or [])
+             if k.get('name') not in {p['name'] for p in
+                                      model.get('parameters') or []}]
+    if not specs:
+        return {}
+    from sage.all import SR
+    from engine.core.field_theory import FieldTheory, kernel_dc_gains_of
+    from api._mean_field import complete_parameters
+    if ns is None:
+        ns = FieldTheory(model)._build_namespace()[0]
+    gains = kernel_dc_gains_of(ns, model)
+    fund = complete_parameters(model, fundamental, 'mean-field solve',
+                               strict=False)
+    psubs = _param_subs(model, fund, _pop_sizes(model, ns))
+
+    def val(sym):
+        g = gains.symbol_gain(sym)
+        return 1.0 if g is None else float(SR(g).subs(psubs))
+
+    def shaped(a):
+        if isinstance(a, (list, tuple)):
+            return [shaped(x) for x in a]
+        return val(a)
+    out = {}
+    for k in specs:
+        arr = getattr(ns, k['name'], None)
+        if arr is None:
+            continue
+        v = shaped(arr)
+        out[k['name']] = np.asarray(v, dtype=float) if isinstance(v, list) else v
+    return out
+
+
 # ── Population index set dict ────────────────────────────────────────
 
 
@@ -526,10 +565,12 @@ def _ladder_seeds(state_vars, slices, model, fundamental, seed_box, rng):
 
 #: At most this many root scales get their own second-pass seed box.
 _MAX_RESCALE_BOXES = 8
+#: Rounds of the second pass (a round boxes the root scales found so far).
+_RESCALE_ROUNDS = 3
 
 
 def _rescale_seeds(roots, state_vars, slices, model, fundamental, seed_box,
-                   n_starts, rng):
+                   n_starts, rng, used=None):
     """Second-pass guesses: ``n_starts`` on the default box shape scaled to
     each root found whose size (per variable, its largest component) lies
     below a fifth of the default box (or above it); one box per decade of
@@ -540,7 +581,7 @@ def _rescale_seeds(roots, state_vars, slices, model, fundamental, seed_box,
     if seed_box:
         default.update(seed_box)
     unit = _seed_box_default(state_vars, model, {})
-    keys, boxes = set(), []
+    keys, boxes = (set() if used is None else used), []
     for r in roots:
         box, key, off = {}, [], False
         for var, _, _ in state_vars:
@@ -580,43 +621,6 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
                 if p.get('mean_field') and p.get('natural_name')}
     return [var for var, _, _ in state_vars
             if declared.get(var) is None and var not in (seed_box or {})]
-
-
-def _negative_roots(R, mirror_points, roots, root_errs, state_vars, slices,
-                    names, rtol, atol):
-    """Roots the default search cannot reach.  A field with no declared
-    domain is seeded on the non-negative half line only (widening that box
-    moved existing models' roots, see ``_seed_box_default``), so a root with
-    a negative value there (``x - x^3`` at ``x = -1``) is out of reach of
-    ``fixed_point_index``.  The same seeds with those components negated
-    (``mirror_points``: where they converged) find them; warn, naming the
-    roots found and the remedy.  Returns the new roots."""
-    cols = np.concatenate([np.arange(*slices[v]) for v in names])
-    cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
-    new = []
-    for r, e in zip(cand, cand_e):
-        # negative beyond its own error estimate (a root at 0 snaps to 0)
-        if not np.any(r[cols] < -10.0 * e[cols]):
-            continue
-        if len(_dedup_roots(list(roots) + [r], rtol=rtol, atol=atol,
-                            errs=list(root_errs) + [e])[0]) > len(roots):
-            new.append(r)
-    if new:
-        new.sort(key=lambda r: float(r[cols[0]]))
-        shown = '; '.join(
-            ', '.join(f'{v}*={r[slices[v][0]:slices[v][1]].tolist()}'
-                      for v in names)
-            for r in new[:4])
-        warnings.warn(
-            f'solve_mean_field_dae: field(s) {", ".join(names)} declare no '
-            f'domain, so the root search covers only their non-negative '
-            f'values; {len(new)} more fixed point(s) exist with negative '
-            f'values ({shown}) and are NOT among the roots '
-            f'fixed_point_index ranges over.  Declare the field with '
-            f"domain='real' (SDE.field(name, domain='real') or "
-            f"physical_field(name, domain='real')), or pass mf_dae_seed_box, "
-            f'to include them.', stacklevel=3)
-    return new
 
 
 # ── Root refinement, acceptance and deduplication ───────────────────
@@ -1136,7 +1140,7 @@ def solve_mean_field_dae(
         verbose: bool = False,
         rng_seed: int = 0,
         ns=None,
-        _reduced: bool = False,
+        _reduced: Optional[bool] = None,
 ) -> dict:
     """Solve the mean-field system of a model: the ``Dt -> 0`` limit of its
     ``ModelBuilder.equation(...)`` rows, or, for a model declared with
@@ -1201,6 +1205,8 @@ def solve_mean_field_dae(
             )
         slices = _state_slices(state_vars)
         params_np = _numpy_params(model, fundamental)
+        if model.get('kernels'):
+            params_np.update(_kernel_values(model, fundamental, ns))
         phi_callables = _make_phi_callables(model, params_np)
         idx_sets = _index_sets(model)
         R, expanded = _build_residual(
@@ -1213,7 +1219,18 @@ def solve_mean_field_dae(
                 "solve_mean_field_dae: the model declares no "
                 ".equation(...) rows; its .set_mf_equation(...) saddle "
                 "equations need the FieldTheory namespace (ns=).")
-        system = _saddle_system(model, fundamental, ns, reduced=_reduced)
+        # The iteration (closure) saddles are the unknowns when the others
+        # can be substituted -- the former iteration solver's system: a
+        # compound saddle (a voltage, often negative, with no declared
+        # domain) then neither enters the seed box nor the root order, and a
+        # model written with or without its voltage selects the same root
+        # (audit W6).  The full system otherwise, or when this finds none.
+        system = None
+        if _reduced is not False:
+            system = _saddle_system(model, fundamental, ns, reduced=True)
+        used_reduced = system is not None
+        if system is None:
+            system = _saddle_system(model, fundamental, ns, reduced=False)
         state_vars, slices, R, expanded, keys, extras = system
     total = sum(size for _, _, size in state_vars)
 
@@ -1265,23 +1282,43 @@ def solve_mean_field_dae(
     # second pass: a box at the scale of every root found off the default
     # box's scale (the decade ladder has few seeds per decade, so a narrow
     # basin, e.g. the middle root of a cubic, can be missed there)
-    extra = _rescale_seeds(deduped, state_vars, slices, model, fundamental,
-                           seed_box, n_starts, rng)
+    # ... repeated for the root scales a pass discovers (a box at one
+    # root's scale can reach a root of another scale whose basin the first
+    # boxes miss; audit W6: an exactly rescaled cubic lost its largest root),
+    # each scale boxed once, at most _RESCALE_ROUNDS rounds
     n_mirror = len(seeds)
-    if len(extra):
+    used = set()
+    for _ in range(_RESCALE_ROUNDS):
+        extra = _rescale_seeds(deduped, state_vars, slices, model,
+                               fundamental, seed_box, n_starts, rng, used)
+        if not len(extra):
+            break
+        n_before = len(deduped)
         run(extra, points)
         deduped, root_errs = _roots_from_points(R, points, rtol, atol)
         seeds = np.vstack([seeds, extra])
+        if len(deduped) == n_before:
+            break
     n_converged = len(points)
     unsearched = []
+    mirror_only, mirror_only_e = [], []
     if mirror_cols is not None:
-        # the default seeds (and the ladder, when it ran) mirrored, as before;
-        # not the second-pass boxes (their roots are reached from seeds that
-        # are mirrored already)
+        # The default seeds (and the ladder, when it ran) mirrored in the
+        # fields that declare no domain; the roots they reach are selectable
+        # like any other.  (They were only reported: a negative root was
+        # selectable when a seed happened to overshoot to it, which depends
+        # on the field's units -- an exactly rescaled cubic lost a root;
+        # audit W6.)  Not the second-pass boxes: their roots are reached
+        # from seeds that are mirrored already.
         run(mirrored(seeds[:n_mirror]), mirror_points)
-        unsearched = _negative_roots(
-            R, mirror_points, deduped, root_errs, state_vars, slices,
-            undeclared, rtol, atol)
+        cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
+        for x, e in zip(cand, cand_e):
+            known = list(deduped) + mirror_only
+            if len(_dedup_roots(known + [x], rtol=rtol, atol=atol,
+                                errs=list(root_errs) + mirror_only_e + [e])[0]
+                   ) > len(known):
+                mirror_only.append(x)
+                mirror_only_e.append(e)
 
     # Sort ascending by first declared physical field's first index.
     first_var = state_vars[0][0]
@@ -1290,16 +1327,21 @@ def solve_mean_field_dae(
                    key=lambda q: float(deduped[q][first_start]))
     deduped = [deduped[q] for q in order]
     root_errs = [root_errs[q] for q in order]
+    # the roots only the mirrored seeds reach follow, ascending (where the
+    # linearization orders roots by stability, below, all are ordered
+    # together: then the order does not depend on which search found a root)
+    mo = sorted(range(len(mirror_only)),
+                key=lambda q: float(mirror_only[q][first_start]))
+    deduped = deduped + [mirror_only[q] for q in mo]
+    root_errs = list(root_errs) + [mirror_only_e[q] for q in mo]
 
-    if not deduped and not model.get('equations') and not _reduced and (
-            _saddle_system(model, fundamental, ns, reduced=True) is not None):
-        # the iteration saddles alone (compound ones substituted): their
-        # roots do not depend on where a compound saddle lies
+    if not deduped and not model.get('equations') and used_reduced:
+        # nothing for the iteration saddles alone: the full system
         return solve_mean_field_dae(
             model, fundamental, n_starts=n_starts,
             fixed_point_index=fixed_point_index, seed_box=seed_box,
             rtol=rtol, atol=atol, verbose=verbose, rng_seed=rng_seed, ns=ns,
-            _reduced=True)
+            _reduced=False)
     if not deduped:
         raise ValueError(
             f"solve_mean_field_dae: no MF fixed point found from "
@@ -1340,11 +1382,19 @@ def solve_mean_field_dae(
 
     all_root_records = []
     rec_errs = {}           # id(record) -> its error estimates
+    if stab_on and mirror_only:
+        # the stable subset is ordered ascending over every root, whichever
+        # search reached it (the order does not depend on the units)
+        asc = sorted(range(len(deduped)),
+                     key=lambda q: float(deduped[q][first_start]))
+        deduped = [deduped[q] for q in asc]
+        root_errs = [root_errs[q] for q in asc]
     if stab_on:
         for x, xe in zip(deduped, root_errs):
             rd = _build_root_dict(x)
             try:
-                stab = linear_stability(model, fundamental, rd, verbose=False)
+                stab = linear_stability(model, fundamental, rd, verbose=False,
+                                        ns=ns)
             except NonlinearDtError:
                 # A model nonlinear in Dt is not a flaky-stability
                 # nuisance — it is unrepresentable.  Let the actionable
@@ -1368,10 +1418,47 @@ def solve_mean_field_dae(
             })
             rec_errs[id(all_root_records[-1])] = _build_root_dict(xe, err=True)
     else:
-        # Skip stability entirely.  Tag each record with ``stable=None``
-        # so callers can distinguish "not classified" from "classified
-        # unstable".
-        for x, xe in zip(deduped, root_errs):
+        # No stability filter.  Tag each record with ``stable=None`` so
+        # callers can distinguish "not classified" from "classified
+        # unstable".  Where the linearization decides (``.equation`` rows
+        # with Dt terms; a kernel at its integral), the linearly stable roots
+        # come first
+        # (each group nearest to 0 first): the default fixed_point_index = 0 is then a
+        # stable root whenever one exists, whatever the roots' order on the
+        # axis (audit W6: the units decided which root was found, and so
+        # which one index 0 was).
+        stable_first = set()
+        if model.get('equations') and len(deduped) > 1:
+            for q, x in enumerate(deduped):
+                try:
+                    # (a kernel at its integral: the static linearization,
+                    # used for the order only)
+                    if linear_stability(model, fundamental, _build_root_dict(x),
+                                        verbose=False, ns=ns)['stable']:
+                        stable_first.add(q)
+                except NonlinearDtError:
+                    raise
+                except Exception:                        # noqa: BLE001
+                    pass
+        if stable_first:
+            # each group nearest to 0 first (ties ascending): invariant under
+            # a change of the field's units, and the root the old search
+            # (seeded on x >= 0 from 0) reached first stays first
+            import functools
+
+            def _cmp(p, q):
+                a = float(deduped[p][first_start])
+                b = float(deduped[q][first_start])
+                if abs(abs(a) - abs(b)) > 1e-9 * max(abs(a), abs(b)):
+                    return -1 if abs(a) < abs(b) else 1
+                return (a > b) - (a < b)        # a tie (+-c): ascending
+            asc = sorted(range(len(deduped)), key=functools.cmp_to_key(_cmp))
+            order = ([q for q in asc if q in stable_first]
+                     + [q for q in asc if q not in stable_first])
+        else:
+            order = list(range(len(deduped)))
+        for q in order:
+            x, xe = deduped[q], root_errs[q]
             all_root_records.append({
                 'values':              _build_root_dict(x),
                 'stable':              None,
@@ -1591,8 +1678,11 @@ def linear_stability(
         root: dict,
         *,
         verbose: bool = False,
+        ns=None,
 ) -> dict:
-    """Classify the linear stability of a DAE fixed point.
+    """Classify the linear stability of a DAE fixed point (a kernel in the
+    rows at its integral: the static linearization; ``ns`` the model's
+    namespace when at hand).
 
     Linearizes the DAE ``LHS_k - RHS_k = 0`` around ``root`` and solves
     the generalized eigenvalue problem ``(σ·A + B)·δx = 0`` where
@@ -1676,6 +1766,8 @@ def linear_stability(
     sage_special_ns = {'gamma': _sage_gamma, 'factorial': _sage_factorial}
 
     params_np = _numpy_params(model, fundamental)
+    if model.get('kernels'):
+        params_np.update(_kernel_values(model, fundamental, ns))
 
     # ── Build phi callables that return Sage expressions ─────────
     phi_sym = {}
@@ -1819,6 +1911,56 @@ def linear_stability(
         'B':                     B_mat,
         'unstable_eigenvalues':  unstable,
     }
+
+
+class UnstableSaddleError(ValueError):
+    """The selected mean-field saddle is linearly unstable: there is no
+    stationary state around it to expand about."""
+
+
+def refuse_unstable_saddle(model, fundamental, mf):
+    """Raise :class:`UnstableSaddleError` when the selected root of a model
+    with ``.equation`` rows (stability analysis off) has a linearization
+    eigenvalue with ``Re sigma > 0`` beyond round-off (relative to the
+    model's fastest rate, as ``linear_stability`` judges it).  Without it an
+    unstable selection surfaced as a ``PoleFreePropagatorError`` (the growing
+    mode is not a retarded pole) when the analyzer is off.  Skipped where the
+    linearization does not decide stability: no ``Dt`` rows, kernels (their
+    images are collapsed to the integral), spatial models (q > 0 modes)."""
+    if (not model.get('equations') or model.get('stability_analysis')
+            or model.get('kernels') or model.get('spatial')):
+        return
+    roots = [r['values'] for r in (mf.get('mf_all_roots') or [])]
+    sel = mf.get('mf_values')
+    try:
+        st = linear_stability(model, fundamental, sel)
+    except Exception:                                    # noqa: BLE001
+        return
+    eigs = np.asarray(st['eigenvalues_finite'], dtype=complex)
+    if not eigs.size:
+        return
+    tol = _EIG_RTOL * _rate_scale(st['A'], st['B'], eigs)
+    grow = [complex(z) for z in eigs if z.real > tol]
+    if not grow:
+        return
+    stable = []
+    for i, r in enumerate(roots):
+        try:
+            if linear_stability(model, fundamental, r)['stable']:
+                stable.append(i)
+        except Exception:                                # noqa: BLE001
+            pass
+    shown = ', '.join(f'{z.real:.4g}{z.imag:+.4g}i' for z in grow)
+    hint = (f'fixed_point_index={stable[0]}' + (f' (stable roots: '
+            f'{stable})' if len(stable) > 1 else '')) if stable else (
+            'no root found is stable: change the parameters')
+    raise UnstableSaddleError(
+        f'the selected mean-field saddle {sel} (fixed_point_index='
+        f'{mf.get("mf_index_used")} of {len(roots)} root(s)) is linearly '
+        f'unstable: eigenvalue(s) {shown} have Re > 0, so perturbations grow '
+        f'and there is no stationary state around it.  Select a stable root '
+        f'({hint}), or turn on stability_analysis(True) so that only stable '
+        f'roots are selectable.')
 
 
 # ── Compatibility wrapper for compute_cumulants ───────────────────────
