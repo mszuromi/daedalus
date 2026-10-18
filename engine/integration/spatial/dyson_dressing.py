@@ -154,12 +154,14 @@ def _periodic_1d(p, x, a, L, rtol=1e-16):
         tot = _laguerre_gauss(p, x * x, a, 1)
         n = 1
         n_min = int(np.ceil((np.max(np.abs(x)) + np.sqrt(8.0 * p * a)) / L)) + 1
+        quiet = 0
         while True:
             add = (_laguerre_gauss(p, (x + n * L) ** 2, a, 1)
                    + _laguerre_gauss(p, (x - n * L) ** 2, a, 1))
             tot = tot + add
-            if n >= n_min and np.max(np.abs(add)) <= rtol * max(
-                    np.max(np.abs(tot)), 1e-300):
+            quiet = quiet + 1 if np.max(np.abs(add)) <= rtol * max(
+                np.max(np.abs(tot)), 1e-300) else 0
+            if n >= n_min and quiet >= 2:
                 return tot
             n += 1
             if n > 100000:
@@ -169,10 +171,11 @@ def _periodic_1d(p, x, a, L, rtol=1e-16):
     k_min = int(np.ceil(np.sqrt(p / a) * L / (2.0 * np.pi))) + 1
     while True:
         q = 2.0 * np.pi * k / L
-        add = (2.0 / L) * q ** (2 * p) * np.exp(-a * q * q) * np.cos(q * x)
-        tot = tot + add
-        if k >= k_min and np.max(np.abs(add)) <= rtol * max(
-                np.max(np.abs(tot)), 1e-300):
+        bound = (2.0 / L) * q ** (2 * p) * np.exp(-a * q * q)
+        tot = tot + bound * np.cos(q * x)
+        # stop on the term's BOUND (cos -> 1): an x on a zero of cos(q x)
+        # must not end the sum early
+        if k >= k_min and bound <= rtol * max(np.max(np.abs(tot)), 1e-300):
             return tot
         k += 1
         if k > 100000:
@@ -223,7 +226,7 @@ def dressed_tree_C_x(xs, tau, M, Dhat, D0, N, order, legs, spatial_dim=1,
     i, j = legs
     at = abs(float(tau))
     ii, jj = (j, i) if tau >= 0 else (i, j)
-    if d >= 2 and at == 0.0 and np.any(xs == 0.0) and L is None:
+    if d >= 2 and at == 0.0 and np.any(xs == 0.0):
         from engine.integration.spatial.heat_kernel import (
             SpatialPropagatorError)
         raise SpatialPropagatorError(

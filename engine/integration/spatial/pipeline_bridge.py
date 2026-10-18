@@ -274,6 +274,11 @@ def _drift_boost(ft, prop, num_params):
     V = _num(V_sr, 'drift (V)')
     if not np.any(V):
         return None
+    if any(SR(e).degree(grad) >= 2 for e in K_ft.list()):
+        # GradX -> 0 below would also drop a GradX^2 term (Dx(Dx(phi)))
+        raise NotImplementedError(
+            'spatial drift with a second first-derivative (GradX^2) term in '
+            'the inverse propagator: write the second derivative as Lap(...).')
     v = _drift_velocity(V, _num(M_sr, 'reaction (M)'),
                         _num(D_sr, 'diffusion (D)'))
     prop0 = dict(prop)
@@ -317,6 +322,11 @@ def _boosted_k2(fn, ft, model, prop, num_params, external_fields, tau_grid,
         infos.append(inf)
     C = np.array(rows)
     info = dict(infos[0])
+    # per-τ diagnostics: the worst over every boosted run
+    for key in ('max_abs_imag', 'imag_frac', 'certify_max_rel'):
+        vals = [inf.get(key) for inf in infos if inf.get(key) is not None]
+        if vals:
+            info[key] = max(vals)
     if 'C_by_order' in info:
         info['C_by_order'] = {
             el: np.array([np.asarray(inf['C_by_order'][el])[0]

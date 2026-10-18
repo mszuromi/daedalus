@@ -924,7 +924,7 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # Lap(lam*pstar^2) = 0 as lam*Lap(pstar^2) is (``keep_syms``).
     saddles = [v for v in SR(s).variables() if 'star' in str(v)]
     s = kill_means(s, saddles,
-                   keep_syms=list(flucts) + [SR.var(c) for c in ('x', 'y', 'z')])
+                   keep_syms=list(flucts) + [SR.var(c) for c in ('x', 'y', 'z', 't')])
     s, genmap = to_derived_generators(s, flucts)
     ns._operator_ir_genmap = genmap
 

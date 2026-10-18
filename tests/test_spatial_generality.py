@@ -178,12 +178,16 @@ _LEG = [('phi', 1), ('phi', 1)]
 
 @pytest.mark.parametrize('s', [1.0, 1e-6, 1e8])
 def test_drift_tree_is_the_boosted_closed_form(s):
-    """Exact up to an exact change of time units (rates*s, tau/s)."""
+    """Exact up to an exact change of time units (rates*s, tau/s); total_C
+    off the grid is boosted too."""
     v = 0.3
     C, out = _k2(_advected(v), _LEG, _TD / s, _XD, mu=s, D=s, T=s, v=v * s)
     ref = np.array([[C_ou(x - v * t, t, 1.0, 1.0, 1.0) for x in _XD]
                     for t in _TD])
     assert np.max(np.abs(C - ref)) < 1e-14, (C, ref)
+    for t, x in ((0.5, 0.4), (-0.7, 1.1)):
+        got = complex(out['total_C'](t / s, x)).real
+        assert abs(got - C_ou(x - v * t, t, 1.0, 1.0, 1.0)) < 1e-14
 
 
 def test_drift_tree_periodic_box_is_the_boosted_image_sum():
@@ -403,16 +407,19 @@ def test_laguerre_gauss_transform_closed_form():
                         np.inf)[0] / (2 * np.pi ** 2)
             for gv, rv in zip(got, (ref1, ref2, ref3)):
                 assert abs(gv - rv) <= 1e-10 * max(abs(rv), 1e-3), (p, r, gv, rv)
-    L, xs = 3.0, np.array([0.0, 0.4, 1.5, 2.9])
-    for p in range(3):
-        img = _periodic_1d(p, xs, 0.999 * L * L / (4 * np.pi), L)  # images
-        mod = _periodic_1d(p, xs, 1.001 * L * L / (4 * np.pi), L)  # modes
-        # a changes by 0.2 % across the switch: compare each against its own
-        # opposite-branch evaluation at the same a via the closed image sum
-        a_m = 1.001 * L * L / (4 * np.pi)
-        img_m = sum(_F_p(p, xs + n * L, a_m, 1) for n in range(-60, 61))
-        assert np.max(np.abs(mod - img_m)) <= 1e-12 * np.max(np.abs(img_m))
-        assert np.all(np.isfinite(img))
+    # both periodic branches (narrow: images; wide: dual modes) against a
+    # brute image sum, including grids on the zeros of cos(2 pi x / L)
+    L = 3.0
+    for xs in (np.array([0.0, 0.4, 1.5, 2.9]), np.array([L / 4, 3 * L / 4])):
+        for p in range(3):
+            for f in (0.3, 0.999, 1.001, 3.0):
+                a_ = f * L * L / (4 * np.pi)
+                ref = sum(_F_p(p, xs + n * L, a_, 1) for n in range(-80, 81))
+                got = _periodic_1d(p, xs, a_, L)
+                scale = max(np.max(np.abs(ref)), _F_p(p, np.zeros(1), a_, 1)[0]
+                            * 1e-3)
+                assert np.max(np.abs(got - ref)) <= 1e-12 * abs(scale), (
+                    p, f, xs, got, ref)
 
 
 def _exact_unequal_D_line(M, Dm, N, tau, x, legs):

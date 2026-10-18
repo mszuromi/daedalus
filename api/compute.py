@@ -1938,6 +1938,9 @@ def _run_spatial(state):
     _tree_exact = (_orders == [0] and not sp_info.get('coupled')
                    and sp_info.get('modes'))
     _tau_arr = _np.asarray(tau_grid, dtype=float)
+    # a constant drift was boosted away (C_v(x, tau) = C_0(x - v tau, tau)):
+    # the off-grid exact tree is the drift-free mode at the boosted point
+    _v_drift = float(sp_info.get('drift_velocity') or 0.0)
 
     def _spatial_callable(table, exact_tree):
         def fn(*tau_then_x):
@@ -1960,6 +1963,7 @@ def _run_spatial(state):
                 from engine.integration.spatial.spatial_correlator import (
                     free_two_point_d, free_two_point_box)
                 val = 0j
+                xq = xq - _v_drift * tau
                 for (A, B, N) in sp_info['modes']:
                     if _sp_d == 1:
                         val += free_two_point(A, B, N, xq, tau,
