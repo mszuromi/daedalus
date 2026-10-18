@@ -824,10 +824,18 @@ class NormalInverseGaussian(NoiseSource):
                              f'(alpha={a:g}, beta={b:g}).')
 
     def _cgf(self):
+        # written with the one square root g = sqrt(alpha^2 - beta^2) and a
+        # series in theta around 1: K(0) is then 0 identically and every
+        # derivative carries the same branch of g.  (The form
+        # sqrt(a^2 - b^2) - sqrt(a^2 - (b + theta)^2) was expanded by Maxima
+        # into I*sqrt(b^2 - a^2) for the second root when alpha, beta are
+        # symbols, a nonzero K(0) the mean-field check refused: audit
+        # LOUD-01.)
         P = self.params
         a, b = P['alpha'], P['beta']
-        return P['mu'] * THETA + P['delta'] * (
-            sqrt(a ** 2 - b ** 2) - sqrt(a ** 2 - (b + THETA) ** 2))
+        g2 = a ** 2 - b ** 2
+        return P['mu'] * THETA + P['delta'] * sqrt(g2) * (
+            1 - sqrt(1 - (2 * b * THETA + THETA ** 2) / g2))
 
 
 class CGMY(NoiseSource):
