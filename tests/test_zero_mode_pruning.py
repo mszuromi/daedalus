@@ -196,6 +196,9 @@ def test_group_order_replay_on_random_plans(monkeypatch, block):
         if 'n_tuples_full' not in pruned or len(pruned['pole_tuples']) == len(
                 full['pole_tuples']):
             continue
+        if not pruned['pole_tuples']:             # an edge without a nonzero
+            assert all(C == 0 for C, _l in full['pole_tuples'])   # mode
+            continue
         _same_counts(pruned, full)
         qt = pruned['pole_tuples']
         got = [(a, [qt[t] for t in idx]) for a, idx in pruned['tuple_groups']]
@@ -255,14 +258,18 @@ def test_order_replay_over_its_cap_keeps_the_pruned_order(monkeypatch):
     assert len(p['pole_tuples']) == 3 * 2 * 1 * 1
 
 
-def test_edge_without_a_nonzero_mode_keeps_the_unpruned_plan():
+def test_edge_without_a_nonzero_mode_builds_the_empty_plan():
+    # every tuple of the unpruned plan has coefficient exactly 0, so the
+    # pruned plan is the plan of an edge without modes (audit MEM-06: the
+    # full product was built and charged for an identically zero integrand)
     modes = _modes(3)
     modes[2] = [(0j, -1.1), (0j, -0.4)]
     ems = [_ems(md) for md in modes]
     p = FI._build_modesum_plan(ems, _ROWS, 3, 1, prune=True)
     q = FI._build_modesum_plan(ems, _ROWS, 3, 1, prune=False)
-    assert p['pole_tuples'] == q['pole_tuples']
-    assert p['tuple_groups'] == q['tuple_groups']
+    assert p['pole_tuples'] == () and p['tuple_groups'] == ()
+    assert p['n_tuples_full'] == 0
+    assert q['pole_tuples'] and all(C == 0 for C, _l in q['pole_tuples'])
 
 
 def test_only_exact_zeros_are_pruned():

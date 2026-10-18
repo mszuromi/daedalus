@@ -2301,7 +2301,8 @@ def _run_phase_j(state, grouped):
     # budget is read ONCE for the run (item 53: its default depends on what
     # the process holds), so the pre-pass and the running guard agree.
     from engine.integration.time_domain import final_integral as _fi_b
-    _run_budget = (_fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    _run_budget = (_fi_b.run_budget() if hasattr(_fi_b, 'run_budget')
+                   else _fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
     # Item 61: evaluate-and-discard needs fixed evaluation points (k <= 2
     # on the τ grid) and a single pass

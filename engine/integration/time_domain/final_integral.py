@@ -1021,6 +1021,16 @@ class run_growth_scope:
         return False
 
 
+def run_budget():
+    """``(budget, rule)`` of the running :class:`run_growth_scope` (the
+    run's one reading of the budget), or a fresh ``mem_budget`` reading
+    outside one."""
+    with _PLAN_MEM_LOCK:
+        if _RUN_GROWTH['active'] > 0:
+            return _RUN_GROWTH['budget'], _RUN_GROWTH['rule']
+    return mem_budget('PHASE_J_MEM_BUDGET_GB')
+
+
 def growth_scoped(fn):
     """Decorator: run ``fn`` inside a :class:`run_growth_scope`."""
     @_functools.wraps(fn)

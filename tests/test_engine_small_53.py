@@ -256,14 +256,18 @@ def test_run_reads_the_budget_once(monkeypatch):
     monkeypatch.setattr(FI, '_ram_bytes', lambda: 8 * GB)
     calls = []
 
+    # +10 MB per read (the run-growth guard of audit W8 reads the footprint
+    # at every checkpoint: a fake +0.5 GB per read is a growth it refuses)
     def growing():
         calls.append(1)
-        return (1.0 + 0.5 * len(calls)) * GB             # +0.5 GB per read
+        return (1.5 + 0.01 * (len(calls) - 1)) * GB
     monkeypatch.setattr(FI, 'process_footprint_bytes', growing)
     r = compute_cumulants(_oscillator(), k=2, max_ell=1,
                           external_fields=[('dT', 1)] * 2, parallel=False,
                           verbose=False, tau_grid=np.array([0.0, 0.7]))
     est = r['phase_j_memory']
+    assert len(calls) > 3                                 # it did grow
+    # the first reading (1.5 GB held) sets the budget of the whole run
     assert est['budget_bytes'] == pytest.approx((4.8 - 1.5) * GB, rel=1e-12)
     assert FI._PLAN_MEM['budget'] == est['budget_bytes']
     assert FI._PLAN_MEM['rule'] == est['budget_rule']
