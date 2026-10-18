@@ -714,14 +714,26 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     noise_amp_prefixes = list(ns.get('amplitude_params', []))
 
     Scal = combinatorial_factor(typed_diagram)
+    # ``bool``'s zero verdict without Maxima for a coefficient with floats or
+    # assumption symbols (seconds per call on a large one, audit W8)
+    from engine.core.field_theory import _sr_nonzero
+
+    def _is_zero(c):
+        return not _sr_nonzero(c)
 
     scalar_parts = [SR(Scal)]
     vertex_time_factors = {}
     source_time_info = {}
+    # each factor is the vertex's own ``-coefficient`` (no time-dependent
+    # part split off): the product is then a function of ``Scal`` and the
+    # ordered vertex types alone (``_PREFACTOR_MEMO``)
+    plain_parts = True
+    vtypes_in_order = []
 
     for v, vtype in typed_diagram.vertex_assignments.items():
         # Z = ∫ exp(-S), so each vertex factor from S_V acquires (-1).
         coeff = -SR(vtype.coefficient)
+        vtypes_in_order.append(vtype)
 
         if _is_source_type(vtype):
             n_legs = len(vtype.response_legs)
@@ -739,8 +751,9 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
             # holds only the part left INSIDE (1 unless time-dependent), so
             # nothing is ever counted twice.
             if amp_td_syms:
+                plain_parts = False
                 const_part = coeff.subs({s: SR(1) for s in amp_td_syms})
-                if const_part.is_zero():
+                if _is_zero(const_part):
                     const_part = SR(1)
             else:
                 const_part = coeff
@@ -750,7 +763,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
                 'n_legs': n_legs,
                 'temporal_type': noise_type,
                 'amplitude': (coeff / const_part
-                              if not const_part.is_zero() else SR(1)),
+                              if not _is_zero(const_part) else SR(1)),
                 'amplitude_is_time_dep': amp_is_td,
                 'in_integrand': not can_pull_out,
             }
@@ -761,15 +774,32 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
             if not td_syms:
                 scalar_parts.append(coeff)
             else:
+                plain_parts = False
                 const_part = coeff.subs({s: SR(1) for s in td_syms})
-                td_part = coeff / const_part if not const_part.is_zero() else coeff
+                td_part = coeff / const_part if not _is_zero(const_part) else coeff
 
-                if not const_part.is_one() and not const_part.is_zero():
+                if not const_part.is_one() and not _is_zero(const_part):
                     scalar_parts.append(const_part)
 
                 vertex_time_factors[v] = td_part.simplify_rational()
 
-    scalar_prefactor = reduce(mul, scalar_parts, SR(1))
+    if plain_parts:
+        # the same ordered product recurs across typed diagrams (44k
+        # diagrams, ~8 ms per product of large float coefficients on a
+        # three-field jump model at two loops); same operands in the same
+        # order give the same expression
+        key = (repr(Scal), tuple(id(vt) for vt in vtypes_in_order))
+        hit = _PREFACTOR_MEMO.get(key)
+        if hit is not None and all(a is b for a, b in
+                                   zip(hit[0], vtypes_in_order)):
+            scalar_prefactor = hit[1]
+        else:
+            scalar_prefactor = reduce(mul, scalar_parts, SR(1))
+            if len(_PREFACTOR_MEMO) >= _PREFACTOR_MEMO_MAX:
+                _PREFACTOR_MEMO.clear()
+            _PREFACTOR_MEMO[key] = (tuple(vtypes_in_order), scalar_prefactor)
+    else:
+        scalar_prefactor = reduce(mul, scalar_parts, SR(1))
 
     is_stationary = (
         len(vertex_time_factors) == 0
@@ -786,3 +816,10 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
         'source_time_info': source_time_info,
         'is_stationary': is_stationary,
     }
+
+
+#: ``classify_coefficient_factors``: ``(repr(Scal), ordered vertex-type
+#: ids) -> (the vertex types, the product)`` (the types are kept so an id
+#: is never reused while its entry lives)
+_PREFACTOR_MEMO: dict = {}
+_PREFACTOR_MEMO_MAX = 8192
