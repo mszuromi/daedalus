@@ -244,7 +244,10 @@ GH average, `_formfactor_average(…, spatial_dim)` + the per-component
 `diagram_form_factor(…, d)`; `Lap→−|p|²`, `Dx_i→i p_i`, KPZ `(∇h)²=Σ_i(∂_i h)²`)
 — see `docs/spatial_d_ge_2.md`. The remaining `d≥2` caveat is physical: the loop
 form factor raises the superficial degree of divergence, so the *bare* loop is
-cutoff-sensitive (needs renormalisation).
+cutoff-sensitive (needs renormalisation). The UV power count includes the form
+factor (see *Accuracy status*), so such loops now refuse (`SpatialUVDivergenceError`;
+e.g. the Model B and KPZ one-loop bubbles at d = 2, `ω = 0`); d ≥ 2 derivative
+trees and UV-finite loops run.
 
 ## Real-space output: the analytic `q→x` IFT
 
