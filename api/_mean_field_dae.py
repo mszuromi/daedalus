@@ -56,12 +56,14 @@ _MATH_NS = {
     'tanh': np.tanh, 'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
     'exp':  np.exp,  'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
     'sinh': np.sinh, 'cosh': np.cosh,
-    # the mean of a library noise (CGMY, tempered stable, ...) with a
-    # symbolic exponent carries Gamma functions (audit LOUD-02: NameError
-    # 'factorial' in the saddle solve)
-    'gamma': _gamma, 'factorial': _factorial,
     'pi':   float(np.pi),
 }
+
+# The mean of a library noise (CGMY, tempered stable, ...) with a symbolic
+# exponent carries Gamma functions (audit LOUD-02: NameError 'factorial' in
+# the saddle solve).  Placed BEFORE the model's names in every namespace: a
+# parameter called ``gamma`` keeps its value.
+_SPECIAL_NS = {'gamma': _gamma, 'factorial': _factorial}
 
 
 def _sage_to_python(text: str) -> str:
@@ -209,7 +211,7 @@ def _make_phi_callables(model: dict, params: dict) -> dict[str, '_PhiCallableLis
         for i in range(pop_size_val):
             def phi_i(x_val, _expr=expr_py, _arg=arg_name,
                       _i=i, _params=params):
-                ns = {**_params, **_MATH_NS,
+                ns = {**_SPECIAL_NS, **_params, **_MATH_NS,
                       _arg: x_val, 'i': _i,
                       'sum': sum, '__builtins__': {}}
                 return eval(_expr, ns)
@@ -352,6 +354,7 @@ def _build_residual(model: dict, params_np: dict,
         # blows up with NameError on the free names inside the
         # genexpr.
         ns = {
+            **_SPECIAL_NS,
             **params_np,
             **state,
             **phi_callables,
@@ -1669,8 +1672,8 @@ def linear_stability(
         'tan':  _sage_tan,  'exp':  _sage_exp,  'log':  _sage_log,
         'sqrt': _sage_sqrt, 'sinh': _sage_sinh, 'cosh': _sage_cosh,
         'abs':  abs,        'pi':   _sage_pi,
-        'gamma': _sage_gamma, 'factorial': _sage_factorial,
     }
+    sage_special_ns = {'gamma': _sage_gamma, 'factorial': _sage_factorial}
 
     params_np = _numpy_params(model, fundamental)
 
@@ -1689,7 +1692,7 @@ def linear_stability(
         for i in range(pop_size_val):
             def phi_i(x_sym, _expr=expr_py, _arg=arg_name,
                       _i=i, _params=params_np):
-                ns = {**_params, **sage_math_ns,
+                ns = {**sage_special_ns, **_params, **sage_math_ns,
                       _arg: x_sym, 'i': _i,
                       'sum': sum, '__builtins__': {}}
                 return eval(_expr, ns)
@@ -1718,6 +1721,7 @@ def linear_stability(
         rhs_py = _sage_to_python(eq['rhs_text'])
         for i in range(pop_size_val):
             ns = {
+                **sage_special_ns,
                 **params_np,
                 **sym_per_var_eval,
                 **phi_sym,

@@ -149,6 +149,15 @@ _M3_MOVERS = ('quad_exp-k2-l1',)
 # (keys ``<entry>/<array>``), and used in place of the baseline's.
 _REFROZEN_NPZ = os.path.join(os.path.dirname(__file__), 'fixtures',
                              'phase_j_legacy_baseline_refrozen_item21.npz')
+# Audit W6 (GEN-02): every ``.set_mf_equation`` model's saddle is solved to
+# round-off by the multi-root solver (the old fsolve stopped ~1e-12..1e-11
+# short; 50-digit roots confirm the new values to <= 3e-16).  The arrays this
+# moves beyond rtol 1e-13 are refrozen here: spike_reset k1 l1 (ell1, total:
+# 2.9e-12), spike_reset k2 l1 and its grouped twin (ell0, ell1, total:
+# 2.9e-11), quad_exp k2 l1 (ell0: 1.1e-11; its ell1 / total differ from the
+# baseline already at main, unchanged here).
+_REFROZEN_NPZ_W6 = os.path.join(os.path.dirname(__file__), 'fixtures',
+                                'phase_j_legacy_baseline_refrozen_w6.npz')
 
 
 # The one route counter that the cluster route changes on that entry: the
@@ -162,12 +171,15 @@ _REFROZEN_COUNTERS = {'multipopulation_test-k2-l1': {'polytope_m0_direct': 42}}
 def _refrozen_arrays(name):
     """The refrozen arrays of an entry whose baseline values moved for a
     reviewed reason, ``{array: values}`` (empty for every other entry)."""
-    if not os.path.exists(_REFROZEN_NPZ):
-        return {}
-    with np.load(_REFROZEN_NPZ) as z:
-        prefix = name + '/'
-        return {k[len(prefix):]: np.array(z[k]) for k in z.files
-                if k.startswith(prefix)}
+    out = {}
+    prefix = name + '/'
+    for path in (_REFROZEN_NPZ, _REFROZEN_NPZ_W6):
+        if not os.path.exists(path):
+            continue
+        with np.load(path) as z:
+            out.update({k[len(prefix):]: np.array(z[k]) for k in z.files
+                        if k.startswith(prefix)})
+    return out
 
 
 # Default mode, an entry served by the M2b hardened quadrature fallback: the

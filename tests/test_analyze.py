@@ -97,13 +97,15 @@ GOLDEN = {
     'ou_quartic_two_dim_color_corr': (4, True, _CM, True, 'rational', 3, True, _LIN, True, 1, False,
                                       frozenset({'G4_MARKOV_CONSENT_MISSING'})),
     'linear_hawkes':           (4, False, _W, False, 'rational', 4, True, 'poles', True, 1, True, _HAWKES),
-    'single_population_quad_exp_test': (4, False, _W, False, 'rational', 4, True, 'poles', True, 1, True,
+    # two saddles (the quadratic transfer function's low and high rate; every
+    # root is searched since audit W6 / GEN-02; the low one is selected)
+    'single_population_quad_exp_test': (4, False, _W, False, 'rational', 4, True, 'poles', True, 2, True,
                                         _HAWKES | {'G0_DOMAIN_BOUNDARY'}),
     'single_population_linear_delta_spikes_test': (4, False, _W, False, 'rational', 2, True, 'poles', True, 1,
                                                    True, _HAWKES | {'G0_DOMAIN_BOUNDARY'}),
     'single_population_spike_reset_test': (4, False, _W, False, 'rational', 2, True, 'poles', True, 1, True,
                                            _HAWKES),
-    'quadratic_hawkes_alpha':  (4, False, _W, False, 'rational', 8, True, 'poles', True, 1, True, _HAWKES),
+    'quadratic_hawkes_alpha':  (4, False, _W, False, 'rational', 8, True, 'poles', True, 2, True, _HAWKES),
     # two pole clusters (kappa ~ 1e2): G3_CLOSE_POLES is info since they are resolved (api._pole_clusters)
     'multipopulation_test':    (8, False, _W, False, 'rational', 16, True, 'poles', True, 1, True, _HAWKES),
     'dendritic_quad_soma_sigmoid': (8, False, _W, False, 'rational', 4, True, 'poles', True, 1, True, _HAWKES),
