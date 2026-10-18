@@ -1762,6 +1762,11 @@ def compute_cumulants(
     _phase_time('mean_field', _t_phase)
     if _pf is not None:
         _pf.mean_field(mf)                # G2 / G3 spatial / G4 / undriven
+    else:
+        # the analyzer (G2_UNSTABLE_SADDLE) is off: an unstable selection is
+        # refused here by name, not later as a pole-free propagator
+        from api._mean_field_dae import refuse_unstable_saddle
+        refuse_unstable_saddle(model, fundamental, mf)
 
     # ── 3.5 Spatial short-circuit ─────────────────────────────────
     # A spatial model's propagator carries the inert ``Laplacian``

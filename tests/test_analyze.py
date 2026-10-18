@@ -118,9 +118,11 @@ GOLDEN = {
     'edwards_wilkinson_1d':               (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
     'kpz_1d':                             (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
     'linear_diffusion_test':              (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
-    'reaction_diffusion_2d':              (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
+    # two saddles: phi = 0 (selected) and the unstable negative root, which
+    # the mirrored seeds reach and which is selectable since audit W6
+    'reaction_diffusion_2d':              (1, True, _W, True, _SP, None, True, _LIN, True, 2, False, frozenset()),
     'reaction_diffusion_conserved_1d':    (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
-    'reaction_diffusion_quadratic_1d':    (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
+    'reaction_diffusion_quadratic_1d':    (1, True, _W, True, _SP, None, True, _LIN, True, 2, False, frozenset()),
     # SDE front-end references
     'sde_ou_quartic':     (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, False, frozenset()),
     'sde_multiplicative': (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, True,
