@@ -11,37 +11,27 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
-#### Test-suite precision (audit wave W5)
+#### Changed: macOS never forks; `DAEDALUS_PARALLEL=0` kill switch; the OBJC fork-safety flag is never set
 
-Tests, CI and the environment only; no library code changed and no public number moved.
-
-- **A public exact-oracle suite runs in CI** (`tests/test_public_oracles.py`, references in `tests/oracles_public/refs.py`,
-  mpmath only, no package code): linear Gaussian SDEs (non-normal 3-field drift, correlated noise, a Jordan block, poles
-  1e-7 apart; Lyapunov + expm), Levy-driven linear SDEs at k = 2..4 (closed form), linear Hawkes rates and two-point
-  functions (Markov embedding), 1-D polynomial drifts loop by loop at unequal times (backward generator; the Boltzmann
-  series 1, -3, 24, -297), the delayed OU process (exact BVP), Erlang kernels, the switch-on transient (Van Loan),
-  colored noise (exact one-loop mass shift) and the 1-D Allen-Cahn tree and one loop. Tolerance 1e-12 relative to the
-  cell's scale on both the state-space and the pole engine. One cell is a strict xfail: the spatial d = 1 equal-time
-  one loop is 2e-6..7e-6 off the exact tadpole mass shift (tau = 1 agrees to 3e-12).
-- **Mutation-killing tests** (`tests/test_audit_w5_mutation_kills.py`) for the audit's surviving mutants: Laurent
-  residues at double and triple poles, the pole-cluster cancellation factor, the Taylor degree selection of the
-  state-space exponential, and the exact delayed tree (rational K0, dynamic delayed K1, against a spectral integral; the
-  neutral-system refusal). Each test was checked to fail on its mutant.
-- **Tolerances tightened to the measured accuracy**: 327 assertions that were >= 100x looser than the worst error the
-  suite achieves (or exact under a loose tolerance) now sit at max(1e-12, the decade above 100x the worst error on
-  either the local or the CI stack); 12 were left alone (semantic thresholds, or already at the floor). Ten `pytest.approx` checks on values far
-  below 1 get `abs=0` (the default `abs=1e-12` made them vacuous, e.g. a 2e-20 residue), and a stochastic check whose
-  expected value was below its own 5-sigma band now runs at a lag where it is not. Three assertions that ran within
-  2x of their tolerance on CI's stack got a decade of room.
-- **New tests for untested public paths**: `dd.prediagram_mappings`, `RationalKernel` at a delta contact,
-  `Cumulant.smooth`, phase-type jumps from floats and a symbolic rate, the simulator's delayed-kernel ring buffer and
-  `record=`, a lift-the-bound test for the tree enumeration's |V2| bound, exact counts in the type-assignment tests,
-  and the README's Python snippets run as written (`tests/test_readme_snippets.py`).
-- **Slow tests run weekly and on demand** (`.github/workflows/slow-tests.yml`, three shards); the two tests whose
-  footprint exceeds 12 GB are marked `bigmem` and run only when asked. The analyzer's cold-cache counterparts of its
-  warm-cache skips are slow tests, so they now run there. A test that needs a git checkout skips outside one.
-- **`environment.yml` pins the exact stack CI runs** (python 3.12, numpy 2.3.5, scipy 1.17.1, sympy 1.13.3,
-  numba 0.65.1; the supported ranges stay in a comment), and CI prints the resolved versions.
+- **macOS never forks**, in any process (notebook, terminal IPython, script, pytest). `engine.fork_safety.fork_unsafe`
+  is True for the `fork` start method on macOS, and every fork-based pool (Phase J `total_C_batch` /
+  `eval_per_diagram_batch`, type assignment `enumerate_all`, streaming enumeration with `DAEDALUS_PREDIAGRAM_PROCS` > 1)
+  runs serially there with one `RuntimeWarning` per process. Before, plain macOS scripts forked. A Sage process is
+  multithreaded after its first symbolic step (Boehm GC marker threads of ECL), and forking a macOS Jupyter kernel has
+  hard-crashed the OS. Linux keeps the fork path. Numbers do not move: the parallel paths were bit-identical to serial.
+- **`DAEDALUS_PARALLEL=0`** (also false/no/off) turns every worker pool off, silently, read at call time: the fork
+  pools above, the spatial thread pool and the legacy eager enumerator's `n_threads`. Any value other than 0/1,
+  false/true, no/yes or off/on raises `ValueError`.
+- **`OBJC_DISABLE_INITIALIZE_FORK_SAFETY` is never set** (three library sites and one test removed). The
+  Objective-C runtime reads it once, at image load, so setting it from Python never affected the forks it was meant
+  to guard. It only stayed in `os.environ` and disabled the runtime's fork check in every process exec'd later, where
+  that turns a controlled abort into a hard crash.
+- `engine.fork_safety.in_jupyter_kernel()` is public (any ipykernel, `ZMQInteractiveShell` anywhere in the shell's MRO
+  as in SageMath and Spyder, or a shell with a kernel). `fork_unsafe_in_notebook` keeps its meaning (the kernel case).
+- Tests: fake SageMath / Spyder / VS Code shells, the macOS rule without a kernel, kill-switch parsing and every pool
+  under `DAEDALUS_PARALLEL=0`, one warning per process, a source scan that nothing sets the OBJC flag, and (Linux
+  only) a forked child that runs Maxima and a full ECL garbage collection within a timeout. The fork bit-identity
+  tests skip on macOS; Linux CI runs them.
 
 #### Fixed: the fork guard missed the SageMath Jupyter kernel
 
