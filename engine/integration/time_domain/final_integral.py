@@ -232,10 +232,10 @@ class PoleFreePropagatorError(ValueError):
     entry whose smooth (non-instantaneous) part cannot be shown to vanish.
 
     The propagator builder keeps only strictly retarded poles
-    (Im ω > 1e-9, ``api/_propagator.py``).  A marginal or non-retarded mode
-    -- e.g. λ = 0 at q = 0 for a massless field -- is dropped from the
-    list although the entry still has a smooth part, which then cannot be
-    evaluated from the pole list.  Raised (with ``STRUCTURAL_ZEROS`` on)
+    (Im ω > 1e-12 of the largest |root|, ``api/_propagator.py``).  A
+    marginal or non-retarded mode -- e.g. λ = 0 at q = 0 for a massless
+    field -- is dropped from the list although the entry still has a
+    smooth part, which then cannot be evaluated from the pole list.  Raised (with ``STRUCTURAL_ZEROS`` on)
     instead of returning a value: before M2a the per-diagram path failed
     here with a bare ``IndexError``.  ``entries``: the offending
     ``(pi, ri)`` entries; ``reasons``: ``{(pi, ri): why}``."""
@@ -316,7 +316,7 @@ def _pole_free_forced_delta_edges(edge_info, propagator_data, zero_by_entry,
             f'(non-instantaneous) part of {len(bad)} entr'
             f"{'y' if len(bad) == 1 else 'ies'} used by this diagram is "
             f'not provably zero -- {lines}.  The propagator builder keeps '
-            f'only strictly retarded poles (Im ω > 1e-9, '
+            f'only strictly retarded poles (Im ω > 1e-12 max|root|, '
             f'api/_propagator.py), so a marginal or non-retarded mode '
             f'(e.g. λ = 0 at q = 0 for a massless field) was dropped from '
             f'the pole list, and this smooth part cannot be evaluated '
@@ -333,8 +333,8 @@ def _smooth_part_is_exact_zero(C_mats, n_poles, pi, ri):
 
     With no poles at all this residue test decides nothing (False): an
     empty pole list is not evidence of a zero smooth part, because the
-    propagator builder keeps only strictly retarded poles (Im ω > 1e-9,
-    ``api/_propagator.py``) and drops a marginal λ = 0 mode (e.g. a
+    propagator builder keeps only strictly retarded poles (Im ω > 1e-12 of
+    the largest |root|, ``api/_propagator.py``) and drops a marginal λ = 0 mode (e.g. a
     massless spatial mode at q = 0) although its smooth part is not zero.
     ``_forced_delta_edges`` decides a pole-free propagator from ``G_ft``
     instead (``_entry_is_provably_instantaneous``).  Any failure to
@@ -452,10 +452,31 @@ def _extract_exp_mode(sr_expr, tau_sym):
     except Exception:
         return None
     # The log-derivative at 0 fits ANY kernel; check that it is the kernel
-    # (a sum of exponentials would otherwise get a wrong single mode).
+    # (a sum of exponentials would otherwise get a wrong single mode), at
+    # times on the kernel's OWN scale (audit W4b, ACC-60: fixed times 0.37,
+    # 1.9, 4.3 underflowed for a fast kernel, so r e^{-rt} cos(rt) at
+    # r = 2000 passed with nothing compared and was fitted as one real mode;
+    # its r = 2 twin was refused).  The scale is |lambda| together with the
+    # curvature of log g at 0 (which a pure exponential lacks), so that
+    # cos(w t) (lambda = 0) is probed at t ~ 1/w; both scale like a rate,
+    # so the probe times are fixed multiples of the kernel's time unit.
     import cmath
+    rate = abs(lam)
+    if rate == 0:
+        # no rate to set the unit (a constant, or cos(w t)): the curvature
+        # of log g at 0, which an exponential lacks (computed only here, so
+        # an ordinary kernel takes exactly the symbolic steps it took before)
+        try:
+            curv = complex(CDF(SR(sr_expr.diff(tau_sym, 2) / sr_expr
+                                  - (sr_expr.diff(tau_sym) / sr_expr) ** 2)
+                           .subs({tau_sym: 0})))
+        except Exception:
+            return None
+        rate = math.sqrt(abs(curv))
+    unit = 1.0 / rate if rate > 0 and math.isfinite(rate) else 1.0
     try:
-        for t in (0.37, 1.9, 4.3):
+        for t0 in _EXP_MODE_PROBES:
+            t = t0 * unit
             fit = C * cmath.exp(lam * t)
             if abs(fit) < 1e-250 * abs(C):
                 continue                    # underflow: nothing to compare
@@ -467,6 +488,39 @@ def _extract_exp_mode(sr_expr, tau_sym):
     return (C, lam)
 
 
+#: Probe times of the single-exponential fit check, in units of the kernel's
+#: own time scale (``_extract_exp_mode``).
+_EXP_MODE_PROBES = (0.37, 1.9, 4.3)
+
+
+def _trig_as_exp(expr):
+    """``expr`` with cos, sin, cosh and sinh written as exponentials, so that
+    a damped-oscillatory kernel ``r e^{-rt} cos(rt)`` splits into its two
+    complex modes (``_extract_exp_modes``) on the pole route as on the
+    state-space route (audit W4b, ACC-60: written with cos it was refused,
+    at r = 2, or fitted as one real mode, at r = 2000).  The SAME object
+    when none of them occurs (an operator walk: nothing is built for a
+    kernel without a trig factor)."""
+    from sage.all import cos, sin, cosh, sinh, exp, I
+    trig = (cos, sin, cosh, sinh)
+    stack = [expr]
+    while stack:
+        x = stack.pop()
+        op = x.operator()
+        if op is None:
+            continue
+        if any(op is f for f in trig):
+            break
+        stack.extend(x.operands())
+    else:
+        return expr
+    w = SR.wild(0)
+    return expr.subs({cos(w): (exp(I * w) + exp(-I * w)) / 2,
+                      sin(w): (exp(I * w) - exp(-I * w)) / (2 * I),
+                      cosh(w): (exp(w) + exp(-w)) / 2,
+                      sinh(w): (exp(w) - exp(-w)) / 2})
+
+
 def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
     """``[(C_k, λ_k), ...]`` with ``sr_expr == Σ_k C_k exp(λ_k tau_sym)``
     (distinct λ_k, numeric), or ``None`` when the expression is not a
@@ -476,7 +530,10 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
     at three points."""
     import cmath
     try:
-        expr = SR(sr_expr).expand()
+        expr0 = SR(sr_expr)
+        expr = _trig_as_exp(expr0)
+        from_trig = expr is not expr0
+        expr = expr.expand()
     except Exception:
         return None
     try:
@@ -499,8 +556,15 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
     modes = [(C, lam) for (C, lam) in acc.values() if C != 0]
     if not modes or _kernel_rates_clustered(modes):
         return None
+    if from_trig and any(lam.real >= 0 for (_C, lam) in modes):
+        # a trig kernel that does not decay (cos(w t), cosh(t)): refused as
+        # before the rewrite (``_trig_as_exp``) existed
+        return None
+    # probe on every mode's own time scale (ACC-60: fixed times underflow
+    # for fast modes and check nothing)
+    rates = sorted({abs(lam) for (_C, lam) in modes if abs(lam) > 0}) or [1.0]
     try:
-        for t in (0.37, 1.9, 4.3):
+        for t in sorted({t0 / r for r in rates for t0 in _EXP_MODE_PROBES}):
             g_t = complex(CDF(SR(SR(sr_expr).subs({tau_sym: t}))))
             fit = sum(C * cmath.exp(lam * t) for C, lam in modes)
             scale = sum(abs(C * cmath.exp(lam * t)) for C, lam in modes)
@@ -3693,12 +3757,18 @@ def _enumerate_linear_extensions(poset):
     yield from _recurse([], in_count, available)
 
 
-def _causal_poset_consistent_scalar_lower(poset, tol=1e-9):
+#: Relative tolerance of "equal" scalar lowers (``_poset_scalar_lower_verdict``),
+#: against the largest scalar bound of the poset (its time scale).
+POSET_LOWER_RTOL = 1e-12
+
+
+def _causal_poset_consistent_scalar_lower(poset, tol=POSET_LOWER_RTOL):
     r"""Compute the single effective scalar lower bound shared by
     variables that have one.
 
     Returns ``(L, True)`` if every variable WITH A SCALAR LOWER has
-    the same value ``L`` (within ``tol``), or no scalar lower at all
+    the same value ``L`` (within ``tol`` RELATIVE to the largest scalar
+    bound of the poset), or no scalar lower at all
     (returns ``(None, True)`` — caller uses a bbox cap).  Variables
     WITHOUT an explicit scalar lower inherit ``L`` via the chain
     ordering of any linear extension: the chain-simplex form
@@ -3756,10 +3826,17 @@ def _poset_lower_not_inherited(poset, lower_vars):
     return False
 
 
-def _poset_scalar_lower_verdict(poset, tol=1e-9):
+def _poset_scalar_lower_verdict(poset, tol=POSET_LOWER_RTOL):
     """``(L, ok, reason)``: ``_causal_poset_consistent_scalar_lower``'s
     ``(L, ok)`` plus why it failed (``None``, ``'inconsistent'``: unequal
-    scalar lowers, ``'not_inherited'``: the M3 inheritance rule)."""
+    scalar lowers, ``'not_inherited'``: the M3 inheritance rule).
+
+    Lowers count as equal within ``tol`` times the poset's time scale (its
+    largest scalar bound, lower or upper), a rounding-level margin in any
+    time unit.  Audit W4b (ACC-63): an ABSOLUTE 1e-9 merged the distinct
+    lowers 0 and 5e-10 of a region with upper 2e-9 (the exact 1e9-faster
+    twin of 0, 0.5, 2, which bails): the chain simplex from one L gave the
+    m = 3 value 36.6 % low."""
     per_var_max = {}
     for (var, c) in poset.scalar_lowers:
         cur = per_var_max.get(var)
@@ -3768,7 +3845,9 @@ def _poset_scalar_lower_verdict(poset, tol=1e-9):
         return (None, True, None)
     vals = list(per_var_max.values())
     Lmin, Lmax = min(vals), max(vals)
-    if Lmax - Lmin > tol:
+    t_scale = max(abs(c) for (_v, c) in
+                  tuple(poset.scalar_lowers) + tuple(poset.scalar_uppers))
+    if Lmax - Lmin > tol * t_scale:
         return (None, False, 'inconsistent')
     # All variables that have a scalar lower agree on value Lmax.
     # Variables without one inherit it via the chain ordering -- M3: only
@@ -5763,7 +5842,13 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     r = bf.chain_fold_mag(tc, gmax, ST, LS, MANT, tcabs)
     if r is None:
         return None
-    return r[0], r[1], _dd_scale_np(coef, gamma)
+    # the scalar loop's floor: Σ |coef| e^{Re γ} times the time volume of
+    # the fastest exponent of the tuples with a nonzero coefficient
+    A = np.asarray(arrs['A'])
+    nz = np.asarray(coef) != 0
+    rate = (float(np.max(np.abs(A[nz]))) if A.size and np.any(nz) else 0.0)
+    return r[0], r[1], _dd_scale_np(coef, gamma) * _dbm.time_volume(
+        rate, m, _chain_widths(L, upper_for_ext, m))
 
 
 def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
@@ -5839,11 +5924,13 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
             total_mp = _mpc(0, 0)
     total = 0.0 + 0.0j
     mag = scale = 0.0
+    rate = 0.0
     for alphas_orig, members in groups:
         members = [(c, g) for (c, g) in members if c != 0]
         if not members:
             continue
         scale += sum(_dd_scale_term(c, g) for (c, g) in members)
+        rate = max([rate] + [abs(complex(a)) for a in alphas_orig])
         g_max = max(g.real for (_c, g) in members)
         tc = 0.0 + 0.0j
         tcabs = 0.0
@@ -5879,7 +5966,9 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                 total += v
     if use_mp_accum:
         total = complex(float(total_mp.real), float(total_mp.imag))
-    return _poset_dd_finish(total, L, upper_for_ext, mag, scale)
+    return _poset_dd_finish(total, L, upper_for_ext, mag,
+                            scale * _dbm.time_volume(
+                                rate, m, _chain_widths(L, upper_for_ext, m)))
 
 
 def _poset_dd_finish(total, L, upper_for_ext, mag=0.0, scale=0.0):
@@ -6027,10 +6116,13 @@ def _integrate_subset_dbm(
             _RUNTIME_COUNTERS['dbm_declined_other'] += 1
             return _bail('dbm_nonfinite')
 
-    # The integrand's scale for the conditioning test's absolute floor:
-    # Σ |pole-tuple coefficient| (prefactor included), the bound of the
-    # integrand where every Δt >= 0 and Re λ <= 0.
-    scale = sum(abs(C) for (C, _E, _b) in seeds)
+    # The conditioning test's absolute floor: the DBM's own default
+    # (``integral_scale``: Σ |C| e^{Re E} times a volume in the fastest
+    # exponent's time unit, capped by the region), in the units of the
+    # integral.  Audit W4b (ACC-64): the Σ |C| passed here lacked e^{Re E}
+    # (an ill-conditioned closed form in a correlator tail passed, its mp
+    # retry skipped) and [time]^m (the verdict changed with the time unit).
+    scale = None
     # M7: the box.  Default: ±_nquad_outer_cap(), absolute (as before).  DD
     # kernels: ±max(that, 40/κ_min + max|free time|), κ_min the slowest
     # decay rate of the decaying modes, so that the truncation e^{-κ·(cap -
@@ -6226,6 +6318,27 @@ def _divergent_group_cancels(terms, alphas, pref):
     return w == 0
 
 
+def _chain_widths(L, uppers, m):
+    """Extent of a chain region ``L < s_1 < ... < s_m < U`` along each
+    variable for the DD floor's volume (``dbm_integral.time_volume``): the
+    largest finite upper minus ``L`` (infinite when open)."""
+    U = max((float(u) for u in uppers), default=math.inf)
+    return [U - float(L)] * m
+
+
+def _region2d_widths(region):
+    """Extent of a 2-D DD region along each axis (``boxfree.Region2D``): its
+    vertices' bounding box, infinite along an axis a recession ray moves."""
+    out = []
+    for ax in range(2):
+        if any(abs(r[ax]) > 0 for r in getattr(region, 'rays', ())):
+            out.append(math.inf)
+            continue
+        xs = [float(v[ax]) for v in getattr(region, 'vertices', ())]
+        out.append(max(xs) - min(xs) if xs else math.inf)
+    return out
+
+
 def _dd_scale_term(coef, gamma):
     """``|coef| e^{Re γ}``: one pole tuple's share of the integrand scale
     of a DD route (the DBM's ``scale``, capped at e^LOG_OVERFLOW)."""
@@ -6243,7 +6356,10 @@ def _dd_accuracy(total, mag, scale):
     """Error accounting of a box-free subset sum (M7 report: stiff mode
     ratios and cancelling sums lose accuracy with an OK status): the DBM's
     own test -- rounding error ``COND_ERR_FACTOR · Σ|term|`` against
-    ``max(COND_RTOL · |value|, COND_ATOL · scale)`` -- recorded in the
+    ``max(COND_RTOL · |value|, COND_ATOL · scale)``, ``scale`` in the units
+    of the integral as the DBM's ``integral_scale`` (the callers multiply
+    Σ |coef| e^{Re γ} by ``dbm_integral.time_volume``: audit W4b, ACC-64)
+    -- recorded in the
     counters ``dd_err_ratio_max`` (the worst ratio) and ``dd_ill_conditioned``
     (subsets above 1).  Bookkeeping only: the value is used as computed (the
     DD kernels are the most accurate route there is).  The test is relative
@@ -6286,11 +6402,13 @@ def _interval_dd_total(terms, pref, L, U, prefix, tol=0.0,
     dropped = set()
     total = 0.0 + 0.0j
     mag = scale = 0.0
+    rate = 0.0
     for C_prod, alphas, gamma in terms:
         coef = pref * C_prod
         if coef == 0 or alphas in dropped:
             continue
         scale += _dd_scale_term(coef, gamma)
+        rate = max(rate, abs(complex(alphas[0])))
         st, v = bf.interval(alphas[0], gamma, L, U, tol)
         if st == bf.DIVERGENT and _divergent_group_cancels(terms, alphas,
                                                            pref):
@@ -6311,7 +6429,7 @@ def _interval_dd_total(terms, pref, L, U, prefix, tol=0.0,
         mag += abs(coef * v)
     total = _finite_or_overflow(total, prefix)
     if total is not None:
-        _dd_accuracy(total, mag, scale)
+        _dd_accuracy(total, mag, scale * _dbm.time_volume(rate, 1, [U - L]))
         _RUNTIME_COUNTERS['dd_interval'] += 1
     return total
 
@@ -6818,6 +6936,9 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
             if r is not None:
                 total, mag = r
                 scale = _dd_scale_np(coefs, gammas)
+                nz = np.asarray(coefs) != 0      # as the scalar loop below
+                rate = (float(np.max(np.abs(A[nz]))) if A.size and np.any(nz)
+                        else 0.0)
     if total is None:
         terms = list(_modesum_tuples(
             smooth_edge_modes, subset_constraint_data, free_ext_vals, 2,
@@ -6825,11 +6946,13 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
         dropped = set()
         total = 0.0 + 0.0j
         mag = scale = 0.0
+        rate = 0.0
         for C_prod, alphas, gamma in terms:
             coef = pref * C_prod
             if coef == 0 or alphas in dropped:
                 continue
             scale += _dd_scale_term(coef, gamma)
+            rate = max(rate, abs(complex(alphas[0])), abs(complex(alphas[1])))
             st, v = bf.region_integral(region, alphas[0], alphas[1], gamma,
                                        tol)
             if st == bf.DIVERGENT and _divergent_group_cancels(
@@ -6851,7 +6974,8 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
             mag += abs(coef * v)
     total = _finite_or_overflow(total, 'polygon')
     if total is not None:
-        _dd_accuracy(total, mag, scale)
+        _dd_accuracy(total, mag, scale * _dbm.time_volume(
+            rate, 2, _region2d_widths(region)))
         _RUNTIME_COUNTERS['dd_polygon'] += 1
         if region.kind == 'unbounded':
             _RUNTIME_COUNTERS['polygon_exact_unbounded'] += 1

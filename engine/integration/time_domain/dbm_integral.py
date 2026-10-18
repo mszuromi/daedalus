@@ -82,10 +82,17 @@ rounding error of the value is about ``COND_ERR_FACTOR · magnitude``.  A term
 whose nonzero ``β_k`` was dropped (above) also books its truncation error,
 ``|β_k|/eps · BETA_ZERO_SPAN`` relative, into its magnitude (scaled by
 ``1/COND_ERR_FACTOR``), so the same test accounts for it.  When
-that exceeds ``max(COND_RTOL · |value|, COND_ATOL · scale)`` (``scale``: the
-integrand's scale, given by the caller, e.g. Σ|pole-tuple coefficient|) the
-result is ``STATUS_ILL_CONDITIONED``: the value is returned for information
-only, and the caller integrates the region another way.
+that exceeds ``max(COND_RTOL · |value|, COND_ATOL · scale)`` the result is
+``STATUS_ILL_CONDITIONED``: the value is returned for information only, and
+the caller integrates the region another way.  ``scale`` (``integral_scale``)
+is the integrand's scale times a volume, ``Σ_t |C_t| e^{Re E_t} · ∏_v min(w_v,
+T)`` with ``T = 1 / max_{t,v} |β_tv|`` the time unit of the fastest exponent
+and ``w_v`` the region's extent along ``s_v``: units [integrand]·[time]^m,
+like the integral, so the verdict is the same in every time unit (audit W4b, ACC-64: without ``T^m`` the same integral flipped
+ill_conditioned -> ok when time was rescaled, the ratio scaling as λ^-m; the
+caller's Σ|C| also lacked e^{Re E}, so an ill-conditioned closed form in a
+correlator tail, e^{Re E} << 1, passed and skipped its mp retry).  With all
+rates of order one it is the earlier floor.
 
 The prototype this is ported from is ``poset_dbm_integrator.py`` (M3 brief).
 Differences: all pole tuples are integrated in one pass through one case
@@ -601,6 +608,49 @@ def _sum_leaves(leaves, ar=_DoubleArith):
 
 # ───────────────────────────────────────────────────────────── driver
 
+def time_volume(rate_max, m, widths=None):
+    """``∏_v min(w_v, T)`` with ``T = 1 / rate_max`` (the fastest exponent's
+    time unit) and ``w_v`` the region's extent along variable ``v``
+    (``widths``; infinite or unknown when not given): the volume that turns
+    an integrand scale into an integral scale in the conditioning floor
+    (``integral_scale``).  A factor with neither a rate nor an extent is 1.
+    Both scale like a time, so the volume is unit-free in the right sense:
+    it carries [time]^m."""
+    rate_max = float(rate_max)
+    T = 1.0 / rate_max if rate_max > 0 and math.isfinite(rate_max) else INF
+    vol = 1.0
+    for v in range(int(m)):
+        w = INF if widths is None else float(widths[v])
+        f = min(w if w > 0 else 0.0, T)
+        vol *= f if f < INF else 1.0
+    return vol
+
+
+def region_widths(D, m):
+    """The extent of the closed DBM ``D`` along each variable
+    (``upper - lower``, ``INF`` along an open direction)."""
+    Z = m
+    return [D[Z][v] + D[v][Z] for v in range(m)]
+
+
+def integral_scale(seeds, m, D=None):
+    """``Σ_t |C_t| e^{Re E_t} · time_volume(max |β_tv|, m, widths of D)``
+    (``e^{Re E}`` capped at e^LOG_OVERFLOW): the conditioning test's default
+    ``scale``, in the units of the integral.  ``D``: the closed region (its
+    extents cap the volume, so a near-zero exponent on a bounded region
+    counts the region, not 1/|β|)."""
+    tot = 0.0
+    rate = 0.0
+    for (C, E, beta) in seeds:
+        if C == 0:
+            continue
+        tot += abs(complex(C)) * math.exp(min(complex(E).real, LOG_OVERFLOW))
+        for b in beta:
+            rate = max(rate, abs(complex(b)))
+    widths = None if D is None else region_widths(D, m)
+    return tot * time_volume(rate, m, widths)
+
+
 def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
                       beta_tol=None, ar=_DoubleArith):
     r"""``Σ_t C_t ∫_{region} exp(E_t + Σ_v β_tv s_v) ds``.
@@ -612,8 +662,9 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
     ``cap``   the box half-width (open directions closed at ±cap);
               ``math.inf``: no box (open directions integrated to infinity,
               ``STATUS_DIVERGENT`` when a term does not decay there);
-    ``scale`` the integrand's scale for the conditioning test's absolute
-              floor (default: Σ_t |C_t| exp(Re E_t));
+    ``scale`` the integral's scale for the conditioning test's absolute
+              floor (default: ``integral_scale(seeds, m, D)``, D the
+              closed region);
     ``eps``   ``|β|`` below which β is treated as 0 (default
               ``BETA_ZERO_SPAN / cap``; with ``cap = inf`` it is
               ``BETA_ZERO_SPAN / 200``, which suits decay rates down to about
@@ -643,17 +694,15 @@ def integrate_exp_sum(rows, m, seeds, cap, *, scale=None, eps=None,
         eps = BETA_ZERO_SPAN / (200.0 if open_ok else max(float(cap), 1.0))
     terms = {}
     zero_mono = (0,) * n
-    seed_scale = 0.0
     for (C, E, beta) in seeds:
         C = ar.cplx(C)
         if C == 0:
             continue
         E = ar.cplx(E)
-        seed_scale += abs(C) * ar.rexp(min(E.real, LOG_OVERFLOW))
         key = (tuple(ar.cplx(b) for b in beta) + (ar.cplx(0),), zero_mono)
         _add_term(terms, key, C, E, abs(C), ar)
     if scale is None:
-        scale = seed_scale
+        scale = integral_scale(seeds, m, D)
     if beta_tol is None:
         beta_tol = 64.0 * 2.220446049250313e-16 * max(
             (sum(abs(complex(b)) for b in beta) for (_C, _E, beta) in seeds),

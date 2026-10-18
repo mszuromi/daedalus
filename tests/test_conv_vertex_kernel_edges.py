@@ -183,16 +183,22 @@ def test_exp_mode_extraction_rejects_a_sum_of_exponentials():
 
 def test_high_precision_dbm_answers_a_cancelling_closed_form():
     """∫_0^∞ (e^{a1 s} - e^{a2 s}) ds = 1/|a1| - 1/|a2| with a1 = -1e-3 and
-    a2 = a1 (1 + 1e-6): the expansion's terms are 1000 times the integrand
-    bound and cancel 6 digits, so the double closed form fails the
-    conditioning test; the same elimination at MP_DPS digits returns the
-    exact integral of these (double) rates."""
+    a2 = a1 (1 + 1e-6): the expansion's two terms cancel 6 digits.  The
+    elimination at MP_DPS digits returns the exact integral of these
+    (double) rates.  The double closed form's verdict is the same in every
+    time unit (audit W4b, ACC-64: the floor is in the integral's units, so
+    the rounding error, 1e-15 of the integral's scale |C|/|a|, passes here
+    as it did at a1 = -1; before, only the slow-unit copy was declined)."""
     import mpmath as mp
     a1, a2 = -1e-3, -1e-3 * (1 + 1e-6)
     rows = [((1.0,), 0.0)]
     seeds = [(1.0, 0.0, (a1,)), (-1.0, 0.0, (a2,))]
     lo = DBM.integrate_exp_sum(rows, 1, seeds, float('inf'))
-    assert lo.status == DBM.STATUS_ILL_CONDITIONED
+    twin = DBM.integrate_exp_sum(rows, 1, [(1.0, 0.0, (a1 * 1e3,)),
+                                           (-1.0, 0.0, (a2 * 1e3,))],
+                                 float('inf'))
+    assert lo.status == twin.status
+    assert abs(lo.error_ratio - twin.error_ratio) <= 1e-6 * twin.error_ratio
     hi = DBM.integrate_exp_sum_mp(rows, 1, seeds, float('inf'))
     assert hi.status == DBM.STATUS_OK
     with mp.workdps(50):

@@ -323,7 +323,20 @@ def analyze(G_ft_F, Q_poly, nf, tau_max=None):
         n = len(roots)
         if sum(mult_Q) != Qh.degree():
             raise ArithmeticError('coprime base does not account for Q')
-        retarded = [mp.re(r) < -1e-9 for r in roots]
+        # retarded: decaying beyond the 50-digit roots' own accuracy, per
+        # root (audit W4b, ACC-65: an absolute -1e-9 dropped a stable mode
+        # slower than 1e-9; a floor relative to the largest root would drop
+        # it next to a far root); an exact zero root is marginal
+        # an exact zero root: the root nearest 0 of a factor with no
+        # constant term (decided on the exact factor, not by size)
+        zero_k = set()
+        for b in set(id(x) for x in fac):
+            ks = [k for k in range(len(roots)) if id(fac[k]) == b]
+            if ks and fac[ks[0]].constant_coefficient() == 0:
+                zero_k.add(min(ks, key=lambda k: abs(roots[k])))
+        retarded = [k not in zero_k
+                    and mp.re(r) < -mp.mpf(10) ** (-30) * abs(r)
+                    for k, r in enumerate(roots)]
         # entries: numerator, leading coefficient, per-root multiplicity
         entries = []
         for (i, j), D in dens.items():
