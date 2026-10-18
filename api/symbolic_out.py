@@ -1780,26 +1780,84 @@ Quadrature.__doc__ = (
     "looser tolerance implied by ``error``).")
 
 
+def _even_part(scalar, w):
+    """``(f(w) + f(-w)) / 2`` or ``None`` (not finite / not evaluable)."""
+    try:
+        g = 0.5 * (scalar(w) + scalar(-w))
+    except (OverflowError, ZeroDivisionError, ValueError, FloatingPointError,
+            ArithmeticError, TypeError):
+        return None
+    return g if np.isfinite(g) else None
+
+
+def _spectrum_profile(scalar):
+    """``[(omega, even part)]`` on the decades ``1e-30 .. 1e60`` and at 0
+    (where finite): the frequency scale of ``f`` is read off it, whatever
+    the time unit."""
+    out = []
+    g0 = _even_part(scalar, 0.0)
+    if g0 is not None:
+        out.append((0.0, g0))
+    for k in range(-30, 61):
+        g = _even_part(scalar, 10.0 ** k)
+        if g is not None:
+            out.append((10.0 ** k, g))
+    return out
+
+
 def numeric_inverse_transform(f: Callable, tau: float, *,
                               contact: Optional[complex] = None,
-                              epsabs: float = 1e-12, epsrel: float = 1e-10,
+                              epsabs: Optional[float] = None,
+                              epsrel: float = 1e-10,
                               limit: int = 500) -> Quadrature:
     r"""``(1/2 pi) int_{-inf}^{inf} f(omega) exp(-i omega tau) d omega`` by
     adaptive quadrature (scipy ``quad`` with the QAWF cos/sin weights for
     ``tau != 0``) of the smooth part: the constant ``contact`` =
-    ``f(inf)`` is subtracted first (estimated from ``f`` at very large omega
-    if ``None``).  ``f(omega)`` is a scalar function ``omega -> complex``
-    (e.g. a :class:`SymbolicCallable` with its parameters bound).
+    ``f(inf)`` is subtracted first (if ``None``: the limit of
+    ``(f(omega) + f(-omega))/2`` along the decades up to 1e60, or its value
+    at 1e9 when that does not settle).  ``f(omega)`` is a scalar function
+    ``omega -> complex`` (e.g. a :class:`SymbolicCallable` with its
+    parameters bound).
 
-    Tolerances: ``epsabs`` / ``epsrel`` per quad call; the result carries the
-    summed error estimate.  This is the SMOOTH part, i.e. the delta(tau)
-    contribution of ``contact`` is not included (pipeline convention)."""
+    The integral runs in ``v = omega / omega_s`` with ``omega_s`` the
+    half-width of ``|f - contact|`` (read off the decades), so the quadrature
+    sees the same integrand in any time unit (an absolute ``omega`` lost the
+    result for spectra much narrower or wider than 1: audit UNIT-06).
+
+    Tolerances: ``epsrel`` per quad call; ``epsabs`` absolute on the
+    integral over ``omega`` (default ``None``: 1e-12 of the integrand's
+    natural size ``omega_s * max|f - contact|``, unit free).  The result
+    carries the summed error estimate and the absolute ``epsabs`` used.
+    This is the SMOOTH part, i.e. the delta(tau) contribution of
+    ``contact`` is not included (pipeline convention)."""
     from scipy.integrate import quad
     scalar = lambda w: complex(np.asarray(f(w)).reshape(-1)[0]) \
         if not np.isscalar(w) else complex(np.asarray(f(w)).reshape(-1)[0])
+    prof = _spectrum_profile(scalar)
     if contact is None:
-        contact = 0.5 * (scalar(1e9) + scalar(-1e9))
-    h = lambda w: scalar(w) - contact
+        tail = [g for w, g in prof if w > 0][-4:]
+        scale = max([abs(g) for _, g in prof] + [0.0])
+        if len(tail) == 4 and max(abs(g - tail[-1]) for g in tail) \
+                <= 1e-12 * scale:
+            contact = tail[-1]
+        else:
+            contact = 0.5 * (scalar(1e9) + scalar(-1e9))
+    contact = complex(contact)
+    dev = [(w, abs(g - contact)) for w, g in prof]
+    peak = max([d for _, d in dev] + [0.0])
+    tau = float(tau)
+    if peak == 0.0:
+        return Quadrature(0j, 0.0, 0.0 if epsabs is None else epsabs, epsrel,
+                          contact, True, True)
+    # half-width: the first decade beyond the peak where |f - contact| has
+    # fallen to half of it
+    w_peak = max(dev, key=lambda t: t[1])[0]
+    w_s = next((w for w, d in dev if w > w_peak and d <= 0.5 * peak), None)
+    if not w_s:
+        w_s = w_peak if w_peak > 0 else 1.0
+    norm = w_s * peak                    # natural size of the omega integral
+    eps_n = 1e-12 if epsabs is None else float(epsabs) / norm
+    h = lambda v: (scalar(w_s * v) - contact) / peak
     err = 0.0
 
     converged = True
@@ -1808,14 +1866,13 @@ def numeric_inverse_transform(f: Callable, tau: float, *,
         nonlocal err, converged
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            v, e = quad(fun, 0, np.inf, epsabs=epsabs, epsrel=epsrel,
+            v, e = quad(fun, 0, np.inf, epsabs=eps_n, epsrel=epsrel,
                         limit=limit, **kw)
         if caught:
             converged = False
         err += e
         return v
 
-    tau = float(tau)
     if tau == 0.0:
         re = part(lambda u: (h(u) + h(-u)).real)
         im = part(lambda u: (h(u) + h(-u)).imag)
@@ -1823,7 +1880,7 @@ def numeric_inverse_transform(f: Callable, tau: float, *,
         # f(u) e^{-iut} + f(-u) e^{iut},  integrate over u in (0, inf)
         a = lambda u: h(u)
         c = lambda u: h(-u)
-        w = abs(tau)
+        w = abs(tau) * w_s
         sg = 1.0 if tau > 0 else -1.0       # e^{-iut} = cos(ut) - i sg sin(|t|u)
         re = (part(lambda u: (a(u) + c(u)).real, weight='cos', wvar=w)
               + sg * part(lambda u: (a(u) - c(u)).imag, weight='sin',
@@ -1831,8 +1888,9 @@ def numeric_inverse_transform(f: Callable, tau: float, *,
         im = (part(lambda u: (a(u) + c(u)).imag, weight='cos', wvar=w)
               - sg * part(lambda u: (a(u) - c(u)).real, weight='sin',
                           wvar=w))
-    return Quadrature(complex(re, im) / (2 * np.pi), err / (2 * np.pi),
-                      epsabs, epsrel, contact, True, converged)
+    return Quadrature(complex(re, im) * norm / (2 * np.pi),
+                      err * norm / (2 * np.pi), eps_n * norm, epsrel,
+                      contact, True, converged)
 
 
 def numeric_pair_with_kernel(C0_entry, L_tilde, omega=None, *,
