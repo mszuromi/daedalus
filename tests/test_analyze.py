@@ -398,6 +398,17 @@ def test_fast_and_leaves_model_unchanged(name):
     assert wall < BUDGET_S, f'{name}: {wall:.2f}s'
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize('name', sorted(HEAVY))
+def test_heavy_models_unchanged_cold(name):
+    """The cold-cache counterpart of the HEAVY skips above (CI's cache is always cold, so those
+    skip there): the analyzer leaves the model unchanged with a fresh expansion (no wall budget)."""
+    model, q = _build(name)
+    before = copy.deepcopy(model)
+    analyze(model, question=q, use_cache=False)
+    _same(model, before)
+
+
 def test_analyze_never_writes_the_cache(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)                     # saved_models/ resolves relative to the cwd
     analyze(_tracked('ou_quartic')[0])
