@@ -337,18 +337,21 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     n_tilde = prop['nf']
     phys_names = ring_names[n_tilde:]
 
-    # External legs may be ('phi',1) style already normalized to the
-    # internal fluctuation name with a numeric suffix (e.g. 'dphi1').
-    def _field_index(legname):
-        base = str(legname)
-        # strip trailing population index digits to match phys col base
-        for idx, pn in enumerate(phys_names):
-            if base == pn or base.rstrip('0123456789') == pn.rstrip('0123456789'):
-                return idx
-        return 0
-    leg_names = [f[0] if isinstance(f, (tuple, list)) else f
-                 for f in external_fields]
-    fi = _field_index(leg_names[0])
+    # External legs resolve through the phys_idx (name, population) keys, so
+    # a multi-population field's population 2 is its own column (the old
+    # name-only match with the digits stripped returned column 0 for every
+    # population; an unknown leg fell back to column 0 silently).
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.pipeline_bridge import _legs_to_phys_idx
+    _, _pidx = build_field_index_map(list(ring_names), int(n_tilde))
+    _keys = _legs_to_phys_idx(list(external_fields), _pidx)
+    fi = int(_pidx[_keys[0]])
+    if len(_keys) >= 2 and int(_pidx[_keys[1]]) != fi:
+        raise NotImplementedError(
+            'compute_spatial_correlator_tree: the external legs sit on two '
+            'different fields (a cross-correlator); this diagonal oracle '
+            'returns auto-correlators only — use '
+            'compute_spatial_correlator_via_pipeline (coupled driver).')
 
     # Tier-1 guard: the closed-form heat-kernel block is only built for a
     # diagonal (decoupled) inverse propagator.  Off-diagonal multi-field
@@ -380,14 +383,14 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     if B <= 0.0:
         if B < 0.0:
             raise SpatialPropagatorError(
-                f'field {leg_names[0]!r} (index {fi}) has NEGATIVE diffusion '
+                f'field {phys_names[fi]!r} (index {fi}) has NEGATIVE diffusion '
                 f'B={B}: the spatial operator is anti-diffusive, so the heat '
                 f'kernel diverges (the model is short-wavelength unstable / '
                 f'ill-posed).  Check the sign of the Laplacian term — it '
                 f'should enter as "- D*Laplacian" with D>0 (dispersion +D·k²) '
                 f'— and that D itself is positive.')
         raise SpatialPropagatorError(
-            f'field {leg_names[0]!r} (index {fi}) has zero diffusion (B=0): '
+            f'field {phys_names[fi]!r} (index {fi}) has zero diffusion (B=0): '
             f'it carries no spatial (Laplacian) kinetic term, i.e. it is a '
             f'time-only (spatial_dim=0) field.  A spatial correlator C(x, τ) '
             f'is only defined for spatial (dim >= 1) fields — request this '

@@ -242,23 +242,37 @@ def expand_about_saddle(expr, replacements, fields=None, coords=('x', 'y', 'z'))
 
 
 # ── 3. contingent annihilation on a homogeneous / stationary mean ─
-def kill_means(expr, mean_syms, ops=('Lap', 'Dt', 'Dx')):
-    """Annihilate ``Op(arg) → 0`` for ``Op`` in ``ops`` whenever ``arg`` depends
-    ONLY on the given ``mean_syms`` (the saddle).  This encodes a CONTINGENT
+def kill_means(expr, mean_syms, ops=('Lap', 'Dt', 'Dx'), keep_syms=None):
+    """Annihilate ``Op(arg) → 0`` for ``Op`` in ``ops`` whenever ``arg`` is a
+    space- and time-CONSTANT: it depends on the given ``mean_syms`` (the
+    saddle) and otherwise only on constants.  This encodes a CONTINGENT
     fact — a spatially homogeneous (for ``Lap``/``Dx``) and/or stationary (for
     ``Dt``) mean field — and is deliberately separate from the operator algebra
     in :func:`apply_linearity`.  For an inhomogeneous saddle, omit ``Lap`` from
     ``ops`` (or don't call this) so ``Lap(φ̄)`` survives to cancel the rest of
     the stationarity condition.
+
+    ``keep_syms`` names what is NOT constant (the dynamical fields and the
+    spatial coordinates).  Given, an ``arg`` that contains none of them is a
+    constant (model parameters are constants: ``Lap(λ·φ̄²) = λ·Lap(φ̄²) = 0``)
+    and is annihilated.  Omitted, the old rule applies: ``arg`` must depend on
+    the ``mean_syms`` alone (a parameter inside the operator then survives).
     """
     mnames = _as_names(mean_syms)
+    knames = None if keep_syms is None else _as_names(keep_syms)
     ops = set(ops)
+
+    def _constant(arg):
+        names = _as_names(arg.variables())
+        if knames is None:
+            return bool(names) and names <= mnames
+        return not (names & knames)
 
     def _walk(e):
         name = _op_name(e)
         if name is not None and name in ops:
             arg = e.operands()[0]
-            if arg.variables() and _as_names(arg.variables()) <= mnames:
+            if _constant(arg):
                 return SR(0)
         kids = e.operands()
         if kids:
