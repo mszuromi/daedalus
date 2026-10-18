@@ -242,3 +242,20 @@ def test_dense_triple_and_decomposition_cache_are_bounded(monkeypatch):
     assert len(me._DECOMP) == 1
     me._DECOMP.clear()
     me._DECOMP_BYTES[0] = 0
+
+
+# ── RED-11: a compressed shipped cell is copied compressed ────────────────
+
+def test_shipped_xz_cell_copied_compressed(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', 'off')
+    src = pc.shipped_path(3, 3)
+    assert src.endswith('.xz')
+    monkeypatch.setattr(pc, 'records_from_certs', lambda certs: list(certs))
+    recs, how = pc.load_prediagrams(str(tmp_path), 3, 3, use_cache=True)
+    assert how == 'shipped' and len(recs) == 358983
+    local = pc.v2_path(str(tmp_path), 3, 3)
+    assert local.endswith('.xz')
+    assert os.path.getsize(local) == os.path.getsize(src)
+    recs2, how2 = pc.load_prediagrams(str(tmp_path), 3, 3, use_cache=True)
+    assert how2 == 'v2' and sorted(recs2) == sorted(recs)

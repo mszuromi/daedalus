@@ -833,6 +833,16 @@ def save_v2_certs(root, k, ell, certs, cert_backend=None):
     return path
 
 
+def _copy_file_atomic(src, dest):
+    """Copy ``src`` to ``dest`` through a temporary file (no half-written
+    cache file if the run is killed)."""
+    import shutil
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + '.tmp'
+    shutil.copyfile(src, tmp)
+    os.replace(tmp, dest)
+
+
 def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
                      stream=True):
     """Prediagram records for ``(k, ell)``, cheapest available source first.
@@ -919,10 +929,18 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
             return recs, 'v1'
 
     if fmt in ('auto', 'v2') and shipped_exists(k, ell):
-        certs, stamp = read_cert_file(shipped_path(k, ell), k, ell)
+        src_path = shipped_path(k, ell)
+        certs, stamp = read_cert_file(src_path, k, ell)
         _load_guard(k, ell, len(certs))
-        save_v2_certs(root, k, ell, certs,
-                      (stamp or {}).get('cert_backend', 'sage'))
+        if str(src_path).endswith('.xz'):
+            # the compressed file as it is (re-pickling it uncompressed put
+            # 38 MB of (2,4) into every working directory; audit RED-11)
+            dest = v2_path(root, k, ell)
+            _copy_file_atomic(src_path,
+                              dest if dest.endswith('.xz') else dest + '.xz')
+        else:
+            save_v2_certs(root, k, ell, certs,
+                          (stamp or {}).get('cert_backend', 'sage'))
         return records_from_certs(certs), 'shipped'
 
     certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
