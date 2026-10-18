@@ -107,13 +107,30 @@ def test_unstable_selection_is_refused_by_name(s):
 
 def test_voltage_and_spike_only_forms_select_the_same_stable_saddle():
     """One two-neuron exponential Hawkes model written with its voltage
-    (``vstar`` a compound saddle, negative at the stable root) and without it:
-    both select the stable low-rate saddle by default (the voltage form took
-    the unstable upper root once the voltage was searched as an unknown on
-    its non-negative box; the iteration saddles are the unknowns again)."""
+    (``vstar`` a compound saddle, negative at the stable root), without it,
+    and with ``.equation`` rows (the full system, the kernel in a row): all
+    select the stable low-rate saddle by default.  (The voltage form took the
+    unstable upper root once the voltage was searched as an unknown on its
+    non-negative box; the .equation form raised NameError on the kernel.)"""
     import tests.test_conv_leg_operator_hawkes as H
+    from api.model import TemporalModelBuilder
+
+    def equation_form(n_pop, p):
+        """The voltage form with .equation rows (the full system; the kernel
+        g in a row is at its integral, as at the saddle)."""
+        b = H._params(TemporalModelBuilder(f'w6c Exp Hawkes voltage eq {n_pop}'), n_pop, p)
+        b.physical_field('v', population='E')
+        b.define_function('phi', args=['v'], expression='a[i]*exp(v)', population='E')
+        b.define_kernel('g', time_expr='(1/taug[i,j])*exp(-t/taug[i,j])*heaviside(t)',
+                        latex_name='g', indexed_by=['E', 'E'])
+        b.set_action_text('sum(nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)*v[i]'
+                          ' - Em[i] - sum(w[i,j]*g[i,j]*n[j] for j in E)) for i in E)')
+        b.equation(lhs='(tau[i]*Dt + 1)*v[i]', rhs='Em[i] + sum(w[i,j]*g[i,j]*n[j] for j in E)',
+                   population='E')
+        b.equation(lhs='n[i]', rhs='phi[i](v[i])', population='E')
+        return b.build()
     rates = []
-    for mk in (H.voltage_form, H.spike_only_form):
+    for mk in (H.voltage_form, H.spike_only_form, equation_form):
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
             r = compute_cumulants(mk(2, H.SYM), k=1, max_ell=0, external_fields=[('n', 1)],
@@ -125,4 +142,5 @@ def test_voltage_and_spike_only_forms_select_the_same_stable_saddle():
             assert v == pytest.approx(-1.5 + 0.8 * rates[-1][0], rel=1e-14)
             assert rates[-1][0] == pytest.approx(np.exp(v), rel=1e-14)
     assert rates[0] == pytest.approx(rates[1], rel=1e-14)
+    assert rates[2] == pytest.approx(rates[1], rel=1e-14)
     assert rates[0][0] == pytest.approx(0.278907892527, rel=1e-11)

@@ -21,7 +21,10 @@
   a compound saddle with no declared domain (a voltage, negative at the stable root) was seeded on its
   non-negative box: a two-neuron exponential Hawkes model written with its voltage selected the unstable upper
   rate (n* 3.407 vs the stable 0.2789) while its spike-only twin selected the stable one. Both select 0.2789
-  again (the pre-W6 root). Tracked `.set_mf_equation` models: same roots, saddles still at round-off (50-digit
+  again (the pre-W6 root). The same model written with `.equation` rows (the full system) selects it too: a
+  kernel symbol in an `.equation` row is now its integral (it raised NameError), and the stable-first order uses
+  the static linearization (each kernel at its integral) for models with kernels as well (ordering only: the
+  unstable-saddle refusal still skips them). Tracked `.set_mf_equation` models: same roots, saddles still at round-off (50-digit
   check), C(tau) within 1.5e-16 of main.
 - **An unstable selected root is refused by name** with the analyzer off (`preflight=False`):
   `UnstableSaddleError` names the stable indices (it surfaced as `PoleFreePropagatorError`). With the analyzer on,

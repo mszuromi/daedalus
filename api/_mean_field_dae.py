@@ -247,6 +247,45 @@ def _numpy_params(model: dict, fundamental: dict) -> dict:
     return out
 
 
+def _kernel_values(model: dict, fundamental: dict, ns=None) -> dict:
+    """``{kernel name: value}`` with every kernel symbol at its integral
+    (``g_hat(0)``, the value it has at a stationary saddle; 1 for a
+    normalised kernel), shaped like the symbol (scalar / vector / matrix):
+    an ``.equation`` row may then mention the kernel as the action does
+    (it raised NameError).  Empty for a model without kernels."""
+    specs = [k for k in (model.get('kernels') or [])
+             if k.get('name') not in {p['name'] for p in
+                                      model.get('parameters') or []}]
+    if not specs:
+        return {}
+    from sage.all import SR
+    from engine.core.field_theory import FieldTheory, kernel_dc_gains_of
+    from api._mean_field import complete_parameters
+    if ns is None:
+        ns = FieldTheory(model)._build_namespace()[0]
+    gains = kernel_dc_gains_of(ns, model)
+    fund = complete_parameters(model, fundamental, 'mean-field solve',
+                               strict=False)
+    psubs = _param_subs(model, fund, _pop_sizes(model, ns))
+
+    def val(sym):
+        g = gains.symbol_gain(sym)
+        return 1.0 if g is None else float(SR(g).subs(psubs))
+
+    def shaped(a):
+        if isinstance(a, (list, tuple)):
+            return [shaped(x) for x in a]
+        return val(a)
+    out = {}
+    for k in specs:
+        arr = getattr(ns, k['name'], None)
+        if arr is None:
+            continue
+        v = shaped(arr)
+        out[k['name']] = np.asarray(v, dtype=float) if isinstance(v, list) else v
+    return out
+
+
 # ── Population index set dict ────────────────────────────────────────
 
 
@@ -1166,6 +1205,8 @@ def solve_mean_field_dae(
             )
         slices = _state_slices(state_vars)
         params_np = _numpy_params(model, fundamental)
+        if model.get('kernels'):
+            params_np.update(_kernel_values(model, fundamental, ns))
         phi_callables = _make_phi_callables(model, params_np)
         idx_sets = _index_sets(model)
         R, expanded = _build_residual(
@@ -1352,7 +1393,8 @@ def solve_mean_field_dae(
         for x, xe in zip(deduped, root_errs):
             rd = _build_root_dict(x)
             try:
-                stab = linear_stability(model, fundamental, rd, verbose=False)
+                stab = linear_stability(model, fundamental, rd, verbose=False,
+                                        ns=ns)
             except NonlinearDtError:
                 # A model nonlinear in Dt is not a flaky-stability
                 # nuisance — it is unrepresentable.  Let the actionable
@@ -1379,17 +1421,20 @@ def solve_mean_field_dae(
         # No stability filter.  Tag each record with ``stable=None`` so
         # callers can distinguish "not classified" from "classified
         # unstable".  Where the linearization decides (``.equation`` rows
-        # with Dt terms, no kernels), the linearly stable roots come first
+        # with Dt terms; a kernel at its integral), the linearly stable roots
+        # come first
         # (each group nearest to 0 first): the default fixed_point_index = 0 is then a
         # stable root whenever one exists, whatever the roots' order on the
         # axis (audit W6: the units decided which root was found, and so
         # which one index 0 was).
         stable_first = set()
-        if model.get('equations') and not model.get('kernels') and len(deduped) > 1:
+        if model.get('equations') and len(deduped) > 1:
             for q, x in enumerate(deduped):
                 try:
+                    # (a kernel at its integral: the static linearization,
+                    # used for the order only)
                     if linear_stability(model, fundamental, _build_root_dict(x),
-                                        verbose=False)['stable']:
+                                        verbose=False, ns=ns)['stable']:
                         stable_first.add(q)
                 except NonlinearDtError:
                     raise
@@ -1633,8 +1678,11 @@ def linear_stability(
         root: dict,
         *,
         verbose: bool = False,
+        ns=None,
 ) -> dict:
-    """Classify the linear stability of a DAE fixed point.
+    """Classify the linear stability of a DAE fixed point (a kernel in the
+    rows at its integral: the static linearization; ``ns`` the model's
+    namespace when at hand).
 
     Linearizes the DAE ``LHS_k - RHS_k = 0`` around ``root`` and solves
     the generalized eigenvalue problem ``(σ·A + B)·δx = 0`` where
@@ -1718,6 +1766,8 @@ def linear_stability(
     sage_special_ns = {'gamma': _sage_gamma, 'factorial': _sage_factorial}
 
     params_np = _numpy_params(model, fundamental)
+    if model.get('kernels'):
+        params_np.update(_kernel_values(model, fundamental, ns))
 
     # ── Build phi callables that return Sage expressions ─────────
     phi_sym = {}
