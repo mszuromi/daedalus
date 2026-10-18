@@ -244,8 +244,25 @@ def _spatial_accuracy(result, tau_grid, max_ell):
                         f'(max successive-order change '
                         f'{eq.get("max_rel_change"):.2e})'),
                     'coarse_spread': None})
+    if info.get('integrator') in ('mc', 'bessel'):
+        out.append({'reason': 'monte_carlo_integrator',
+                    'note': (f"SPATIAL_INTEGRATOR={info['integrator']}: a "
+                             'Monte-Carlo estimate (statistical error; bessel '
+                             'is biased at tau != 0)'),
+                    'coarse_spread': None})
+    pts = result.get('points') if isinstance(result, dict) else None
+    if info.get('coupled') and pts is not None and np.size(pts):
+        # coupled k-point: the spectral driver keeps the product grid, which
+        # converges only algebraically at equal-time events
+        P_ = np.asarray(pts, dtype=float)
+        if np.any(np.all(P_[..., 1] == 0.0, axis=-1)):
+            out.append({'reason': 'equal_time_coupled_loop',
+                        'note': ('coupled k-point events at equal times use '
+                                 'the product grid (algebraic convergence; '
+                                 'not certified)'),
+                        'coarse_spread': None})
     taus = np.asarray(tau_grid if tau_grid is not None else [], dtype=float)
-    if (info.get('coupled') and max_ell >= 1 and taus.size
+    if (info.get('coupled') and pts is None and max_ell >= 1 and taus.size
             and np.any(taus == 0.0)):
         out.append({'reason': 'equal_time_coupled_loop',
                     'note': ('coupled loops at tau = 0 use the product grid '

@@ -327,6 +327,29 @@ def _boosted_k2(fn, ft, model, prop, num_params, external_fields, tau_grid,
         vals = [inf.get(key) for inf in infos if inf.get(key) is not None]
         if vals:
             info[key] = max(vals)
+    # the accuracy records of every τ (the τ = 0 run holds the equal-time one)
+    eqs = [inf['equal_time'] for inf in infos if inf.get('equal_time')]
+    if eqs:
+        m_ = {'calls': sum(e.get('calls', 0) for e in eqs),
+              'grid_calls': sum(e.get('grid_calls', 0) for e in eqs)}
+        sx = [e for e in eqs if e.get('calls')]
+        if sx:
+            m_['max_rel_change'] = max(e['max_rel_change'] for e in sx)
+            m_['unconverged'] = sum(e['unconverged'] for e in sx)
+            m_['max_order'] = max(e['max_order'] for e in sx)
+        gn = [e for e in eqs if e.get('grid_calls')]
+        if gn:
+            m_['grid_note'] = gn[0]['grid_note']
+            m_['grid_sizes'] = sorted({g for e in gn for g in e['grid_sizes']})
+        info['equal_time'] = m_
+    das = [inf['derivative_accuracy'] for inf in infos
+           if inf.get('derivative_accuracy')]
+    if das:
+        d_ = dict(das[0])
+        sp = [x.get('coarse_spread') for x in das]
+        d_['coarse_spread'] = (None if any(v is None for v in sp)
+                               else max(sp))
+        info['derivative_accuracy'] = d_
     if 'C_by_order' in info:
         info['C_by_order'] = {
             el: np.array([np.asarray(inf['C_by_order'][el])[0]
@@ -1220,8 +1243,14 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         ff.moment_bessel = lambda a, S, Bcal, xs: (
             np.array([0.0]),
             np.zeros((1, a.shape[0], np.asarray(xs).shape[0]), dtype=complex))
+        ff.identically_zero = True
         return ff
 
+    if Rcal == 1:
+        # every node of this diagram is a plain vertex (a mixed model): it is
+        # a plain diagram (radial-simplex rule, plain sigma grid, no
+        # derivative-accuracy mark)
+        return None
     if d == 1:
         if Rcal == 0:
             return _zero_ff_with_moments(-1)
@@ -2057,12 +2086,10 @@ def compute_spatial_correlator_generic(
     from engine.integration.spatial.full_integrator import (
         time_grid_split_factor, external_times_2pt, chamber_peak_bytes)
     _tau_m = float(np.max(np.abs(taus))) if len(taus) else 0.0
-    from engine.integration.spatial.full_integrator import (
-        eqtime_simplex_dim, EQTIME_MAX_DIM)
+    from engine.integration.spatial.full_integrator import eqtime_eligible
     for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
-        if (_tau_m == 0.0 and _ff is None and _use_x_path
-                and _integrator == 'grid'
-                and 1 <= eqtime_simplex_dim(_dd) <= EQTIME_MAX_DIM):
+        if (_tau_m == 0.0 and _use_x_path
+                and eqtime_eligible(_dd, _ff, _integrator)):
             continue                 # equal times: the radial-simplex rule
         _nV = len(_dd.internal_vertices)
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
@@ -2206,7 +2233,8 @@ def compute_spatial_correlator_generic(
     # coarser grid; the spread goes to info['derivative_accuracy'] and the
     # result is marked approximate (api.compute).
     deriv_acc = None
-    _ff_recs = [rec for rec in live_g if rec[2] is not None]
+    _ff_recs = [rec for rec in live_g if rec[2] is not None
+                and not getattr(rec[2], 'identically_zero', False)]
     if _ff_recs:
         def _cg(n_):
             return max(6, int(round(0.7 * n_)))
@@ -2284,6 +2312,7 @@ def compute_spatial_correlator_generic(
         info['equal_time'] = _eq
     if deriv_acc is not None:
         info['derivative_accuracy'] = deriv_acc
+    info['integrator'] = _integrator
     return C1, info
 
 
@@ -2446,7 +2475,8 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             if _vterms:
                 kw['formfactor'] = _formfactor_callable(td, _vterms,
                                                         d=spatial_dim)
-            _deriv = kw.get('formfactor') is not None
+            _deriv = (kw.get('formfactor') is not None and not getattr(
+                kw['formfactor'], 'identically_zero', False))
             for tkey, idxs in tau_groups.items():
                 x_pts = _np.zeros((len(idxs), k))
                 for col, j in enumerate(range(1, k)):
@@ -2758,7 +2788,7 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
         if verbose:
             print(f'[coupled k={k}] ell={el}: summed')
 
-    info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k,
+    info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k, 'coupled': True,
             'max_ell': max_ell, 'n_modes': nf,
             'max_abs_imag': float(np.max(np.abs(np.imag(total))))}
     if _v_drift:

@@ -168,9 +168,11 @@ two-loop φ³ diagrams). The product grid converges only algebraically there
 (the feature sits on a diagonal of (t, σ)): the one-loop Allen-Cahn τ = 0
 value was 1.2e-5 off the exact tadpole mass shift at the default grid, now
 1e-13; a d = 2 bubble was 6e-4 off. Above dimension 4 (k = 3 one loop, the
-φ² two-loop diagrams) the grid stays, refined 2× when the chamber fits the
-memory budget, and the result is marked approximate. `SPATIAL_EQTIME=0`
-restores the grid. The per-call orders and changes are in
+φ² two-loop diagrams) the grid stays (a 2× refinement is attempted only when
+the chamber fits the memory budget and 2e7 samples, which at the default grids
+it does not) and the result is marked approximate. `SPATIAL_EQTIME=0` restores
+the grid; `SPATIAL_EQTIME_RTOL` (default 1e-9) trades accuracy for time (a
+one-loop φ² run on 64 points: 6 s against 0.4 s for the grid's 1e-5). The per-call orders and changes are in
 `result['spatial_info']['equal_time']`. Sector decomposition for 5–6
 dimensions is open (research).
 
@@ -187,8 +189,12 @@ gives the reasons, a `SpatialAccuracyWarning` is issued, G6 records
   value (~1e-6 of the total C), but convergence stays algebraic, so the result
   carries the measured spread against a 0.7× coarser grid; a sector-adapted
   corner quadrature would make it spectral (research);
-- equal-time diagrams left on the grid (above the rule's dimension), and
-  coupled (spectral) loops at τ = 0.
+- equal-time diagrams left on the grid (above the rule's dimension), coupled
+  (spectral) loops at τ = 0 and coupled k-point events at equal times;
+- `SPATIAL_INTEGRATOR=mc` / `bessel` (Monte-Carlo estimates).
+
+In a mixed model (plain and derivative vertices) a diagram whose nodes are all
+plain is a plain diagram (no form factor).
 
 The UV power count includes the form factor: `ω = (V−1) + n_C − (d/2)L − r/2`,
 `r` the even part of the form factor's degree along the subgraph's own loop

@@ -803,7 +803,7 @@ def _refuse_uv_divergent(descr, spatial_dim, formfactor=None):
 # EQTIME_RTOL.  Plain vertices; up to EQTIME_MAX_DIM simplex dimensions
 # (cost m^dim per chamber); derivative vertices keep the grid.
 DERIV_SIGMA_POWER = 6.0           # sigma = s_cap v^p for derivative vertices
-EQTIME_RTOL = 1e-9
+EQTIME_RTOL = float(__import__('os').environ.get('SPATIAL_EQTIME_RTOL', '1e-9'))
 EQTIME_MAX_DIM = 4
 EQTIME_NODE_CAP = 2e7            # simplex nodes x chambers, per call
 _EQTIME_ORDERS = {1: (32, 48, 72, 108, 160), 2: (24, 36, 54, 80, 120),
@@ -829,6 +829,7 @@ def eqtime_ledger_collect():
     ``{'calls', 'max_rel_change', 'unconverged', 'grid_calls',
     'grid_note'}`` (``None`` if nothing was collected)."""
     rows = getattr(_EQTIME_LEDGER, 'rows', None)
+    _EQTIME_LEDGER.rows = None
     if not rows:
         return None
     simplex = [r for r in rows if r['rule'] == 'radial-simplex']
@@ -888,18 +889,58 @@ def eqtime_simplex_dim(descr):
     return len(descr.internal_vertices) + n_C - 1
 
 
-def _eqtime_applies(descr, external_times, xs, formfactor, method):
+def eqtime_eligible(descr, formfactor=None, method='grid'):
+    """True when the radial-simplex rule takes ``descr`` at equal external
+    times: the grid backend, plain vertices, no leaf feeding a vertex, simplex
+    dimension 1..``EQTIME_MAX_DIM``, ``SPATIAL_EQTIME`` not 0."""
     import os as _os
-    if method != 'grid' or xs is None or formfactor is not None:
+    if method != 'grid' or formfactor is not None:
         return False
     if _os.environ.get('SPATIAL_EQTIME', '1').strip() == '0':
         return False
-    if len({float(t) for t in external_times.values()}) != 1:
-        return False
-    if any(e.kind == 'R' and e.v in set(descr.internal_vertices)
-           and e.u not in set(descr.internal_vertices) for e in descr.edges):
+    iv = set(descr.internal_vertices)
+    if any(e.kind == 'R' and e.v in iv and e.u not in iv for e in descr.edges):
         return False                        # a leaf feeding a vertex
     return 1 <= eqtime_simplex_dim(descr) <= EQTIME_MAX_DIM
+
+
+def _eqtime_applies(descr, external_times, xs, formfactor, method):
+    if xs is None or len({float(t) for t in external_times.values()}) != 1:
+        return False
+    return eqtime_eligible(descr, formfactor, method)
+
+
+def _radial_bessel(Pp, aa, c):
+    """``2 (c/a)^(P/2) K_P(2 sqrt(a c))`` for arrays ``aa (P,)``, ``c (P, n_x)``.
+    Integer and half-integer orders (every spatial diagram: ``P = n - (L +
+    n_ext) d / 2``) by the stable upward recurrence ``K_{v+1} = K_{v-1} +
+    (2v/z) K_v`` from the exponentially scaled ``k0e``/``k1e`` (or the
+    elementary ``K_{1/2}``), several times cheaper than the general ``kv``;
+    other orders use ``kv``."""
+    from scipy.special import kv as _kv, k0e as _k0e, k1e as _k1e
+    z = 2.0 * np.sqrt(aa[:, None] * c)
+    pref = 2.0 * (c / aa[:, None]) ** (0.5 * Pp)
+    twoP = 2.0 * Pp
+    if abs(twoP - round(twoP)) > 1e-12 or Pp < 0:
+        return pref * _kv(Pp, z)
+    ez = np.exp(-z)
+    if abs(Pp - round(Pp)) < 1e-12:                      # integer order
+        nu, km, k = 0.0, _k0e(z), _k1e(z)                # scaled K0, K1
+        target = int(round(Pp))
+        if target == 0:
+            return pref * km * ez
+        nu = 1.0
+    else:                                                # half-integer
+        km = np.sqrt(0.5 * np.pi / z)                    # scaled K_{1/2}
+        k = km * (1.0 + 1.0 / z)                         # scaled K_{3/2}
+        target = Pp
+        if abs(target - 0.5) < 1e-12:
+            return pref * km * ez
+        nu = 1.5
+    while nu < target - 1e-12:
+        km, k = k, km + (2.0 * nu / z) * k
+        nu += 1.0
+    return pref * k * ez
 
 
 def _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m, a, b, internal_R):
@@ -987,17 +1028,16 @@ def _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m, a, b, internal_R):
                 cc = (0.25 * np.einsum('xj,pjk,xk->px', xs, Binv, xs)
                       if xs.ndim == 2 else
                       0.25 * np.einsum('xjc,pjk,xkc->px', xs, Binv, xs))
-            for ix in range(n_x):
-                c = cc[:, ix]
-                if not np.any(c > 0.0):
-                    if Pp <= 0:
-                        raise SpatialUVDivergenceError(
-                            'equal-point radial integral diverges (P <= 0).')
-                    rad = _gamma(Pp) / aa ** Pp
-                else:
-                    rad = 2.0 * (c / aa) ** (0.5 * Pp) * _kv(
-                        Pp, 2.0 * np.sqrt(aa * c))
-                total[ix] += float(np.sum(c_pref * rad))
+            zero = ~np.any(cc > 0.0, axis=0)                 # equal points
+            if np.any(zero):
+                if Pp <= 0:
+                    raise SpatialUVDivergenceError(
+                        'equal-time equal-point radial integral diverges '
+                        '(P <= 0): a UV-divergent coincident point.')
+                total[zero] += float(np.sum(c_pref * _gamma(Pp) / aa ** Pp))
+            if np.any(~zero):
+                rad = _radial_bessel(Pp, aa, cc[:, ~zero])
+                total[~zero] += c_pref @ rad
     return total
 
 
@@ -1007,11 +1047,23 @@ def _eqtime_kinematic_adaptive(descr, xs, mu, D, spatial_dim, a, b,
     agree to :data:`EQTIME_RTOL` (relative to the largest value), or the node
     cap.  Records the outcome in the equal-time ledger."""
     dim = eqtime_simplex_dim(descr)
+    xs = np.asarray(xs, dtype=float)
+    # the order is chosen on a few representative points (the smallest and
+    # largest |x| and the middle one: the convergence is governed by the
+    # simplex singularities, which every x shares), then evaluated once on all
+    n_x = xs.shape[0]
+    if n_x > 3:
+        r = (np.abs(xs) if xs.ndim == 1 else
+             np.sqrt(np.sum(xs.reshape(n_x, -1) ** 2, axis=1)))
+        o = np.argsort(r, kind='stable')
+        probe = xs[np.unique([o[0], o[n_x // 2], o[-1]])]
+    else:
+        probe = xs
     prev, m_used, change = None, None, float('inf')
     for m in _EQTIME_ORDERS[dim]:
         if prev is not None and (m ** dim) * n_chambers > EQTIME_NODE_CAP:
             break
-        val = _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m, a, b,
+        val = _eqtime_kinematic_x(descr, probe, mu, D, spatial_dim, m, a, b,
                                   internal_R)
         if prev is not None:
             scale = max(float(np.max(np.abs(val))), 1e-300)
@@ -1020,10 +1072,13 @@ def _eqtime_kinematic_adaptive(descr, xs, mu, D, spatial_dim, a, b,
                 prev, m_used = val, m
                 break
         prev, m_used = val, m
+    out = (prev if probe is xs else
+           _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m_used, a, b,
+                               internal_R))
     _eqtime_record({'rule': 'radial-simplex', 'dim': dim, 'm': m_used,
                     'rel_change': change,
                     'converged': change <= EQTIME_RTOL})
-    return prev
+    return out
 
 
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
@@ -1047,6 +1102,11 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber.
     Refuses (:class:`SpatialUVDivergenceError`) a diagram with a UV-divergent
     loop subgraph at ``spatial_dim`` (:func:`uv_divergent_subgraphs`)."""
+    if getattr(formfactor, 'identically_zero', False):
+        # the conservation law makes this diagram vanish exactly
+        if xs is not None:
+            return np.zeros(np.asarray(xs).shape[0])
+        return 0j
     _refuse_uv_divergent(descr, spatial_dim, formfactor)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)

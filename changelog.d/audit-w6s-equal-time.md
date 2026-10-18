@@ -10,8 +10,10 @@
   - zoo `spatial-allen_cahn_1d-l2`: 3 of 14 arrays (the tau = 0 values) move by up to 6.5e-6 relative (the
     (16, 14) grid's error); wall 5.3 -> 18 s;
   - a d = 2 bubble was 6e-4 off at the default grid; the k = 3 tree 1.8e-5.
-  Above dimension 4 the grid stays (refined 2x when the chamber fits the memory budget). `SPATIAL_EQTIME=0`
-  restores the grid; `result['spatial_info']['equal_time']` records the orders and changes.
+  Above dimension 4 the grid stays (a 2x refinement only when it fits the memory budget and 2e7 samples, which
+  it does not at the default grids). `SPATIAL_EQTIME=0` restores the grid, `SPATIAL_EQTIME_RTOL` (default 1e-9)
+  trades accuracy for time (one-loop phi^2 on 64 points: 6 s, the grid 0.4 s at 1e-5);
+  `result['spatial_info']['equal_time']` records the orders and changes.
 - **Derivative-vertex loops (KPZ, Model B, Burgers), any tau:** the form factor makes the loop-shrink corner an
   integrable rho^(-1/2) singularity, which the product grid resolved like n^-2 (the KPZ C-C bubble at q = 0.5,
   tau = 0 was 6.3 % off at the default grid; fixed 8-node kink segments capped tau != 0 at 2e-3). These diagrams
@@ -22,7 +24,9 @@
   `result['spatial_accuracy']`, a `SpatialAccuracyWarning`, G6 `G6_SPATIAL_DERIVATIVE_LOOP` /
   `G6_SPATIAL_EQUAL_TIME`; `policy={'mode': 'strict'}` raises `SpatialAccuracyError`): any derivative-vertex loop
   (with the measured spread against a 0.7x coarser grid), equal-time diagrams left on the grid, coupled loops at
-  tau = 0 (zoo `spatial-coupled_rd_2species_1d-l1`: values bit-identical, now approximate).
+  tau = 0 and coupled k-point events at equal times (zoo `spatial-coupled_rd_2species_1d-l1`: values
+  bit-identical, now approximate), `SPATIAL_INTEGRATOR=mc` / `bessel`.
+- In a mixed model a diagram whose vertices are all plain no longer gets a (constant) form factor.
 - **The UV power count includes derivative-vertex momenta** (`omega -= r/2`, r the even part of the form factor's
   degree along the subgraph's loop directions), at any d. Genuinely divergent loops refuse: the Model B and KPZ
   one-loop bubbles at d = 2 (omega = 0) used to return cutoff-dependent numbers. No d = 1 model changes.

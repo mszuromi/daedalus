@@ -171,8 +171,12 @@ def test_equal_time_switch_and_high_dimension_note(monkeypatch):
     xs = np.array([0.0, 0.7])
     monkeypatch.setenv('SPATIAL_EQTIME', '0')
     FI.eqtime_ledger_reset()
-    g = FI.diagram_correlator_x(dd, pv, xs, 0.0, 1.0, 0.7, comp=cp)
+    g = sum(FI.diagram_correlator_x(d_, p_, xs, 0.0, 1.0, 0.7, comp=c_)
+            for d_, p_, c_ in _records(_q2(), params, 'p', 1))
     assert FI.eqtime_ledger_collect() is None
+    # main's product-grid value (origin/main c8b869c, the same records)
+    main = np.array([0.04642867565324972, 0.03777113863107688])
+    assert np.max(np.abs(g - main) / np.abs(main)) < 1e-15, (g, main)
     monkeypatch.delenv('SPATIAL_EQTIME')
     monkeypatch.setattr(FI, 'EQTIME_MAX_DIM', 0)          # force "too big"
     FI.eqtime_ledger_reset()
@@ -276,3 +280,83 @@ def test_coupled_equal_time_loop_is_marked():
     assert r['status'] == 'approximate'
     assert [x['reason'] for x in r['spatial_accuracy']] == [
         'equal_time_coupled_loop']
+
+
+def test_plain_diagrams_of_a_mixed_model_have_no_form_factor():
+    """Allen-Cahn + Model B + KPZ: a diagram whose nodes are all phi^3 is a
+    plain diagram (no constant form factor: radial-simplex rule at equal
+    times, plain sigma grid, not counted as a derivative loop)."""
+    from engine.core.field_theory import FieldTheory
+    from api._propagator import build_propagator
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _legs_to_phys_idx, _formfactor_callable,
+        diagram_form_factor)
+    spec = importlib.util.spec_from_file_location(
+        'mix', os.path.join(_MODELS, 'combined_allencahn_modelb_kpz_1d.model.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    m = mod.build()
+    ft = FieldTheory(m, taylor_order=4)
+    ft.expand()
+    prop = build_propagator(ft, m, use_cache=False, verbose=False)
+    _, pidx = build_field_index_map(list(ft._ns._ring_var_names), ft._n_tilde)
+    field = str(list(pidx)[0][0])
+    ext = _legs_to_phys_idx([(field, 1)] * 2, pidx)
+    sub = {SR.var(str(p['name'])): float(p['default'])
+           for p in m.get('parameters', []) if p.get('default') is not None
+           and not isinstance(p.get('default'), (list, tuple))}
+    vt = [{'weight': float(SR(t['weight']).subs(sub)), 'n_phys': t['n_phys'],
+           'chain': t['chain'], 'mode': t['mode']}
+          for t in ft._ns._operator_ir_vertex_terms]
+    kinds = set()
+    for td, _p in build_pipeline_records(ft, m, prop, ext, max_ell=1).get(1, []):
+        R = diagram_form_factor(td, vt, d=1)
+        ff = _formfactor_callable(td, vt, d=1)
+        if R == 1:
+            assert ff is None
+            kinds.add('plain')
+        elif R == 0:
+            assert getattr(ff, 'identically_zero', False)
+            kinds.add('zero')
+        else:
+            assert ff is not None and not getattr(ff, 'identically_zero', False)
+            kinds.add('derivative')
+    assert kinds >= {'plain', 'derivative'}, kinds
+
+
+def test_drift_boost_keeps_the_equal_time_record():
+    """The Galilean boost runs one drift-free evaluation per tau; the tau = 0
+    one (not the first tau) carries the equal-time record."""
+    m = (ModelBuilder('advected AC', n_populations=0)
+         .physical_field('phi', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('lam', default=0.1, domain='positive')
+         .parameter('v', default=0.3, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+         .set_action_text('phit*(Dt(phi) + mu*phi - D*Lap(phi) + v*Dx(phi, 0)'
+                          ' + lam*phi^3) - T*phit^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    r = compute_cumulants(m, k=2, max_ell=1, external_fields=[('phi', 1)] * 2,
+                          tau_grid=np.array([-0.5, 0.0, 0.5]),
+                          spatial_grid=np.array([0.0, 0.6]), use_cache=False,
+                          parallel=False, spatial_parallel=False, verbose=False)
+    eq = r['spatial_info']['equal_time']
+    assert eq['calls'] >= 1 and eq['unconverged'] == 0
+    assert r['status'] == 'ok'
+
+
+def test_monte_carlo_integrator_is_approximate(monkeypatch):
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', 'mc')
+    monkeypatch.setenv('SPATIAL_MC_N', '20000')
+    with pytest.warns(UserWarning, match='approximate'):
+        r = compute_cumulants(_q2(), k=2, max_ell=1,
+                              external_fields=[('p', 1)] * 2,
+                              tau_grid=np.array([0.5]),
+                              spatial_grid=np.array([0.0]), use_cache=False,
+                              parallel=False, spatial_parallel=False,
+                              verbose=False)
+    assert r['status'] == 'approximate'
+    assert 'monte_carlo_integrator' in [x['reason'] for x in r['spatial_accuracy']]
