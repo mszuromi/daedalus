@@ -27,21 +27,41 @@ _WARNED = set()
 def fork_unsafe_in_notebook(start_method='fork'):
     """Return True iff a ``fork`` here risks crashing a macOS Jupyter kernel.
 
-    Narrow by design: ``start_method == 'fork'`` AND ``sys.platform ==
-    'darwin'`` AND we are inside a ZMQ/Jupyter interactive kernel.  Returns
-    False for spawn/forkserver, non-macOS, terminal IPython, plain scripts, and
-    pytest — none of which are exposed to the fork-after-Cocoa-init crash.
+    ``start_method == 'fork'`` AND ``sys.platform == 'darwin'`` AND we are
+    inside a Jupyter kernel of any kind (:func:`_in_jupyter_kernel`, deliberately
+    conservative).  Returns False for spawn/forkserver, non-macOS, terminal
+    IPython, plain scripts, and pytest -- none of which are exposed to the
+    fork-after-Cocoa-init crash.
     """
     if start_method != 'fork':
         return False
     if sys.platform != 'darwin':
         return False
+    return _in_jupyter_kernel()
+
+
+def _in_jupyter_kernel():
+    """True inside ANY Jupyter/ZMQ kernel, detected conservatively.
+
+    Three independent signals, any one suffices: ``ipykernel`` is imported (every
+    Jupyter kernel, including the SageMath and VS Code kernels); the shell's MRO
+    contains ``ZMQInteractiveShell`` (the SageMath 10.x kernel uses the SUBCLASS
+    ``SageZMQInteractiveShell``, which an exact class-name test missed); or the
+    shell carries a ``kernel``.  A false positive only costs speed (serial), a
+    false negative can crash the OS, so the test errs towards True.
+    """
+    if 'ipykernel' in sys.modules:
+        return True
     try:
         from IPython import get_ipython
         ip = get_ipython()
     except Exception:
         return False
-    return ip is not None and ip.__class__.__name__ == 'ZMQInteractiveShell'
+    if ip is None:
+        return False
+    if any(c.__name__ == 'ZMQInteractiveShell' for c in type(ip).__mro__):
+        return True
+    return getattr(ip, 'kernel', None) is not None
 
 
 def warn_fork_fallback_once(where):
