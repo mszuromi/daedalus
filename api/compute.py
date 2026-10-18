@@ -211,6 +211,76 @@ from engine.integration.time_domain.final_integral import (  # noqa: E402
     PhaseJResourceError)
 
 
+class SpatialAccuracyWarning(UserWarning):
+    """A spatial result whose quadrature accuracy is not certified
+    (``result['status'] == 'approximate'``; ``result['spatial_accuracy']``
+    says why and gives the measured spread)."""
+
+
+class SpatialAccuracyError(RuntimeError):
+    """Raised instead of :class:`SpatialAccuracyWarning` under
+    ``policy={'mode': 'strict'}``; ``result`` is the approximate result."""
+
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result
+
+
+def _spatial_accuracy(result, tau_grid, max_ell):
+    """The reasons a spatial result is approximate (empty: certified as far
+    as the integrator knows).  Reads the drivers' records in
+    ``result['spatial_info']``: derivative-vertex loops (the product grid
+    converges ~n^-2 around the integrable loop-shrink singularity; the
+    measured 0.7x-coarser spread), equal-time diagrams the radial-simplex
+    rule could not take (above its dimension: the grid) or did not converge
+    to 1e-6, and coupled loops at equal times (the spectral driver keeps the
+    product grid there)."""
+    info = result.get('spatial_info') if isinstance(result, dict) else None
+    if not isinstance(info, dict):
+        return []
+    out = []
+    da = info.get('derivative_accuracy')
+    if da:
+        out.append({'reason': 'derivative_vertex_loop', 'note': da['note'],
+                    'coarse_spread': da.get('coarse_spread')})
+    eq = info.get('equal_time')
+    if eq and (eq.get('grid_calls') or (
+            eq.get('unconverged') and (eq.get('max_rel_change') or 0) > 1e-6)):
+        out.append({'reason': 'equal_time_grid',
+                    'note': eq.get('grid_note') or (
+                        'radial-simplex rule not converged to 1e-6 '
+                        f'(max successive-order change '
+                        f'{eq.get("max_rel_change"):.2e})'),
+                    'coarse_spread': None})
+    if info.get('integrator') in ('mc', 'bessel'):
+        out.append({'reason': 'monte_carlo_integrator',
+                    'note': (f"SPATIAL_INTEGRATOR={info['integrator']}: a "
+                             'Monte-Carlo estimate (statistical error; bessel '
+                             'is biased at tau != 0)'),
+                    'coarse_spread': None})
+    pts = result.get('points') if isinstance(result, dict) else None
+    if info.get('coupled') and pts is not None and np.size(pts):
+        # coupled k-point: the spectral driver keeps the product grid, which
+        # converges only algebraically at equal-time events
+        P_ = np.asarray(pts, dtype=float)
+        if np.any(np.all(P_[..., 1] == 0.0, axis=-1)):
+            out.append({'reason': 'equal_time_coupled_loop',
+                        'note': ('coupled k-point events at equal times use '
+                                 'the product grid (algebraic convergence; '
+                                 'not certified)'),
+                        'coarse_spread': None})
+    taus = np.asarray(tau_grid if tau_grid is not None else [], dtype=float)
+    if (info.get('coupled') and pts is None and max_ell >= 1 and taus.size
+            and np.any(taus == 0.0)):
+        out.append({'reason': 'equal_time_coupled_loop',
+                    'note': ('coupled loops at tau = 0 use the product grid '
+                             '(algebraic convergence at equal times; ~1e-5 '
+                             'relative at the default grid on one-loop '
+                             'diagrams; not certified)'),
+                    'coarse_spread': None})
+    return out
+
+
 class PhaseJIncompleteError(RuntimeError):
     """Raised instead of :class:`PhaseJIncompleteWarning` under
     ``policy={'mode': 'strict'}``.  ``result``: the (incomplete) result
@@ -1767,6 +1837,14 @@ def compute_cumulants(
         _failures = _phase_j_failures(result['phase_j_by_ell'])
         result['phase_j_incomplete'] = _failures
         result['status'] = 'incomplete' if _failures else 'ok'
+    # Spatial: a result whose quadrature accuracy is not certified is
+    # 'approximate' (never 'ok'); G6 reports it; strict policy raises below
+    _sp_acc = []
+    if isinstance(result, dict) and route.backend.name == 'spatial_integrator':
+        _sp_acc = _spatial_accuracy(result, result.get('tau_grid', tau_grid),
+                                    max_ell)
+        result['spatial_accuracy'] = _sp_acc
+        result['status'] = 'approximate' if _sp_acc else 'ok'
     if _pf is not None:
         # G6 sizes its accuracy estimate on ``C_tau``; a switch-on run's
         # values are ``C_times`` (a read-only view: G6 never writes)
@@ -1793,6 +1871,18 @@ def compute_cumulants(
         _ensure_warning_shown(PhaseJIncompleteWarning, 'always',
                               message=_msg, stacklevel=2)
         warnings.warn(_msg, PhaseJIncompleteWarning, stacklevel=2)
+    if _sp_acc:
+        _msg = ('spatial result is approximate: ' + '; '.join(
+            r['note'] + (f' (0.7x-coarser grid spread '
+                         f'{r["coarse_spread"]:.2e} of max|C|)'
+                         if r.get('coarse_spread') is not None else '')
+            for r in _sp_acc) + ' -- see result["spatial_accuracy"].')
+        if _policy_is_strict(policy):
+            raise SpatialAccuracyError(_msg, result=result)
+        from api.save import _ensure_warning_shown
+        _ensure_warning_shown(SpatialAccuracyWarning, 'always',
+                              message=_msg, stacklevel=2)
+        warnings.warn(_msg, SpatialAccuracyWarning, stacklevel=2)
     if route.backend.standard_tail:
         _standard_tail(state, result, output_npz, output_csv)
     return result
