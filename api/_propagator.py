@@ -550,8 +550,11 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                         'residue formula does not apply.  Falling '
                         'back to next tier.'
                     )
-                _note_tier1_fallback(analysis_out, 'Q(omega) has a repeated '
-                                     'root the cluster route did not resolve')
+                if cluster_out is None:
+                    # (with the cluster route on, its own analysis reports
+                    # the unresolved cluster: G3_POLE_CLUSTER_UNRESOLVED)
+                    _note_tier1_fallback(analysis_out, 'Q(omega) has a '
+                                         'repeated root')
                 return None, None, None
         except (AttributeError, TypeError):
             # ``is_squarefree`` may not be implemented on the field;
