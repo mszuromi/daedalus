@@ -109,5 +109,5 @@ a region that would reach the `scipy` fallback with it raises (the fallback cann
 
 `_decay_tol` (the certificate margin), `_divergence_verdict` (the policy), `_DD_BATCH_MIN`
 (where the batched kernels pay), `_dd_accuracy` (the subset-sum error accounting, counters
-`dd_err_ratio_max` / `dd_ill_conditioned`), the bilateral guard of the legacy triangle (kept, it
-is the legacy route's), `_legacy_umbrella_flags` (every flag the umbrella resets).
+`dd_err_ratio_max` / `dd_ill_conditioned`). (The legacy triangle with its bilateral guard and the
+`DAEDALUS_PHASE_J_LEGACY` umbrella were retired in audit W7.)

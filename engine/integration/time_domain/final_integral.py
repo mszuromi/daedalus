@@ -130,6 +130,18 @@ _RETIRED_PHASE_J_ENV = (
 )
 for _name, _note in _RETIRED_PHASE_J_ENV:
     _env.retired(_name, _note)
+
+
+def _warn_retired_env():
+    """The retired switches are read again at the start of every Phase J
+    pass (``compute_correction_td``), as their readers were: one set after
+    import warns too (once per process and name)."""
+    for name, note in _RETIRED_PHASE_J_ENV + (
+            ('DAEDALUS_SETUP_AUT_MEMO',
+             'the automorphism-order memo is always on (audit W7)'),
+            ('DAEDALUS_POLE_CLUSTERS',
+             'the near-degenerate pole deformation is always on (audit W7)')):
+        _env.retired(name, note)
 del _name, _note
 
 
@@ -5035,10 +5047,19 @@ def _loop_number_from_graph(typed_diagram):
 _UNSET = object()
 
 
+#: The pole engine's refusal of a kernel without separated rates names the
+#: default engine (audit LOUD-05); it realizes such kernels when the kernel
+#: has a state-space realization (repeated / close rates, polynomial factors).
+_POLES_KERNEL_HINT = ('; the default state-space engine (unset '
+                      'DAEDALUS_PHASE_J_ENGINE) can compute such kernels '
+                      'exactly when they have a state-space realization: '
+                      'the pole engine cannot (audit LOUD-05)')
+
+
 class PropagatorTD:
     """Model-level data of one ``(propagator_data, num_params)``, built once
     per ``compute_correction_td`` call and shared by every
-    ``integrate_diagram`` of that call (M5 L2, ``USE_SETUP_PROP_TD``).
+    ``integrate_diagram`` of that call (M5 L2).
 
     Holds, each built lazily and with the very conversions the per-diagram
     code uses (so every value is bit-identical to a per-diagram build):
@@ -6396,11 +6417,8 @@ def integrate_diagram(
                                f'polynomial factor such as t e^{{-t/tau}}, '
                                f'or no usable image); write it as an '
                                f'auxiliary linear field (Markov embedding)'
-                               + ('; the default state-space engine (unset '
-                                  'DAEDALUS_PHASE_J_ENGINE) realizes such '
-                                  'kernels exactly: the pole engine cannot '
-                                  '(audit LOUD-05)' if _engine_poles else
-                                  '')),
+                               + (_POLES_KERNEL_HINT if _engine_poles
+                                  else '')),
                 }
             if (kmodes is not None and _can_dress
                     and ek not in (_conv_force_leg or ())):
@@ -6628,7 +6646,9 @@ def integrate_diagram(
                                    f'image and its frequency image is not '
                                    f'a proper rational function with simple '
                                    f'retarded poles (declare it with '
-                                   f'time_expr)'),
+                                   f'time_expr)'
+                                   + (_POLES_KERNEL_HINT if _engine_poles
+                                      else '')),
                     }
                 else:
                     g_tau = SR(0)

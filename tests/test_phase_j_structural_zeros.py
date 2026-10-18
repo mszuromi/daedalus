@@ -475,9 +475,17 @@ def _perdiag_fd(t=(0.0, 0.7)):
     return r, r['contribution'](*t), dict(FI._RUNTIME_COUNTERS)
 
 
+# ``FD_TREE`` without the prune (the retired DAEDALUS_PHASE_J_STRUCTURAL_ZEROS
+# =0, all 4 subsets evaluated), frozen at main dca8804
+_FD_UNPRUNED = {(0.0, 0.7): 0.12414632594785238 + 0j, (0.0, -0.4): 0j,
+                (0.0, 2.5): 0.0205212496559747 + 0j}
+
+
 def test_perdiag_forced_delta_prune():
-    """(The values equalled those without the prune, bit for bit, while the
-    retired switch could turn it off.)"""
+    """Pruning the 2 forced-δ subsets leaves the value of the unpruned
+    evaluation (frozen) bit for bit."""
+    for t, v_off in _FD_UNPRUNED.items():
+        assert _perdiag_fd(t)[1] == v_off, t
     r_on, v_on, c_on = _perdiag_fd()
     assert v_on != 0
     (fd,) = [i for i, ei in enumerate(r_on['edge_info'])
@@ -486,7 +494,7 @@ def test_perdiag_forced_delta_prune():
     pruned = [d for d in r_on['subset_diagnostics']
               if d['status'] == 'forced_delta_pruned']
     assert len(pruned) == 2 and all(fd in d['smooth_edges'] for d in pruned)
-    assert r_on['n_subsets_evaluated'] <= 2
+    assert r_on['n_subsets_evaluated'] == 2       # of 4 without the prune
 
 
 def test_a_dropped_mode_with_poles_is_not_pruned(monkeypatch):
@@ -692,6 +700,23 @@ def _assert_bit_identical(a, b):
                                                              b[ell])
 
 
+def _frozen_close(prefix, got, rtol=1e-13):
+    """``got`` ({name: array}) against the default-path values frozen at main
+    dca8804 in tests/fixtures/w7_default_values.npz (the retired switch's
+    off path gave the same values bit for bit; audit W7 froze them instead
+    of re-running it)."""
+    import os
+    z = np.load(os.path.join(os.path.dirname(__file__), 'fixtures',
+                             'w7_default_values.npz'))
+    want = {k[len(prefix):]: z[k] for k in z.files if k.startswith(prefix)}
+    assert want and set(want) == {str(k) for k in got}, (sorted(want), sorted(got))
+    for k, v in got.items():
+        ref = want[str(k)]
+        assert np.asarray(v).shape == ref.shape, k
+        scale = max(float(np.max(np.abs(ref))), 1e-300)
+        assert np.max(np.abs(np.asarray(v) - ref)) <= rtol * scale, k
+
+
 K3_POINTS = [(0.0, 0.4, 1.0), (0.0, 0.7, 0.7), (0.0, -2e-6, -1e-6),
              (0.3, 0.1 + 0.2, 0.7)]
 
@@ -701,8 +726,7 @@ K3_POINTS = [(0.0, 0.4, 1.0), (0.0, 0.7, 0.7), (0.0, -2e-6, -1e-6),
 def test_public_one_way_linear_delta_k2(ld_model):
     tau = [0.0, 2.5, 10.0, -2.5]
     on, c_on = _run(ld_model, k=2, tau=tau)
-    again, _c = _run(ld_model, k=2, tau=tau)
-    _assert_bit_identical(on, again)
+    _frozen_close('ld_k2|', on)
     assert np.any(on[0] != 0)
     assert c_on['forced_delta_pruned'] > 0
 
@@ -811,6 +835,7 @@ def test_public_spike_reset_one_way_unchanged(spike_dir, cfg):
         on, c_on = _run(model, **kw)
         again, _c = _run(model, **kw)
     _assert_bit_identical(on, again)
+    _frozen_close(f"spike_{'k3_tree' if cfg['k'] == 3 else 'k2_ell1'}|", on)
     assert any(np.any(v != 0) for v in on.values())
     assert c_on['forced_delta_pruned'] > 0
 

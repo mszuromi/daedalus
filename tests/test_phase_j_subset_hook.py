@@ -507,8 +507,6 @@ def test_new_counters_present_and_consistent(name, declined):
     assert sum(1 for r in recs if r['path'] == 'nquad') == n_mge1
     n_m0 = sum(1 for r in recs if r['evaluator'] == 'polytope_m0')
     assert c['polytope_m0_direct'] == n_m0 > 0
-    assert by['polygon_guard'] == sum(
-        1 for r in recs if r['bail_reason'] == 'polygon_triangle_guard')
     # M1 Θ(0) counters (the Itô rule, the only one since audit W7)
     n_theta0 = c['theta0_const_empty'] + c['theta0_const_drop']
     assert n_theta0 > 0

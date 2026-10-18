@@ -630,7 +630,7 @@ def realization_for(propagator_data, num_params):
         except Exception as e:                  # never let S1 break a run
             real, exc = None, e
         if real is None:
-            reason = getattr(exc, 'reason', None) or 'realization_error'
+            reason = getattr(exc, 'reason', None) or 'error'
             ops, why = None, f'realization_{reason}'
             _count('ss_realization_refused')
         elif not (real.hurwitz is True or (real.hurwitz is None and

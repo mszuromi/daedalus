@@ -435,8 +435,9 @@ def test_lifted_kernel():
     assert res['status'] == 'ok'
     for g in res['phase_j_by_ell'][1]['groups']:
         assert g['handled_by'] != 'skipped'
-    for ell in (0, 1):
-        assert np.all(np.isfinite(_arr(res, ell)))
+    # main's numbers (dca8804, frozen)
+    from tests.test_phase_j_structural_zeros import _frozen_close
+    _frozen_close('lifted|', {ell: _arr(res, ell) for ell in (0, 1)})
 
 
 def test_late_refusal_after_a_bypassed_deformation_raises(monkeypatch):

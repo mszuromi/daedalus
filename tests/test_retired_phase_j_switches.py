@@ -110,7 +110,7 @@ _PROBE = textwrap.dedent(r'''
                             external_fields=[('dx', 1)] * 2,
                             parameters={'mu': 1.0, 'D': 1.0, 'eps': 0.1},
                             tau_grid=np.array([0.0, 0.5, 2.0]),
-                            use_cache=True, parallel=False, verbose=False)
+                            use_cache=False, parallel=False, verbose=False)
     for ell, a in res['C_tau_by_ell'].items():
         out[f'ou{ell}'] = [complex(x) for x in a]
     flags = res['config']['phase_j_flags']
@@ -122,10 +122,10 @@ _PROBE = textwrap.dedent(r'''
 ''')
 
 
-def _probe(tmp_path, env_extra):
+def _probe(tmp_path, env_extra, tag):
     child = tmp_path / 'probe.py'
     child.write_text(_PROBE)
-    cwd = tmp_path / 'cwd'
+    cwd = tmp_path / f'cwd_{tag}'          # no shared cache between probes
     cwd.mkdir(exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k not in _RETIRED}
     env.update(env_extra, PYTHONHASHSEED='0')
@@ -160,8 +160,8 @@ def test_each_retired_switch_warns_once_and_changes_no_number(tmp_path):
     """One child with every retired variable set to its old legacy value,
     one with none: one FutureWarning per variable in the first, none in the
     second, and the same numbers (cross-process, so rtol 1e-13)."""
-    got = _probe(tmp_path, _RETIRED)
-    ref = _probe(tmp_path, {})
+    got = _probe(tmp_path, _RETIRED, 'retired')
+    ref = _probe(tmp_path, {}, 'none')
     assert ref['msgs'] == []
     for name in _RETIRED:
         hits = [m for m in got['msgs']
@@ -178,3 +178,25 @@ def test_each_retired_switch_warns_once_and_changes_no_number(tmp_path):
             assert abs(x - y) <= 1e-13 * max(abs(x), 1e-300), (key, x, y)
             assert math.isfinite(abs(x))
     assert got['flags'] == ref['flags']
+
+
+def test_a_retired_switch_set_after_import_warns_at_the_next_pass(monkeypatch):
+    """The retired readers ran at call time, so a switch set after import
+    (a notebook ``os.environ[...] = ...``) warns at the next Phase J pass;
+    fast (no computation: an empty diagram list)."""
+    from engine import _env
+    from engine.integration.time_domain.pipeline import compute_correction_td
+    names = [n for n, _ in FI._RETIRED_PHASE_J_ENV] + [
+        'DAEDALUS_SETUP_AUT_MEMO', 'DAEDALUS_POLE_CLUSTERS']
+    for n in names:
+        monkeypatch.setenv(n, '0')
+        _env._RETIRED_SEEN.discard(n)
+    import warnings
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        compute_correction_td(typed_diagrams=[], prefactors=[],
+                              propagator_data={'pole_vals': [], 'C_mats': []},
+                              k=2)
+    got = sorted(str(x.message).split(' is retired')[0] for x in w
+                 if issubclass(x.category, FutureWarning))
+    assert got == sorted(names)

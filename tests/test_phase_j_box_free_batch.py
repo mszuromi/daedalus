@@ -422,6 +422,147 @@ def test_chain_memo_keys_do_not_alias(FI):
     assert len(FI._chain_uppers_memo) == n
 
 
+# Ported from the retired tests/test_chain_uppers_memo.py (audit W7): the
+# same table, lock, cap and counters, now behind ``_chain_dd_log``.  The
+# reference is the uncached ``boxfree.chain_log``.
+def _captured_calls():
+    import os
+    z = np.load(os.path.join(os.path.dirname(__file__), 'fixtures',
+                             'chain_uppers_captured.npz'))
+    calls = []
+    for i in range(len(z['lens'])):
+        m = int(z['lens'][i])
+        alphas = [complex(x) for x in z['alphas'][i, :m]]
+        upp = {int(p_): float(v) for p_, v in zip(z['up_pos'][i],
+                                                  z['up_val'][i]) if p_ >= 0}
+        calls.append((alphas, float(z['L'][i]), upp, float(z['U'][i])))
+    return calls
+
+
+_CALLS = _captured_calls()
+
+
+def _uncached(calls):
+    return [bf.chain_log(a, L, dict(u), U, 0.0) for a, L, u, U in calls]
+
+
+def _same(x, y):
+    return x == y and all(np.array_equal(np.asarray(p_), np.asarray(q_))
+                          for p_, q_ in zip(x, y))
+
+
+def test_chain_memo_equals_the_uncached_kernel_on_captured_calls(FI):
+    FI._chain_simplex_memo_clear()
+    FI._reset_runtime_counters()
+    ref = _uncached(_CALLS)
+    cold = [FI._chain_dd_log(a, L, dict(u), U) for a, L, u, U in _CALLS]
+    warm = [FI._chain_dd_log(a, L, dict(u), U) for a, L, u, U in _CALLS]
+    assert all(_same(r, c) for r, c in zip(ref, cold))
+    assert all(c is w for c, w in zip(cold, warm))
+    assert FI._RUNTIME_COUNTERS['chain_uppers_memo_hits'] >= len(_CALLS)
+
+
+def test_chain_memo_clear_and_counter_reset(FI):
+    FI._chain_dd_log(_DD_ALPHAS, -5.0, {}, 0.0)
+    assert FI._chain_uppers_memo
+    FI._chain_simplex_memo_clear()
+    assert not FI._chain_uppers_memo
+    FI._chain_dd_log(_DD_ALPHAS, -5.0, {}, 0.0)
+    assert FI._RUNTIME_COUNTERS['chain_uppers_memo_misses'] >= 1
+    FI._reset_runtime_counters()
+    for k in ('hits', 'misses', 'evictions'):
+        assert FI._RUNTIME_COUNTERS[f'chain_uppers_memo_{k}'] == 0
+
+
+def test_chain_memo_behaviour_at_the_cap(FI, monkeypatch):
+    """At the cap the table is cleared once and the new entry goes in: the
+    size never exceeds the cap, the values are the uncached ones, and an
+    evicted entry is recomputed equal."""
+    calls = _CALLS[:40]
+    ref = _uncached(calls)
+    FI._chain_simplex_memo_clear()
+    FI._reset_runtime_counters()
+    monkeypatch.setattr(FI, '_CHAIN_UPPERS_MEMO_MAX', 5)
+    got = []
+    for a, L, u, U in calls:
+        got.append(FI._chain_dd_log(a, L, dict(u), U))
+        assert len(FI._chain_uppers_memo) <= 5
+    assert all(_same(r, g) for r, g in zip(ref, got))
+    assert FI._RUNTIME_COUNTERS['chain_uppers_memo_evictions'] >= 1
+    misses = FI._RUNTIME_COUNTERS['chain_uppers_memo_misses']
+    a, L, u, U = calls[0]
+    again = FI._chain_dd_log(a, L, dict(u), U)
+    assert FI._RUNTIME_COUNTERS['chain_uppers_memo_misses'] == misses + 1
+    assert _same(again, ref[0])
+
+
+def test_chain_memo_cap_of_one_never_grows(FI, monkeypatch):
+    FI._chain_simplex_memo_clear()
+    monkeypatch.setattr(FI, '_CHAIN_UPPERS_MEMO_MAX', 1)
+    for a, L, u, U in _CALLS[:10]:
+        FI._chain_dd_log(a, L, dict(u), U)
+        assert len(FI._chain_uppers_memo) == 1
+
+
+def test_chain_memo_threaded_eviction_matches_the_serial_run(FI, monkeypatch):
+    """8 threads over the captured calls with the cap forced to 100 (the
+    table is cleared mid-run): every value equals the uncached one and the
+    locked counters are exact."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    serial = _uncached(_CALLS)
+    FI._chain_simplex_memo_clear()
+    FI._reset_runtime_counters()
+    monkeypatch.setattr(FI, '_CHAIN_UPPERS_MEMO_MAX', 100)
+    assert len(_CALLS) > 100
+    barrier = threading.Barrier(8)
+
+    def work(seed):
+        order = np.random.RandomState(seed).permutation(len(_CALLS))
+        barrier.wait()
+        out = {}
+        for i in order:
+            a, L, u, U = _CALLS[i]
+            out[int(i)] = FI._chain_dd_log(list(a), L, dict(u), U)
+            assert len(FI._chain_uppers_memo) <= 100
+        return out
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(work, range(8)))
+    for out in results:
+        assert len(out) == len(_CALLS)
+        assert all(_same(v, serial[i]) for i, v in out.items())
+    c = FI._RUNTIME_COUNTERS
+    assert c['chain_uppers_memo_evictions'] >= 1
+    assert c['chain_uppers_memo_hits'] + c['chain_uppers_memo_misses'] \
+        == 8 * len(_CALLS)
+
+
+def test_chain_memo_warm_run_is_bit_identical_end_to_end(FI, monkeypatch):
+    """ou_quartic k=4 one loop (m >= 3 chains) on the pole engine: a cold
+    memo and a warm one give the same arrays bit for bit, and the warm run
+    hits the memo."""
+    import daedalus as dd
+    from api.compute import compute_cumulants
+    monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
+    model = dd.load_model('ou_quartic')[0]
+    pts = [(0.0, 0.3, 0.7, 1.1), (0.0, -0.4, 0.2, 0.9)]
+    out = []
+    for warm in (False, True):
+        if not warm:
+            FI._chain_simplex_memo_clear()
+        FI._reset_runtime_counters()
+        r = compute_cumulants(model, k=4, max_ell=1,
+                              external_fields=[('dx', 1)] * 4,
+                              parallel=False, verbose=False, use_cache=False)
+        vals = np.array([[complex(fn(*p_)) for p_ in pts]
+                         for _ell, fn in sorted(r['total_C_by_ell'].items())])
+        out.append((vals, dict(FI._RUNTIME_COUNTERS)))
+    assert np.array_equal(out[0][0], out[1][0])
+    assert out[0][1]['chain_uppers_memo_misses'] > 0
+    assert out[1][1]['chain_uppers_memo_hits'] > 0
+
+
 def test_batch_and_scalar_book_the_same_error_accounting(FI, monkeypatch):
     """The error accounting (``_dd_accuracy``) of the chain route counts the
     cancellation inside each group's fold the same way batched and scalar

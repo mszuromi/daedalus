@@ -1991,6 +1991,10 @@ def test_public_callables_aggregate_the_warnings(hardened, private_cwd,
     assert m and 10 < int(m.group(1)) <= n, msgs[0]
     assert (f"of model '{model['name']}' (per_diagram, loop order 0)"
             in msgs[0]), msgs[0]
+    # (the same point again, through either callable, adds none; the tie
+    # point (0, 0.7, 0.7) sends a different SET of diagrams to the fallback
+    # under this harness (the polygon route declined), so it warns once of
+    # its own -- by design, the warning is keyed by the set of diagrams)
     assert _warnings_of([lambda: res['total_C_by_ell'][0](0.0, 0.4, 1.0),
                          lambda: res['total_C'](0.0, 0.4, 1.0)]) == []
 

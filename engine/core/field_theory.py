@@ -430,8 +430,8 @@ def _taylor_action(S_sr, field_vars, order: int):
         raise DerivativeAtomTaylorError(
             'the action contains a derivative of an abstract function '
             '(D[...](f)(...)) and the expansion would take the multivariate '
-            'taylor() route (DAEDALUS_EXPAND_LEGACY, or an atom without a '
-            'polynomial expansion), which truncates such atoms early; give '
+            'taylor() route (an atom without a polynomial expansion), which '
+            'truncates such atoms early; give '
             'the function an expression')
     return taylor(S_sr, *[(v, 0) for v in field_vars], order)
 

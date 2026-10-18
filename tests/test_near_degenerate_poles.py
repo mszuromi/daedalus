@@ -263,8 +263,12 @@ def test_the_retired_switch_off_lost_the_one_loop_term():
 def test_the_retired_switch_is_ignored(monkeypatch):
     """``DAEDALUS_POLE_CLUSTERS=0`` (retired in audit W7) no longer turns the
     deformation off: the cluster is resolved and the one-loop term exact."""
+    from engine import _env
     monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
+    _env._RETIRED_SEEN.discard('DAEDALUS_POLE_CLUSTERS')
     r = _run(_load('ou_quartic_colored'), _params(1e-4), policy=_MARKOV)
+    # (``_run`` records the warnings itself: the retired switch warned)
+    assert 'DAEDALUS_POLE_CLUSTERS' in _env._RETIRED_SEEN
     assert r['pole_clusters']['status'] == 'resolved'
     _, loop_ref = _colored_ref(1 / (1 + 1e-4))
     assert abs(complex(r['C_tau_by_ell'][1][0]).real - loop_ref[0]) <= (

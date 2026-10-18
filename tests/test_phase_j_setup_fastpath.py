@@ -133,10 +133,15 @@ def _full_path(c):
                                        ('ou_quartic', 4, 1),
                                        ('ou_quartic_colored', 2, 1)])
 def test_l1_fires_and_two_runs_agree(key, k, ell):
+    """The zero exit fires, and the values (every per-diagram slot kept)
+    are main's: frozen at dca8804, where the retired DAEDALUS_SETUP_ZERO_EXIT
+    off path gave them bit for bit (tests/fixtures/w7_default_values.npz)."""
+    from tests.test_phase_j_structural_zeros import _frozen_close
     _run(key, k, ell)                          # warm the disk cache
     on, c_on = _run(key, k, ell)
     again, _c = _run(key, k, ell)
     assert _same(on, again)
+    _frozen_close(f'l1|{key}|{k}|{ell}|', on)
     assert c_on['setup_zero_exit'] > 0                 # it fired
 
 
@@ -477,7 +482,10 @@ def test_l3_shotnoise_branch_builds_the_smooth_factors_on_demand():
     FI._reset_runtime_counters()
     on = FI.integrate_diagram(**kw)
     on_vals = _delta_values(on, pts)
-    assert np.all(np.isfinite(on_vals))
+    # the eager path's values (the retired DAEDALUS_SETUP_LAZY_SR=0), frozen
+    # at main dca8804
+    from tests.test_phase_j_structural_zeros import _frozen_close
+    _frozen_close('l3_shotnoise|', {'vals': on_vals})
     assert FI._RUNTIME_COUNTERS['setup_lazy_sr_deferred'] == 3
     assert FI._RUNTIME_COUNTERS['setup_lazy_sr_built'] > 0      # it was needed
     assert on['n_shotnoise_skipped'] > 0 and len(on['delta_contributions']) > 0
@@ -492,7 +500,8 @@ def test_l3_sr_integrand_branch_builds_the_smooth_factors():
     on = FI.integrate_diagram(**kw)
     on_vals = _delta_values(on, pts)
     assert FI._RUNTIME_COUNTERS['setup_lazy_sr_built'] > 0
-    assert np.all(np.isfinite(on_vals))
+    from tests.test_phase_j_structural_zeros import _frozen_close
+    _frozen_close('l3_sr|', {'vals': on_vals}, rtol=1e-12)   # scipy path
     assert on['status'] == 'ok'
 
 

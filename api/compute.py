@@ -1492,6 +1492,7 @@ def compute_cumulants(
     # first Phase J subset after the enumeration
     from engine.integration.time_domain import statespace as _ss_env
     _ss_env.engine_requested()
+    _ss_env.fallback_enabled()      # (validated before the run too, W7)
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
     # ``chi_grid``), mirroring onto the internal names; canonical wins.
     if parameters is not None:

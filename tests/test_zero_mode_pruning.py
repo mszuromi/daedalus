@@ -312,8 +312,13 @@ def test_budget_parsing(monkeypatch):
     f = FI.phase_j_mem_budget_bytes
     assert f({}) == 6e9
     assert f({'PHASE_J_MEM_BUDGET_GB': '0.5'}) == 0.5e9
-    for off in ('off', 'inf', '0', '-1', 'none'):
+    for off in ('off', 'inf', 'none', 'unlimited'):
         assert f({'PHASE_J_MEM_BUDGET_GB': off}) is None
+    # 0 / negative raise (they meant "no limit" here and "refuse everything"
+    # for SPATIAL_MEM_BUDGET_GB; audit W7, RED-05)
+    for bad in ('0', '-1'):
+        with pytest.raises(ValueError, match='positive number of GB'):
+            f({'PHASE_J_MEM_BUDGET_GB': bad})
     with pytest.raises(ValueError, match='PHASE_J_MEM_BUDGET_GB'):
         f({'PHASE_J_MEM_BUDGET_GB': 'lots'})
 

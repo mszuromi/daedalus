@@ -68,6 +68,14 @@ def _frozen_legacy(key):
     return json.load(open(path))[key]
 
 
+def _eval_frozen(text, values):
+    """A frozen coefficient's value at ``values`` ({symbol name: number}):
+    parsed with only those names bound (``SR(text)`` would read a name that
+    another test declared as a symbol, e.g. ``e``, as that symbol)."""
+    from sage.all import sage_eval
+    return sage_eval(text, locals=dict(values))
+
+
 def _table(ft):
     out = {}
     for key, poly in ft._by_tp.items():
@@ -109,9 +117,8 @@ def test_retired_legacy_switch_warns_and_changes_nothing(monkeypatch):
     pt = {s: RF(random.Random(0).uniform(0.2, 0.8)) for s in syms}
     by_name = {repr(s): v for s, v in pt.items()}
     for k in tn:
-        ref = SR(fl[repr(k)])
         a = RF(tn[k].subs(pt))
-        b = RF(ref.subs({v: by_name[repr(v)] for v in ref.variables()}))
+        b = RF(_eval_frozen(fl[repr(k)], by_name))
         assert abs(a - b) <= RF(10) ** -50 * max(abs(a), RF(1)), k
     _env._RETIRED_SEEN.discard(F._EXPAND_LEGACY_ENV)
     monkeypatch.setenv(F._EXPAND_LEGACY_ENV, '1')
@@ -131,9 +138,8 @@ def test_equals_legacy_taylor_order3(monkeypatch):
     pt = {s: RF(random.Random(5).uniform(0.2, 0.8)) for s in syms}
     by_name = {repr(s): v for s, v in pt.items()}
     for k in tn:
-        ref = SR(tl[repr(k)])
         a = RF(tn[k].subs(pt))
-        b = RF(ref.subs({v: by_name[repr(v)] for v in ref.variables()}))
+        b = RF(_eval_frozen(tl[repr(k)], by_name))
         assert abs(a - b) <= RF(10) ** -50 * max(abs(a), RF(1)), k
 
 

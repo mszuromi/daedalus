@@ -318,6 +318,9 @@ def compute_correction_td(
         from engine.integration.time_domain.final_integral import (
             _divergence_policy)
         _divergence_policy(on_divergence)               # validate early
+    from engine.integration.time_domain.final_integral import (
+        _warn_retired_env)
+    _warn_retired_env()
     if kernel_groups is not None:
         raise TypeError(
             'compute_correction_td(kernel_groups=...) is retired: pass '

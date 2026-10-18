@@ -733,10 +733,13 @@ def test_dbm_box_free_and_slow_mode_box(FI, monkeypatch, plan):
     # rate 0.02): the ±200 box of the pre-0.2.0 route (``cap=200.0``, its
     # default) truncates; the box-free route does not.  (The retired boxed
     # DD route's ±max(200, 40/κ_min) agreed with the box-free value to
-    # 1e-13.)
+    # 1e-13; an explicit cap at that distance, 40/0.01 = 4000, is the same
+    # independent reference.)
     slow = [[(1.0, -1.0)], [(0.8, -0.01)], [(1.0, -0.01 + 0.3j)], [(0.6, -2.0)]]
     v_free = _dbm(FI, slow, free, plan=plan)
     v_200 = _dbm(FI, slow, free, cap=200.0, plan=plan)
+    v_far = _dbm(FI, slow, free, cap=4000.0, plan=plan)
+    assert abs(v_far - v_free) <= 1e-13 * abs(v_free)
     assert abs(v_200 - v_free) > 1e-3 * abs(v_free)
 
 
@@ -773,9 +776,10 @@ def test_ou_quartic_routes(FI, monkeypatch):
     _set_flags(monkeypatch, FI)
     on, ctr = _zoo_run(entry)
     assert ctr['nquad_calls'] == 0
-    assert ctr['chain_simplex_polynomial_called'] == 0
     assert ctr['dd_poset'] > 0 and ctr['poset_semiinf_chains'] > 0
-    assert np.all(np.isfinite(on['total']))
+    # main's numbers (dca8804, frozen; the legacy routes agreed to 1e-12)
+    from tests.test_phase_j_structural_zeros import _frozen_close
+    _frozen_close('ou_routes|', {k: v for k, v in on.items()})
 
 
 # ═══════════════════════════════════════════════════════════════════════

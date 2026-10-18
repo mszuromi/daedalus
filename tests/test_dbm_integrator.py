@@ -627,6 +627,10 @@ def test_an_explicit_cap_closes_the_open_directions(monkeypatch):
     assert abs(v200 - v50) > 0.1 * abs(v200)       # the box matters here
     v_free = wrap()
     assert abs(v_free - v200) > 1e-3 * abs(v_free)
+    # an independent reference for the box-free value: a box far beyond the
+    # slow mode's decay length (40 / 0.02 = 2000)
+    v_far = wrap(4000.0)
+    assert abs(v_far - v_free) <= 1e-12 * abs(v_free)
     monkeypatch.setattr(FI, 'USE_POSET_CAP_MATCH_SCIPY', True)
     assert FI._nquad_outer_cap() == FI.POSET_PHYSICAL_MARGIN == 50.0
     assert wrap() == v_free
