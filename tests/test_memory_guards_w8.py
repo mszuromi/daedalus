@@ -128,3 +128,21 @@ def test_forked_workers_get_a_share_of_the_budget():
         assert kw['initargs'] == (200,)          # (1000 - 200) / 4
         kw['initializer'](*kw['initargs'])       # what each child runs
         assert fi._PLAN_MEM['budget'] == 400     # its own 200 + share
+
+
+# ── MEM-13: the point-process simulator's output ───────────────────────────
+
+def test_pp_simulate_refuses_an_oversized_output():
+    import sys, os, time
+    sys.path.insert(0, os.path.dirname(__file__))
+    from test_point_process_front_end import pp_spike_only
+    s = pp_spike_only(1)
+    t0 = time.perf_counter()
+    with pytest.raises(MemoryError, match=r'8\.00 GB'):
+        s.simulate(T=1e4, dt=1e-3, n_paths=100, burn_in=0.0, max_bytes=4e9)
+    assert time.perf_counter() - t0 < 5          # refused, not simulated
+    out = s.simulate(T=2.0, dt=1e-3, n_paths=3, burn_in=0.0, seed=1,
+                     max_bytes=1e6)               # 2000 x 3 x 8 B = 48 kB
+    assert sum(v.nbytes for v in out['counts'].values()) == 2000 * 3 * 8
+    with pytest.raises(MemoryError):
+        s.simulate(T=2.0, dt=1e-3, n_paths=3, burn_in=0.0, max_bytes=1e4)
