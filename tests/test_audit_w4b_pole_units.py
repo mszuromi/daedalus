@@ -347,8 +347,11 @@ def test_exact_tier_near_axis_roots_decided_in_high_precision():
         [complex(c) for c in Q.coefficients(sparse=False)]).roots(CDF)]
     flags = PR._exact_retarded_flags(Q, rs)
     assert flags is not None
-    kept = sorted(r.real for r, f in zip(rs, flags) if f)
-    assert kept == pytest.approx(list(range(1, 11)), rel=1e-4)
+    # the double roots of this Q are only good to ~1 %: compare by nearest
+    # true root (integers = damped, half-integers = real)
+    kept = sorted(round(r.real) for r, f in zip(rs, flags) if f
+                  if abs(r.real - round(r.real)) < 0.2)
+    assert sum(flags) == 10 and kept == list(range(1, 11))
 
 
 def test_exact_tier_leaves_the_global_mpmath_precision_alone():
