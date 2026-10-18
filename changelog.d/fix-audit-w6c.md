@@ -25,7 +25,8 @@
   kernel symbol in an `.equation` row is now its integral (it raised NameError), and the stable-first order uses
   the static linearization (each kernel at its integral) for models with kernels as well (ordering only: the
   unstable-saddle refusal still skips them). Tracked `.set_mf_equation` models: same roots, saddles still at round-off (50-digit
-  check), C(tau) within 1.5e-16 of main.
+  check), C(tau) within 1.5e-16 of main on the A/B grid; zoo spike_reset k2 l1 (and grouped) 1.3e-14 (ulp-level saddle
+  differences amplified by the one loop), every other entry bit-identical or <= 5.5e-16.
 - **An unstable selected root is refused by name** with the analyzer off (`preflight=False`):
   `UnstableSaddleError` names the stable indices (it surfaced as `PoleFreePropagatorError`). With the analyzer on,
   `G2_UNSTABLE_SADDLE` refuses it as before.
