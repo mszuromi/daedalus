@@ -604,39 +604,33 @@ class _TemporalMethods:
         so the FT of g symbolically becomes 1 / (1 + iωτ_g).
 
         For DeltaKernel, no FT image is needed; instead the template
-        contributes an EXTRA specialization ``g → delta_D`` that gets
-        merged into the action template's specializations dict so the
-        kernel acts as δ(t) at cell-8 propagator-construction time.
+        contributes an EXTRA specialization ``g → delta_D`` that is merged
+        into the action template's specializations.  The templates are
+        combined whenever either is (re)applied, so the call order of
+        ``use_action_template`` / ``use_synaptic_kernel`` /
+        ``add_gtas_noise`` does not matter (audit GEN-06: the kernel's
+        specialization was lost when the kernel came first or GTaS was
+        added after it).
         """
+        self._kernel_template = template
         ft_hook = template.kernel_ft_image()
         if ft_hook is not None:
             self._kernel_ft_image = ft_hook
-
-        # Merge any kernel-side specializations into the action's
-        # specializations dict.  Capture the current specs lambda and
-        # extend it.
-        extra_specs = (template.extra_specializations()
-                       if hasattr(template, 'extra_specializations')
-                       else None)
-        if extra_specs is not None and self._specializations is not None:
-            base_specs = self._specializations
-            self._specializations = (
-                lambda ns, _base=base_specs, _extra=extra_specs: {
-                    **_base(ns), **_extra(ns),
-                }
-            )
+        self._apply_templates()
         return self
 
     def add_gtas_noise(self, template):
         """Apply a GTaSNoise template.  Adds the dm/mt fields, the
         mstar parameter, the GTaS feedforward terms in the action /
         saddle / MF equations (via the HawkesAction template's
-        ``_gtas`` hook), and the correlated_noises block."""
-        # Register the GTaS metadata so the HawkesAction template
-        # picks up the feedforward + saddle terms when its lambdas
-        # are emitted.  Do this BEFORE use_action_template() if the
-        # user calls them in the wrong order, but supporting the more
-        # convenient order (action then noise) too.
+        ``_gtas`` hook), and the correlated_noises block.
+
+        The GTaS parameters the template names (feedforward weight, mother
+        rate, participation, shift mean / variance) are declared WITHOUT a
+        value when the model has not declared them: give them with
+        ``.parameter(name, default=...)`` (before or after this call) or in
+        ``parameters=`` at run time (audit GEN-06: invented physical
+        defaults 0.25 / 1.7 / 0.6 were filled in silently)."""
         self._pending_gtas = template
 
         # Add the dm physical field + mt response field automatically.
@@ -657,7 +651,7 @@ class _TemporalMethods:
             latex=r'\delta m',
             description='GTaS external rate fluctuation (zero-mean)',
             natural_name='m',
-            auto_response=False,
+            auto_response=False, auto_saddle=False,
         )
         self.response_field(
             template.response_field, indexed=True,
@@ -665,22 +659,16 @@ class _TemporalMethods:
             description='GTaS response field conjugate to dm',
         )
 
-        # Add the GTaS parameters automatically (with sane defaults
-        # the user can override via .parameter() before .build()).
-        for pname, default, dom in [
-            (template.feedforward_weight, 0.25,  None),
-            (template.mother_rate,        1.7,   'positive'),
-            (template.participation,      0.6,   'positive'),
+        for pname, dom in [
+            (template.feedforward_weight, None),
+            (template.mother_rate,        'positive'),
+            (template.participation,      'positive'),
+            (template.mu_diff,            None),
+            (template.sigma_diff_sq,      'positive'),
         ]:
-            if not any(p.name == pname for p in self.parameters):
-                self.parameter(pname, default=default, domain=dom)
-        if template.mu_diff is not None and not any(
-                p.name == template.mu_diff for p in self.parameters):
-            self.parameter(template.mu_diff, default=0.0)
-        if template.sigma_diff_sq is not None and not any(
-                p.name == template.sigma_diff_sq for p in self.parameters):
-            self.parameter(template.sigma_diff_sq, default=1.0,
-                           domain='positive')
+            if pname is not None and not any(p.name == pname
+                                             for p in self.parameters):
+                self.parameter(pname, domain=dom)
         if template.background_param is not None and not any(
                 p.name == template.background_param for p in self.parameters):
             self.parameter(template.background_param, indexed=True,
@@ -691,32 +679,44 @@ class _TemporalMethods:
                                        f'{template.participation}')
 
         self._correlated_noises.update(template.correlated_noises_block())
-
-        # Re-emit the action with the GTaS hook now wired in.  The
-        # HawkesAction template stores ``_gtas`` so the emitted
-        # lambdas know to add feedforward terms.
-        if hasattr(self, '_action_template'):
-            self._action_template._gtas = template
-            # Rebuild the lambdas
-            self.use_action_template(self._action_template)
+        self._apply_templates()
         return self
 
     def use_action_template(self, template):
-        """Override the previous use_action_template to remember the
-        template object so add_gtas_noise() can re-emit with the GTaS
-        hook installed."""
+        """Apply an action template (``HawkesAction``): its action, saddle
+        dicts, specializations and functions, combined with any kernel or
+        GTaS template applied before or after."""
         self._action_template = template
-        # Apply any pending GTaS hook
-        if getattr(self, '_pending_gtas', None) is not None:
-            template._gtas = self._pending_gtas
-        self._action          = template.action()
-        self._phi_concrete    = template.phi_concrete()
-        self._specializations = template.specializations()
-        self._mf_bg           = template.mf_bg_conditions()
-        self._mf_equations    = template.mf_equations()
-        self._mf_substitutions = template.mf_substitutions()
-        self._functions       = list(template.functions_list())
+        self._apply_templates()
         return self
+
+    def _apply_templates(self):
+        """(Re)emit every template-driven hook from the templates applied so
+        far: the action template's lambdas (with the GTaS hook when a GTaS
+        template is present) and the kernel template's specializations
+        merged in."""
+        action = getattr(self, '_action_template', None)
+        kernel = getattr(self, '_kernel_template', None)
+        if action is not None:
+            gtas = getattr(self, '_pending_gtas', None)
+            if gtas is not None:
+                action._gtas = gtas
+            self._action          = action.action()
+            self._phi_concrete    = action.phi_concrete()
+            self._mf_bg           = action.mf_bg_conditions()
+            self._mf_bg_solver    = action.mf_bg_solver()
+            self._mf_equations    = action.mf_equations()
+            self._mf_substitutions = action.mf_substitutions()
+            self._functions       = list(action.functions_list())
+            self._specializations = action.specializations()
+        extra = (kernel.extra_specializations()
+                 if kernel is not None
+                 and hasattr(kernel, 'extra_specializations') else None)
+        if extra is not None and action is not None:
+            base_specs = self._specializations
+            self._specializations = (
+                lambda ns, _base=base_specs, _extra=extra: {
+                    **_base(ns), **_extra(ns)})
 
 
 class _BaseModelBuilder:
@@ -1959,7 +1959,8 @@ class _BaseModelBuilder:
         """``n_populations=N`` (N >= 2) without ``.population(...)``: declare
         the explicit population ``pop`` of size N and index every legacy
         ``indexed=`` field, parameter, kernel and one-argument function by
-        it (vector -> ``['pop']``, matrix -> ``['pop', 'pop']``).  The model
+        it (vector -> ``['pop']``, matrix -> ``['pop', 'pop']``), and every
+        ``.equation`` row without ``population=`` by it.  The model
         is then an ordinary population model (same symbols, same index set
         ``pop``), solved by the population mean-field path, which reads no
         field or parameter spelling; the former flat-population solver read
@@ -1985,6 +1986,12 @@ class _BaseModelBuilder:
         for fn in self._function_specs:
             if fn.get('population') is None:
                 fn['population'] = name
+        # an equation without population= is one row per population index
+        # (it was solved for index 1 only, the others left at the default
+        # point: a two-population spatial model failed its MF check)
+        for eq in self._equations:
+            if eq.get('population') is None:
+                eq['population'] = name
 
     def _resolve_spatial_dim(self) -> int:
         """Resolve the model's single spatial dimension from the physical

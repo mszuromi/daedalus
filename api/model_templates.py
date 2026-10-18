@@ -69,6 +69,21 @@ def _gauss(tau, mu, sigma_sq):
     return exp(-(tau - mu)**2 / (2 * sigma_sq)) / sqrt(2 * pi * sigma_sq)
 
 
+def _gauss_vec(u, mean, sigma_sq):
+    """Density at ``u`` of the shift differences ``s_c - s_c0`` of
+    ``len(u)`` further cells: Gaussian with the given means and covariance
+    ``sigma_sq / 2 (I + 1 1^T)`` (iid shifts of variance ``sigma_sq / 2``;
+    one difference: variance ``sigma_sq``)."""
+    from sage.all import matrix, identity_matrix, ones_matrix, vector
+    m = len(u)
+    if m == 1:
+        return _gauss(u[0], mean[0], sigma_sq)
+    cov = sigma_sq / 2 * (identity_matrix(SR, m) + ones_matrix(SR, m, m))
+    d = vector(SR, [a - b for a, b in zip(u, mean)])
+    q = (d * cov.inverse() * d).simplify_rational()
+    return exp(-q / 2) / sqrt((2 * pi)**m * cov.det())
+
+
 # ───────────────────────────────────────────────────────────────────────
 # HawkesAction
 # ───────────────────────────────────────────────────────────────────────
@@ -474,49 +489,82 @@ class GTaSNoise:
     def correlated_noises_block(self):
         """Returns the dict to slot into ``model['correlated_noises']``.
 
-        Includes:
-          κ⁽²⁾ — Poisson auto + Bernoulli+Gaussian cross
-          κ⁽³⁾ — Poisson auto only (mixed indices vanish for N=2)
-          κ⁽⁴⁾ — Poisson auto only
+        The cumulants of the GTaS cluster process: mother events at rate
+        ``lambda_X``; at each, cell ``i`` takes part with probability
+        ``p_part`` (independently) and fires at the event time plus its
+        shift ``s_i``.  With ``mu_diff``/``sigma_diff_sq`` given, the shift
+        differences are Gaussian, ``s_j - s_i ~ N((j - i) mu_diff,
+        sigma_diff_sq)`` (``s_i = i mu_diff + xi_i``, ``xi_i`` iid with
+        variance ``sigma_diff_sq / 2``; for two cells this is just the law
+        of ``s_1 - s_0``: cell 1 fires ``mu_diff`` after cell 0 on
+        average).  The order-n cumulant density of legs on cells
+        ``c_1..c_n`` at times ``t_1 = 0, t_{k+1} = -tau_k`` (the
+        framework's argument convention ``tau_k = t_1 - t_{k+1}``) is
+
+            lambda_X p_part^m  prod_(legs on a cell already seen) delta(t - t_cell)
+                               x  density of the m distinct cells' shift
+                                  differences at their first legs' times,
+
+        ``m`` the number of distinct cells: legs on one cell are one spike
+        (a delta), legs on different cells are joined by the shift law
+        (audit GEN-05: the mixed-cell kappa3 / kappa4 were 0 and kappa2
+        ignored the leg order, ``k_ij(tau) != k_ji(-tau)``).  Without the
+        shift parameters (``None``) the cells are independent: every
+        mixed-cell cumulant is 0.
+
+        Note: the integrator takes non-local (non-delta) cumulant kernels at
+        order 2 only; a mixed-cell kappa3 / kappa4 with shifts has one, and
+        ``FieldTheory`` warns that it drops it (see
+        docs/correlated_noise_capabilities.md).
         """
         nname = self.noise_name
         pname = self.physical_field
         rname = self.response_field
-        mu_d  = self.mu_diff
-        si_d  = self.sigma_diff_sq
+        lam_n, p_n = self.mother_rate, self.participation
+        mu_d, si_d = self.mu_diff, self.sigma_diff_sq
 
-        def _kappa2(ns, i, j, tau, _mu=mu_d, _si=si_d):
-            if i == j:
-                return ns.lambda_X * ns.p_part * dirac_delta(tau)
-            if _mu is None or _si is None:
-                # Independent across cells if user omitted shift params
-                return SR(0)
-            return (
-                ns.lambda_X * ns.p_part**2
-                * _gauss(tau, getattr(ns, _mu), getattr(ns, _si))
-            )
+        def _kappa(ns, cells, taus):
+            lam, p = getattr(ns, lam_n), getattr(ns, p_n)
+            # the framework's convention: tau_k = t_1 - t_(k+1) (the first
+            # leg's time minus leg k+1's; Phase J places leg 2 at the anchor
+            # time minus tau)
+            times = [SR(0)] + [-SR(t) for t in taus]
+            first = {}                       # cell -> time of its first leg
+            out = lam
+            for c, t in zip(cells, times):
+                if c in first:
+                    # written delta(t_first - t): with t = -tau this is
+                    # delta(tau), the form the framework's delta extraction
+                    # recognizes (delta(-tau) is not simplified)
+                    out = out * dirac_delta(first[c] - t)
+                else:
+                    first[c] = t
+            distinct = list(first)
+            out = out * p**len(distinct)
+            if len(distinct) == 1:
+                return out
+            if mu_d is None or si_d is None:
+                return SR(0)                 # independent cells
+            mu, s2 = getattr(ns, mu_d), getattr(ns, si_d)
+            c0 = distinct[0]
+            u = [first[c] - first[c0] for c in distinct[1:]]
+            mean = [(c - c0) * mu for c in distinct[1:]]
+            return out * _gauss_vec(u, mean, s2)
+
+        def _kappa2(ns, i, j, tau):
+            return _kappa(ns, (i, j), (tau,))
 
         def _kappa3(ns, i, j, k, t1, t2):
-            if i == j == k:
-                return (
-                    ns.lambda_X * ns.p_part
-                    * dirac_delta(t1) * dirac_delta(t2)
-                )
-            return SR(0)
+            return _kappa(ns, (i, j, k), (t1, t2))
 
         def _kappa4(ns, i, j, k, l, t1, t2, t3):
-            if i == j == k == l:
-                return (
-                    ns.lambda_X * ns.p_part
-                    * dirac_delta(t1) * dirac_delta(t2) * dirac_delta(t3)
-                )
-            return SR(0)
+            return _kappa(ns, (i, j, k, l), (t1, t2, t3))
 
         return {
             nname: {
                 'physical_field': pname,
                 'response_field': rname,
-                'mean': lambda ns: ns.lambda_X * ns.p_part,
+                'mean': lambda ns: getattr(ns, lam_n) * getattr(ns, p_n),
                 'cumulants': {
                     2: _kappa2,
                     3: _kappa3,
