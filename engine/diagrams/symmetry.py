@@ -800,6 +800,12 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     noise_amp_prefixes = list(ns.get('amplitude_params', []))
 
     Scal = combinatorial_factor(typed_diagram)
+    # ``bool``'s zero verdict without Maxima for a coefficient with floats or
+    # assumption symbols (seconds per call on a large one, audit W8)
+    from engine.core.field_theory import _sr_nonzero
+
+    def _is_zero(c):
+        return not _sr_nonzero(c)
 
     scalar_parts = [SR(Scal)]
     vertex_time_factors = {}
@@ -826,7 +832,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
             # nothing is ever counted twice.
             if amp_td_syms:
                 const_part = coeff.subs({s: SR(1) for s in amp_td_syms})
-                if const_part.is_zero():
+                if _is_zero(const_part):
                     const_part = SR(1)
             else:
                 const_part = coeff
@@ -836,7 +842,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
                 'n_legs': n_legs,
                 'temporal_type': noise_type,
                 'amplitude': (coeff / const_part
-                              if not const_part.is_zero() else SR(1)),
+                              if not _is_zero(const_part) else SR(1)),
                 'amplitude_is_time_dep': amp_is_td,
                 'in_integrand': not can_pull_out,
             }
@@ -848,9 +854,9 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
                 scalar_parts.append(coeff)
             else:
                 const_part = coeff.subs({s: SR(1) for s in td_syms})
-                td_part = coeff / const_part if not const_part.is_zero() else coeff
+                td_part = coeff / const_part if not _is_zero(const_part) else coeff
 
-                if not const_part.is_one() and not const_part.is_zero():
+                if not const_part.is_one() and not _is_zero(const_part):
                     scalar_parts.append(const_part)
 
                 vertex_time_factors[v] = td_part.simplify_rational()
