@@ -98,7 +98,7 @@ def _ito_nudge_callable(fn, k):
     other k the callable is returned unchanged (``daedalus.run`` places the
     k≥3 times itself: ``_kpoint_slice_times`` for the slices,
     ``_kpoint_pinned_time`` per leg for the full grid).  Mirrors the grid:
-    a second-leg time within 1e-12 of the anchor leg's time is moved onto it
+    a second-leg time within 1e-12 (relative) of the anchor leg's time is moved onto it
     (default, an exact tie) or to ``anchor − _ITO_EPS`` (DAEDALUS_TAU0=nudge).
     """
     if k != 2:
@@ -109,7 +109,15 @@ def _ito_nudge_callable(fn, k):
     # moved to the equal-time left limit.  'exact': a second time within
     # 1e-12 of the first is moved ONTO it (an exact tie, decided by the
     # engine's tie rule)
-    return lambda t0, t1: fn(t0, t0 + lag if abs(t1 - t0) <= 1e-12 else t1)
+    # (the tie is relative to the times themselves: an absolute 1e-12 tied
+    # distinct times of a model in fast time units)
+    # Only FINITE times can tie: with t1 = inf the relative threshold is itself
+    # infinite and would snap inf onto tau = 0; non-finite times go to the
+    # engine, which refuses them.
+    def _tied(t0, t1):
+        return (math.isfinite(t0) and math.isfinite(t1)
+                and abs(t1 - t0) <= 1e-12 * max(abs(t0), abs(t1)))
+    return lambda t0, t1: fn(t0, t0 + lag if _tied(t0, t1) else t1)
 
 
 def _phase_j_warning_scope():
@@ -1837,19 +1845,28 @@ def _run_spatial(state):
             _ns = ft._ns
             _Msr, _Dsr, _Vsr = reaction_diffusion_matrices(
                 prop['K_ft'], prop['omega'], SR.var('k'),
-                _ns.Laplacian, getattr(_ns, 'GradX', None))
+                _ns.Laplacian, getattr(_ns, 'GradX', None) or SR.var('GradX'))
             _nf = int(_Msr.nrows())
             _sub = _norm_sr(num_params)
 
             def _numm(sm):
                 return _np.array(
-                    [[complex(SR(sm[a_, b_]).subs(_sub)).real
+                    [[complex(SR(sm[a_, b_]).subs(_sub))
                       for b_ in range(_nf)] for a_ in range(_nf)],
-                    dtype=float)
-            _Mn, _Dn, _Vn = _numm(_Msr), _numm(_Dsr), _numm(_Vsr)
-            if not _np.allclose(_Vn, 0.0, atol=1e-9):
-                raise NotImplementedError(
-                    'coupled k>=3: drift (V != 0) not supported.')
+                    dtype=complex)
+            _Mc, _Dc = _numm(_Msr), _numm(_Dsr)
+            # M and D are real for a real action; never drop an imaginary
+            # part silently (relative to the matrix's own scale)
+            for _nm, _mc in (('reaction M', _Mc), ('diffusion D', _Dc)):
+                if _np.max(_np.abs(_mc.imag)) > 1e-12 * max(
+                        float(_np.max(_np.abs(_mc))), 1e-300):
+                    raise NotImplementedError(
+                        f'coupled k>=3: the {_nm} matrix is complex at the '
+                        f'saddle; a real matrix is required.')
+            _Mn, _Dn = _Mc.real, _Dc.real
+            # the drift V = i*v*I (GradX -> i k, purely imaginary): a common
+            # drift is boosted away exactly inside compute_coupled_kpoint;
+            # any other V refuses there (pipeline_bridge._drift_velocity)
             _D0, _Dhat = split_reference_diffusion(_Dn)
             tree_info_k = {
                 'M': _Mn, 'Dhat': _Dhat, 'D0': float(_D0),
@@ -1931,6 +1948,9 @@ def _run_spatial(state):
     _tree_exact = (_orders == [0] and not sp_info.get('coupled')
                    and sp_info.get('modes'))
     _tau_arr = _np.asarray(tau_grid, dtype=float)
+    # a constant drift was boosted away (C_v(x, tau) = C_0(x - v tau, tau)):
+    # the off-grid exact tree is the drift-free mode at the boosted point
+    _v_drift = float(sp_info.get('drift_velocity') or 0.0)
 
     def _spatial_callable(table, exact_tree):
         def fn(*tau_then_x):
@@ -1953,6 +1973,7 @@ def _run_spatial(state):
                 from engine.integration.spatial.spatial_correlator import (
                     free_two_point_d, free_two_point_box)
                 val = 0j
+                xq = xq - _v_drift * tau
                 for (A, B, N) in sp_info['modes']:
                     if _sp_d == 1:
                         val += free_two_point(A, B, N, xq, tau,
@@ -2238,7 +2259,11 @@ def _run_phase_j(state, grouped):
         # default, where the engine's exact tie rule gives C(0⁻) exactly;
         # the −_ITO_EPS sample is DAEDALUS_TAU0=nudge, see ``_tau0_mode``.)
         _lag0 = _tau0_lag()
-        tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else _lag0)
+        # a grid value is the equal-time point when it is 0 to round-off of
+        # the grid's own scale (an absolute 1e-12 turned every lag of a model
+        # in fast time units, rates ~1e12, into tau = 0: audit W4a)
+        _tz = 1e-12 * max([0.0] + [abs(float(t)) for t in tau_grid])
+        tau_points = [(0.0, float(t) if abs(float(t)) > _tz else _lag0)
                       for t in tau_grid]
     else:
         tau_points = None   # k≥3: caller handles grid evaluation

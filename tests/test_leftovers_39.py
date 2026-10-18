@@ -186,8 +186,8 @@ def test_mf_check_solves_the_saddle_once_per_check(monkeypatch):
     _expanded(_hawkes_mf(True), 2)
     assert len(calls) == 1                                  # the check has several coefficients
     n_coeff = []
-    orig_res = F._residual_at
-    monkeypatch.setattr(F, '_residual_at', lambda *a: n_coeff.append(1) or orig_res(*a))
+    orig_res = F.mf_sector_residual
+    monkeypatch.setattr(F, 'mf_sector_residual', lambda *a, **k: n_coeff.append(1) or orig_res(*a, **k))
     _expanded(_hawkes_mf(True), 2)
     assert len(n_coeff) > 1
 
