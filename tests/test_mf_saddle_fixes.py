@@ -263,10 +263,11 @@ def _bistable(domain=None, rhs=None):
 
 
 def test_selected_root_is_checked_not_only_the_default_one():
-    """The equation ``x - x^3/4`` shares the root 0 (index 0, where the expansion's check runs) with
-    the action's drift ``x - x^3`` but not the root 2 (index 1): that run must stop, not compute at a
-    saddle the action does not have."""
-    m = _bistable(rhs='x - 0.25*x**3')
+    """The equation drift ``-(x + 1) x (x - 2)`` (rhs ``-x^3 + x^2 + x`` next to the lhs
+    ``Dt x - x``) shares the stable root -1 (index 0: stable roots first,
+    where the expansion's check runs) with the action's drift ``x - x^3`` but not the stable root 2
+    (index 1): that run must stop, not compute at a saddle the action does not have."""
+    m = _bistable(rhs='-x**3 + x**2 + x')
     with pytest.raises(AssertionError, match=r'at the selected root \(fixed_point_index=1'):
         _run(m, XX, ell=0, fixed_point_index=1)
 
@@ -276,14 +277,18 @@ def test_consistent_model_passes_the_selected_root_check():
     assert r['mf_values']['xstar'][0] == pytest.approx(1.0, abs=1e-12)
 
 
-def test_negative_root_of_an_undeclared_field_is_named():
-    """Undeclared domain: the search covers x >= 0 (the historical box; widening it moved other
-    models' roots), so -1 is not selectable -- but it is found and named, with the remedy."""
+def test_negative_root_of_an_undeclared_field_is_selectable():
+    """Undeclared domain: the default seeds cover x >= 0 (the historical box) and the mirrored seeds
+    x <= 0; every root they reach is selectable (audit W6: which negative roots were selectable
+    depended on the field's units).  Stability analysis off: the stable roots first, ascending."""
     from api._mean_field_dae import solve_mean_field_dae
-    with pytest.warns(UserWarning, match=r"x\*=\[-1\.0.*domain='real'"):
-        r = solve_mean_field_dae(_bistable(), {}, fixed_point_index=1)
-    assert [x['values']['xstar'][0] for x in r['mf_all_roots']] == [0.0, 1.0]
-    assert r['mf_unsearched_roots'][0]['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', UserWarning)
+        r = solve_mean_field_dae(_bistable(), {}, fixed_point_index=0)
+    assert [x['values']['xstar'][0] for x in r['mf_all_roots']] == [
+        pytest.approx(-1.0, abs=1e-12), pytest.approx(1.0, abs=1e-12), 0.0]
+    assert r['mf_values']['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
+    assert r['mf_unsearched_roots'] == []
 
 
 def test_declared_real_domain_reaches_the_negative_root():
@@ -294,7 +299,7 @@ def test_declared_real_domain_reaches_the_negative_root():
     assert r['mf_values']['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
     assert r['mf_unsearched_roots'] == []
     a = _run(_bistable('real'), XX, ell=1, fixed_point_index=0)
-    b = _run(_bistable('real'), XX, ell=1, fixed_point_index=2)
+    b = _run(_bistable('real'), XX, ell=1, fixed_point_index=1)     # the other well
     assert a['mf_values']['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
     # x -> -x symmetry of x - x^3 with additive noise: the two wells have the same C(tau)
     for ell in (0, 1):

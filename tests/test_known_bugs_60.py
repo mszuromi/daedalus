@@ -289,7 +289,8 @@ def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
 
     def spy(*a, **k):
         out = orig(*a, **k)
-        cap['R'] = out[2]
+        if out is not None:          # (the reduced form: None without one)
+            cap['R'] = out[2]
         return out
     from api.model import ModelBuilder
     m = (ModelBuilder('bug60 saddle nan').physical_field('x')
