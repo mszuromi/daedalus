@@ -393,7 +393,7 @@ def test_gtas_cross_covariance_is_the_cluster_process_in_both_orders(
          .parameter('mu_shift_diff', default=mu)
          .parameter('sigma_shift_diff_sq', default=s2, domain='positive')
          .add_gtas_noise(GTaSNoise()).build())
-    taus = np.array([-1.0, 0.5, 3.0])
+    taus = np.array([-1.0, 0.0, 1.0])
     g = lambda t, c: lam * p**2 * math.exp(-(t - c)**2 / (2 * s2)) / math.sqrt(2 * math.pi * s2)
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', engine)
     c12, r = _C(m, [('m', 1), ('m', 2)], taus=taus, use_grouped_phase_j=grouped)
@@ -401,6 +401,9 @@ def test_gtas_cross_covariance_is_the_cluster_process_in_both_orders(
     assert np.allclose(c12.real, [g(t, mu) for t in taus], rtol=1e-13, atol=0)
     assert np.allclose(c21.real, [g(t, -mu) for t in taus], rtol=1e-13, atol=0)
     assert r['mf_values']['mstar'] == [pytest.approx(lam * p)] * 2
+    # the state-space engine declines noise-kernel diagrams: both engine
+    # settings evaluate them on the shared route fixed here
+    assert r['phase_j_engine']['engine'] == engine
 
 
 def test_asymmetric_cross_field_cgf_row_matches_quadrature():
