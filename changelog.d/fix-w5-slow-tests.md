@@ -20,3 +20,7 @@ Tests only; no library code changed and no public number moved. The first schedu
 - **`test_delayed_alpha_network_voltage_form_bit_identical_to_builder` expects `status='target_missed'`** on both
   forms: the automatic Pade order stops at n_max = 16 with an estimated 1.4e-5 against the 1e-8 target, which #50 marks
   as a missed target (it used to read 'ok'); the two forms still agree bit for bit, status and order included.
+- **The two unequal-D Dyson loop tests are `bigmem`** (`test_unequal_D_loops_order3_runs`,
+  `test_unequal_D_loop_dressing_ladder`): the coupled one loop at dressing order 2 / 3 needs 6.4 / 10.8 GB per chamber
+  at the default grids; before the memory guard (#44) the same tests reached > 18.9 GB, so they never fitted a standard
+  runner. (Their NaN in the x-space tree is a separate fix, fix/dyson-nan.)
