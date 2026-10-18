@@ -29,7 +29,7 @@ Tests, CI and the environment only; no library code changed and no public number
   neutral-system refusal). Each test was checked to fail on its mutant.
 - **Tolerances tightened to the measured accuracy**: 327 assertions that were >= 100x looser than the worst error the
   suite achieves (or exact under a loose tolerance) now sit at max(1e-12, the decade above 100x the worst error on
-  either the local or the CI stack); 12 semantic thresholds were left alone. Ten `pytest.approx` checks on values far
+  either the local or the CI stack); 12 were left alone (semantic thresholds, or already at the floor). Ten `pytest.approx` checks on values far
   below 1 get `abs=0` (the default `abs=1e-12` made them vacuous, e.g. a 2e-20 residue), and a stochastic check whose
   expected value was below its own 5-sigma band now runs at a lag where it is not. Three assertions that ran within
   2x of their tolerance on CI's stack got a decade of room.
