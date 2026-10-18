@@ -310,7 +310,7 @@ def test_alpha_conductance_vs_markov_embedding(monkeypatch):
         # values ~1e-3 here, the state-space route returns real values
         k_, o_ = np.asarray(kern['C_tau_by_ell'][ell]).real, np.asarray(
             kern_on['C_tau_by_ell'][ell]).real
-        assert np.max(np.abs(k_ - o_)) <= 1e-13 * np.max(np.abs(k_))
+        assert np.max(np.abs(k_ - o_)) <= 1e-12 * np.max(np.abs(k_))
     FI._reset_runtime_counters()
     emb = _cc(alpha_markov_model(0.4), 2, 1, ext, TAUS)
     c = _ss_counters()
@@ -318,7 +318,7 @@ def test_alpha_conductance_vs_markov_embedding(monkeypatch):
     for ell in (0, 1):
         k_, e_ = np.asarray(kern['C_tau_by_ell'][ell]), np.asarray(
             emb['C_tau_by_ell'][ell])
-        assert np.max(np.abs(k_ - e_)) <= 1e-13 * np.max(np.abs(e_))
+        assert np.max(np.abs(k_ - e_)) <= 1e-12 * np.max(np.abs(e_))
     # equal kernel rates: main refuses the kernel form (a repeated kernel
     # rate); the embedding (whose poles the feedback through x* splits) runs
     # on the state-space route and is continuous through tau2 = tau

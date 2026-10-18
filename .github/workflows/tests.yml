@@ -30,13 +30,4 @@ jobs:
           python -c "import sage.version; print('sage', sage.version.version)"
 
       - name: Run the test suite (slow tests deselected via pytest.ini)
-        # TEMPORARY (W5 tolerance confirmation on CI's stack; removed before review)
-        run: TOLREC_OUT="$RUNNER_TEMP/tolrec_ci.jsonl" PYTHONHASHSEED=0 python -m pytest tests/ -q -p tests._w5_tolrec_plugin -o enable_assertion_pass_hook=true
-
-      - name: Upload the tolerance record (TEMPORARY)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tolrec-ci
-          path: ${{ runner.temp }}/tolrec_ci.jsonl
-          if-no-files-found: ignore
+        run: python -m pytest tests/ -q     # the activated conda env's python already has Sage

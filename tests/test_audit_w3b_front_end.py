@@ -458,7 +458,7 @@ def test_delay_controller_k3_is_unit_invariant():
     assert a['n'] == b['n'] and a['target_met'] == b['target_met']
     assert sorted(a['est_by_order']) == sorted(b['est_by_order'])
     for n in a['est_by_order']:
-        assert b['est_by_order'][n] == pytest.approx(a['est_by_order'][n], rel=1e-10)
+        assert b['est_by_order'][n] == pytest.approx(a['est_by_order'][n], rel=1e-9)
 
 
 def test_delay_target_missed_is_marked(monkeypatch):

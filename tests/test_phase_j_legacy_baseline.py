@@ -273,8 +273,10 @@ def test_legacy_fixture_values_reproduce(fx):
 
 
 def _in_git_checkout():
-    rc, out = Z._git('rev-parse', '--is-inside-work-tree')
-    return rc == 0 and out.strip() == 'true'
+    """The repository root is a git work tree's top level (an exported tree nested inside some
+    other repository does not count)."""
+    rc, out = Z._git('rev-parse', '--show-toplevel')
+    return rc == 0 and os.path.realpath(out.strip()) == os.path.realpath(Z._REPO_ROOT)
 
 
 @pytest.mark.skipif(not _in_git_checkout(),

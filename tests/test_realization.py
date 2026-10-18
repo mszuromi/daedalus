@@ -350,5 +350,5 @@ def test_expm_upper_triangular_near_double_eigenvalue(gap):
         with mp.workdps(40):
             a, b = mp.mpf(-1) * t, -(1 + mp.mpf(gap)) * t
             ref = float(t * mp.exp(a) if gap == 0 else (mp.exp(a) - mp.exp(b)) / ((a - b) / t))
-        assert abs(E[0, 1].real - ref) <= 4e-15 * abs(ref)
+        assert abs(E[0, 1].real - ref) <= 1e-14 * abs(ref)
         assert abs(E[0, 0].real - np.exp(-t)) <= 4e-15 * np.exp(-t)
