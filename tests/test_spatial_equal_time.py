@@ -174,10 +174,19 @@ def test_equal_time_switch_and_high_dimension_note(monkeypatch):
     g = sum(FI.diagram_correlator_x(d_, p_, xs, 0.0, 1.0, 0.7, comp=c_)
             for d_, p_, c_ in _records(_q2(), params, 'p', 1))
     assert FI.eqtime_ledger_collect() is None
-    # main's product-grid value (origin/main c8b869c, the same records)
-    main = np.array([0.04642867565324972, 0.03777113863107688])
-    assert np.max(np.abs(g - main) / np.abs(main)) < 1e-15, (g, main)
+    # the switch IS the product grid: bit for bit against the dispatch
+    # forced off (same platform)
     monkeypatch.delenv('SPATIAL_EQTIME')
+    monkeypatch.setattr(FI, '_eqtime_applies', lambda *a, **k: False)
+    g_grid = sum(FI.diagram_correlator_x(d_, p_, xs, 0.0, 1.0, 0.7, comp=c_)
+                 for d_, p_, c_ in _records(_q2(), params, 'p', 1))
+    assert np.array_equal(g, g_grid), (g, g_grid)
+    monkeypatch.undo()
+    # and main's product-grid value (origin/main c8b869c, macOS): the same
+    # algorithm, so it agrees to cross-platform BLAS / libm round-off
+    main = np.array([0.04642867565324972, 0.03777113863107688])
+    assert np.max(np.abs(g - main) / np.abs(main)) < 1e-13, (g, main)
+    monkeypatch.delenv('SPATIAL_EQTIME', raising=False)
     monkeypatch.setattr(FI, 'EQTIME_MAX_DIM', 0)          # force "too big"
     FI.eqtime_ledger_reset()
     FI.diagram_correlator_x(dd, pv, xs, 0.0, 1.0, 0.7, comp=cp)
