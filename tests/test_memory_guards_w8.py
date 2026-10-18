@@ -146,3 +146,24 @@ def test_pp_simulate_refuses_an_oversized_output():
     assert sum(v.nbytes for v in out['counts'].values()) == 2000 * 3 * 8
     with pytest.raises(MemoryError):
         s.simulate(T=2.0, dt=1e-3, n_paths=3, burn_in=0.0, max_bytes=1e4)
+
+
+# ── MEM-05: the pre-pass's cheap branch and stateless delta lines ─────────
+
+def test_prepass_cheap_branch_counts_only_subsets_built():
+    from engine.integration.time_domain import statespace as SS
+    # two stateless delta lines (n = 0: always contracted) and two with states
+    args = (4, 0b1001, ((1, 2, 0, True), (2, 3, 0, True), (1, 3, 1, True),
+                        (0, 1, 1, True)), 8)
+    SS._EST_CACHE.clear()
+    cheap = SS._layout_estimate(*args, n_tau=200, n_perm=2)
+    old = SS.PREPASS_CHEAP_BYTES
+    try:
+        SS.PREPASS_CHEAP_BYTES = 0
+        SS._EST_CACHE.clear()
+        enum = SS._layout_estimate(*args, n_tau=200, n_perm=2)
+    finally:
+        SS.PREPASS_CHEAP_BYTES = old
+        SS._EST_CACHE.clear()
+    # still an upper bound of the enumerated estimate, no longer 4x it
+    assert enum[0] <= cheap[0] <= 1.01 * enum[0], (cheap, enum)

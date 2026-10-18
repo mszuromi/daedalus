@@ -3356,6 +3356,10 @@ def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
     for (_u, _v, n, _dl) in edges:
         prod_n *= max(n, 1)
     n_sub = 2 ** len(didx)
+    # a stateless delta line (n == 0) is never kept smooth (``_contract``:
+    # that subset is never built), so only the delta lines with states
+    # double the subsets built (audit MEM-05: 2^k over-estimate since #38)
+    n_sub_built = 2 ** sum(1 for i in didx if edges[i][2] > 0)
     cheap_stat = (2 ** n_int) * prod_n
     if (cheap_stat * item <= PREPASS_CHEAP_BYTES
             or len(didx) > PREPASS_MAX_DELTA_EDGES):
@@ -3366,7 +3370,7 @@ def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
                 nv, leaf_mask, [(u, v, max(n, 1)) for (u, v, n, _d) in edges])
         D = full_sum
         Dd = min(D, OP_DENSE_MAX)
-        out = (n_sub * (stat_sum * item + prefetch),
+        out = (n_sub_built * (stat_sum * item + prefetch),
                6 * D * item + 2 * Dd * Dd * item)
     else:
         stat = 0
