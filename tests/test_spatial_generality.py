@@ -130,14 +130,19 @@ def test_kill_means_treats_parameters_as_constants():
     from api.spatial_operator_ir import Lap, kill_means
     pbar, dp, lam, x = SR.var('pbar dp lam x')
     keep = [dp, x]
-    assert kill_means(Lap(lam * pbar ** 2), [pbar], keep_syms=keep) == 0
-    assert kill_means(Lap(lam), [pbar], keep_syms=keep) == 0
+    # structural checks (a symbolic `!= 0` depends on the Sage assumptions
+    # other tests leave behind)
+    def killed(e):
+        return SR(e).is_trivial_zero()
+
+    assert killed(kill_means(Lap(lam * pbar ** 2), [pbar], keep_syms=keep))
+    assert killed(kill_means(Lap(lam), [pbar], keep_syms=keep))
     # a fluctuation or a coordinate inside the operator is not a constant
-    assert kill_means(Lap(lam * dp ** 2), [pbar], keep_syms=keep) != 0
-    assert kill_means(Lap(x * pbar), [pbar], keep_syms=keep) != 0
+    assert 'Lap' in str(kill_means(Lap(lam * dp ** 2), [pbar], keep_syms=keep))
+    assert 'Lap' in str(kill_means(Lap(x * pbar), [pbar], keep_syms=keep))
     # without keep_syms the old rule (means only) is unchanged
-    assert kill_means(Lap(lam * pbar ** 2), [pbar]) != 0
-    assert kill_means(Lap(pbar ** 2), [pbar]) == 0
+    assert 'Lap' in str(kill_means(Lap(lam * pbar ** 2), [pbar]))
+    assert killed(kill_means(Lap(pbar ** 2), [pbar]))
 
 
 def test_parameter_inside_operator_at_nonzero_saddle():
