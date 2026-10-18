@@ -2057,7 +2057,8 @@ def compute_spatial_correlator_generic(
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
         # the time grid splits at the external times inside each vertex's
         # leaf bounds (worst lag sign of the largest |tau|)
-        _nshort = min(_nt, int(_osg.environ.get('SPATIAL_SEGMENT_NODES', 8)))
+        _nshort = (_nt if _ff is not None else
+                   min(_nt, int(_osg.environ.get('SPATIAL_SEGMENT_NODES', 8))))
         _split = max(time_grid_split_factor(_dd, external_times_2pt(_dd, t_),
                                             _nt, _nshort)
                      for t_ in ((0.0,) if _tau_m == 0.0 else (_tau_m, -_tau_m)))

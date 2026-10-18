@@ -802,6 +802,7 @@ def _refuse_uv_divergent(descr, spatial_dim, formfactor=None):
 # at an adaptive order: the order grows until two successive orders agree to
 # EQTIME_RTOL.  Plain vertices; up to EQTIME_MAX_DIM simplex dimensions
 # (cost m^dim per chamber); derivative vertices keep the grid.
+DERIV_SIGMA_POWER = 6.0           # sigma = s_cap v^p for derivative vertices
 EQTIME_RTOL = 1e-9
 EQTIME_MAX_DIM = 4
 EQTIME_NODE_CAP = 2e7            # simplex nodes x chambers, per call
@@ -1085,8 +1086,19 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     s_cap = 32.0 / mu
     xv, wv = np.polynomial.legendre.leggauss(n_s)
     vv = 0.5 * (xv + 1.0)
-    s_nodes = s_cap * vv * vv
-    s_w = wv * s_cap * vv * np.exp(-mu * s_nodes)            # w·s_cap·v·e^{−μσ}
+    if formfactor is None:
+        s_nodes = s_cap * vv * vv
+        s_w = wv * s_cap * vv * np.exp(-mu * s_nodes)        # w·s_cap·v·e^{−μσ}
+    else:
+        # a derivative vertex's form factor turns the loop-shrink corner into
+        # an integrable rho^(-1/2) singularity: sigma = s_cap v^p with
+        # p = DERIV_SIGMA_POWER smooths it (KPZ C-C bubble at the default
+        # grid: 6e-2 -> ~1e-4 relative; still algebraic, the result stays
+        # 'approximate')
+        _p = DERIV_SIGMA_POWER
+        s_nodes = s_cap * vv ** _p
+        s_w = (wv * s_cap * 0.5 * _p * vv ** (_p - 1)
+               * np.exp(-mu * s_nodes))
     # the correlation Schwinger grid (n_s^{n_C} points), shared across chambers
     if n_C > 0:
         sg = np.meshgrid(*([s_nodes] * n_C), indexing='ij')
@@ -1140,8 +1152,10 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                         'note': EQTIME_GRID_NOTE})
     _ties = _leaf_ties(edges, idx, external_times, n_V)
     # the long tail segment keeps n_t nodes; the short smooth segments between
-    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
-    n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
+    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t) --
+    # n_t for a derivative vertex, whose segments are not smooth enough for 8
+    n_short = (n_t if formfactor is not None else
+               min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8))))
     _use_mc = method == 'mc' and (n_V + n_C) > 0
 
     def _chamber_bytes(P_):
