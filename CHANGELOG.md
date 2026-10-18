@@ -11,61 +11,36 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
-#### Pole engine: unit-invariant thresholds (audit wave W4b)
+#### Changed: macOS never forks; `DAEDALUS_PARALLEL=0` kill switch; the OBJC fork-safety flag is never set
 
-The pole engine (`DAEDALUS_PHASE_J_ENGINE=poles`, the supported backup of the state-space default) had absolute
-thresholds that changed answers under an exact change of time or field units. Each is now relative to the problem's
-own scale, and each fix is tested with exact time-rescaled (or field-rescaled) twins, units changed by 1e-6 to 1e6,
-against the state-space engine or a closed form (`tests/test_audit_w4b_pole_units.py`).
-Zoo A/B on BOTH engines (`use_cache=False`, base = main c8b869c): default engine 17 of 18 runnable public entries
-bit-identical, `dendritic_quad_soma_sigmoid` within 2.8e-16 (main's own scatter); pole engine 15 of 16 bit-identical,
-`spike_reset-k2-l1-grouped` within 4.1e-15 (main's own cross-process scatter on that route: repeated main runs differ
-by as much); analyzer codes identical except `ou_quartic_two_dim_color_corr` on the pole engine, which now reports
-`info:G6_ILL_CONDITIONED` (13 subset sums above their unit-correct floor, worst ratio 2.76; values bit-identical,
-`G6_ACCURACY` unchanged at 6.1e-13). No zoo number moves beyond 1e-15 except that scatter.
+- **macOS never forks**, in any process (notebook, terminal IPython, script, pytest). `engine.fork_safety.fork_unsafe`
+  is True for the `fork` start method on macOS, and every fork-based pool (Phase J `total_C_batch` /
+  `eval_per_diagram_batch`, type assignment `enumerate_all`, streaming enumeration with `DAEDALUS_PREDIAGRAM_PROCS` > 1)
+  runs serially there with one `RuntimeWarning` per process. Before, plain macOS scripts forked. A Sage process is
+  multithreaded after its first symbolic step (Boehm GC marker threads of ECL), and forking a macOS Jupyter kernel has
+  hard-crashed the OS. Linux keeps the fork path. Numbers do not move: the parallel paths were bit-identical to serial.
+- **`DAEDALUS_PARALLEL=0`** (also false/no/off) turns every worker pool off, silently, read at call time: the fork
+  pools above, the spatial thread pool and the legacy eager enumerator's `n_threads`. Any value other than 0/1,
+  false/true, no/yes or off/on raises `ValueError`.
+- **`OBJC_DISABLE_INITIALIZE_FORK_SAFETY` is never set** (three library sites and one test removed). The
+  Objective-C runtime reads it once, at image load, so setting it from Python never affected the forks it was meant
+  to guard. It only stayed in `os.environ` and disabled the runtime's fork check in every process exec'd later, where
+  that turns a controlled abort into a hard crash.
+- `engine.fork_safety.in_jupyter_kernel()` is public (any ipykernel, `ZMQInteractiveShell` anywhere in the shell's MRO
+  as in SageMath and Spyder, or a shell with a kernel). `fork_unsafe_in_notebook` keeps its meaning (the kernel case).
+- Tests: fake SageMath / Spyder / VS Code shells, the macOS rule without a kernel, kill-switch parsing and every pool
+  under `DAEDALUS_PARALLEL=0`, one warning per process, a source scan that nothing sets the OBJC flag, and (Linux
+  only) a forked child that runs Maxima and a full ECL garbage collection within a timeout. The fork bit-identity
+  tests skip on macOS; Linux CI runs them.
 
-- **Kernels with cos / sin / cosh / sinh** (`_extract_exp_modes`): `r e^{-rt} cos(rt)` at `r = 2000` was fitted as
-  ONE real exponential, because the fixed probe times 0.37, 1.9 and 4.3 underflowed and compared nothing; the one-loop
-  C was 39 % off with no warning (1.532e-3 instead of 1.105e-3 at τ = 0). At `r = 2` the same kernel was refused
-  ("Phase J could not evaluate 3 diagrams", one-loop C = 0). The probe times are now multiples of the kernel's own
-  time unit, and trig factors are written as exponentials first, so the kernel splits into its complex modes. Both
-  twins now give the state-space value (1.10487e-3, 9.6889e-4, 1.8371e-4 at τ = 0, 0.5, 2; agreement 1e-15). A trig
-  kernel that does not decay (`cos(ωt)` alone) is still refused. The state-space engine gets the same fix where it
-  used this function (a mixed cos / sin / cosh kernel at rates 1e-4 was refused there too).
-- **Residues from the numerical tiers** (when the exact tier fails): a residue entry below 1e-12 of the LARGEST entry
-  at its pole was set to 0. A field in small units (`x' = -x + c z` with `c = 1e-14`) lost its genuine `C_xz`
-  (pole-engine value 0 instead of 1.33e-14), and `propagator['C_mats']` was wrong on every engine. Entries are now
-  zero only when they are structural zeros of `K^{-1}` (exact), or rounding noise relative to the SAME entry's size
-  on a small circle around the pole. Residues now agree with the exact tier entry by entry (1e-12).
-- **The numerical tiers are no longer entered silently**: an exact-tier inverse that raised or ran out of time, or a
-  repeated root the cluster route did not resolve, now gives a `PoleResidueWarning`. When the exact pole record
-  exists, the analyzer reports `G3_RESIDUES_NUMERICAL_TIER`.
-- **Poles from the numerical tiers**: the retarded floor (`Im ω > 1e-9`), the pre-Newton dedup radius (1e-5), the
-  Newton exits and steps (`|det| < 1e-13`, `1e-7 (1 + |ω|)`) and the probe frequencies were absolute. In slow units
-  (`a = 1e-4`, `b = 1.05e-4`) two poles were merged, and `C_xx` came out 236 times too large with no warning. Every
-  root of `det K(ω)` is now Newton-refined with relative steps and kept only if `det K` vanishes there. The retarded
-  test, the dedup and the residue circles use the frequency scale of those verified zeros (one Newton routine; the
-  three drifted copies are gone). The review also caught a spurious root from a rounding-noise coefficient, about
-  1e16 times the true pole, which set the scale and emptied the pole list in slow units; this is now a test. After a
-  leading-coefficient trim drops genuine poles, the untrimmed polynomial's roots are the candidates (one per root;
-  restored and trimmed copies of an ill-conditioned slow pole could otherwise both be kept).
-- **Retarded poles of the exact tier and of the cluster analysis** (`api._pole_clusters`): a decay rate below the
-  absolute 1e-9 was dropped silently. Example: `y' = -b y` with `b = 5e-10` next to a unit-rate field, after
-  downgrading `G2_MARGINAL_MODE`, gave `C_yy = 0` instead of 0.2. Its 1000-times-faster twin kept the pole. A root
-  is now retarded when its rate is above 1e-12 of the largest `|root|` (`api._propagator.RETARDED_RTOL`).
-- **Poset chain simplex** (k ≥ 3, m ≥ 3 regions): scalar lower bounds within an absolute 1e-9 were treated as one. In
-  units 1e9 times finer, the lowers 0 and 5e-10 of a region with upper 2e-9 were merged, and the subset came out
-  36.6 % low (its unit twin went to the exact route). The tolerance is now 1e-12 of the poset's largest bound
-  (`POSET_LOWER_RTOL`).
-- **DBM / box-free conditioning floor** (`dbm_integral`): the absolute floor `COND_ATOL · scale` had the units of the
-  integrand, not of the integral. The same integral changed from `ill_conditioned` to `ok` when time was rescaled
-  (the ratio scaled as λ^-m). The pole route also passed `Σ|C|` without `e^{Re E}`, so an ill-conditioned closed
-  form in a correlator tail (`e^{-30}`) was accepted with relative error 1.2e-6 and its mp retry skipped. The
-  default scale is now `integral_scale = Σ|C| e^{Re E} · ∏_v min(w_v, 1/max|β|)`: the integrand times a volume in
-  the fastest exponent's time unit, capped by the region's own extent `w_v`. The route uses it, and the DD routes'
-  error accounting (counters for G6) uses the same volume. At rates of order one this is the old floor. One
-  consequence: a single-variable cancellation between near-equal SLOW rates (`a = -1e-3`) is accepted in double
-  precision, as its unit-rate twin always was, instead of going to the mp retry.
+#### Fixed: the fork guard missed the SageMath Jupyter kernel
+
+`engine.fork_safety.fork_unsafe_in_notebook` tested the shell's class name for exactly `ZMQInteractiveShell`. The
+SageMath 10.x kernel uses the subclass `SageZMQInteractiveShell`, so inside Sage notebooks on macOS the guard returned
+False and `compute_cumulants(parallel=True)` (the default) could fork the kernel -- the crash the guard exists to prevent.
+The guard now treats any Jupyter kernel as unsafe for fork: `ipykernel` loaded, `ZMQInteractiveShell` anywhere in the
+shell's MRO, or a shell with a kernel. Those runs fall back to serial with the existing warning. Numbers do not move.
+Regression tests: `tests/test_fork_safety.py` (Sage subclass, loaded `ipykernel`, shell with a kernel).
 
 #### Front end: CGF rows, Markovian embedding, kernels, model files, delay controller (audit wave W3b)
 
