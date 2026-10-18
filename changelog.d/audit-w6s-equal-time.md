@@ -28,6 +28,11 @@
   bit-identical, now approximate), `SPATIAL_INTEGRATOR=mc` / `bessel`.
 - In a mixed model a diagram whose vertices are all plain no longer gets a (constant) form factor.
 - **The UV power count includes derivative-vertex momenta** (`omega -= r/2`, r the even part of the form factor's
-  degree along the subgraph's loop directions), at any d. Genuinely divergent loops refuse: the Model B and KPZ
-  one-loop bubbles at d = 2 (omega = 0) used to return cutoff-dependent numbers. No d = 1 model changes.
+  degree along the subgraph's loop directions), at any d. Genuinely divergent loops refuse
+  (`SpatialUVDivergenceError`); they used to return grid-dependent numbers:
+  - the Model B and KPZ one-loop bubbles at d = 2 (omega = 0);
+  - tracked `combined_allencahn_modelb_kpz_1d` at max_ell >= 1 (d = 1): the KPZ self-loop
+    <(dphi)^2> = int dk k^2 C(k) (omega = -1/2) feeds the Allen-Cahn vertex; on main its one-loop C(x=0.5,
+    tau=0.5) was -0.354 / -0.906 / -2.897 at SPATIAL_GRID_NS = 24 / 48 / 96 (tree 0.149).
+  Pure KPZ / Model B / Burgers at d = 1 are UV-finite and unchanged by the count.
 - `compute_spatial_kpoint` derivative records also report the coarse-grid spread.
