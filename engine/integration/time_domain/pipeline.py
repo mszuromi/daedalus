@@ -34,8 +34,6 @@ This is enforced by the canonical time remapping in
 
 from sage.all import SR
 
-import sys
-import warnings
 
 from engine.integration.time_domain.final_integral import (
     integrate_diagram,
@@ -53,49 +51,27 @@ from engine.integration.time_domain.final_integral import (
 # serial, always-available entry point) and ``total_C_batch(tau_list,
 # parallel=...)`` for fan-out over a τ grid.
 #
-# Parallelism uses ``multiprocessing.Pool`` with the ``fork`` start method.
-# Fork is chosen because:
+# Parallelism uses ``multiprocessing.Pool`` with the ``fork`` start method,
+# on Linux only.  Fork is chosen because the per-diagram ``contribution``
+# callables returned by ``integrate_diagram`` are nested closures that
+# standard ``pickle`` cannot serialise; with ``fork`` the workers inherit them
+# from the parent's memory, and only the τ tuples and the complex outputs
+# cross the process boundary.
 #
-#   - The per-diagram ``contribution`` callables returned by
-#     ``integrate_diagram`` are nested closures (inside
-#     ``integrate_diagram.<locals>.contribution``) that standard
-#     ``pickle`` cannot serialise.  With ``fork``, workers inherit the
-#     parent's full memory at fork time — closures, captured state, and
-#     all — without pickling functions.  The only objects crossing the
-#     fork boundary via pickle are the τ-tuple inputs (``tuple[float]``)
-#     and the complex-scalar outputs.
-#   - On Linux ``fork`` is the default.  On macOS Python 3.8+ switched
-#     to ``spawn`` by default to avoid Objective-C fork-after-init
-#     crashes; we explicitly set ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY``
-#     and request ``mp.get_context('fork')``.  This has been tested with
-#     Sage 10.8 + CPython 3.13 on macOS and reproduces bit-identical
-#     output to the serial path (measured max |parallel − serial| = 0.0).
+# **macOS never forks** (``engine.fork_safety.fork_unsafe``): forking after
+# Cocoa/BLAS/ECL initialisation has hard-crashed a Jupyter kernel and the OS
+# of the dev machine, and a Sage process is multithreaded after its first
+# symbolic step (Boehm GC markers), so there is no clean fork parent there.
+# On macOS a parallel batch runs serially with one warning per process.  The
+# package never sets ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY`` (the runtime
+# reads it once at image load, so setting it from Python never affected these
+# forks, and it leaked into every process exec'd later).  ``DAEDALUS_PARALLEL=0``
+# turns every pool off.
 #
-# ─── Windows support: DEFERRED ─────────────────────────────────────────
-# Windows does NOT support the ``fork`` start method at all — Python's
-# ``multiprocessing`` on Windows is always ``spawn``, which re-imports
-# the parent module in a fresh interpreter and then pickles arguments
-# across the boundary.  Because our per-diagram closures are not
-# picklable (see above), ``total_C_batch(parallel=True)`` will raise
-# ``ValueError: cannot find context for 'fork'`` if invoked on Windows.
-#
-# When we revisit Windows support the two viable options are:
-#
-#   1. Add ``cloudpickle`` as an optional dependency and route closure
-#      serialisation through it.  ``cloudpickle`` handles nested
-#      functions, lambdas, and Sage objects that stdlib ``pickle``
-#      rejects.  Would let us switch ``total_C_batch`` to ``spawn`` on
-#      Windows transparently while leaving fork as the fast path on
-#      POSIX.
-#   2. Refactor the per-diagram / per-subset closures into top-level
-#      ``pickle``-compatible classes (e.g. ``FastSubsetEvaluator`` and
-#      ``DiagramContribution`` as module-level ``class``es with
-#      explicit ``__init__`` / ``__call__`` / ``__getstate__``).
-#      More invasive but no new runtime dependency.
-#
-# For now, POSIX-only is fine for the current user base (macOS / Linux
-# lab machines).  Windows users get a clear error at runtime rather
-# than silent non-determinism.
+# Windows has no ``fork`` start method; picklable state-space diagram tasks
+# with ``spawn`` (macOS and Windows) are the planned follow-up.  Until then a
+# Windows ``parallel=True`` batch raises ``ValueError: cannot find context for
+# 'fork'``.
 #
 # ``_WORKER_STATE`` is a module-level dict that lets ``_worker_eval``
 # (a picklable top-level function) reach the parent's ``total_C``
@@ -118,59 +94,23 @@ from engine.integration.time_domain.final_integral import (
 
 _WORKER_STATE = {}
 
-# ───────────────────────────────────────────────────────────────────────
-# Fork-in-notebook safety guard (2026-06, spatial→temporal lesson)
-# ───────────────────────────────────────────────────────────────────────
-# Forking a process AFTER an Objective-C framework (Cocoa via matplotlib),
-# the Accelerate/BLAS pools, or any other init has run can HARD-CRASH the
-# Jupyter kernel *and* macOS itself — intermittently, depending on what was
-# initialised in the parent before the fork.  This is the exact failure mode
-# that crashed the user's machine twice (June 2026) and was removed from the
-# spatial integrator (now thread-based / serial-gated, commit fd3af81).
-#
-# Setting ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` (as the batch helpers do
-# to silence the runtime's own fork-after-init *warning*) makes the actual
-# crash MORE likely, not less — it removes the guard rail without removing the
-# hazard.  The ``test_phase_J_total_C_batch_*`` bit-identity tests pass only
-# because pytest runs in a plain interpreter (never a ZMQ kernel) where Cocoa
-# was never initialised — they certify *numerical* determinism, NOT notebook
-# crash-safety.
-#
-# This guard is deliberately NARROW: it trips ONLY in the genuinely dangerous
-# context — macOS + a live Jupyter/ZMQ kernel + the ``fork`` start method —
-# and silently degrades that one case to the (always-correct) serial path with
-# a one-time warning.  Linux, terminal IPython, plain ``sage -python`` scripts,
-# and the test suite are all unaffected and keep the fast fork path.
-
-_FORK_GUARD_WARNED = False
+def _fork_unsafe(start_method):
+    """Return True iff this batch must not fork: ``fork`` on macOS
+    (:func:`engine.fork_safety.fork_unsafe`, one source of truth)."""
+    from engine.fork_safety import fork_unsafe
+    return fork_unsafe(start_method)
 
 
-def _fork_unsafe_in_notebook(start_method):
-    """Return True iff a ``fork`` here risks crashing a macOS Jupyter kernel.
-
-    Thin local alias for the canonical
-    :func:`engine.fork_safety.fork_unsafe_in_notebook` (kept so the existing
-    Phase-J call sites read unchanged; one source of truth for the logic)."""
-    from engine.fork_safety import fork_unsafe_in_notebook
-    return fork_unsafe_in_notebook(start_method)
+def _parallel_off():
+    """``DAEDALUS_PARALLEL=0``: every batch serial, silently."""
+    from engine.fork_safety import parallel_disabled
+    return parallel_disabled()
 
 
 def _warn_fork_guard_once():
-    """Emit the fork-in-notebook fallback warning at most once per process."""
-    global _FORK_GUARD_WARNED
-    if _FORK_GUARD_WARNED:
-        return
-    _FORK_GUARD_WARNED = True
-    warnings.warn(
-        "Phase-J parallel batch: fork-based multiprocessing is UNSAFE inside "
-        "a Jupyter kernel on macOS — forking after Cocoa/BLAS init can hard-"
-        "crash the kernel and the OS.  Automatically falling back to SERIAL "
-        "evaluation.  To parallelise the τ sweep, run as a plain script "
-        "(`sage -python run.py`, not a notebook) where fork-after-init is "
-        "safe.  (Mirrors the fork removal already done on the spatial path.)",
-        RuntimeWarning,
-        stacklevel=3,
-    )
+    """The fork -> serial fallback warning, once per process."""
+    from engine.fork_safety import warn_fork_fallback_once
+    warn_fork_fallback_once('Phase J parallel batch')
 
 
 def _worker_eval_total_C(tau_tuple):
@@ -615,6 +555,8 @@ def compute_correction_td(
             closures are unpicklable (nested functions); fork inherits
             them via process memory.  ``'spawn'`` and ``'forkserver'``
             will raise a pickling error in the current implementation.
+            On macOS ``'fork'`` is never used: the batch runs serially
+            with one warning per process.
 
         Returns
         -------
@@ -623,19 +565,18 @@ def compute_correction_td(
 
         Notes
         -----
-        On macOS the function sets
-        ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` automatically to
-        defuse Objective-C fork-after-init crashes.  Bit-identity with
+        ``DAEDALUS_PARALLEL=0`` makes the batch serial.  Bit-identity with
         the serial path is pinned by
         ``test_phase_J_total_C_batch_parallel_matches_serial`` (per-τ)
         and ``test_phase_J_total_C_batch_nested_matches_serial``
         (nested).
         """
         tau_list = [tuple(pt) for pt in tau_points]
-        # Fork-in-notebook crash guard (see module header): degrade to
-        # serial in the one dangerous context rather than risk a kernel/OS
-        # crash.  No-op under pytest, Linux, terminal IPython, and scripts.
-        if parallel and _fork_unsafe_in_notebook(start_method):
+        # Kill switch, then the fork guard (see module header): macOS never
+        # forks; the batch runs serially there.
+        if parallel and _parallel_off():
+            parallel = False
+        if parallel and _fork_unsafe(start_method):
             _warn_fork_guard_once()
             parallel = False
         if not parallel or len(tau_list) == 0:
@@ -644,12 +585,6 @@ def compute_correction_td(
 
         import multiprocessing as mp
         import os
-        # Fork-after-init safety on macOS + Sage + any Objective-C
-        # framework in the dep chain.  Must be set BEFORE the first
-        # fork in this process.  Idempotent (setdefault).
-        os.environ.setdefault(
-            'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
-        )
 
         n_diag = len(tree_callables)
         if n_diag == 0:
@@ -739,8 +674,10 @@ def compute_correction_td(
             n_workers if n_workers is not None
             else (__import__('os').cpu_count() or 4))
 
-        # Fork-in-notebook crash guard (see module header).
-        if parallel and _fork_unsafe_in_notebook(start_method):
+        # Kill switch, then the fork guard (see module header).
+        if parallel and _parallel_off():
+            parallel = False
+        if parallel and _fork_unsafe(start_method):
             _warn_fork_guard_once()
             parallel = False
 
@@ -757,10 +694,6 @@ def compute_correction_td(
             return vals, loop_nums
 
         import multiprocessing as mp
-        import os
-        os.environ.setdefault(
-            'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
-        )
         _WORKER_STATE['tree_callables'] = tree_callables
         tasks = [(p_idx, d_idx, pt)
                  for p_idx, pt in enumerate(tau_list)
