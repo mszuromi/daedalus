@@ -127,6 +127,33 @@ def test_sr_inverse_is_sage_inverse():
     ]
     for K in mats:
         assert _same(K.inverse(), P._sr_inverse(K)), K
+    # symbolic parameters with assumptions, 4x4 and 5x5 (an I*omega
+    # diagonal, positive rates, couplings in symbols and floats)
+    a, b, c = SR.var('a_ci b_ci c_ci')
+    assume(a > 0)
+    assume(b > 0)
+    try:
+        for n, dense in ((4, True), (5, False)):
+            rows = []
+            for i in range(n):
+                row = []
+                for j in range(n):
+                    if i == j:
+                        row.append(I * w + a + i * b)
+                    elif j == (i + 1) % n:
+                        row.append(-c * SR(0.3 + 0.1 * i))
+                    elif dense and (i + j) % 3 == 0:
+                        row.append(b / (1 + I * w * a) - SR(0.05) * j)
+                    else:
+                        row.append(SR(0))
+                rows.append(row)
+            # the 5x5 is a ring: Sage's own inverse of the dense 5x5, the
+            # reference here, takes minutes (what the replica removes)
+            K = matrix(SR, rows)
+            assert _same(K.inverse(), P._sr_inverse(K)), n
+    finally:
+        forget(a > 0)
+        forget(b > 0)
     sing = matrix(SR, [[x, 2 * x], [SR(1), SR(2)]])
     with pytest.raises(ZeroDivisionError):
         sing.inverse()
@@ -174,3 +201,57 @@ def test_numpy_scalar_reprs_in_action_text():
     ft.expand()
     K = {k: v for k, v in ft._by_tp.items() if k == (1, 1)}
     assert K and '0.7' in str(K[(1, 1)])
+
+
+def _network_symbolic(n=2, deg=3):
+    """The network of :func:`_network` with its numbers as SYMBOLIC indexed
+    parameters (couplings, saddle, Taylor coefficients of the rate)."""
+    from scipy.optimize import fsolve
+    J = np.zeros((n, n))
+    for i, j, v in _J:
+        if i < n and j < n:
+            J[i, j] = J[j, i] = v
+    h = np.asarray(_H[:n])
+    m = fsolve(lambda m: m - np.tanh(_BETA * (J @ m + h)), np.tanh(_BETA * h),
+               xtol=1e-14)
+    xs = (1 + m) / 2
+    u = _BETA * (J @ m + h)
+    C = np.zeros((n, deg + 1))
+    for i in range(n):
+        t = math.tanh(u[i])
+        P_k = np.polynomial.Polynomial([0, 1])
+        for k in range(deg + 1):
+            C[i, k] = float(P_k(t)) / math.factorial(k) / 2
+            P_k = P_k.deriv() * np.polynomial.Polynomial([1, 0, -1])
+        C[i, 0] += 0.5
+    b = (TemporalTheoryBuilder(f'glauber net symbolic n{n} deg{deg}')
+         .population('pop', size=n).physical_field('x', population='pop')
+         .parameter('J', default=J.tolist(), indexed_by=['pop', 'pop'])
+         .parameter('xs', default=xs.tolist(), indexed_by=['pop'])
+         .parameter('beta', default=float(_BETA), domain='positive'))
+    for k in range(deg + 1):
+        b = b.parameter(f'c{k}', default=C[:, k].tolist(), indexed_by=['pop'])
+    D = '(2*beta*sum(J[i,j]*(x[j] - xs[j]) for j in pop))'
+    R = ' + '.join(['c0[i]'] + [f'c{k}[i]*{D}^{k}' for k in range(1, deg + 1)])
+    return (b.set_action_text(f'sum( xt[i]*Dt*x[i] - (exp(xt[i]) - 1)*(1 - x[i])'
+                              f'*({R}) - (exp(-xt[i]) - 1)*x[i]*(1 - ({R}))'
+                              f' for i in pop)')
+            .set_mf_equation('xstar', 'xs[i]').build())
+
+
+def test_symbolic_coefficient_network_one_loop_timed():
+    """Two units, symbolic indexed coefficients, k = 1 one loop: 474.7 s and
+    5.3 GB before (the symbolic inverse block and the per-diagram source
+    zero tests in Maxima); ~18 s now.  Same mean as the numeric network."""
+    from api.compute import compute_cumulants
+    kw = dict(k=1, max_ell=1, tau_grid=np.array([0.0]), parallel=False,
+              verbose=False, use_cache=False)
+    t0 = time.perf_counter()
+    r = compute_cumulants(_network_symbolic(2), external_fields=[('dx', 1)],
+                          **kw)
+    wall = time.perf_counter() - t0
+    assert wall < 120, wall
+    rn = compute_cumulants(_network(2)[0], external_fields=[('dx1', 1)], **kw)
+    v = float(np.real(np.atleast_1d(r['C_tau_by_ell'][1]))[0])
+    vn = float(np.real(np.atleast_1d(rn['C_tau_by_ell'][1]))[0])
+    assert abs(v - vn) <= 1e-12 * abs(vn), (v, vn)
