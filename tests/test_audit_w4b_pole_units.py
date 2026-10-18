@@ -105,8 +105,12 @@ def test_exp_modes_are_unit_invariant(S):
                  key=lambda m: -m[1].real)
     assert [abs(C) for C, _ in two] == pytest.approx([r, 3 * r], rel=1e-14)
     assert [lam.real for _, lam in two] == pytest.approx([-r, -5 * r], rel=1e-14)
-    # not exponential sums, in every unit
+    # not exponential sums, in every unit; a trig kernel that does not decay
+    # stays refused; a kernel without trig factors is passed on untouched
     assert FI._extract_exp_modes(r * t * exp(-r * t), t) is None
+    assert FI._extract_exp_modes(cos(r * t), t) is None
+    plain = 3 * exp(-r * t)
+    assert FI._trig_as_exp(plain) is plain
     assert FI._extract_exp_modes(exp(-(r * t) ** 2), t) is None
 
 

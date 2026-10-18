@@ -461,13 +461,18 @@ def _extract_exp_mode(sr_expr, tau_sym):
     # cos(w t) (lambda = 0) is probed at t ~ 1/w; both scale like a rate,
     # so the probe times are fixed multiples of the kernel's time unit.
     import cmath
-    try:
-        curv = complex(CDF(SR(sr_expr.diff(tau_sym, 2) / sr_expr
-                              - (sr_expr.diff(tau_sym) / sr_expr) ** 2)
-                       .subs({tau_sym: 0})))
-    except Exception:
-        return None
-    rate = max(abs(lam), math.sqrt(abs(curv)))
+    rate = abs(lam)
+    if rate == 0:
+        # no rate to set the unit (a constant, or cos(w t)): the curvature
+        # of log g at 0, which an exponential lacks (computed only here, so
+        # an ordinary kernel takes exactly the symbolic steps it took before)
+        try:
+            curv = complex(CDF(SR(sr_expr.diff(tau_sym, 2) / sr_expr
+                                  - (sr_expr.diff(tau_sym) / sr_expr) ** 2)
+                           .subs({tau_sym: 0})))
+        except Exception:
+            return None
+        rate = math.sqrt(abs(curv))
     unit = 1.0 / rate if rate > 0 and math.isfinite(rate) else 1.0
     try:
         for t0 in _EXP_MODE_PROBES:
@@ -493,12 +498,23 @@ def _trig_as_exp(expr):
     a damped-oscillatory kernel ``r e^{-rt} cos(rt)`` splits into its two
     complex modes (``_extract_exp_modes``) on the pole route as on the
     state-space route (audit W4b, ACC-60: written with cos it was refused,
-    at r = 2, or fitted as one real mode, at r = 2000).  Unchanged when none
-    of them occurs."""
+    at r = 2, or fitted as one real mode, at r = 2000).  The SAME object
+    when none of them occurs (an operator walk: nothing is built for a
+    kernel without a trig factor)."""
     from sage.all import cos, sin, cosh, sinh, exp, I
-    w = SR.wild(0)
-    if not any(expr.has(f(w)) for f in (cos, sin, cosh, sinh)):
+    trig = (cos, sin, cosh, sinh)
+    stack = [expr]
+    while stack:
+        x = stack.pop()
+        op = x.operator()
+        if op is None:
+            continue
+        if any(op is f for f in trig):
+            break
+        stack.extend(x.operands())
+    else:
         return expr
+    w = SR.wild(0)
     return expr.subs({cos(w): (exp(I * w) + exp(-I * w)) / 2,
                       sin(w): (exp(I * w) - exp(-I * w)) / (2 * I),
                       cosh(w): (exp(w) + exp(-w)) / 2,
