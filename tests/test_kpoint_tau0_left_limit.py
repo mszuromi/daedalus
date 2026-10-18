@@ -381,21 +381,22 @@ def _run(which, k, grid, base=None):
         # multipopulation_test has two pole clusters, which compute_cumulants
         # resolves by averaging node runs (api._pole_clusters; ~9 times the
         # cost per k >= 3 evaluation, and the tree moves by up to 1.4e-4).
-        # These tests are about the slice / tie machinery, with values
-        # tabulated before item 21: the old pole sums.
-        saved = os.environ.get('DAEDALUS_POLE_CLUSTERS')
+        # These tests are about the slice / tie machinery (self-consistency
+        # of limits), so the clusters are left unresolved -- the exact
+        # residue tier made unavailable -- for the old pole sums.  (Before
+        # audit W7: the retired switch DAEDALUS_POLE_CLUSTERS=0.)
+        from api import _propagator as PR
+        saved = PR._compute_residues_via_polynomial_fracfield
         if which == 'mp':
-            os.environ['DAEDALUS_POLE_CLUSTERS'] = '0'
+            PR._compute_residues_via_polynomial_fracfield = (
+                lambda *a, **kw: (None, None, None))
         try:
             _RUNS[key] = dd.run(model, dd.Config(
                 k=k, max_ell=0, external_fields=_ext(which, k),
                 parameters=params, tau_grid=np.asarray(grid, dtype=float),
                 kpoint_base_lags=base), mod)
         finally:
-            if saved is None:
-                os.environ.pop('DAEDALUS_POLE_CLUSTERS', None)
-            else:
-                os.environ['DAEDALUS_POLE_CLUSTERS'] = saved
+            PR._compute_residues_via_polynomial_fracfield = saved
     return _RUNS[key]
 
 

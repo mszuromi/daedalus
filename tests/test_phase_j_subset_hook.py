@@ -48,15 +48,17 @@ Cost: the default suite runs ``ou_quartic`` and ``spike1`` (both cheap:
 The repo spike-reset model -- the one with guard-bailed polygons
 (``polygon_triangle_guard``) -- is ``@pytest.mark.slow``.
 
-M1 (Θ(0) = 0 for constant constraint rows, plan §2.4) moves the one-loop of
-the δ models, so the pre-M0.1 captures (i) are now reproduced with
-``final_integral.THETA0_CONST_ROW_MODE = 'legacy_clip'`` (``_PRE_M1_MODE``);
-``ou_quartic`` has no constant rows and is compared in the default mode.
-Everything else runs in the default ('ito') mode, where ``spike1`` no longer
-reaches the scipy.nquad fallback at all; the hook's nquad-path records and
-counters are exercised on ``spike1`` under 'legacy_clip' (the hook does not
-depend on the mode) and on ``spike`` (slow) in both modes.  The payload's
-``row_kinds`` is the M1 row provenance.  The harness's references are
+M1 (Θ(0) = 0 for constant constraint rows, plan §2.4) moved the one-loop of
+the δ models; the pre-M0.1 captures (i) of ``spike1`` and ``spike`` were
+reproduced with ``final_integral.THETA0_CONST_ROW_MODE = 'legacy_clip'``
+until audit W7 retired that mode: they stay as frozen literals
+(``_BEFORE``; tests/test_phase_j_theta0.py checks the M1 move against them),
+and (i) is checked live on ``ou_quartic``, which has no constant rows.
+Everything runs in the default mode, where no configuration reaches the
+scipy fallback; the hook's nquad-path records and counters are exercised
+by runs with the m = 2 polygon route declining at call time
+(``_declined_runs``: every m = 2 region goes to the fallback, with its
+modes).  The payload's ``row_kinds`` is the M1 row provenance.  The harness's references are
 computed per (subset, free values, tie context) -- every tie orientation of
 a subset separately (``test_harness_references_every_tie_orientation``,
 model-free).
@@ -137,12 +139,12 @@ _CONFIGS = {
 # poset_no_extension on constant rows and order cycles); with the Θ(0) rule
 # it answers every subset analytically.  ``spike`` did until M9: on the
 # box-free default routes it reaches no fallback either, so none does; the
-# hook's nquad-path records are exercised by the legacy-route runs
-# (``_PRE_M1_MODE``).
+# hook's nquad-path records are exercised by ``_declined_runs``.
 _NQUAD_CONFIGS = set()
-# The mode that reproduces the pre-M1 captures in ``_BEFORE`` (``None``: the
-# default mode; the model has no constant constraint rows).
-_PRE_M1_MODE = {'ou': None, 'spike1': 'legacy_clip', 'spike': 'legacy_clip'}
+# The configurations whose pre-M1 captures in ``_BEFORE`` are reproduced
+# live (the model has no constant constraint rows); the others' were
+# reproduced by the retired 'legacy_clip' mode (audit W7) and are frozen.
+_LIVE_BEFORE = ('ou',)
 
 # C_tau_by_ell captured on b2bf559 before the M0.1 edit (exact reprs).
 _BEFORE = {
@@ -172,6 +174,7 @@ def _name_param(name, slow=False):
 
 
 _KEYS = [_name_param(n, slow=(n == 'spike')) for n in ('ou', 'spike1', 'spike')]
+_LIVE_KEYS = [_name_param(n) for n in _LIVE_BEFORE]
 _DELTA_MODELS = ['spike1', _name_param('spike', slow=True)]
 
 
@@ -193,33 +196,8 @@ _MODELS = {}
 _RUNS = {}
 _HOOKED = {}
 _PRE = {}
+_DECLINED = {}
 _WARM = set()
-
-
-@contextlib.contextmanager
-def _theta0_mode(mode):
-    """Run with ``THETA0_CONST_ROW_MODE = mode`` (``None``: unchanged).
-    'legacy_clip' reaches the scipy quadrature fallback on the δ models, and
-    the pre-M1 captures were made with the pre-M2b (default-tolerance)
-    fallback, so ``NQUAD_HARDENED`` is False with it (M2b), and on the
-    legacy routes, so the box-free switches are off with it (M9)."""
-    if mode is None:
-        yield
-        return
-    names = ('THETA0_CONST_ROW_MODE', 'NQUAD_HARDENED',
-             'USE_PHASE_J_DD_KERNELS', 'SEMIINF_CHAIN', 'UNBOUNDED_2D')
-    saved = {n: getattr(FI, n) for n in names}
-    FI.THETA0_CONST_ROW_MODE = mode
-    if mode == 'legacy_clip':
-        FI.NQUAD_HARDENED = False
-        FI.USE_PHASE_J_DD_KERNELS = False
-        FI.SEMIINF_CHAIN = False
-        FI.UNBOUNDED_2D = 'box'
-    try:
-        yield
-    finally:
-        for n, v in saved.items():
-            setattr(FI, n, v)
 
 
 @contextlib.contextmanager
@@ -314,18 +292,41 @@ def _hooked(key):
 
 
 def _pre_m1_runs(key):
-    """Like ``_runs`` but in the mode that reproduces the pre-M1 captures
-    (``_PRE_M1_MODE``): warm-up, then plain, then hooked, same process."""
+    """Like ``_runs`` but sampling τ = 0 at −1e-6, as the pre-M1 captures
+    (``_tau0_nudge``): warm-up, then plain, then hooked, same process."""
     name = key
-    # (always its own run, also for the default-mode model: the captures
-    # sample τ = 0 at −1e-6, see ``_tau0_nudge``)
+    assert name in _LIVE_BEFORE, name
     if key not in _PRE:
         _warm(name)
-        with _theta0_mode(_PRE_M1_MODE[name]), _tau0_nudge():
+        with _tau0_nudge():
             plain = _plain_arrays(_compute(_CONFIGS[name]))
             run, hooked = _hooked_run(_CONFIGS[name])
         _PRE[key] = {'plain': plain, 'run': run, 'hooked': hooked}
     return _PRE[key]
+
+
+@contextlib.contextmanager
+def _polygon_declines():
+    """The m = 2 polygon route declines at call time (as for a shape it
+    does not take): every m = 2 region goes to the scipy fallback, with its
+    modes."""
+    saved = FI._integrate_2d_polygon_modesum
+    FI._integrate_2d_polygon_modesum = (
+        lambda *a, **k: FI._bail('polygon_dd_unsupported'))
+    try:
+        yield
+    finally:
+        FI._integrate_2d_polygon_modesum = saved
+
+
+def _declined_runs(key):
+    """A hooked run with ``_polygon_declines``: the nquad-path records."""
+    if key not in _DECLINED:
+        _warm(key)
+        with _polygon_declines():
+            run, hooked = _hooked_run(_CONFIGS[key])
+        _DECLINED[key] = {'run': run, 'hooked': hooked}
+    return _DECLINED[key]
 
 
 def _assert_before(arrays, key):
@@ -339,21 +340,22 @@ def _assert_before(arrays, key):
 
 # ── (i) pre-M0.1 values ───────────────────────────────────────────────
 
-@pytest.mark.parametrize('key', _KEYS)
+@pytest.mark.parametrize('key', _LIVE_KEYS)
 def test_hook_unset_matches_pre_m01_values(key):
-    """(δ models under 'legacy_clip' since M1, see ``_PRE_M1_MODE``.)"""
+    """(The δ models' captures were reproduced under the retired
+    'legacy_clip' mode; frozen since audit W7.)"""
     _assert_before(_pre_m1_runs(key)['plain'], key)
 
 
-@pytest.mark.parametrize('key', _KEYS)
+@pytest.mark.parametrize('key', _LIVE_KEYS)
 def test_hooked_run_matches_pre_m01_values(key):
     """The recorded run itself (hook installed) reproduces the pre-M0.1
-    values -- on spike reset through the δ / zero-normal-row paths."""
+    values."""
     _assert_before(_pre_m1_runs(key)['hooked'], key)
 
 
-@pytest.mark.parametrize('key', _KEYS)
-def test_legacy_mode_hook_is_transparent(key):
+@pytest.mark.parametrize('key', _LIVE_KEYS)
+def test_nudged_hook_is_transparent(key):
     r = _pre_m1_runs(key)
     assert sorted(r['plain']) == sorted(r['hooked'])
     for ell in r['plain']:
@@ -410,8 +412,8 @@ def test_hook_records_per_diagram(name):
             ('m0', None)} <= paths
     assert (('nquad', 'plan') in paths) == (name in _NQUAD_CONFIGS)
     _check_records(recs)
-    # the nquad-path payload, on the pre-M1 route
-    lrecs = _pre_m1_runs(name)['run']['records']
+    # the nquad-path payload (the polygon route declining)
+    lrecs = _declined_runs(name)['run']['records']
     assert ('nquad', 'plan') in {(r['path'], r['branch']) for r in lrecs}
     _check_records(lrecs)
 
@@ -482,10 +484,11 @@ def test_points_mode_records_only_the_requested_points(name):
 
 # ── (iv) counters ─────────────────────────────────────────────────────
 
-@pytest.mark.parametrize('pre_m1', [True, False], ids=['legacy', 'ito'])
+@pytest.mark.parametrize('declined', [True, False],
+                         ids=['polygon_declined', 'default'])
 @pytest.mark.parametrize('name', _DELTA_MODELS)
-def test_new_counters_present_and_consistent(name, pre_m1):
-    run = (_pre_m1_runs(name) if pre_m1
+def test_new_counters_present_and_consistent(name, declined):
+    run = (_declined_runs(name) if declined
            else {'run': _hooked(name)[0]})['run']
     c = run['counters']
     by = c['nquad_fallback_by_reason']
@@ -493,21 +496,22 @@ def test_new_counters_present_and_consistent(name, pre_m1):
     n_mge1 = (c['scipy_nquad_called_m1'] + c['scipy_nquad_called_m2']
               + c['scipy_nquad_called_mge3'])
     assert sum(by.values()) == n_mge1
-    assert (n_mge1 > 0) == (pre_m1 or name in _NQUAD_CONFIGS)
+    assert (n_mge1 > 0) == (declined or name in _NQUAD_CONFIGS)
     # nquad_calls counts entries into the scipy.nquad fallback (m>=1) only;
     # the m=0 δ-collapsed subsets that reach _integrate_polytope are direct
     # evaluations, counted separately.
     assert c['nquad_calls'] == n_mge1
-    assert c['zero_normal_rows_seen'] > 0
+    # (counted by the polygon / poset paths: the declined polygon sees none)
+    assert (c['zero_normal_rows_seen'] > 0) or declined
     recs = run['records']
     assert sum(1 for r in recs if r['path'] == 'nquad') == n_mge1
     n_m0 = sum(1 for r in recs if r['evaluator'] == 'polytope_m0')
     assert c['polytope_m0_direct'] == n_m0 > 0
     assert by['polygon_guard'] == sum(
         1 for r in recs if r['bail_reason'] == 'polygon_triangle_guard')
-    # M1 Θ(0) counters: only the Itô rule calls the helper
+    # M1 Θ(0) counters (the Itô rule, the only one since audit W7)
     n_theta0 = c['theta0_const_empty'] + c['theta0_const_drop']
-    assert (n_theta0 > 0) == (not pre_m1)
+    assert n_theta0 > 0
     assert c['theta0_tie'] <= c['theta0_const_empty']
 
 

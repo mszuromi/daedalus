@@ -595,14 +595,18 @@ def test_g6_flags_the_digits_lost_to_near_degenerate_poles(monkeypatch):
     rep = res['analysis']
     assert res['pole_clusters']['status'] == 'resolved' and rep.has('G3_CLOSE_POLES')
     assert not rep.has('G6_ACCURACY_LOW') and rep.diagnostics['accuracy_estimate'] < 1e-10
-    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
-    with pytest.warns(UserWarning, match='digits lost'):
-        bad = _run(model, parameters=near, **kw)
+    # an unresolved cluster: the exact residue tier unavailable (before
+    # audit W7: the deformation switched off, DAEDALUS_POLE_CLUSTERS=0)
+    from api import _propagator as PR
+    with monkeypatch.context() as mp_:
+        mp_.setattr(PR, '_compute_residues_via_polynomial_fracfield',
+                    lambda *a, **k: (None, None, None))
+        with pytest.warns(UserWarning, match='digits lost'):
+            bad = _run(model, parameters=near, **kw)
     assert abs(complex(bad['C_tau_by_ell'][1][0]).real - (-0.0900074997)) > 1e-3        # the lost digits
     rep = bad['analysis']
     assert rep.has('G3_POLE_CLUSTER_UNRESOLVED') and rep.has('G6_ACCURACY_LOW')
     assert rep.diagnostics['accuracy_estimate'] > 1e-2
-    monkeypatch.delenv('DAEDALUS_POLE_CLUSTERS')
     good = _run(model, parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 0.5}, **kw)
     assert good['pole_clusters'] is None
     good = good['analysis']

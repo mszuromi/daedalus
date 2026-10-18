@@ -331,10 +331,20 @@ def test_bypass_runs_the_deformation_when_a_subset_declines(monkeypatch):
             1e-11 * np.max(np.abs(_arr(ok, ell))))
 
 
+def _unresolved_clusters(monkeypatch):
+    """An unresolved pole cluster: the exact residue tier unavailable (it
+    fails for non-rationalizable parameters or on its time budget), so the
+    deformation cannot be built.  (Before audit W7 these tests switched the
+    deformation off, ``DAEDALUS_POLE_CLUSTERS=0``.)"""
+    from api import _propagator as PR
+    monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield',
+                        lambda *a, **kw: (None, None, None))
+
+
 def test_unresolved_cluster_is_informational_on_the_route(monkeypatch):
-    # the deformation switched off: the pole engine loses digits (G3 warns,
+    # an unresolved cluster: the pole engine loses digits (G3 warns,
     # tests/test_analyzer_routing.py); the route uses no poles
-    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
+    _unresolved_clusters(monkeypatch)
     near = 1 / (1 + 1e-4)
     res = _cc(ou_colour(near), 2, 1, X2)
     an = res['analysis']
@@ -415,19 +425,18 @@ def test_graded_dressed_line_impulse():
 
 # ── review round 2 ──────────────────────────────────────────────────────
 
-def test_lifted_kernel_with_the_legacy_setup_and_its_display(monkeypatch):
+def test_lifted_kernel():
     # a kernel only the route realizes (equal rates, frequency image): a
-    # formal function stands for it in the symbolic factors
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
+    # formal function stands for it in the symbolic factors.  (Until audit
+    # W7 also run on the retired legacy setup path,
+    # DAEDALUS_PHASE_J_LEGACY_SETUP=1, whose eager display build had to
+    # cope with it; equal to 1e-14.)
     res = _cc(alpha_kernel(0.7), 2, 1, DX2)
     assert res['status'] == 'ok'
     for g in res['phase_j_by_ell'][1]['groups']:
         assert g['handled_by'] != 'skipped'
-    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP')
-    ref = _cc(alpha_kernel(0.7), 2, 1, DX2)
     for ell in (0, 1):
-        assert np.max(np.abs(_arr(res, ell) - _arr(ref, ell))) <= (
-            1e-14 * np.max(np.abs(_arr(ref, ell))))
+        assert np.all(np.isfinite(_arr(res, ell)))
 
 
 def test_late_refusal_after_a_bypassed_deformation_raises(monkeypatch):
@@ -459,17 +468,18 @@ def test_partial_coverage_is_reported_and_strict_keeps_g3(monkeypatch):
     monkeypatch.setattr(SS, 'MAX_DOWNSETS', 50000)
     # strict policy: an unresolved cluster stops the run before Phase J, as
     # on the pole engine (the levels are not lowered under strict)
-    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
+    _unresolved_clusters(monkeypatch)
     from api.analyze import AnalyzerError
     with pytest.raises(AnalyzerError):
         _cc(ou_colour(1 / (1 + 1e-4)), 2, 1, X2, policy={'mode': 'strict'})
 
 
-def test_pure_delta_propagator_on_the_route(monkeypatch):
-    # decoupled spike model with structural zeros off: exact zeros
+def test_pure_delta_propagator_on_the_route():
+    # decoupled spike model (a pole-free, pure-δ propagator): exact zeros.
+    # (Before audit W7 with structural zeros off, the retired
+    # STRUCTURAL_ZEROS = False.)
     import daedalus as dd
     model, _mod = dd.load_model('single_population_linear_delta_spikes_test')
-    monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', False)
     res = compute_cumulants(
         model, k=2, max_ell=0, external_fields=[('n', 1), ('n', 2)],
         parameters={'Em': [0.8, 0.78], 'tau': [10.0, 9.0],

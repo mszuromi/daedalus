@@ -15,15 +15,17 @@ def FI():
     return fi
 
 
-def _set_flags(monkeypatch, fi, dd=False, semiinf=False, u2='box',
-               t_min=-math.inf):
-    monkeypatch.setattr(fi, 'USE_PHASE_J_DD_KERNELS', dd)
-    monkeypatch.setattr(fi, 'SEMIINF_CHAIN', semiinf)
-    monkeypatch.setattr(fi, 'UNBOUNDED_2D', u2)
+def _set_flags(monkeypatch, fi, t_min=-math.inf):
     monkeypatch.setattr(fi, 'PHASE_J_T_MIN', t_min)
 
 
-_ALL_ON = dict(dd=True, semiinf=True, u2='exact')
+# The switches retired in audit W7: never in a new stamp.
+_RETIRED_STAMP_FLAGS = ('THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS',
+                        'NQUAD_HARDENED', 'USE_DBM_FALLBACK',
+                        'USE_PHASE_J_DD_KERNELS', 'CHAIN_UPPERS_KERNEL',
+                        'SEMIINF_CHAIN', 'UNBOUNDED_2D', 'POLYGON_BBOX_CAP',
+                        'USE_CHAIN_SIMPLEX_PRECISION_FIX',
+                        'USE_NUMBA_CHAIN_SIMPLEX', 'USE_SHOTNOISE_INTEGRATED')
 
 
 def test_retired_grouped_flag_warns_and_changes_nothing():
@@ -61,11 +63,13 @@ def test_retired_grouped_flag_warns_and_changes_nothing():
 
 def test_save_stamp_records_the_phase_j_flags(FI, monkeypatch, tmp_path):
     from api import save as S
-    _set_flags(monkeypatch, FI, **_ALL_ON)
+    _set_flags(monkeypatch, FI)
     flags = S._phase_j_flags()
-    assert 'USE_PHASE_J_DD_KERNELS=1' in flags
-    assert 'SEMIINF_CHAIN=1' in flags and 'UNBOUNDED_2D=exact' in flags
-    assert 'USE_DBM_FALLBACK=1' in flags
+    assert 'PHASE_J_T_MIN=-inf' in flags
+    assert 'USE_POLYGON_M2_INTEGRATOR=1' in flags
+    names = {p.split('=')[0] for p in flags.split(';')}
+    assert not names & set(_RETIRED_STAMP_FLAGS)
+    assert '<absent>' not in flags
     # a result records the flags it was computed with; the stamp copies them
     res = {'config': {'k': 2, 'max_ell': 0, 'phase_j_convention':
                       S.PHASE_J_CONVENTION, 'phase_j_flags': 'X=1'},
@@ -73,8 +77,8 @@ def test_save_stamp_records_the_phase_j_flags(FI, monkeypatch, tmp_path):
            'C_tau_by_ell': {0: np.array([1.0 + 0j])}}
     assert S._result_stamp(res)['phase_j_flags'] == 'X=1'
     del res['config']['phase_j_flags']
-    _set_flags(monkeypatch, FI)
-    assert 'USE_PHASE_J_DD_KERNELS=0' in S._result_stamp(res)['phase_j_flags']
+    _set_flags(monkeypatch, FI, t_min=-5.0)
+    assert 'PHASE_J_T_MIN=-5.0' in S._result_stamp(res)['phase_j_flags']
 
 
 def test_npz_and_csv_carry_the_phase_j_flags(FI, monkeypatch, tmp_path):
@@ -98,13 +102,13 @@ def test_compute_cumulants_records_the_flags_it_ran_with(FI, monkeypatch):
     import api.compute as AC
     import daedalus as dd
     model, _mod = dd.load_model('ou_quartic')
-    _set_flags(monkeypatch, FI, **_ALL_ON)
+    _set_flags(monkeypatch, FI)
     res = AC.compute_cumulants(model, k=2, max_ell=0,
                                external_fields=[('dx', 1), ('dx', 1)],
                                tau_grid=np.array([0.0]), parallel=False,
                                verbose=False)
     flags = res['config']['phase_j_flags']
-    assert 'USE_PHASE_J_DD_KERNELS=1' in flags
+    assert 'PHASE_J_T_MIN=-inf' in flags
     assert 'use_grouped_phase_j' not in flags
     assert 'USE_GROUPED_ANALYTIC_MODESUM' not in flags
     assert res['config']['use_grouped_phase_j'] is False

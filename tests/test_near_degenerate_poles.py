@@ -249,14 +249,26 @@ def test_cluster_without_the_exact_tier_is_flagged(monkeypatch):
     assert 'exact tier failed' in r['pole_clusters']['reason']
 
 
-def test_switched_off_is_flagged(monkeypatch):
-    """DAEDALUS_POLE_CLUSTERS=0 restores the old numbers (the one-loop term is rounding noise at gap 1e-4)
-    and says so."""
-    monkeypatch.setenv(PC.ENV_SWITCH, '0')
-    r = _run(_load('ou_quartic_colored'), _params(1e-4), policy=_MARKOV)
-    _assert_flagged(r, 'disabled', 10)
+# The one-loop term at gap 1e-4 with the deformation switched off (the
+# retired ``DAEDALUS_POLE_CLUSTERS=0``, pole engine; frozen at audit W7): the
+# old numbers, rounding noise.
+_SWITCHED_OFF_LOOP = [0j, (-1.125 + 0j), (-0.15625 + 0j)]
+
+
+def test_the_retired_switch_off_lost_the_one_loop_term():
     _, loop_ref = _colored_ref(1 / (1 + 1e-4))
-    assert abs(complex(r['C_tau_by_ell'][1][0]).real - loop_ref[0]) > 1e-3
+    assert abs(_SWITCHED_OFF_LOOP[0].real - loop_ref[0]) > 1e-3
+
+
+def test_the_retired_switch_is_ignored(monkeypatch):
+    """``DAEDALUS_POLE_CLUSTERS=0`` (retired in audit W7) no longer turns the
+    deformation off: the cluster is resolved and the one-loop term exact."""
+    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
+    r = _run(_load('ou_quartic_colored'), _params(1e-4), policy=_MARKOV)
+    assert r['pole_clusters']['status'] == 'resolved'
+    _, loop_ref = _colored_ref(1 / (1 + 1e-4))
+    assert abs(complex(r['C_tau_by_ell'][1][0]).real - loop_ref[0]) <= (
+        1e-9 * abs(loop_ref[0]))
 
 
 def test_strict_policy_refuses_only_unresolved_clusters(monkeypatch):
@@ -264,7 +276,8 @@ def test_strict_policy_refuses_only_unresolved_clusters(monkeypatch):
     strict = {'mode': 'strict', 'allow_markov_embedding': True}
     r = _run(model, _params(1e-4), policy=strict)                    # resolved: runs
     assert r['pole_clusters']['status'] == 'resolved'
-    monkeypatch.setenv(PC.ENV_SWITCH, '0')
+    # an unresolved cluster: the exact residue tier unavailable
+    monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield', lambda *a, **kw: (None, None, None))
     from api.analyze import AnalyzerError
     with pytest.raises(AnalyzerError, match='G3_POLE_CLUSTER_UNRESOLVED'):
         _run(model, _params(1e-4), policy=strict)

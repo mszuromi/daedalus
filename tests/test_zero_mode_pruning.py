@@ -66,13 +66,29 @@ def _cumulants(model, k=2, ell=1, field='dT'):
     return r, {e: repr(complex(f(*pt))) for e, f in r['total_C_by_ell'].items()}
 
 
+_BUILD_PRUNED = FI._build_pruned_modesum_plan
+
+
+def _set_pruning(monkeypatch, on):
+    """Pruning on (the only setting since audit W7 retired
+    ``PRUNE_ZERO_MODES`` / ``DAEDALUS_PRUNE_ZERO_MODES``), or off through the
+    unpruned fallback build of ``_build_modesum_plan`` (what a pruned build
+    that declines gets)."""
+    monkeypatch.setattr(FI, '_build_pruned_modesum_plan',
+                        _BUILD_PRUNED if on else (lambda *a, **k: None))
+
+
 def _ab(monkeypatch, model, variants, **kw):
-    """Values for each ``{attr: value}`` variant of FI, after a warm-up."""
+    """Values for each ``{attr: value}`` variant of FI (``prune``: see
+    ``_set_pruning``), after a warm-up."""
     _cumulants(model, **kw)
     out = []
     for flags in variants:
         for a, v in flags.items():
-            monkeypatch.setattr(FI, a, v)
+            if a == 'prune':
+                _set_pruning(monkeypatch, v)
+            else:
+                monkeypatch.setattr(FI, a, v)
         FI._reset_runtime_counters()
         r, vals = _cumulants(model, **kw)
         out.append((vals, dict(FI._RUNTIME_COUNTERS), r))
@@ -86,7 +102,7 @@ def _ab(monkeypatch, model, variants, **kw):
 @pytest.mark.parametrize('k, field', [(2, 'dT'), (2, 'dh'), (1, 'dh')])
 def test_pruning_and_zero_group_skip_change_no_bit(monkeypatch, model, k,
                                                    field):
-    variants = [dict(PRUNE_ZERO_MODES=p, DD_BATCH_SKIP_ZERO_GROUPS=f)
+    variants = [dict(prune=p, DD_BATCH_SKIP_ZERO_GROUPS=f)
                 for p in (True, False) for f in (True, False)]
     runs = _ab(monkeypatch, model, variants, k=k, field=field)
     ref = runs[0][0]
@@ -100,8 +116,8 @@ def test_pruning_and_zero_group_skip_change_no_bit(monkeypatch, model, k,
 
 
 def test_k3_one_loop_pruned_equals_unpruned(monkeypatch, model):
-    runs = _ab(monkeypatch, model, [dict(PRUNE_ZERO_MODES=True),
-                                    dict(PRUNE_ZERO_MODES=False)], k=3)
+    runs = _ab(monkeypatch, model, [dict(prune=True),
+                                    dict(prune=False)], k=3)
     assert runs[0][0] == runs[1][0]
     c = runs[0][1]
     # 21 plans: 4,374 nonzero tuples of 393,903
@@ -220,8 +236,6 @@ def test_pruned_plan_keeps_the_unpruned_group_order(n):
 
 @pytest.mark.parametrize('n', [3, 4])
 def test_poset_value_is_bit_identical_pruned_or_not(monkeypatch, n):
-    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
     ems = [_ems(md) for md in _modes(n)]
     vals = []
     for prune in (False, True, False):

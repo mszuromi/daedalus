@@ -155,10 +155,11 @@ on a circle (`api._pole_clusters`; Cauchy mean value, trapezoid rule,
 `result['pole_clusters']` reports the clusters and an accuracy
 estimate), so `τc = 1/μ` and any nearby value give the exact result to
 about 1e-12.  A cluster it cannot resolve (no exact rational
-propagator, a cluster too close to the stability boundary, or
-`DAEDALUS_POLE_CLUSTERS=0`) is reported in `result['pole_clusters']`
+propagator, or a cluster too close to the stability boundary) is
+reported in `result['pole_clusters']`
 with a lost-digit estimate, and a `PoleClusterWarning` is issued when
-more than 10 digits may be lost.
+more than 10 digits may be lost.  (The switch that turned the
+deformation off, `DAEDALUS_POLE_CLUSTERS=0`, was retired in audit W7.)
 
 ### 2. Cross-field cumulants (κ², any kernel)
 

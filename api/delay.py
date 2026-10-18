@@ -495,7 +495,8 @@ def resolve_options(opts) -> dict:
             raise TypeError(f'delay options: unknown key(s) {unknown}; known: '
                             f'{sorted(DEFAULTS)}')
         o.update(opts)
-    if os.environ.get('DAEDALUS_DELAY_EXACT_TREE', '').strip() == '0':
+    from engine import _env
+    if not _env.flag('DAEDALUS_DELAY_EXACT_TREE', True):
         o['tree'] = 'pade'
     if o['tree'] not in ('exact', 'pade'):
         raise ValueError(f"delay tree must be 'exact' or 'pade', got {o['tree']!r}")

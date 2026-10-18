@@ -284,7 +284,7 @@ tens of GB → OOM. Controls (all in `compute_cumulants`/the bridge via env or `
 
 | Backend / knob | Effect |
 |---|---|
-| **memory guard** (always on) | estimates the worst chamber's `(P, n_x)` allocation up front; raises `SpatialPropagatorError` with the `n_V/n_C/P` numbers if it exceeds `SPATIAL_MEM_BUDGET_GB` (default 6) — ℓ≥2 can **never silently OOM-crash**. |
+| **memory guard** (always on) | estimates the worst chamber's `(P, n_x)` allocation up front; raises `SpatialPropagatorError` with the `n_V/n_C/P` numbers if it exceeds `SPATIAL_MEM_BUDGET_GB` (a positive number of GB, or `off` for no limit; `0` / negative values are refused; unset: the RAM-aware default of at most 6 GB) — ℓ≥2 can **never silently OOM-crash**. |
 | `SPATIAL_INTEGRATOR=grid` (default) | deterministic causal-chamber product quadrature — the validated path; **bit-identical** regardless of the other knobs. |
 | `SPATIAL_INTEGRATOR=mc` (+ `SPATIAL_MC_N`, default 1e6) | importance-sampled Monte-Carlo (`diagram_kinematic(method='mc')`): nested `Exp(μ)` time-gaps + `Exp(μ)` σ's; bounded memory, `O(1/√N)`. **Validated <0.1% for PLAIN φⁿ vertices** (the feasible ℓ=2 path for Allen-Cahn/RD where the grid OOMs); **BIASED for derivative vertices** (the `det M→0` loop-degeneracy singularity → infinite variance). |
 | `SPATIAL_GRID_NT` / `SPATIAL_GRID_NS` | coarsen the loop grid (accuracy tradeoff — validate vs the simulator). |

@@ -708,13 +708,9 @@ def test_leaf_swap_reproduces_the_v2_total_bit_for_bit(tmp_path, monkeypatch):
     from sage.all import DiGraph, Graph
 
     taus = [3.0]                       # where the last bit actually differs
-    # The documented 1-ULP example was measured on the legacy (boxed) routes;
-    # on the box-free default route (M9) v1 and v2 happen to agree bit for
-    # bit at this point, which would leave nothing to demonstrate.
-    import engine.integration.time_domain.final_integral as FI
-    for flag, value in (('USE_PHASE_J_DD_KERNELS', False),
-                        ('SEMIINF_CHAIN', False), ('UNBOUNDED_2D', 'box')):
-        monkeypatch.setattr(FI, flag, value)
+    # The documented 1-ULP example was measured on the boxed routes retired
+    # in audit W7; on the box-free routes v1 and v2 may agree bit for bit at
+    # this point, which leaves nothing to demonstrate (the skip below).
     ctx = _ctx(2, 1, 'pdcache-leafswap')
     v1, v2 = _both_sources(ctx, 2, 1, monkeypatch, tmp_path)
 

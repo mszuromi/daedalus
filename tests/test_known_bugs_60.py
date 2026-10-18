@@ -121,7 +121,9 @@ def test_bug5_broken_rounded_realization_reaches_g6(monkeypatch):
 
 def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
     from api.analyze import analyze, Question
-    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')        # an unresolved cluster
+    # (Until audit W7 the run switched the cluster deformation off,
+    # DAEDALUS_POLE_CLUSTERS=0, and both verdicts were
+    # G3_POLE_CLUSTER_UNRESOLVED 'info'; the switch is retired.)
     s = (SDE('bug60 g3 standalone').parameter('a', default=1.0)
          .parameter('D', default=0.1, domain='positive').field('x').field('y')
          .equation('x', lhs='Dt*x + a*x', rhs='0.5*y - 0.1*x^2')
@@ -138,8 +140,7 @@ def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
     alone = {f.code: f.level for f in analyze(m, Question(k=2, max_ell=1,
                                                           external_fields=ext)).findings
              if f.code.startswith('G3')}
-    assert inrun.get('G3_POLE_CLUSTER_UNRESOLVED') == 'info'
-    assert alone == inrun
+    assert inrun and alone == inrun
 
 
 # ── bug 8: a population named I in the simulator ─────────────────────────────

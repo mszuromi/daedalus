@@ -67,22 +67,16 @@ _TAU0_MODES = ('exact', 'nudge')
 
 def _tau0_mode():
     """'exact' or 'nudge' (``DAEDALUS_TAU0``; see ``_TAU0_MODES``)."""
-    m = os.environ.get('DAEDALUS_TAU0', 'exact').strip().lower() or 'exact'
-    if m not in _TAU0_MODES:
-        raise ValueError(f'DAEDALUS_TAU0={m!r}: expected one of {_TAU0_MODES}')
-    return m
+    from engine import _env
+    return _env.choice('DAEDALUS_TAU0', _TAU0_MODES, 'exact')
 
 
 def _tau0_lag():
     """The lag a k = 2 τ = 0 point is evaluated at: 0.0 ('exact') or
-    −_ITO_EPS ('nudge').  'exact' needs Phase J's exact tie rule: under the
-    pre-M1 constant-row mode (``THETA0_CONST_ROW_MODE = 'legacy_clip'``, set
-    by DAEDALUS_PHASE_J_LEGACY=1) a tie drops the coincident chamber, so the
-    legacy runs keep the −_ITO_EPS sample they were defined with."""
-    if _tau0_mode() != 'exact':
-        return -_ITO_EPS
-    from engine.integration.time_domain import final_integral as _fi
-    return -_ITO_EPS if _fi._theta0_legacy() else 0.0
+    −_ITO_EPS ('nudge').  'exact' uses Phase J's exact tie rule (the only
+    constant-row rule since the pre-M1 'legacy_clip' mode was retired in
+    audit W7)."""
+    return -_ITO_EPS if _tau0_mode() != 'exact' else 0.0
 
 
 def _ito_nudge_callable(fn, k):
@@ -152,8 +146,8 @@ def _ss_route_prediction(prop, num_params, vertex_types):
     ``bypass_deformation``: the run is covered by the state-space route and
     the propagator has a pole-cluster deformation, which then is not run
     (the route uses no poles or residues)."""
-    raw = os.environ.get('DAEDALUS_PHASE_J_ENGINE')
-    if raw is not None and raw.strip().lower() == 'poles':
+    from engine import _env
+    if _env.phase_j_engine() == 'poles':
         return {'engine': 'poles', 'covers_run': False,
                 'reason': 'engine_poles', 'bypass_deformation': False}
     from engine.integration.time_domain import statespace as _ssm
@@ -182,7 +176,7 @@ def _pole_cluster_preamble(prop, max_ell, ss_route=None):
                         'the run; it uses no poles or residues')
         pc['accuracy'] = None
         return pc
-    if pc['status'] in ('unresolved', 'disabled'):
+    if pc['status'] == 'unresolved':
         digits = _pc.lost_digits(pc['kappa_max'], max_ell)
         pc['lost_digits'] = digits
         if digits <= _pc.LOST_DIGITS_WARN:
@@ -821,9 +815,9 @@ class _PipelineState:
 
 def _preflight_default() -> bool:
     """``DAEDALUS_PREFLIGHT`` (read at call time): ``0``/``off``/``false``
-    turns the analyzer gates off; default on."""
-    v = os.environ.get('DAEDALUS_PREFLIGHT', '').strip().lower()
-    return v not in ('0', 'off', 'false', 'no')
+    turns the analyzer gates off; default on; any other value raises."""
+    from engine import _env
+    return _env.flag('DAEDALUS_PREFLIGHT', True)
 
 
 def _make_preflight(preflight, model, k, max_ell, external_fields_user,

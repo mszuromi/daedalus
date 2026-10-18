@@ -11,8 +11,8 @@ Checks:
   * the expansion equals the one of the hand-expanded polynomial form
     (the sigmoid replaced by its Taylor polynomial at the saddle u = 0,
     exact to the order used) -- exactly, coefficient by coefficient;
-  * it equals the legacy route (``DAEDALUS_EXPAND_LEGACY=1``): same
-    monomials, coefficients equal at random points to 50 digits;
+  * the retired legacy switch (``DAEDALUS_EXPAND_LEGACY``, audit W7) only
+    warns and changes nothing;
   * a time budget at taylor_order 4;
   * unit checks of the truncated Taylor, of the fast nonzero test and of
     the dict-to-ring construction.
@@ -53,15 +53,19 @@ def _model(form='exp'):
             .build())
 
 
-def _expand(model, order, legacy=False, monkeypatch=None):
-    if legacy:
-        monkeypatch.setenv(F._EXPAND_LEGACY_ENV, '1')
-    else:
-        monkeypatch.delenv(F._EXPAND_LEGACY_ENV, raising=False)
+def _expand(model, order, monkeypatch=None):
     ft = F.FieldTheory(model, taylor_order=order)
     ft.expand()
-    monkeypatch.delenv(F._EXPAND_LEGACY_ENV, raising=False)
     return ft
+
+
+def _frozen_legacy(key):
+    """The retired legacy route's table (``DAEDALUS_EXPAND_LEGACY=1``, frozen
+    at main dca8804: tests/fixtures/expand_legacy_taylor.json)."""
+    import json
+    path = os.path.join(os.path.dirname(__file__), 'fixtures',
+                        'expand_legacy_taylor.json')
+    return json.load(open(path))[key]
 
 
 def _table(ft):
@@ -92,35 +96,44 @@ def test_matches_hand_expanded_polynomial_form(order, monkeypatch):
         assert d.is_trivial_zero(), (k, d)
 
 
-def test_equals_legacy_taylor(monkeypatch):
+def test_retired_legacy_switch_warns_and_changes_nothing(monkeypatch):
+    from engine import _env
     order = 2
     model = _model('exp')
     tn = _table(_expand(model, order, monkeypatch=monkeypatch))
-    tl = _table(_expand(model, order, legacy=True, monkeypatch=monkeypatch))
-    assert set(tn) == set(tl)
+    # the frozen legacy table (the route the switch selected) still agrees
+    fl = _frozen_legacy('exp2')
+    assert {repr(k) for k in tn} == set(fl)
     RF = RealField(200)
-    syms = sorted({v for c in list(tn.values()) + list(tl.values())
-                   for v in c.variables()}, key=repr)
-    for trial in range(2):
-        rnd = random.Random(trial)
-        pt = {s: RF(rnd.uniform(0.2, 0.8)) for s in syms}
-        for k in tn:
-            a, b = RF(tn[k].subs(pt)), RF(tl[k].subs(pt))
-            assert abs(a - b) <= RF(10) ** -50 * max(abs(a), RF(1)), k
+    syms = sorted({v for c in tn.values() for v in c.variables()}, key=repr)
+    pt = {s: RF(random.Random(0).uniform(0.2, 0.8)) for s in syms}
+    by_name = {repr(s): v for s, v in pt.items()}
+    for k in tn:
+        ref = SR(fl[repr(k)])
+        a = RF(tn[k].subs(pt))
+        b = RF(ref.subs({v: by_name[repr(v)] for v in ref.variables()}))
+        assert abs(a - b) <= RF(10) ** -50 * max(abs(a), RF(1)), k
+    _env._RETIRED_SEEN.discard(F._EXPAND_LEGACY_ENV)
+    monkeypatch.setenv(F._EXPAND_LEGACY_ENV, '1')
+    with pytest.warns(FutureWarning, match='DAEDALUS_EXPAND_LEGACY is retired'):
+        tl = _table(_expand(model, order, monkeypatch=monkeypatch))
+    assert set(tn) == set(tl)
+    assert all((tn[k] - tl[k]).is_trivial_zero() for k in tn)
 
 
-@pytest.mark.slow
-@pytest.mark.bigmem          # > 12 GB footprint: own job in .github/workflows/slow-tests.yml
 def test_equals_legacy_taylor_order3(monkeypatch):
     model = _model('exp')
     tn = _table(_expand(model, 3, monkeypatch=monkeypatch))
-    tl = _table(_expand(model, 3, legacy=True, monkeypatch=monkeypatch))
-    assert set(tn) == set(tl)
+    tl = _frozen_legacy('exp3')
+    assert {repr(k) for k in tn} == set(tl)
     RF = RealField(200)
     syms = sorted({v for c in tn.values() for v in c.variables()}, key=repr)
     pt = {s: RF(random.Random(5).uniform(0.2, 0.8)) for s in syms}
+    by_name = {repr(s): v for s, v in pt.items()}
     for k in tn:
-        a, b = RF(tn[k].subs(pt)), RF(tl[k].subs(pt))
+        ref = SR(tl[repr(k)])
+        a = RF(tn[k].subs(pt))
+        b = RF(ref.subs({v: by_name[repr(v)] for v in ref.variables()}))
         assert abs(a - b) <= RF(10) ** -50 * max(abs(a), RF(1)), k
 
 
@@ -161,10 +174,10 @@ def test_polynomial_action_identical_to_legacy(monkeypatch):
     element (coefficients trivially equal), not only an equal one."""
     model = _model('poly')
     tn = _table(_expand(model, 4, monkeypatch=monkeypatch))
-    tl = _table(_expand(model, 4, legacy=True, monkeypatch=monkeypatch))
-    assert set(tn) == set(tl)
+    tl = _frozen_legacy('poly4')
+    assert {repr(k) for k in tn} == set(tl)
     for k in tn:
-        assert tn[k].is_trivially_equal(tl[k]), k
+        assert str(tn[k]) == tl[repr(k)], k
 
 
 # ── unit checks ──────────────────────────────────────────────────────────
@@ -236,17 +249,6 @@ def test_any_atom_is_expanded_by_taylor():
     mine = sum(c * x ** i * y ** j for (i, j), c in got.items())
     ref = taylor(e, (x, 0), (y, 0), 3)
     assert (SR(mine) - SR(ref)).expand().is_trivial_zero()
-
-
-def test_legacy_switch_skips_truncated_route(monkeypatch):
-    x, a = SR.var('x a')
-    monkeypatch.setenv(F._EXPAND_LEGACY_ENV, '1')
-
-    def boom(*args, **kw):
-        raise AssertionError('truncated route used under the legacy switch')
-    monkeypatch.setattr(F, '_truncated_taylor', boom)
-    e = exp(a + x)
-    assert F._taylor_action(e, [x], 3).is_trivially_equal(taylor(e, (x, 0), 3))
 
 
 def test_sr_nonzero_agrees_with_bool():

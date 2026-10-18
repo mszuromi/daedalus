@@ -26,28 +26,26 @@ Integration routes (closed forms on numeric poles; no symbolic integral)
   linear extensions of the causal poset (``_integrate_1d_polytope_
   modesum``, ``_integrate_2d_polygon_modesum``, ``_integrate_nd_polytope_
   poset_modesum``), with a per-subset plan and memoised chain integrals.
-* By default (0.2.0) these run box-free on the divided-difference kernels
-  of ``expdd`` (``boxfree.py``): the exact unbounded region (finite
-  vertices and recession rays), the semi-infinite chain, γ folded into the
-  logarithmic scale before any exp, and one overflow test on the final
-  exponent; many-tuple regions take the batched compiled kernels.  An open
-  direction must decay (the convergence certificate); a failure is dropped
-  when its pole-tuple group cancels exactly, and otherwise handled by the
-  divergence policy (``on_divergence``: 'fallback' / 'warn' / 'raise').
+* They run box-free on the divided-difference kernels of ``expdd``
+  (``boxfree.py``): the exact unbounded region (finite vertices and
+  recession rays), the semi-infinite chain, γ folded into the logarithmic
+  scale before any exp, and one overflow test on the final exponent;
+  many-tuple regions take the batched compiled kernels.  An open direction
+  must decay (the convergence certificate); a failure is dropped when its
+  pole-tuple group cancels exactly, and otherwise handled by the divergence
+  policy (``on_divergence``: 'fallback' / 'warn' / 'raise').
 * A subset no closed form takes goes to the exact difference-constraint
-  route (``dbm_integral``, ``USE_DBM_FALLBACK``) and only then to the
-  hardened ``scipy`` quadrature fallback (``_integrate_polytope``), which
-  warns.  On the model zoo no region reaches it.
+  route (``dbm_integral``) and only then to the hardened ``scipy``
+  quadrature fallback (``_integrate_polytope``), which warns.  On the model
+  zoo no region reaches it.
 * Θ(0) = 0 (Itô) for constant rows left by δ-elimination; an exact tie of
   external times follows their tie order (``_const_row_verdict``).
 
-Switches (module attributes, read at call time; environment variables at
-import): ``USE_PHASE_J_DD_KERNELS``, ``SEMIINF_CHAIN``, ``UNBOUNDED_2D``
-(box-free routes, on), ``USE_DBM_FALLBACK``, ``NQUAD_HARDENED``,
-``THETA0_CONST_ROW_MODE``, ``STRUCTURAL_ZEROS``, ``PHASE_J_T_MIN`` (a finite
-lower bound of every time, for switch-on transients), and the legacy
-umbrella ``DAEDALUS_PHASE_J_LEGACY=1``, which restores the pre-0.2.0 routes
-and numbers (``_legacy_umbrella_flags``).  The public entry point is
+Module attributes read at call time: ``PHASE_J_T_MIN`` (a finite lower
+bound of every time, for switch-on transients) and the tuning constants
+below.  The pre-0.2.0 rollback switches (``DAEDALUS_PHASE_J_LEGACY`` and the
+per-milestone ones, ``_RETIRED_PHASE_J_ENV``) were retired in audit W7: set,
+each warns once and is ignored.  The public entry point is
 ``integrate_diagram``; its ``contribution(*ext_time_values) -> complex``
 callable evaluates the diagram.
 """
@@ -60,6 +58,7 @@ from collections import namedtuple
 from dataclasses import dataclass
 from fractions import Fraction as _Fraction
 
+import numpy as np
 from sage.all import SR, fast_callable, CDF, solve as sage_solve
 from sage.all import QQ as _QQ, ZZ as _ZZ
 from sage.symbolic.operators import (
@@ -73,6 +72,65 @@ from engine.integration.time_domain.propagator_td import (
     G_t_delta_coeff,
 )
 from engine.core.vertices import NoiseSourceType, ConvVertexType
+from engine import _env
+
+
+# ───────────────────────────────────────────────────────────────────────
+# Retired environment switches (audit W7)
+# ───────────────────────────────────────────────────────────────────────
+# Each restored a pre-0.2.0 route or a slower setup path.  Set, it warns once
+# per process (``FutureWarning``) and is otherwise ignored.
+_RETIRED_PHASE_J_ENV = (
+    ('DAEDALUS_PHASE_J_LEGACY',
+     'the pre-0.2.0 Phase J numbers are no longer reproducible in-process; '
+     'they are kept as frozen baselines (tests/fixtures/'
+     'phase_j_legacy_baseline.npz, tests/phase_j_refactor_fixtures/legacy/) '
+     '(audit W7)'),
+    ('DAEDALUS_PHASE_J_THETA0_CONST_ROW',
+     "the Ito rule Theta(0) = 0 with the external-time tie order is the only "
+     "constant-row convention ('legacy_clip' is gone) (audit W7)"),
+    ('DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
+     'identically-zero subsets are always skipped (audit W7)'),
+    ('DAEDALUS_PHASE_J_NQUAD_HARDENED',
+     'the hardened quadrature fallback is the only one (audit W7)'),
+    ('DAEDALUS_PHASE_J_DBM',
+     'the poset lower-bound inheritance rule and the exact DBM route are '
+     'always on (audit W7)'),
+    ('DAEDALUS_PHASE_J_DD_KERNELS',
+     'the divided-difference kernels are the only Phase J kernels '
+     '(audit W7)'),
+    ('DAEDALUS_CHAIN_UPPERS_KERNEL',
+     'the divided-difference chain kernels replaced both chain evaluators '
+     '(audit W7)'),
+    ('DAEDALUS_CHAIN_UPPERS_MEMO',
+     'the chain integrals are always memoised (audit W7)'),
+    ('DAEDALUS_PHASE_J_SEMIINF_CHAIN',
+     'the semi-infinite chain is the only m >= 3 route (audit W7)'),
+    ('DAEDALUS_PHASE_J_UNBOUNDED_2D',
+     'the box-free closed forms are the only route (audit W7)'),
+    ('DAEDALUS_PRUNE_ZERO_MODES',
+     'pole tuples with an exactly zero residue are always pruned '
+     '(audit W7)'),
+    ('DAEDALUS_PHASE_J_LEGACY_SETUP',
+     'the fast setup path is the only one; it gives the same numbers '
+     '(audit W7)'),
+    ('DAEDALUS_SETUP_ZERO_EXIT',
+     'the zero-prefactor early exit is always on (audit W7)'),
+    ('DAEDALUS_SETUP_PROP_TD',
+     'the call-scoped propagator data are always used (audit W7)'),
+    ('DAEDALUS_SETUP_LAZY_SR',
+     'the SR objects are always built on demand (audit W7)'),
+    ('DAEDALUS_SETUP_DELTA_SOLVE',
+     'the delta edges are always eliminated exactly '
+     '(DAEDALUS_PHASE_J_VALIDATE_DELTA still cross-checks sage_solve) '
+     '(audit W7)'),
+    ('DAEDALUS_SHOTNOISE_INTEGRATED',
+     'integrated shot-noise records are always built; the off path dropped '
+     'shot-noise subsets silently (audit W7)'),
+)
+for _name, _note in _RETIRED_PHASE_J_ENV:
+    _env.retired(_name, _note)
+del _name, _note
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -235,7 +293,7 @@ class PoleFreePropagatorError(ValueError):
     (Im ω > 1e-12 of the largest |root|, ``api/_propagator.py``).  A
     marginal or non-retarded mode -- e.g. λ = 0 at q = 0 for a massless
     field -- is dropped from the list although the entry still has a
-    smooth part, which then cannot be evaluated from the pole list.  Raised (with ``STRUCTURAL_ZEROS`` on)
+    smooth part, which then cannot be evaluated from the pole list.  Raised
     instead of returning a value: before M2a the per-diagram path failed
     here with a bare ``IndexError``.  ``entries``: the offending
     ``(pi, ri)`` entries; ``reasons``: ``{(pi, ri): why}``."""
@@ -695,21 +753,18 @@ def _kernel_modes(att, num_params=None):
 #: Item 27: fold a conductance kernel that is a finite exponential sum into
 #: the propagator of the line it sits on (``(g ∗ G)``, a pole sum: no extra
 #: time variable).  Off: every kernel takes the leg-time path.  Read at call
-#: time; env ``DAEDALUS_PHASE_J_DRESS_KERNELS=0`` switches it off at import.
-DRESS_CONV_KERNELS = (
-    _os.environ.get('DAEDALUS_PHASE_J_DRESS_KERNELS', '1').strip().lower()
-    not in ('0', 'off', 'false', 'no'))
+#: time; env ``DAEDALUS_PHASE_J_DRESS_KERNELS=0`` switches it off at import
+#: (``engine._env.flag``: any other word raises).
+DRESS_CONV_KERNELS = _env.flag('DAEDALUS_PHASE_J_DRESS_KERNELS', True)
 
-#: Item 35 (F1): every modesum plan leaves out the pole tuples that take a
-#: mode whose residue is EXACTLY zero (no tolerance; ``_build_pruned_modesum_
-#: plan``).  Driven filters that do not feed back (block-triangular K) give
-#: such entries; at k = 3 one loop the full product n_poles^E was 1e2-1e3
-#: times larger than the nonzero one.  The values are bit-identical to the
-#: unpruned plan's.  Read at call time; env ``DAEDALUS_PRUNE_ZERO_MODES=0``
-#: switches it off at import.
-PRUNE_ZERO_MODES = (
-    _os.environ.get('DAEDALUS_PRUNE_ZERO_MODES', '1').strip().lower()
-    not in ('0', 'off', 'false', 'no'))
+# Item 35 (F1): every modesum plan leaves out the pole tuples that take a
+# mode whose residue is EXACTLY zero (no tolerance; ``_build_pruned_modesum_
+# plan``).  Driven filters that do not feed back (block-triangular K) give
+# such entries; at k = 3 one loop the full product n_poles^E was 1e2-1e3
+# times larger than the nonzero one.  The values are bit-identical to the
+# unpruned plan's.  (The switch ``DAEDALUS_PRUNE_ZERO_MODES`` was retired in
+# audit W7; ``_build_modesum_plan(prune=False)`` still builds the unpruned
+# plan.)
 
 #: Item 35: a pruned plan replays the group order of the full product (so
 #: that the group sums run in the unpruned order, bit for bit) when that
@@ -834,20 +889,17 @@ def default_mem_budget(ram=None, footprint=None):
 
 def mem_budget(var, environ=None):
     """``(bytes or None, rule)`` of the memory guard read from the
-    environment variable ``var`` (GB; ``None`` = no limit for ``0``, a
-    negative value, ``off``, ``none`` or ``inf``); unset: the default rule
-    (``default_mem_budget``)."""
-    env = _os.environ if environ is None else environ
-    if var not in env:
+    environment variable ``var`` (``engine._env.budget_gb``: a positive
+    number of GB; ``None`` = no limit for ``off``, ``none``, ``inf`` or
+    ``unlimited``; ``0`` and negative values raise -- they meant "no limit"
+    here and "refuse everything" for the spatial guard, audit RED-05);
+    unset or empty: the default rule (``default_mem_budget``)."""
+    gb = _env.budget_gb(var, environ)
+    if gb is None:
         return default_mem_budget()
+    env = _os.environ if environ is None else environ
     raw = str(env[var]).strip().lower()
-    if raw in ('off', 'none', 'inf', 'infinity', ''):
-        return None, f'{var}={raw}'
-    try:
-        gb = float(raw)
-    except ValueError:
-        raise ValueError(f'{var}={raw!r} is not a number (GB), or off')
-    if not gb > 0 or gb == float('inf'):
+    if gb == float('inf'):
         return None, f'{var}={raw}'
     return gb * 1e9, f'{var}={raw}'
 
@@ -855,8 +907,8 @@ def mem_budget(var, environ=None):
 def phase_j_mem_budget_bytes(environ=None):
     """The budget in bytes from ``PHASE_J_MEM_BUDGET_GB``; unset: the
     default rule (``default_mem_budget``: at most 6 GB, less on a machine
-    with little RAM); ``None`` (no limit) for ``0``, a negative value,
-    ``off``, ``none`` or ``inf``."""
+    with little RAM); ``None`` (no limit) for ``off``, ``none``, ``inf`` or
+    ``unlimited``."""
     return mem_budget('PHASE_J_MEM_BUDGET_GB', environ)[0]
 
 
@@ -1324,68 +1376,14 @@ def _attach_subset_dt(edge_mode_sum, a_int, a_ext, c0):
     )
 
 
-# ───────────────────────────────────────────────────────────────────────
-# Analytic ∫∫_polygon exp(α·x + β·y) dA  (Stage 3a-full)
-# ───────────────────────────────────────────────────────────────────────
-# Replaces scipy.nquad on the m=2 polytope.  The integrand factors
-# after pole-expansion as a sum of single-exponential terms
-# A·exp(α·s_0 + β·s_1 + γ).  Each term is integrated analytically:
-#
-#   1. The polytope is a convex polygon (intersection of half-planes
-#      from the retardation constraints).  Computed once per
-#      (subset, τ-point) via Sutherland-Hodgman clipping.
-#   2. Fan-triangulate the polygon from vertex 0.
-#   3. Per triangle: affine-map to the unit triangle 0 ≤ u, w ≤ 1,
-#      u + w ≤ 1.  The integrand reduces to ``exp(α₀ + p·u + q·w)``
-#      with α₀, p, q expressible from (α, β, vertices).
-#   4. Unit-triangle integral ``J(p, q) = ∫₀¹ ∫₀^{1-u} exp(p·u + q·w)
-#      dw du`` has the closed form
-#
-#         J(p, q) = [(eᵖ − e^q)/(p − q) − (eᵖ − 1)/p] / q
-#
-#      with stable Taylor fallbacks when |p|, |q|, or |p−q| → 0.
-#   5. Sum over pole tuples ``(α_e)_e``: each contributes
-#      A · exp(γ) · |det| · exp(α₀) · J(p, q).
-#
-# Compared to scipy.nquad on the un-expanded integrand: O(n_poles^|E_smooth|
-# × n_triangles) complex-exp evaluations per (subset, τ-point) instead
-# of ~10⁴ adaptive samples per (subset, τ-point), each itself doing
-# n_poles · |E_smooth| complex-exps.  Net speedup typically 10-100×.
-
+#: The m = 2 analytic polygon route (``_integrate_2d_polygon_modesum``);
+#: ``False`` sends every m = 2 subset to the quadrature fallback (tests).
 USE_POLYGON_M2_INTEGRATOR = True
-POLYGON_BBOX_CAP = 200.0  # bounding-box for unbounded polygons
-# The three analytic modesum integrators take ``bbox_cap=None`` and resolve it
-# at CALL TIME from this module attribute (``_resolve_bbox_cap``), so
-# ``final_integral.POLYGON_BBOX_CAP = x`` takes effect immediately, in every
-# Θ(0) mode.  Before M1 the default was bound at definition time
-# (``bbox_cap=POLYGON_BBOX_CAP``) and changing the attribute did nothing.
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Phase J flags (read at CALL TIME) and the legacy umbrella
-# ───────────────────────────────────────────────────────────────────────
-# the internal Phase J plan (not distributed) §3.1 "Rollback and flag hygiene".  Every
-# Phase J flag is a module attribute; its environment variable is read ONCE,
-# at import, only to initialise it.  Call sites read the attribute at call
-# time (never through a default argument or a closure capture), so
-# ``monkeypatch.setattr(final_integral, FLAG, value)`` takes effect at once,
-# including for closures built before the change.  ``grouped_integral``
-# reads them through the module object (``_fi_mod``), never by name.
-#
-# ``DAEDALUS_PHASE_J_LEGACY=1`` (the umbrella) sets EVERY Phase J flag to its
-# legacy value, reproducing the pre-M1 numbers bit-for-bit within one
-# process.  That is ``THETA0_CONST_ROW_MODE = 'legacy_clip'``,
-# ``STRUCTURAL_ZEROS = False`` (M2a), ``NQUAD_HARDENED = False`` (M2b) and
-# ``USE_DBM_FALLBACK = False`` (M3; see ``_initial_phase_j_flags``).  The
-# bounding box is not a flag: the umbrella also reads ``POLYGON_BBOX_CAP`` at
-# call time (so it reproduces a pre-M1 run at any cap, e.g. the cap-12 trap).
-import os as _os
 
 
 def _env_truthy(name, environ=None):
-    env = _os.environ if environ is None else environ
-    return env.get(name, '').strip().lower() not in (
-        '', '0', 'false', 'no', 'off')
+    """An on/off switch, default off (``engine._env.flag``)."""
+    return _env.flag(name, False, environ)
 
 
 # ── Θ(0) convention for constant constraint rows (M1; plan §2.4, §3.1 L0) ──
@@ -1397,7 +1395,7 @@ def _env_truthy(name, environ=None):
 # point takes (since Oct 2026 by evaluating AT the tie with the rule below;
 # ``api.compute._tau0_mode``).  ``_const_row_verdict`` is
 # the ONE place that applies it; every integrator (m=0, m=1, m=2 polygon,
-# m≥3 poset, scipy.nquad fallback, grouped m0/m1) calls it.
+# m≥3 poset, DBM, scipy fallback) calls it.
 #
 # The rule is EXACT: c_eff > 0 keeps the row (DROP), c_eff < 0 empties the
 # region, and only c_eff == 0.0 is a tie.  (A relative tie tolerance was
@@ -1429,242 +1427,103 @@ THETA_AT_ZERO_CONST_ROW = 0
 # A row has a zero normal when every |a_int_j| <= _ROW_COEF_ATOL.  The δ-solve
 # produces small-integer coefficients, so real rows are exactly 0 or ±1.
 _ROW_COEF_ATOL = 1e-12
-# Emptiness of an m=2 polygon is decided structurally and exactly too (no
+# Emptiness of an m=2 region is decided structurally and exactly too (no
 # area tolerance: a genuine strip of any width, e.g. between external times
-# 1e-12 apart, is integrated as before 0.2.0).  See
-# ``_polygon_from_2d_constraints``: two rows with exactly opposite normals
-# whose constants sum to <= 0 (the 2-cycle rows s1 > s0, s0 > s1, or a strip
-# between two coincident external times) empty the region, and a clipped
-# polygon with fewer than 3 vertices or an exactly zero computed area is
-# degenerate.
+# 1e-12 apart, is integrated).  See ``boxfree.region_2d``: two rows with
+# exactly opposite normals whose constants sum to <= 0 (the 2-cycle rows
+# s1 > s0, s0 > s1, or a strip between two coincident external times,
+# ``_opposite_rows_empty``) empty the region, and so does a region of
+# measure zero.
 
-# THETA0_CONST_ROW_MODE:
-#   'ito'          (default) Θ(0) = 0 everywhere through ``_const_row_verdict``,
-#                  with the external-time tie order above; an m=2 polygon
-#                  with an exactly contradictory pair of opposite rows or an
-#                  exactly zero area, and a directed cycle of m≥3 order rows
-#                  whose shifts sum to <= 0, are empty; a δ-subset with a
-#                  τ-independent EMPTY row returns 0 without integration
-#                  (decided at call time, see ``integrate_diagram``).
-#   'legacy_clip'  the pre-M1 behaviour, bit-for-bit: the m=2 polygon clip
-#                  keeps a zero-normal row with c_eff == 0 (Θ(0) = 1), every
-#                  other path uses its own absolute tolerances.
-# The two modes can differ only on an evaluation where 'ito' decides a
-# constant row with the helper, in any path (``theta0_const_empty`` /
-# ``theta0_const_drop``; ``zero_normal_rows_seen`` counts only the polygon
-# and poset paths), skips a τ-independent EMPTY subset
-# (``theta0_subsets_pruned``), or makes an exact structural emptiness
-# decision that needs no constant row (``polygon_zero_area``,
-# ``poset_empty_cycle``; these may turn a rounding-level value, or an nquad
-# value / exception, into an exact 0).  With all five counters at 0 the
-# modes are bit-identical in-process.
-# Environment: DAEDALUS_PHASE_J_THETA0_CONST_ROW = ito | legacy_clip.
-_THETA0_MODES = ('ito', 'legacy_clip')
+# The constant-row rule above is the only one: the pre-M1 'legacy_clip'
+# mode (``THETA0_CONST_ROW_MODE``, ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``) was
+# retired in audit W7.
 
 # ── Structural zeros (M2a; plan §3.1 L1) ──
-# STRUCTURAL_ZEROS (bool, read at call time):
-#   True   (default) two kinds of δ-subset work that is identically zero are
-#          skipped:
-#          * ``_integrate_polytope`` (the scipy.nquad fallback, whoever calls
-#            it: an m=2 guard bail, a poset extraction that bailed, grouped
-#            m2/m≥3, the SR path of a non-analytic subset, a direct caller)
-#            returns 0j at once when the rows contain a directed cycle of
-#            unit-coefficient pair rows whose shifts sum to <= 0 in exact
-#            arithmetic (``_region_structurally_empty``; counter
-#            ``polytope_empty_cycle``).  The strict inequalities around such
-#            a cycle cannot all hold, so the region is empty.  The fallback
-#            used to hand it to scipy.nquad anyway: an identically-zero
-#            filtered integrand, or (m=2 with exact bounds, no filter)
-#            zero-length inner intervals whose quadrature still evaluates
-#            the integrand outside the region, where fast poles overflow
-#            (OverflowError, plan Appendix C.2).
-#          * a δ-subset that keeps smooth an edge whose smooth part is
-#            provably zero (a pure-δ entry, or an entry that vanishes: every
-#            stored pole residue is an exact zero
-#            (``_smooth_part_is_exact_zero``) AND the ``G_ft`` entry -- the
-#            propagator before any pole filtering -- contains no ω once
-#            ``num_params`` are substituted
-#            (``_entry_is_provably_instantaneous``); without ``G_ft`` the
-#            stored residues decide) is never built
-#            (``_forced_delta_edges``; counter ``forced_delta_pruned``), per
-#            diagram and in grouped builds -- the mirror image of the
-#            forced-smooth edges (zero δ part) that the subset enumeration
-#            already skips.  Such a subset's integrand is a product with an
-#            identically-zero factor.  A propagator WITHOUT any pole is
-#            decided from ``G_ft`` alone: an entry is a pure δ only if it
-#            contains no ω once ``num_params`` are substituted (e.g. a
-#            spike model with all couplings 0); if a diagram uses an entry
-#            that is not provably a pure δ, its smooth part was dropped
-#            with a non-retarded mode (λ = 0 at q = 0 for a massless field)
-#            and ``PoleFreePropagatorError`` is raised -- the per-diagram
-#            path used to fail there with a bare IndexError, and the grouped
-#            path used to drop that smooth part silently.
-#          Both are value-neutral by construction: every skipped piece
-#          contributes an exact zero (the analytic paths skip zero-residue
-#          pole tuples, nquad of the zero function is exactly 0.0, and
-#          adding a signed zero to the running sum never changes it).  They
-#          remove the exceptions / NaN the legacy code could raise on those
-#          pieces.  (Constant EMPTY rows need no rule of their own here:
-#          'ito' decides them by ``_const_row_verdict`` at the entry of
-#          ``_integrate_polytope``, and the legacy inner integrators return
-#          0 on them before any quadrature -- ``_outer_bounds``,
-#          ``_resolve_1d_bounds``, ``_integrate_2d_polytope``.)
-#   False  the pre-M2a behaviour, bit-for-bit.
-# The prune is decided when the subsets are built (the flag is read at the
-# call of ``integrate_diagram`` / ``integrate_grouped_diagram``); a closure
-# built with the prune never re-creates the pruned subsets, which are
-# identically zero anyway.  The cycle test is read at every call.
-# Environment: DAEDALUS_PHASE_J_STRUCTURAL_ZEROS = 1 | 0 (also true/false,
-# yes/no, on/off); the umbrella DAEDALUS_PHASE_J_LEGACY=1 sets it to 0.
-_STRUCTURAL_ZEROS_ON = ('', '1', 'true', 'yes', 'on')
-_STRUCTURAL_ZEROS_OFF = ('0', 'false', 'no', 'off')
+# Two kinds of δ-subset work that is identically zero are always skipped
+# (the switch ``STRUCTURAL_ZEROS`` / ``DAEDALUS_PHASE_J_STRUCTURAL_ZEROS``
+# was retired in audit W7):
+#   * ``_integrate_polytope`` (the scipy fallback, whoever calls it: an
+#     analytic bail, the SR path of a non-analytic subset, a direct caller)
+#     returns 0j at once when the rows contain a directed cycle of
+#     unit-coefficient pair rows whose shifts sum to <= 0 in exact
+#     arithmetic (``_region_structurally_empty``; counter
+#     ``polytope_empty_cycle``).  The strict inequalities around such a
+#     cycle cannot all hold, so the region is empty.  (Before M2a the
+#     fallback handed it to scipy.nquad anyway, which could overflow
+#     evaluating fast poles outside the region, plan Appendix C.2.)
+#   * a δ-subset that keeps smooth an edge whose smooth part is provably
+#     zero (a pure-δ entry, or an entry that vanishes: every stored pole
+#     residue is an exact zero (``_smooth_part_is_exact_zero``) AND the
+#     ``G_ft`` entry -- the propagator before any pole filtering -- contains
+#     no ω once ``num_params`` are substituted
+#     (``_entry_is_provably_instantaneous``); without ``G_ft`` the stored
+#     residues decide) is never built (``_forced_delta_edges``; counter
+#     ``forced_delta_pruned``) -- the mirror image of the forced-smooth
+#     edges (zero δ part) that the subset enumeration already skips.  A
+#     propagator WITHOUT any pole is decided from ``G_ft`` alone: an entry
+#     is a pure δ only if it contains no ω once ``num_params`` are
+#     substituted; if a diagram uses an entry that is not provably a pure
+#     δ, its smooth part was dropped with a non-retarded mode (λ = 0 at
+#     q = 0 for a massless field) and ``PoleFreePropagatorError`` is raised
+#     (before M2a: a bare IndexError).
+# Both are value-neutral by construction: every skipped piece contributes an
+# exact zero.
 
-# ── Hardened scipy quadrature fallback (M2b; plan §3.1 L1b) ──
-# NQUAD_HARDENED (bool, read at call time):
-#   True   (default) every ``_integrate_polytope`` region that reaches scipy
-#          quadrature (m >= 1, after the constant-row verdicts and the
-#          structural-zero test) is integrated by
-#          ``_integrate_polytope_hardened``: nested ``scipy.integrate.quad``
-#          over the region's OWN bounds (a difference-bound-matrix closure
-#          of its rows, not the ±200 / ±50 box), the innermost variable in
-#          closed form when the integrand's modes are known, with an empty
-#          interval answered 0 without sampling, the integrand
-#          Heaviside-filtered, breakpoints at the external times, at the
-#          kinks of the inner bounds and geometrically towards the ends of
-#          wide panels, epsabs =
-#          ``NQUAD_EPSABS_FACTOR`` × a rigorous bound of |integrand| from
-#          the modes and epsrel = ``NQUAD_EPSREL``.  A direction that the
-#          rows leave open is truncated at ``NQUAD_TAIL_K`` / κ_min from
-#          its finite end (κ_min: the slowest decay rate of the modes), or,
-#          without a decay certificate, at the legacy ±200.  See that
-#          function for the details and the counters.
-#   False  the pre-M2b default-tolerance scipy.nquad routines, bit-for-bit.
-# Environment: DAEDALUS_PHASE_J_NQUAD_HARDENED = 1 | 0 (also true/false,
-# yes/no, on/off); the umbrella DAEDALUS_PHASE_J_LEGACY=1 sets it to 0.
+# ── The quadrature fallback (M2b; plan §3.1 L1b) ──
+# Every ``_integrate_polytope`` region that reaches scipy quadrature (m >= 1,
+# after the constant-row verdicts and the structural-zero test) is
+# integrated by ``_integrate_polytope_hardened``: nested
+# ``scipy.integrate.quad`` over the region's OWN bounds (a
+# difference-bound-matrix closure of its rows, not a ±200 / ±50 box), the
+# innermost variable in closed form when the integrand's modes are known,
+# with an empty interval answered 0 without sampling, the integrand
+# Heaviside-filtered, breakpoints at the external times, at the kinks of the
+# inner bounds and geometrically towards the ends of wide panels, epsabs =
+# ``NQUAD_EPSABS_FACTOR`` × a rigorous bound of |integrand| from the modes
+# and epsrel = ``NQUAD_EPSREL``.  A direction that the rows leave open is
+# truncated at ``NQUAD_TAIL_K`` / κ_min from its finite end (κ_min: the
+# slowest decay rate of the modes), or, without a decay certificate, at
+# ±200.  See that function for the details and the counters.  Only a region
+# with a non-finite row shift (which the hardened routine declines) reaches
+# the default-tolerance scipy.nquad routines (``_integrate_1d_polytope``,
+# ``_integrate_2d_polytope``, ``_integrate_nd_polytope``).  (The switch
+# ``NQUAD_HARDENED`` / ``DAEDALUS_PHASE_J_NQUAD_HARDENED``, which selected
+# those routines for every region, was retired in audit W7.)
 
 # ── Poset lower-bound inheritance and the exact DBM route (M3; plan §3.1
 # L7, problem P3) ──
-# USE_DBM_FALLBACK (bool, read at call time; acts only while
-# THETA0_CONST_ROW_MODE is 'ito', see ``_dbm_route_on``):
-#   True   (default) two changes to the m≥3 subsets:
-#          * P3, the inheritance rule.  The poset path integrates every
-#            variable from ONE shared scalar lower bound L.  A variable
-#            without a scalar lower of its own may inherit L only through a
-#            predecessor in the transitive closure of the strict order that
-#            has one (s_v > s_u > L).  A poset with a variable that has
-#            neither extends below L, down to the domain cap; the poset path
-#            now bails on it (``'poset_lower_not_inherited'``; counter
-#            ``poset_lower_not_inherited``) instead of cutting that region
-#            off at L.
-#          * The DBM route.  Every m≥3 subset whose poset path bails (for
-#            any reason: the P3 rule above, unequal scalar lowers, shifted
-#            order rows, an order cycle with a positive total shift, an
-#            overflow or degenerate chain) is integrated exactly by
-#            ``_integrate_subset_dbm`` (``dbm_integral.py``: case-split
-#            Fourier-Motzkin elimination of the difference constraints,
-#            log-domain terms).  A direction the rows leave open is closed
-#            at ±OUTER_CAP (``_nquad_outer_cap``, ±200: the box of the
-#            legacy default-tolerance scipy.nquad routines; the M3 brief
-#            fixes this domain); a finite bound is kept as it is, even
-#            beyond the box.  The box is absolute (from the time origin), so
-#            a region bounded above near or below -OUTER_CAP with a time open
-#            below is truncated or emptied (answered 0) by it, as by the
-#            legacy routine.  The default hardened fallback
-#            (``NQUAD_HARDENED``) truncates a direction with a decay
-#            certificate at K/κ beyond its breakpoints instead, which is
-#            nearly box-free: for modes slower than κ ≈ 0.15 a non-P3 bail
-#            that M3 moves from it to the DBM can change by the box
-#            truncation (none in the measured public zoo: no m≥3 region
-#            reached the fallback there).
-#            Constant rows are decided by ``_const_row_decision`` (Θ(0) = 0
-#            and the external-time tie order; the side-effect-free form, as
-#            the poset path has already counted them); every other row
-#            enters the region as it is: the integral is continuous in a
-#            non-constant row's shift, so it needs no tie rule.  A subset
-#            the DBM cannot take (a row that is not a difference row, e.g.
-#            a ConvVertex 3-term row; rows and modes that do not match; an
-#            overflowing term; a closed form whose rounding error estimate
-#            exceeds max(1e-10 |value|, 1e-14 × the integrand's scale), as
-#            close poles or a thin region can give) goes on to
-#            ``_integrate_polytope`` as before (counters ``dbm_declined_*``).
-#   False  the pre-M3 behaviour, bit-for-bit (the shared L is inherited by
-#          every variable, and a poset bail goes to ``_integrate_polytope``).
-# Under THETA0_CONST_ROW_MODE 'legacy_clip' neither change applies (that
-# mode reproduces the pre-M1 numbers bit-for-bit, and the DBM decides
-# constant rows by the Itô rule).
-# Environment: DAEDALUS_PHASE_J_DBM = 1 | 0 (also true/false, yes/no,
-# on/off); the umbrella DAEDALUS_PHASE_J_LEGACY=1 sets it to 0.
-
-
-def _initial_phase_j_flags(environ=None):
-    """The import-time values of the Phase J flags from ``environ``
-    (default ``os.environ``): ``{'THETA0_CONST_ROW_MODE': ...,
-    'STRUCTURAL_ZEROS': ..., 'NQUAD_HARDENED': ...,
-    'USE_DBM_FALLBACK': ...}``.  The umbrella wins over the per-flag
-    variables, but an unknown value raises in any case (a silent fallback
-    to the default would hide a requested rollback)."""
-    env = _os.environ if environ is None else environ
-    mode = (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
-            .strip().lower() or 'ito')
-    if mode not in _THETA0_MODES:
-        raise ValueError(
-            f'DAEDALUS_PHASE_J_THETA0_CONST_ROW={mode!r}: expected one of '
-            f'{_THETA0_MODES}')
-    sz = env.get('DAEDALUS_PHASE_J_STRUCTURAL_ZEROS', '').strip().lower()
-    if sz not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
-        raise ValueError(
-            f'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS={sz!r}: expected 1 or 0')
-    nh = env.get('DAEDALUS_PHASE_J_NQUAD_HARDENED', '').strip().lower()
-    if nh not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
-        raise ValueError(
-            f'DAEDALUS_PHASE_J_NQUAD_HARDENED={nh!r}: expected 1 or 0')
-    db = env.get('DAEDALUS_PHASE_J_DBM', '').strip().lower()
-    if db not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
-        raise ValueError(
-            f'DAEDALUS_PHASE_J_DBM={db!r}: expected 1 or 0')
-    # every value is validated first, so a garbage value raises under the
-    # umbrella too (M8)
-    if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
-        return {'THETA0_CONST_ROW_MODE': 'legacy_clip',
-                'STRUCTURAL_ZEROS': False,
-                'NQUAD_HARDENED': False,
-                'USE_DBM_FALLBACK': False}
-    return {'THETA0_CONST_ROW_MODE': mode,
-            'STRUCTURAL_ZEROS': sz in _STRUCTURAL_ZEROS_ON,
-            'NQUAD_HARDENED': nh in _STRUCTURAL_ZEROS_ON,
-            'USE_DBM_FALLBACK': db in _STRUCTURAL_ZEROS_ON}
-
-
-_PHASE_J_FLAGS_AT_IMPORT = _initial_phase_j_flags()
-THETA0_CONST_ROW_MODE = _PHASE_J_FLAGS_AT_IMPORT['THETA0_CONST_ROW_MODE']
-STRUCTURAL_ZEROS = _PHASE_J_FLAGS_AT_IMPORT['STRUCTURAL_ZEROS']
-NQUAD_HARDENED = _PHASE_J_FLAGS_AT_IMPORT['NQUAD_HARDENED']
-USE_DBM_FALLBACK = _PHASE_J_FLAGS_AT_IMPORT['USE_DBM_FALLBACK']
-
-
-def _dbm_fallback_on():
-    """``USE_DBM_FALLBACK`` (call time), validated."""
-    flag = USE_DBM_FALLBACK
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'final_integral.USE_DBM_FALLBACK={flag!r}: expected '
-                     f'True or False')
-
-
-def _dbm_route_on():
-    """True when the M3 changes apply (call time): ``USE_DBM_FALLBACK`` on
-    AND ``THETA0_CONST_ROW_MODE`` 'ito' (see the flag's comment)."""
-    return _dbm_fallback_on() and not _theta0_legacy()
+# Two rules for the m≥3 subsets (the switch ``USE_DBM_FALLBACK`` /
+# ``DAEDALUS_PHASE_J_DBM`` was retired in audit W7):
+#   * P3, the inheritance rule.  The poset path integrates every variable
+#     from ONE shared scalar lower bound L.  A variable without a scalar
+#     lower of its own may inherit L only through a predecessor in the
+#     transitive closure of the strict order that has one (s_v > s_u > L).
+#     A poset with a variable that has neither extends below L; the poset
+#     path bails on it (``'poset_lower_not_inherited'``; counter
+#     ``poset_lower_not_inherited``) instead of cutting that region off at L.
+#   * The DBM route.  Every m≥3 subset whose poset path bails (for any
+#     reason: the P3 rule above, unequal scalar lowers, shifted order rows,
+#     an order cycle with a positive total shift, a divergent or overflowing
+#     chain) is integrated exactly by ``_integrate_subset_dbm``
+#     (``dbm_integral.py``: case-split Fourier-Motzkin elimination of the
+#     difference constraints, log-domain terms), box-free.  Constant rows
+#     are decided by ``_const_row_decision`` (Θ(0) = 0 and the external-time
+#     tie order); every other row enters the region as it is.  A subset the
+#     DBM cannot take (a row that is not a difference row, e.g. a ConvVertex
+#     3-term row; rows and modes that do not match; an overflowing term; a
+#     divergent region; a closed form whose rounding error estimate exceeds
+#     max(1e-10 |value|, 1e-14 × the integrand's scale) even at
+#     ``dbm_integral.MP_DPS`` digits) goes on to ``_integrate_polytope``
+#     (counters ``dbm_declined_*``).
 
 
 #: Item 27: a DBM closed form that fails the conditioning test is
 #: re-evaluated in ``dbm_integral.MP_DPS``-digit arithmetic before the
 #: subset may fall to the quadrature fallback (read at call time; env
-#: ``DAEDALUS_PHASE_J_DBM_MP=0`` switches it off at import).  Acts only
-#: inside the DBM route, so the legacy umbrella (route off) never reaches it.
-USE_DBM_HIGH_PRECISION = (
-    _os.environ.get('DAEDALUS_PHASE_J_DBM_MP', '1').strip().lower()
-    not in ('0', 'off', 'false', 'no'))
+#: ``DAEDALUS_PHASE_J_DBM_MP=0`` switches it off at import; any other word
+#: than an on/off value raises).  Acts only inside the DBM route.
+USE_DBM_HIGH_PRECISION = _env.flag('DAEDALUS_PHASE_J_DBM_MP', True)
 
 
 def _dbm_high_precision_on():
@@ -1675,53 +1534,13 @@ def _dbm_high_precision_on():
                      f'expected True or False')
 
 
-def _nquad_hardened_on():
-    """True when the hardened quadrature fallback is enabled (call time)."""
-    flag = NQUAD_HARDENED
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'final_integral.NQUAD_HARDENED={flag!r}: expected '
-                     f'True or False')
-
-
-def _structural_zeros_on():
-    """True when the M2a structural-zero skips are enabled (call time)."""
-    flag = STRUCTURAL_ZEROS
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'final_integral.STRUCTURAL_ZEROS={flag!r}: expected '
-                     f'True or False')
-
-
-def _theta0_legacy():
-    """True when the pre-M1 constant-row behaviour is selected (call time)."""
-    mode = THETA0_CONST_ROW_MODE
-    if mode == 'ito':
-        return False
-    if mode == 'legacy_clip':
-        return True
-    raise ValueError(f'final_integral.THETA0_CONST_ROW_MODE={mode!r}: '
-                     f'expected one of {_THETA0_MODES}')
-
-
-def _resolve_bbox_cap(bbox_cap):
-    """``bbox_cap`` if given, else ``POLYGON_BBOX_CAP`` (read at call time)."""
-    return POLYGON_BBOX_CAP if bbox_cap is None else bbox_cap
-
 # ───────────────────────────────────────────────────────────────────────
-# Physical fallback margin for unbounded polytope sides (Stage 3b)
+# Physical margin of the scipy fallback's box (``USE_POSET_CAP_MATCH_SCIPY``)
 # ───────────────────────────────────────────────────────────────────────
-# When the polytope has no explicit scalar lower/upper, the chain
-# simplex needs *some* finite L / U.  POLYGON_BBOX_CAP=200 is too loose:
-# combined with retarded poles (Re β < 0), |Re β · L|=β·200 overflows
-# the exp guard at |Re β|>3 (sum of 3–4 poles).  Physically, retarded
-# propagators decay over a few correlation times beyond the earliest
-# external time, so the integrand is negligible past
-# ``min(0, free_ext_vals) − POSET_PHYSICAL_MARGIN`` (lower) and
-# ``max(0, free_ext_vals) + POSET_PHYSICAL_MARGIN`` (upper).
-# 50 is generous (≈ several correlation times for typical Hawkes
-# τ_v ~ 10) but tight enough to avoid the overflow guard at typical
-# pole magnitudes.
+# The pre-0.2.0 chain routes closed an unbounded lower side at
+# ``min(0, free_ext_vals) − POSET_PHYSICAL_MARGIN``; the box-free routes have
+# no margin.  It survives as the alternative half-width of the scipy
+# fallback's box (``_nquad_outer_cap``).
 POSET_PHYSICAL_MARGIN = 50.0
 
 # ───────────────────────────────────────────────────────────────────────
@@ -1748,9 +1567,8 @@ _RUNTIME_COUNTERS = {
     # memoisation (see the wrappers below)
     'chain_simplex_memo_hits': 0,
     'chain_simplex_memo_misses': 0,
-    # M4: the ``_chain_with_intermediate_uppers`` memo
-    # (``USE_CHAIN_UPPERS_MEMO``); ``evictions`` counts the table clears at
-    # the size cap:
+    # M4: the chain memo (``_chain_dd_log``); ``evictions`` counts the
+    # table clears at the size cap:
     'chain_uppers_memo_hits': 0,
     'chain_uppers_memo_misses': 0,
     'chain_uppers_memo_evictions': 0,
@@ -1792,8 +1610,8 @@ _RUNTIME_COUNTERS = {
     # constraints`` or ``_extract_causal_poset``.
     'zero_normal_rows_seen': 0,
     # ── M1 Θ(0) counters (plan §2.4 item 8).  One count per
-    # ``_const_row_verdict`` call (i.e. per zero-normal row per evaluation;
-    # never incremented in 'legacy_clip' mode):
+    # ``_const_row_verdict`` call (i.e. per zero-normal row per
+    # evaluation):
     #   theta0_const_empty -- verdict EMPTY (c_eff < 0, or a tie decided
     #                         empty);
     #   theta0_const_drop  -- verdict DROP (c_eff > 0, or a tie decided by
@@ -1810,21 +1628,19 @@ _RUNTIME_COUNTERS = {
     # δ-subset evaluations that returned 0 without integration because a
     # smooth-edge row is constant, τ-independent and EMPTY (a_int ≡ 0,
     # a_ext ≡ 0, c0 <= 0).  The subset is flagged when ``integrate_diagram``
-    # builds it (in any mode) and the mode is read at call time.
+    # builds it.
     'theta0_subsets_pruned': 0,
-    # m=2 polygons that survived the clip but are empty or degenerate by an
-    # exact test, answered 0 ('ito' only; ``_polygon_from_2d_constraints``):
-    # two rows with exactly opposite normals whose constants sum to <= 0
-    # (e.g. the 2-cycle rows s1 > s0, s0 > s1, which the closed clip leaves
-    # as the segment s0 = s1), or fewer than 3 vertices / an exactly zero
-    # computed area.
+    # m=2 regions that are empty or degenerate by an exact test, answered 0
+    # (``_polygon_region_dd``): two rows with exactly opposite normals whose
+    # constants sum to <= 0 (e.g. the 2-cycle rows s1 > s0, s0 > s1), or a
+    # region of measure zero.
     'polygon_zero_area': 0,
     # m≥3 posets answered 0 without integration: a constant EMPTY row, or a
     # directed cycle of order rows whose shifts sum to <= 0 (strict
     # inequalities around such a cycle cannot all hold: empty).
     'poset_empty_const': 0,
     'poset_empty_cycle': 0,
-    # ── M2a structural-zero counters (``STRUCTURAL_ZEROS``) ──
+    # ── M2a structural-zero counters ──
     # ``_integrate_polytope`` entries (m >= 2, counted in ``nquad_calls`` /
     # ``scipy_nquad_called_*`` as before) answered 0j without quadrature:
     # a directed cycle of unit-coefficient pair rows whose shifts sum to
@@ -1840,7 +1656,7 @@ _RUNTIME_COUNTERS = {
     # ``integrate_diagram``).  ``setup_zero_exit``: diagrams whose
     # numerically-zero prefactor returned before any setup (L1).
     'setup_zero_exit': 0,
-    # L2 (``USE_SETUP_PROP_TD``): ``integrate_diagram`` calls served from the
+    # L2: ``integrate_diagram`` calls served from the
     # per-call ``PropagatorTD``; calls handed a ``PropagatorTD`` that no
     # longer matched their propagator data / ``num_params`` (built locally);
     # lazy ``build_G_t_matrix`` builds and per-entry residue-table builds.
@@ -1848,21 +1664,21 @@ _RUNTIME_COUNTERS = {
     'setup_prop_td_stale': 0,
     'setup_prop_td_g_t_builds': 0,
     'setup_prop_td_entry_builds': 0,
-    # L3 (``USE_SETUP_LAZY_SR``): edge ``smooth_factor`` SR objects whose
+    # L3: edge ``smooth_factor`` SR objects whose
     # build was deferred / built on demand, and the same for the display-only
     # ``stripped_integrand``.
     'setup_lazy_sr_deferred': 0,
     'setup_lazy_sr_built': 0,
     'setup_lazy_display_deferred': 0,
     'setup_lazy_display_built': 0,
-    # L5 (``engine.diagrams.symmetry.USE_AUT_MEMO``): automorphism-order memo
+    # L5 (``engine.diagrams.symmetry``): automorphism-order memo
     # hits / misses / table clears, and the ``external_wick_compensation``
     # calls skipped because the diagram has a single Wick mapping.
     'setup_aut_memo_hits': 0,
     'setup_aut_memo_misses': 0,
     'setup_aut_memo_evictions': 0,
     'setup_aut_wick_skipped': 0,
-    # M10 (L4a, ``USE_SETUP_DELTA_SOLVE``): δ-edge eliminations solved by
+    # M10 (L4a): δ-edge eliminations solved by
     # exact rational linear algebra / handed to ``sage_solve`` because the
     # equation is not an exactly-rational linear form in the eliminated
     # variable; and, under ``VALIDATE_DELTA``, eliminations checked against
@@ -1870,7 +1686,7 @@ _RUNTIME_COUNTERS = {
     'setup_delta_solve_fast': 0,
     'setup_delta_solve_fallback': 0,
     'setup_delta_validated': 0,
-    # ── M2b hardened quadrature counters (``NQUAD_HARDENED``) ──
+    # ── M2b hardened quadrature counters ──
     # ``_integrate_polytope`` entries (m >= 1) handed to
     # ``_integrate_polytope_hardened`` (still counted in ``nquad_calls``):
     'nquad_hardened_calls': 0,
@@ -1943,7 +1759,7 @@ _RUNTIME_COUNTERS = {
     'nquad_hardened_innermost_capped': 0,
     # largest truncation distance K / κ used (0.0: none):
     'nquad_hardened_cap_span_max': 0.0,
-    # ── M3 counters (``USE_DBM_FALLBACK``) ──
+    # ── M3 counters ──
     # m≥3 posets refused by the inheritance rule (P3): a variable without a
     # scalar lower and without a lower-bounded predecessor in the transitive
     # closure of the strict order; the poset path bails
@@ -2030,16 +1846,16 @@ _RUNTIME_COUNTERS = {
     # Bookkeeping only.
     'dd_err_abs_sum': 0.0,
     'dbm_err_abs_sum': 0.0,
-    # DBM calls without a box (``SEMIINF_CHAIN``), with the slow-mode box
-    # ±max(200, 40/κ_min) wider than ±200 (DD kernels only), and declined as
-    # divergent (box-free):
+    # DBM calls without a box, with the slow-mode box ±max(200, 40/κ_min)
+    # wider than ±200 (the pre-0.2.0 DD route, retired in audit W7: always
+    # 0), and declined as divergent (box-free):
     'dbm_box_free': 0,
     'dbm_slow_mode_box': 0,
     'dbm_declined_divergent': 0,
     # legacy ``_chain_with_intermediate_uppers`` evaluations (M6 F7) in which
-    # at least one cut case returned None while others did not (the sum of
-    # the others is returned: a silently partial value), and those returning
-    # a finite value beyond e^700 (the true integral overflows):
+    # at least one cut case returned None while others did not, and those
+    # returning a finite value beyond e^700 (that evaluator was retired in
+    # audit W7: always 0):
     'chain_uppers_legacy_partial': 0,
     'chain_uppers_legacy_huge': 0,
 }
@@ -2270,8 +2086,6 @@ def _const_row_verdict(a_int, a_ext, c0, free_ext_vals, kind='edge',
     ``theta0_*`` in ``_RUNTIME_COUNTERS`` (``_const_row_decision`` is the
     side-effect-free form).
 
-    Mode-agnostic: callers select legacy behaviour themselves
-    (``_theta0_legacy()``) and never call this in 'legacy_clip' mode.
     """
     verdict, basis = _const_row_decision(a_int, a_ext, c0, free_ext_vals,
                                          kind, tie_ctx)
@@ -2382,29 +2196,18 @@ def _count_nquad_fallback(reason, m):
 # ``DAEDALUS_PHASE_J_ON_DIVERGENCE`` = fallback | warn | raise, default
 # fallback).  The spatial certification (``pipeline_bridge``) passes
 # 'fallback' explicitly, so a later change of the temporal default does not
-# reach it.  The legacy (boxed) interval routes report their own divergences
-# (``interval_divergent_flat`` / ``_upper`` / ``_lower`` and the grouped m=1
-# ones); the policy applies to them too (``_is_divergence_verdict``).
+# reach it.
 _DIVERGENCE_POLICIES = ('fallback', 'warn', 'raise')
 #: the bail reasons that are divergence verdicts (``_DD_BAILS`` and the DBM)
 _DIVERGENT_BAIL_REASONS = frozenset((
     'polygon_divergent', 'interval_divergent', 'poset_divergent',
     'grouped_m0_divergent', 'grouped_m1_divergent', 'dbm_divergent'))
-#: the legacy (boxed) interval routes' own divergence bails, which the
-#: policy applies to as well (their fallback category stays 'other', so the
-#: pre-0.2.0 counters reproduce under the legacy umbrella)
-_LEGACY_DIVERGENT_BAIL_REASONS = frozenset((
-    'interval_divergent_flat', 'interval_divergent_upper',
-    'interval_divergent_lower', 'grouped_m1_divergent_flat',
-    'grouped_m1_divergent_upper', 'grouped_m1_divergent_lower'))
 
 
 def _is_divergence_verdict(reason):
-    """True for a bail reason that says the subset integral diverges, on
-    the box-free routes (``_DIVERGENT_BAIL_REASONS``) or the legacy interval
-    routes (``_LEGACY_DIVERGENT_BAIL_REASONS``)."""
-    return (reason in _DIVERGENT_BAIL_REASONS
-            or reason in _LEGACY_DIVERGENT_BAIL_REASONS)
+    """True for a bail reason that says the subset integral diverges
+    (``_DIVERGENT_BAIL_REASONS``)."""
+    return reason in _DIVERGENT_BAIL_REASONS
 
 
 class PhaseJDivergenceError(ArithmeticError):
@@ -2419,15 +2222,9 @@ class PhaseJDivergenceWarning(UserWarning):
 
 def _initial_on_divergence(environ=None):
     """The import-time value of ``PHASE_J_ON_DIVERGENCE`` from ``environ``
-    (default ``os.environ``); an unknown value raises.  It changes no
-    number, so the umbrella ``DAEDALUS_PHASE_J_LEGACY`` does not touch it."""
-    env = _os.environ if environ is None else environ
-    v = (env.get('DAEDALUS_PHASE_J_ON_DIVERGENCE', '').strip().lower()
-         or 'fallback')
-    if v not in _DIVERGENCE_POLICIES:
-        raise ValueError(f'DAEDALUS_PHASE_J_ON_DIVERGENCE={v!r}: expected '
-                         f'one of {_DIVERGENCE_POLICIES}')
-    return v
+    (default ``os.environ``); an unknown value raises."""
+    return _env.choice('DAEDALUS_PHASE_J_ON_DIVERGENCE',
+                          _DIVERGENCE_POLICIES, 'fallback', environ)
 
 
 PHASE_J_ON_DIVERGENCE = _initial_on_divergence()
@@ -2669,238 +2466,6 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
 # Same correctness guarantees as the polygon/poset paths (exact for
 # rational propagators).
 USE_1D_INTEGRATOR = True
-# Threshold below which we switch to a 4th-order Taylor expansion of
-# J(p, q) to avoid catastrophic cancellation in the formula's denominator.
-_J_TAYLOR_EPS = 1e-6
-
-
-def _exp_over_unit_triangle(p, q):
-    r"""Closed-form value of
-
-        J(p, q) = ∫₀¹ du ∫₀^{1-u} dw  exp(p·u + q·w)
-
-    for complex ``p``, ``q``.
-
-    Derivation: do the w-integral first to get
-    ``∫₀¹ du exp(p·u) · (exp(q(1-u)) − 1) / q``, then split and
-    integrate in u.  Falls back to a 4th-order Taylor expansion when
-    any of |p|, |q|, |p − q| drops below ``_J_TAYLOR_EPS`` to avoid
-    catastrophic cancellation.
-    """
-    import cmath
-    eps = _J_TAYLOR_EPS
-    abs_p = abs(p)
-    abs_q = abs(q)
-    abs_pq = abs(p - q)
-
-    if abs_p < eps and abs_q < eps:
-        # 4th-order Taylor of the double integral.  Coefficients are
-        # the moments of the unit triangle:
-        #   ∫∫ 1 = 1/2
-        #   ∫∫ u  = ∫∫ w = 1/6
-        #   ∫∫ u² = ∫∫ w² = 1/12,   ∫∫ uw = 1/24
-        #   ∫∫ u³ = ∫∫ w³ = 1/20,   ∫∫ u²w = ∫∫ uw² = 1/60
-        return (0.5
-                + (p + q) / 6.0
-                + (p * p) / 24.0 + (q * q) / 24.0 + (p * q) / 24.0
-                + (p**3 + q**3) / 120.0
-                + (p * p * q + p * q * q) / 120.0)
-
-    if abs_p < eps:
-        # J(0, q) = (e^q − 1 − q) / q²
-        return (cmath.exp(q) - 1 - q) / (q * q)
-
-    if abs_q < eps:
-        # J(p, 0) = (e^p − 1 − p) / p²
-        return (cmath.exp(p) - 1 - p) / (p * p)
-
-    if abs_pq < eps:
-        # J(p, p) = ((p − 1) e^p + 1) / p²
-        return ((p - 1) * cmath.exp(p) + 1) / (p * p)
-
-    # General case.
-    ep = cmath.exp(p)
-    eq = cmath.exp(q)
-    return ((ep - eq) / (p - q) - (ep - 1) / p) / q
-
-
-def _exp_over_triangle(v0, v1, v2, alpha, beta):
-    r"""``∫∫_T exp(α·x + β·y) dA`` for triangle ``T = (v0, v1, v2)``.
-
-    The vertices ``v0``, ``v1``, ``v2`` are 2-tuples of floats; ``α``,
-    ``β`` are complex.  Affine-maps to the unit triangle and uses
-    ``_exp_over_unit_triangle`` for the closed-form integral.
-
-    Returns ``None`` if the per-term exponential would overflow IEEE
-    double range — the polygon-modesum caller treats ``None`` as a
-    signal to abort the analytic path and fall back to scipy.nquad.
-    """
-    import cmath
-    e1x = v1[0] - v0[0]
-    e1y = v1[1] - v0[1]
-    e2x = v2[0] - v0[0]
-    e2y = v2[1] - v0[1]
-    det = e1x * e2y - e1y * e2x  # signed parallelogram area
-    if abs(det) < 1e-15:
-        return 0.0 + 0.0j  # degenerate
-    p = alpha * e1x + beta * e1y
-    q = alpha * e2x + beta * e2y
-    v0_term = alpha * v0[0] + beta * v0[1]
-    # Overflow guard — bilateral.  ``cmath.exp(z)`` blows past double
-    # range for Re(z) > ~709 (overflow) AND underflows to 0 for Re(z)
-    # < ~-745.  For most analytic integrators the underflow direction
-    # is harmless (term decays correctly), but ``_exp_over_unit_
-    # triangle`` (called below) has structural cancellation —
-    # ``(exp(p) - exp(q)) / (p - q) - (exp(p) - 1) / p`` — which can
-    # produce floating-point-noise-dominated values when one of
-    # ``exp(p)`` or ``exp(q)`` underflows and the other doesn't.
-    # Stage 4a opt #3 (2026-05-15 commit 7f0bf05) relaxed this to one-
-    # sided which appears to have introduced wrong-direction loop
-    # corrections in spike-reset k=2 ell=1 (m=2 polygon path is
-    # exercised heavily there).  Reverting per Agent 4's audit
-    # recommendation: keep the guard bilateral so previously-bailed
-    # cases route to scipy.nquad as they did in Stage 3b.
-    EXP_REAL_LIMIT = 600.0
-    if (abs(p.real) > EXP_REAL_LIMIT
-            or abs(q.real) > EXP_REAL_LIMIT
-            or abs(v0_term.real) > EXP_REAL_LIMIT):
-        return None
-    try:
-        J = _exp_over_unit_triangle(p, q)
-        return abs(det) * cmath.exp(v0_term) * J
-    except (OverflowError, ValueError):
-        return None
-
-
-def _clip_polygon_to_halfplane(polygon, a, b, c):
-    r"""Sutherland-Hodgman clip a CCW polygon against the half-plane
-    ``a·x + b·y + c > 0``.
-
-    ``polygon`` is a list of ``(x, y)`` tuples.  Returns the clipped
-    polygon as a new list; may be empty if the polygon lies entirely
-    in the rejected half-space.
-
-    Vertices exactly on the boundary (``a·x + b·y + c = 0``) are
-    treated as "on the inside" — for analytic integration over the
-    polygon interior, the measure-zero boundary contribution is 0
-    regardless of which side we assign.
-
-    The normal ``(a, b)`` must be nonzero.  A zero normal makes the
-    condition the constant ``c > 0``, which this closed-half-plane clip
-    would treat as Θ(0) = 1 at ``c == 0`` (keeping the whole polygon);
-    constant rows are decided by ``_const_row_verdict`` instead (M1).
-    """
-    if a == 0.0 and b == 0.0:
-        raise ValueError(
-            '_clip_polygon_to_halfplane: zero normal (a = b = 0); constant '
-            'constraint rows must go through _const_row_verdict')
-    if not polygon:
-        return []
-    n = len(polygon)
-    output = []
-    prev = polygon[-1]
-    prev_f = a * prev[0] + b * prev[1] + c
-    for i in range(n):
-        curr = polygon[i]
-        curr_f = a * curr[0] + b * curr[1] + c
-        prev_in = prev_f >= 0.0
-        curr_in = curr_f >= 0.0
-        if curr_in:
-            if not prev_in:
-                # Edge enters: add intersection.
-                t = prev_f / (prev_f - curr_f)
-                ix = prev[0] + t * (curr[0] - prev[0])
-                iy = prev[1] + t * (curr[1] - prev[1])
-                output.append((ix, iy))
-            output.append(curr)
-        else:
-            if prev_in:
-                # Edge exits: add intersection.
-                t = prev_f / (prev_f - curr_f)
-                ix = prev[0] + t * (curr[0] - prev[0])
-                iy = prev[1] + t * (curr[1] - prev[1])
-                output.append((ix, iy))
-            # curr discarded
-        prev = curr
-        prev_f = curr_f
-    return output
-
-
-def _polygon_from_2d_constraints(constraint_data, free_ext_vals, bbox_cap,
-                                 row_kinds=None, tie_ctx=None):
-    r"""Build the 2D convex polygon defined by the retardation
-    constraints, starting from a CCW bounding box ``±bbox_cap`` and
-    clipping with each constraint.
-
-    Each constraint is ``(a_int, a_ext, c0)`` with
-    ``a_int·(s_0, s_1) + (c0 + a_ext·free_ext_vals) > 0``.
-
-    Returns a CCW polygon vertex list (possibly empty if the
-    intersection is empty).
-
-    Constant rows (zero normal) follow ``THETA0_CONST_ROW_MODE`` (call
-    time).  'ito': ``_const_row_verdict`` decides -- EMPTY returns ``[]``,
-    DROP skips only the clip (the row stays in the caller's per-edge / γ
-    data).  After the clip, 'ito' also returns ``[]`` (counted in
-    ``polygon_zero_area``) for a region that is empty or degenerate by an
-    EXACT test, never a tolerance:
-
-    * two rows with exactly opposite normals, ``a_j == −a_i``, and
-      ``c_i + c_j <= 0.0`` (``_opposite_rows_empty``): ``a·s > −c_i`` and
-      ``a·s < c_j`` cannot both hold.  E.g. the 2-cycle rows s1 > s0,
-      s0 > s1, which the closed clip leaves as the segment s0 = s1, or a
-      strip between two exactly coincident external times;
-    * a clipped polygon with fewer than 3 vertices or an exactly zero
-      computed area (``_polygon_has_zero_area``).
-
-    A genuine strip, however thin (e.g. between external times 1e-12
-    apart), is integrated exactly as before 0.2.0.
-    'legacy_clip': the pre-M1 closed-half-plane clip, bit-for-bit (a
-    zero-normal row with c_eff >= 0 keeps the polygon: Θ(0) = 1).
-    ``row_kinds`` is the rows' provenance (``None``: all 'edge');
-    ``tie_ctx`` (a ``_TieContext`` or ``None``) orders an exact external-time
-    tie (``_tie_order_sign``).
-    """
-    polygon = [
-        (-bbox_cap, -bbox_cap),
-        (bbox_cap, -bbox_cap),
-        (bbox_cap, bbox_cap),
-        (-bbox_cap, bbox_cap),
-    ]
-    legacy = _theta0_legacy()
-    clip_rows = []
-    for idx, (a_int, a_ext, c0) in enumerate(constraint_data):
-        c_eff = float(c0) + sum(
-            float(a_ext[j]) * float(free_ext_vals[j])
-            for j in range(len(a_ext))
-        )
-        a0 = float(a_int[0])
-        a1 = float(a_int[1])
-        if abs(a0) <= _ROW_COEF_ATOL and abs(a1) <= _ROW_COEF_ATOL:
-            # Observational (M0.1): a zero-normal row reaching the clip.
-            _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
-            if not legacy:
-                verdict = _const_row_verdict(
-                    (a0, a1), a_ext, c0, free_ext_vals,
-                    _row_kind(row_kinds, idx), tie_ctx)
-                if verdict == 'EMPTY':
-                    return []
-                continue            # DROP: no clip; γ keeps exp(λ·c_eff)
-            if a0 == 0.0 and a1 == 0.0:
-                # legacy_clip: exactly what the closed-half-plane clip does
-                # with f ≡ c_eff (all vertices kept iff c_eff >= 0).
-                if not (c_eff >= 0.0):
-                    return []
-                continue
-        polygon = _clip_polygon_to_halfplane(polygon, a0, a1, c_eff)
-        if not polygon:
-            return []
-        clip_rows.append((a0, a1, c_eff))
-    if not legacy and (_opposite_rows_empty(clip_rows)
-                       or _polygon_has_zero_area(polygon)):
-        _RUNTIME_COUNTERS['polygon_zero_area'] += 1
-        return []
-    return polygon
 
 
 def _opposite_rows_empty(rows):
@@ -2910,7 +2475,7 @@ def _opposite_rows_empty(rows):
     Then ``a·s > −c_i`` and ``a·s < c_j`` cannot both hold: the region is
     empty (with ``c_i + c_j == 0.0`` the closed clip would leave a segment).
     Exact comparisons only; a pair with ``c_i + c_j > 0`` is a genuine
-    strip, however thin, and is left to the clip."""
+    strip, however thin.  (``boxfree.region_2d``'s first test.)"""
     n = len(rows)
     for i in range(n):
         a0, a1, ci = rows[i]
@@ -2919,25 +2484,6 @@ def _opposite_rows_empty(rows):
             if b0 == -a0 and b1 == -a1 and ci + cj <= 0.0:
                 return True
     return False
-
-
-def _polygon_has_zero_area(polygon):
-    r"""True if the clipped polygon is degenerate: fewer than 3 vertices, or
-    twice its area (summed over the fan from ``polygon[0]``) is exactly
-    0.0.  No tolerance: a genuine thin polygon keeps its (tiny) area and is
-    integrated as before 0.2.0."""
-    n = len(polygon)
-    if n < 3:
-        return True
-    x0, y0 = polygon[0]
-    area2 = 0.0
-    for i in range(1, n - 1):
-        ax = polygon[i][0] - x0
-        ay = polygon[i][1] - y0
-        bx = polygon[i + 1][0] - x0
-        by = polygon[i + 1][1] - y0
-        area2 += ax * by - ay * bx
-    return area2 == 0.0
 
 
 def _enumerate_pole_tuples(edge_mode_sums):
@@ -3011,7 +2557,7 @@ def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
     """Pre-compute the τ-invariant per-pole-tuple data used by the
     analytic modesum integrators.
 
-    ``prune`` (default ``PRUNE_ZERO_MODES``): leave out every pole tuple
+    ``prune`` (default ``True``): leave out every pole tuple
     that takes a mode whose residue is exactly zero (item 35, see
     ``_build_pruned_modesum_plan``); the plan's numbers are bit-identical
     to the unpruned plan's.  ``n_tuples_full`` / ``n_groups_full``: the
@@ -3046,7 +2592,7 @@ def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
         ``γ_const[t] + Σ_j slope[t][j] · free_vals[j]``.
     """
     if prune is None:
-        prune = PRUNE_ZERO_MODES
+        prune = True
     if prune and smooth_edge_modes:
         pruned = _build_pruned_modesum_plan(
             smooth_edge_modes, subset_constraint_data, m, n_ext, where)
@@ -3389,7 +2935,7 @@ class _EmptyPosetSentinel:
         return '_EMPTY_POSET'
 
 
-# Returned by ``_extract_causal_poset`` (THETA0_CONST_ROW_MODE 'ito' only)
+# Returned by ``_extract_causal_poset``
 # when the region is EMPTY by construction: a constant row with verdict
 # EMPTY (Θ(0) = 0), or a directed cycle of order rows whose shifts sum to
 # <= 0 (s_a > s_b + … > s_a with strict inequalities cannot all hold).  The
@@ -3526,40 +3072,36 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
       Adds (var, −c_eff) to ``scalar_lowers``.
     * **Scalar upper**: ``a_int`` has exactly one −1 entry, all else 0.
       Adds (var, c_eff) to ``scalar_uppers``.
-    * **Constant** (zero normal): THETA0_CONST_ROW_MODE 'ito' (call time)
-      applies ``_const_row_verdict`` (with ``tie_ctx``) to every constant
-      row FIRST: one EMPTY row returns ``_EMPTY_POSET``, DROP rows are
-      skipped.  'legacy_clip' (pre-M1): a row with ``c_eff <= 0`` returns
-      ``None``.
+    * **Constant** (zero normal): ``_const_row_verdict`` (with
+      ``tie_ctx``) decides every constant row FIRST: one EMPTY row returns
+      ``_EMPTY_POSET``, DROP rows are skipped.
     * **Anything else** (multiple inter-axis couplings, mixed
       coefficients, inter-axis with a shift beyond the window, etc.) →
       return ``None``.  Caller falls back to scipy.nquad.
 
-    In 'ito' mode, inter-axis rows that form a directed cycle whose shifts
+    Inter-axis rows that form a directed cycle whose shifts
     sum to <= 0 (``_order_rows_infeasible``; e.g. an unshifted 2-cycle, or
     one shifted by a rounding-level −1e-16) also return ``_EMPTY_POSET``.
     A cycle with a positive total shift encloses a thin nonempty strip and
     is not decided here.
 
-    Returns ``_CausalPoset``, ``None`` or (``'ito'`` only) ``_EMPTY_POSET``.
+    Returns ``_CausalPoset``, ``None`` or ``_EMPTY_POSET``.
     ``row_kinds``: the rows' provenance (``None``: all 'edge');
     ``tie_ctx``: see ``_tie_order_sign``.
     """
-    legacy = _theta0_legacy()
     const_verdict = {}
-    if not legacy:
-        # Constant rows first: one EMPTY row empties the region whatever
-        # the other rows are (so it never reaches a fallback).
-        for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
-            if any(abs(float(x)) > _ROW_COEF_ATOL for x in a_int):
-                continue
-            _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
-            verdict = _const_row_verdict(a_int, a_ext, c0, free_ext_vals,
-                                         _row_kind(row_kinds, idx), tie_ctx)
-            if verdict == 'EMPTY':
-                _RUNTIME_COUNTERS['poset_empty_const'] += 1
-                return _EMPTY_POSET
-            const_verdict[idx] = verdict      # 'DROP'
+    # Constant rows first: one EMPTY row empties the region whatever the
+    # other rows are (so it never reaches a fallback).
+    for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
+        if any(abs(float(x)) > _ROW_COEF_ATOL for x in a_int):
+            continue
+        _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
+        verdict = _const_row_verdict(a_int, a_ext, c0, free_ext_vals,
+                                     _row_kind(row_kinds, idx), tie_ctx)
+        if verdict == 'EMPTY':
+            _RUNTIME_COUNTERS['poset_empty_const'] += 1
+            return _EMPTY_POSET
+        const_verdict[idx] = verdict      # 'DROP'
     edges = []
     order_rows = []
     scalar_lowers = []
@@ -3573,24 +3115,11 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
         nz = [(i, float(a_int[i])) for i in range(len(a_int))
               if abs(float(a_int[i])) > tol]
         if not nz:
-            if not legacy:
-                if idx in const_verdict:
-                    continue            # DROP (decided above)
-                # Coefficients in (_ROW_COEF_ATOL, tol]: only a direct
-                # caller with a looser ``tol`` gets here.  Not a clean row.
-                return None
-            # Observational (M0.1): a zero-normal row reaching the
-            # extractor (``tol`` may differ from 1e-12 for direct callers,
-            # so re-check against the counter's definition).
-            if all(abs(float(x)) <= 1e-12 for x in a_int):
-                _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
-            # Pure constant constraint.  Should be satisfied
-            # (c_eff > 0); if violated, polytope is empty (signal
-            # via None — caller falls back, which will also detect
-            # the empty polytope correctly).
-            if c_eff <= 0:
-                return None
-            continue
+            if idx in const_verdict:
+                continue            # DROP (decided above)
+            # Coefficients in (_ROW_COEF_ATOL, tol]: only a direct caller
+            # with a looser ``tol`` gets here.  Not a clean row.
+            return None
         if len(nz) == 1:
             (var_idx, coef) = nz[0]
             # Pure scalar bound.  Only accept ±1 coefficients.
@@ -3627,7 +3156,7 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
         # 3+ nonzero entries — mixed constraint not supported.
         return None
 
-    if not legacy and _order_rows_infeasible(m, order_rows):
+    if _order_rows_infeasible(m, order_rows):
         _RUNTIME_COUNTERS['poset_empty_cycle'] += 1
         return _EMPTY_POSET
     # Deduplicate edges.
@@ -3703,7 +3232,7 @@ def _causal_poset_consistent_scalar_lower(poset, tol=POSET_LOWER_RTOL):
     Returns ``(L, True)`` if every variable WITH A SCALAR LOWER has
     the same value ``L`` (within ``tol`` RELATIVE to the largest scalar
     bound of the poset), or no scalar lower at all
-    (returns ``(None, True)`` — caller uses a bbox cap).  Variables
+    (returns ``(None, True)`` — the caller's lower bound).  Variables
     WITHOUT an explicit scalar lower inherit ``L`` via the chain
     ordering of any linear extension: the chain-simplex form
     integrates each non-bottom variable from L (or the previous
@@ -3716,13 +3245,12 @@ def _causal_poset_consistent_scalar_lower(poset, tol=POSET_LOWER_RTOL):
     simplex over a single L would over- or under-include regions
     and the caller should fall back to scipy.nquad.
 
-    M3 (P3, ``USE_DBM_FALLBACK``; ``_dbm_route_on`` at call time): also
-    ``(None, False)`` when some variable has neither a scalar lower of its
-    own nor a predecessor with one in the transitive closure of the strict
-    order (``_poset_lower_not_inherited``).  Such a variable is not bounded
-    below by L (only by the domain cap), so the single-L chain simplex
-    would cut off the region below L.  With the flag off every variable
-    inherits L, as before.
+    M3 (P3): also ``(None, False)`` when some variable has neither a
+    scalar lower of its own nor a predecessor with one in the transitive
+    closure of the strict order (``_poset_lower_not_inherited``).  Such a
+    variable is not bounded below by L, so the single-L chain would cut off
+    the region below L.  (Before M3 every variable inherited L; the switch
+    that restored that, ``USE_DBM_FALLBACK``, was retired in audit W7.)
     """
     return _poset_scalar_lower_verdict(poset, tol)[:2]
 
@@ -3786,7 +3314,7 @@ def _poset_scalar_lower_verdict(poset, tol=POSET_LOWER_RTOL):
     # All variables that have a scalar lower agree on value Lmax.
     # Variables without one inherit it via the chain ordering -- M3: only
     # from a lower-bounded ancestor.
-    if _dbm_route_on() and _poset_lower_not_inherited(poset, per_var_max):
+    if _poset_lower_not_inherited(poset, per_var_max):
         return (None, False, 'not_inherited')
     return (Lmax, True, None)
 
@@ -3810,616 +3338,13 @@ def _causal_poset_consistent_scalar_upper(poset, tol=1e-9):
     return per_var_min
 
 
-def _exp_over_chain_simplex(alphas, lower, upper, eps=1e-9):
-    r"""Closed-form value of the nested integral on the chain
-    simplex  ``{lower ≤ s_1 ≤ s_2 ≤ … ≤ s_N ≤ upper}``::
-
-       ∫_{lower}^{upper}        ds_N  exp(α_N · s_N)
-         · ∫_{lower}^{s_N}      ds_{N-1}  exp(α_{N-1} · s_{N-1})
-         · …
-         · ∫_{lower}^{s_2}      ds_1  exp(α_1 · s_1)
-
-    where ``alphas = [α_1, α_2, …, α_N]`` with ``α_k`` the exponent
-    coefficient for the k-th variable in the chain (1-indexed
-    mathematically, 0-indexed in the list).
-
-    Derivation: integrate inside-out.  After each step, the running
-    integrand is a sum of terms of the form
-    ``C · exp(β · s_outer + (constant depending on already-integrated
-    bounds))``.  Each inner integration produces two new terms — one
-    "upper-bound" piece (whose ``β`` merges with the next-outer
-    variable's coefficient) and one "lower-bound" piece (a numerical
-    prefactor ``exp(β · lower)`` falls out, leaving the outer
-    coefficient unchanged).  After N steps the sum has 2^N constant
-    terms; their sum is the integral.
-
-    Parameters
-    ----------
-    alphas : sequence of complex
-        Effective exponent coefficients, innermost first.
-    lower, upper : float
-        Common scalar lower bound and the cap on the outermost var.
-    eps : float
-        Threshold below which a ``β`` is treated as degenerate (the
-        formula's ``1/β`` factor would amplify roundoff).  Returns
-        ``None`` in that case so the caller falls back to scipy.
-
-    Returns
-    -------
-    complex or None
-        The integral value, or ``None`` if any intermediate
-        coefficient ``β`` is too close to zero.
-    """
-    import cmath
-    N = len(alphas)
-    if N == 0:
-        # Empty product of integrals — by convention 1.
-        return 1.0 + 0.0j
-    # Empty chain simplex (``upper ≤ lower``): integration domain has
-    # zero measure, integral is 0.  Crucial for τ < 0 configurations
-    # where the chain-bottom scalar lower (e.g. from leaf t = 0) and
-    # the chain-top scalar upper (e.g. from leaf t = τ < 0) cross.
-    if upper <= lower:
-        return 0.0 + 0.0j
-
-    # Each term: (complex coefficient, list of remaining β values).
-    # At level k (about to integrate the (k+1)-th variable in the
-    # chain, which is the innermost remaining), ``beta[0]`` is the
-    # effective coefficient on that variable, ``beta[1:]`` are the
-    # coefficients on the outer variables we haven't touched yet.
-    terms = [(1.0 + 0.0j, list(alphas))]
-
-    # Overflow guard.  The 2^N term expansion can produce intermediate
-    # ``exp(b · L_or_U)`` factors whose Re(b · arg) exceeds the IEEE
-    # double's exp range (~709).  The TRUE integral is finite — the
-    # individual large terms cancel — but the cancellation is fragile
-    # and depends on bit-exact arithmetic the closed-form can't
-    # guarantee.  Safe path: detect the overflow risk, return None,
-    # let the caller fall back to scipy.nquad which handles the
-    # well-conditioned integral natively.
-    # ``EXP_REAL_LIMIT = 600`` leaves a margin below the 709 hard
-    # limit so accumulated roundoff doesn't push us over.
-    EXP_REAL_LIMIT = 600.0
-
-    try:
-        # Integrate variables 1, 2, …, N-1 (each bounded above by next
-        # variable in the chain).
-        for _ in range(N - 1):
-            new_terms = []
-            for (C, beta) in terms:
-                b_inner = beta[0]
-                if abs(b_inner) < eps:
-                    return None
-                if abs((b_inner * lower).real) > EXP_REAL_LIMIT:
-                    return None
-                # Term A — upper-bound piece.  exp(b_inner · s_outer)
-                # merges with the existing exp(beta[1] · s_outer)
-                # factor, so the new β on the next-outer variable is
-                # ``b_inner + beta[1]``.
-                beta_A = list(beta[1:])
-                beta_A[0] = b_inner + beta_A[0]
-                new_terms.append((C / b_inner, beta_A))
-                # Term B — lower-bound piece.  Just pulls out a
-                # constant ``exp(b_inner · lower)`` factor; outer β
-                # unchanged.
-                beta_B = list(beta[1:])
-                new_terms.append((
-                    -C * cmath.exp(b_inner * lower) / b_inner,
-                    beta_B,
-                ))
-            terms = new_terms
-
-        # Outermost integration: s_N from lower to upper (both
-        # constants).
-        total = 0.0 + 0.0j
-        for (C, beta) in terms:
-            b = beta[0]
-            if abs(b) < eps:
-                # ∫_L^U exp(0 · s) ds = U − L
-                total += C * (upper - lower)
-            else:
-                if (abs((b * upper).real) > EXP_REAL_LIMIT
-                        or abs((b * lower).real) > EXP_REAL_LIMIT):
-                    return None
-                total += C * (cmath.exp(b * upper)
-                              - cmath.exp(b * lower)) / b
-    except (OverflowError, ValueError):
-        return None
-    return total
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Numba-compiled chain simplex (fast-path companion to the function above)
-# ───────────────────────────────────────────────────────────────────────
-# Same algorithm as ``_exp_over_chain_simplex`` translated to a numba
-# ``@njit`` function operating on pre-allocated complex128 numpy
-# buffers.  Targets the chain simplex inner loop which post-Stage-3b is
-# the dominant per-(diagram, subset, pole-tuple, linear-extension)
-# cost.  Expected 30-100× per call vs the pure-Python version.
-#
-# Semantics MUST match the Python version bit-for-bit on every
-# converged result.  The Python version stays in place as the
-# reference / fallback (selected by ``USE_NUMBA_CHAIN_SIMPLEX = False``
-# or by the wrapper on a numba-import failure).
-import numpy as np
-
-try:
-    import numba as _numba
-    _HAVE_NUMBA = True
-except ImportError:
-    _HAVE_NUMBA = False
-    _numba = None
-
-USE_NUMBA_CHAIN_SIMPLEX = True
-
-# ─── Chain-simplex precision-loss fix (2026-05-16) ────────────────────
-#
-# When the chain simplex contains close-paired effective coefficients
-# (e.g. spike-reset propagator with poles 0.329i, 0.351i, so some
-# ``b_inner`` in the 2^N recursion is ~0.022), the closed-form formula
-# in ``_exp_over_chain_simplex`` suffers cancellation-driven precision
-# loss.  Empirically observed as a 4× aggregate overestimate of the
-# 1-loop value at spike-reset k=2 ell=1 (76% rel diff vs the converged
-# grouped-scipy reference), with per-subset audit measuring an aggregate
-# analytic/scipy ratio of 1.086 across 30 sampled m=3 subsets that
-# extrapolates to the observed 4× across 313 subsets.
-#
-# Fix: when any subset sum of ``alphas`` falls below a threshold (cheap
-# 2^N scan of subset-sum magnitudes), route the entire chain-simplex
-# evaluation to ``_exp_over_chain_simplex_mpmath`` running at 50-digit
-# precision.  The mpmath path is 50-500× slower per call but only fires
-# when the float64 path was already wrong; unaffected configurations
-# (quad model, spike-reset k≤1 ell≤1, etc.) skip the gate entirely.
-#
-# Full audit at ``docs/m_ge3_precision_bug_audit.md``;
-# design at ``docs/m_ge3_chain_simplex_fix_proposal.md``.
-#
-# To revert exactly to the pre-fix behaviour (bit-identical), set the
-# flag to ``False``.  No other code changes required.
-# Set to True to enable the close-pole mpmath dispatch in chain simplex.
-# Empirically this did NOT address the spike-reset k=2 ell=1 bug (which
-# turned out to be a cap-mismatch issue, not chain-simplex precision —
-# see USE_POSET_CAP_MATCH_SCIPY below).  Keeping the code path for
-# possible future use.  Off by default.
-USE_CHAIN_SIMPLEX_PRECISION_FIX = False
-
-# Threshold below which any subset-sum magnitude of ``alphas`` triggers
-# the high-precision (mpmath) path.  Calibrated to catch the spike-reset
-# 0.022i pole-difference case (which causes ~10% per-subset bias) while
-# not unduly slowing well-conditioned models.  Lower → fewer mpmath
-# calls (faster but less safe); higher → more mpmath calls (safer but
-# slower).
-_CHAIN_SIMPLEX_CANCEL_THRESHOLD = 0.1
-
-
-def _min_subset_sum_abs(alphas):
-    """Minimum |Σ_{i ∈ S} α_i| over non-empty subsets S of ``alphas``.
-
-    Cheap 2^N scan used to detect when the chain-simplex recursion will
-    encounter a small ``b_inner`` (cumulative-pole-sum) at some level,
-    triggering precision-loss in the closed-form formula.
-
-    Returns ``inf`` for empty input so the threshold gate is a no-op.
-
-    Cached via ``_min_subset_sum_abs_cached`` keyed on the alphas tuple,
-    since the chain-simplex dispatcher is called many times with the
-    same α-vector.  Cache eliminates the per-call Python overhead that
-    would otherwise erase the numba speedup on well-conditioned inputs.
-    """
-    n = len(alphas)
-    if n == 0:
-        return float('inf')
-    # Use the alphas directly as a tuple; complex elements are hashable.
-    # On numpy arrays this requires a manual tuple() conversion.
-    return _min_subset_sum_abs_cached(tuple(alphas))
-
-
-@_functools.lru_cache(maxsize=4096)
-def _min_subset_sum_abs_cached(alphas_tuple):
-    """Cached 2^N subset-sum-magnitude scan."""
-    n = len(alphas_tuple)
-    min_abs = float('inf')
-    for mask in range(1, 1 << n):
-        s = 0.0 + 0.0j
-        for i in range(n):
-            if mask & (1 << i):
-                s = s + alphas_tuple[i]
-        a = abs(s)
-        if a < min_abs:
-            min_abs = a
-    return min_abs
-
-
-def _exp_over_chain_simplex_mpmath(alphas, lower, upper, eps=1e-9, dps=50):
-    r"""High-precision (mpmath, default 50 digits) evaluation of the
-    same closed-form integral as ``_exp_over_chain_simplex``.
-
-    Used as the dispatch target for ``_exp_over_chain_simplex_fast``
-    when ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` is enabled AND the
-    cheap subset-sum scan detects a close-pole condition.
-
-    Semantics match ``_exp_over_chain_simplex`` exactly — same input/
-    output types, same ``None`` return on overflow / degenerate β at
-    the float64-effective threshold ``eps``.  The difference is that
-    intermediate arithmetic uses ``mpmath.mpc`` at 50 decimal digits,
-    so the 2^N cancellation that loses ~14 digits of float64 precision
-    leaves ~36 digits intact — well below any plausible aggregation
-    tolerance.
-
-    Parameters
-    ----------
-    alphas, lower, upper, eps : as in ``_exp_over_chain_simplex``.
-    dps : int, default 50
-        Decimal-digit precision for the mpmath workspace.  50 digits
-        comfortably exceeds float64's 16, with margin for cancellation
-        of any plausible close-pole pair (e.g., spike-reset's 0.022i
-        loses ~14 digits → 50 − 14 = 36 left).
-    """
-    try:
-        from mpmath import mp, mpc, exp as mp_exp
-    except ImportError:
-        # mpmath unavailable → behave as if the fix were off; caller
-        # already has bit-exact recovery via flag.
-        return _exp_over_chain_simplex(alphas, lower, upper, eps)
-
-    n = len(alphas)
-    if n == 0:
-        return 1.0 + 0.0j
-    if upper <= lower:
-        return 0.0 + 0.0j
-
-    EXP_REAL_LIMIT = 600.0
-
-    saved_dps = mp.dps
-    mp.dps = dps
-    try:
-        L = mpc(float(lower), 0.0)
-        U = mpc(float(upper), 0.0)
-        alphas_mp = [mpc(complex(a).real, complex(a).imag) for a in alphas]
-        terms = [(mpc(1, 0), list(alphas_mp))]
-
-        for _ in range(n - 1):
-            new_terms = []
-            for (C, beta) in terms:
-                b_inner = beta[0]
-                # Use the float64 magnitude for the threshold check —
-                # mpmath's abs is exact but slow; complex(b_inner) is
-                # fine since the test is "is this MUCH bigger than eps".
-                if abs(complex(b_inner)) < eps:
-                    return None
-                bl_real = float((b_inner * L).real)
-                if abs(bl_real) > EXP_REAL_LIMIT:
-                    return None
-                beta_A = list(beta[1:])
-                beta_A[0] = b_inner + beta_A[0]
-                new_terms.append((C / b_inner, beta_A))
-                beta_B = list(beta[1:])
-                new_terms.append((
-                    -C * mp_exp(b_inner * L) / b_inner,
-                    beta_B,
-                ))
-            terms = new_terms
-
-        total = mpc(0, 0)
-        for (C, beta) in terms:
-            b = beta[0]
-            if abs(complex(b)) < eps:
-                total = total + C * (U - L)
-            else:
-                bu_real = float((b * U).real)
-                bl_real = float((b * L).real)
-                if abs(bu_real) > EXP_REAL_LIMIT or abs(bl_real) > EXP_REAL_LIMIT:
-                    return None
-                total = total + C * (mp_exp(b * U) - mp_exp(b * L)) / b
-        return complex(float(total.real), float(total.imag))
-    except Exception:
-        return None
-    finally:
-        mp.dps = saved_dps
-
-
-if _HAVE_NUMBA:
-    @_numba.njit(cache=True)
-    def _exp_over_chain_simplex_numba_core(alphas, lower, upper, eps):
-        """Returns ``(status, value)``:
-            status = 0  → ``value`` is the integral
-            status = 1  → degenerate β (caller should fall back to
-                          polynomial-prefactor path)
-            status = 2  → overflow (caller returns None)
-        """
-        N = alphas.shape[0]
-        if N == 0:
-            return 0, 1.0 + 0.0j
-        if upper <= lower:
-            return 0, 0.0 + 0.0j
-
-        EXP_REAL_LIMIT = 600.0
-
-        # Buffer size = max possible term count = 2^(N-1).
-        max_terms = 1 << max(N - 1, 0)
-
-        # Ping-pong buffers for the doubling term list.
-        coefs_a = np.zeros(max_terms, dtype=np.complex128)
-        betas_a = np.zeros((max_terms, N), dtype=np.complex128)
-        coefs_b = np.zeros(max_terms, dtype=np.complex128)
-        betas_b = np.zeros((max_terms, N), dtype=np.complex128)
-
-        coefs_a[0] = 1.0 + 0.0j
-        for j in range(N):
-            betas_a[0, j] = alphas[j]
-        n_terms = 1
-
-        for level in range(N - 1):
-            n_remaining = N - level
-            new_n = 0
-            for i in range(n_terms):
-                b_inner = betas_a[i, 0]
-                if abs(b_inner) < eps:
-                    return 1, 0.0 + 0.0j
-                if abs((b_inner * lower).real) > EXP_REAL_LIMIT:
-                    return 2, 0.0 + 0.0j
-                exp_lower_val = np.exp(b_inner * lower)
-                C_i = coefs_a[i]
-
-                # Term A (upper-bound piece):
-                #   coef  = C / b_inner
-                #   β_new = (b_inner + β_old[1], β_old[2], …)
-                coefs_b[new_n] = C_i / b_inner
-                betas_b[new_n, 0] = b_inner + betas_a[i, 1]
-                for j in range(2, n_remaining):
-                    betas_b[new_n, j - 1] = betas_a[i, j]
-                new_n += 1
-
-                # Term B (lower-bound piece):
-                #   coef  = -C · exp(b_inner · lower) / b_inner
-                #   β_new = (β_old[1], β_old[2], …)
-                coefs_b[new_n] = -C_i * exp_lower_val / b_inner
-                for j in range(1, n_remaining):
-                    betas_b[new_n, j - 1] = betas_a[i, j]
-                new_n += 1
-
-            # Swap a ↔ b for next level.
-            tmp_c = coefs_a
-            coefs_a = coefs_b
-            coefs_b = tmp_c
-            tmp_b = betas_a
-            betas_a = betas_b
-            betas_b = tmp_b
-            n_terms = new_n
-
-        # Outermost integration: s_N from lower to upper.
-        total = 0.0 + 0.0j
-        for i in range(n_terms):
-            b = betas_a[i, 0]
-            C_i = coefs_a[i]
-            if abs(b) < eps:
-                total += C_i * (upper - lower)
-            else:
-                if (abs((b * upper).real) > EXP_REAL_LIMIT
-                        or abs((b * lower).real) > EXP_REAL_LIMIT):
-                    return 2, 0.0 + 0.0j
-                total += C_i * (np.exp(b * upper) - np.exp(b * lower)) / b
-
-        return 0, total
-
-
-def _exp_over_chain_simplex_fast_uncached(alphas, lower, upper, eps=1e-9):
-    """Dispatcher: numba version when available + enabled, else Python.
-
-    Returns the integral value or ``None`` (degenerate β / overflow),
-    matching ``_exp_over_chain_simplex`` semantics exactly.
-
-    When ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` is enabled (default) and
-    a cheap subset-sum scan detects a close-pole condition (any non-
-    empty subset of ``alphas`` summing to magnitude
-    < ``_CHAIN_SIMPLEX_CANCEL_THRESHOLD``), the entire call is routed
-    to ``_exp_over_chain_simplex_mpmath`` for high-precision evaluation.
-    The float64 path is precision-limited in that regime and produces
-    a systematic overestimate that compounds across many subsets at
-    spike-reset k≥2 ell≥1.  Set the flag to ``False`` to disable the
-    routing and recover the pre-fix behaviour bit-identically.
-    """
-    if (USE_CHAIN_SIMPLEX_PRECISION_FIX
-            and len(alphas) >= 3
-            and _min_subset_sum_abs(alphas) < _CHAIN_SIMPLEX_CANCEL_THRESHOLD):
-        return _exp_over_chain_simplex_mpmath(alphas, lower, upper, eps)
-    if not (_HAVE_NUMBA and USE_NUMBA_CHAIN_SIMPLEX):
-        return _exp_over_chain_simplex(alphas, lower, upper, eps)
-    try:
-        arr = np.asarray(alphas, dtype=np.complex128)
-        if arr.ndim != 1:
-            return _exp_over_chain_simplex(alphas, lower, upper, eps)
-        status, val = _exp_over_chain_simplex_numba_core(
-            arr, float(lower), float(upper), float(eps),
-        )
-    except Exception:
-        return _exp_over_chain_simplex(alphas, lower, upper, eps)
-    if status != 0:
-        return None
-    return complex(val)
-
-
-def _exp_over_chain_simplex_polynomial_uncached(alphas, lower, upper, eps=1e-9):
-    r"""Polynomial-prefactor extension of ``_exp_over_chain_simplex``.
-
-    Same closed-form integral as ``_exp_over_chain_simplex`` but DOES
-    NOT return ``None`` when an intermediate cumulative-pole-sum β
-    vanishes.  In that case the level's antiderivative is a polynomial
-    in s (rather than ``exp(β·s)/β``); the polynomial is carried
-    through subsequent levels, with closed-form treatment of
-    ``∫ u^k · exp(β·u) du`` at non-degenerate levels.
-
-    Math sketch
-    -----------
-    Each level produces one of two outcomes:
-
-    * **Non-degenerate (β ≠ 0).**  For each ``u^k · exp(β·s)`` term in
-      the running integrand:
-
-          ∫_lower^{s_outer} (s - lower)^k · exp(β·s) ds
-          = exp(β·lower) · Σ_{j=0}^{k} (-1)^j · k!/(k-j)! · u_outer^{k-j}
-                                       · exp(β·u_outer) / β^{j+1}
-            + (-1)^{k+1} · k! · exp(β·lower) / β^{k+1}
-
-      yields (k+1) "upper" terms carrying β into the next-outer
-      variable's exponent, plus 1 "lower" constant term with no β.
-
-    * **Degenerate (β ≈ 0).**  The integrand is just a polynomial:
-
-          ∫_lower^{s_outer} (s - lower)^k ds  =  u_outer^{k+1} / (k+1)
-
-      yields a single term whose polynomial degree has grown by 1 and
-      whose β-list is unchanged (no exp factor carries forward).
-
-    The final outermost integration replaces ``s_outer`` with a numeric
-    upper bound and accumulates the per-term contributions.
-
-    Term representation
-    -------------------
-    Each running term is a tuple ``(C, poly, β_list)``:
-    * ``C`` — complex scalar coefficient.
-    * ``poly`` — tuple of complex polynomial coefficients in basis
-      ``(s - lower)^k``, index = degree.
-    * ``β_list`` — tuple of complex β values for the variables
-      remaining to integrate, innermost first.
-
-    Initial state: ``[(1+0j, (1+0j,), tuple(alphas))]``.
-
-    Parameters and return value mirror ``_exp_over_chain_simplex``;
-    returns ``None`` only on overflow (real-exponent magnitude beyond
-    ``EXP_REAL_LIMIT`` = 600), never on degenerate β.
-    """
-    import cmath
-    import math
-
-    N = len(alphas)
-    if N == 0:
-        return 1.0 + 0.0j
-    if upper <= lower:
-        return 0.0 + 0.0j
-
-    EXP_REAL_LIMIT = 600.0
-
-    terms = [(1.0 + 0.0j, (1.0 + 0.0j,), tuple(alphas))]
-
-    try:
-        # Inner-loop integrations: s_1, s_2, …, s_{N-1}.
-        for _level in range(N - 1):
-            new_terms = []
-            for (C, poly, β_list) in terms:
-                β_inner = β_list[0]
-                β_rest = β_list[1:]
-                # β_rest always has ≥ 1 element while in this inner loop.
-
-                if abs(β_inner) < eps:
-                    # Degenerate level: polynomial integration.
-                    new_poly = [0.0 + 0.0j] * (len(poly) + 1)
-                    for k, a in enumerate(poly):
-                        new_poly[k + 1] = a / (k + 1)
-                    new_terms.append((C, tuple(new_poly), β_rest))
-                else:
-                    # Non-degenerate: closed-form polynomial × exp.
-                    if abs((β_inner * lower).real) > EXP_REAL_LIMIT:
-                        return None
-                    exp_lower = cmath.exp(β_inner * lower)
-                    # Upper β list: β_inner merges into next-outer β.
-                    β_upper_rest = (β_inner + β_rest[0],) + β_rest[1:]
-                    β_lower_rest = β_rest
-
-                    for k, a in enumerate(poly):
-                        if a == 0:
-                            continue
-                        k_fact = math.factorial(k)
-                        # (k+1) upper terms carrying β forward.
-                        for j in range(k + 1):
-                            sign = -1 if (j & 1) else 1
-                            falling = k_fact // math.factorial(k - j)
-                            coef = C * a * sign * falling / (β_inner ** (j + 1))
-                            deg = k - j
-                            up_poly = tuple(
-                                (1.0 + 0.0j) if i == deg else (0.0 + 0.0j)
-                                for i in range(deg + 1)
-                            )
-                            new_terms.append((coef, up_poly, β_upper_rest))
-                        # 1 lower term (constant, β-list reduced by one).
-                        sign_last = -1 if ((k + 1) & 1) else 1
-                        coef_lower = (C * a * sign_last * k_fact
-                                       / (β_inner ** (k + 1)) * exp_lower)
-                        new_terms.append(
-                            (coef_lower, (1.0 + 0.0j,), β_lower_rest)
-                        )
-            terms = new_terms
-
-        # Outermost integration: s_N from `lower` to `upper`.
-        total = 0.0 + 0.0j
-        u_top = upper - lower
-        for (C, poly, β_list) in terms:
-            β = β_list[0] if β_list else (0.0 + 0.0j)
-            if abs(β) < eps:
-                # Pure polynomial: ∫_lower^{upper} Σ a_k (s-lower)^k ds
-                for k, a in enumerate(poly):
-                    if a == 0:
-                        continue
-                    total += C * a * (u_top ** (k + 1)) / (k + 1)
-            else:
-                # ∫_lower^{upper} Σ a_k (s-lower)^k · exp(β·s) ds
-                # = Σ_k a_k · [Σ_{j=0..k} (-1)^j k!/(k-j)! u_top^{k-j} exp(β·upper)/β^{j+1}
-                #              + (-1)^{k+1} k! · exp(β·lower)/β^{k+1}]
-                if abs((β * lower).real) > EXP_REAL_LIMIT:
-                    return None
-                if abs((β * upper).real) > EXP_REAL_LIMIT:
-                    return None
-                exp_top = cmath.exp(β * upper)
-                exp_low = cmath.exp(β * lower)
-                for k, a in enumerate(poly):
-                    if a == 0:
-                        continue
-                    k_fact = math.factorial(k)
-                    contrib = 0.0 + 0.0j
-                    for j in range(k + 1):
-                        sign = -1 if (j & 1) else 1
-                        falling = k_fact // math.factorial(k - j)
-                        contrib += (sign * falling * (u_top ** (k - j))
-                                    * exp_top / (β ** (j + 1)))
-                    sign_last = -1 if ((k + 1) & 1) else 1
-                    contrib += sign_last * k_fact * exp_low / (β ** (k + 1))
-                    total += C * a * contrib
-        return total
-    except (OverflowError, ValueError, ZeroDivisionError):
-        return None
-
-
-# ───────────────────────────────────────────────────────────────────────
-# Memoised chain-simplex evaluation
-# ───────────────────────────────────────────────────────────────────────
-# Both chain-simplex routines are pure functions of (alphas, lower, upper,
-# eps), and the poset walk calls them with a TINY set of distinct arguments
-# over and over.  Measured on ou_quartic k=4, ell=2: 508,176 calls to each of
-# the fast and polynomial routines, with just 9 DISTINCT argument tuples --
-# a redundancy of 56,464x.  (The fast routine returns None on 100% of those
-# calls because this model has a single retarded pole, so every alpha is
-# degenerate and the polynomial path runs every time; memoising the None is
-# worth as much as memoising the value.)
-#
-# Keys use the raw float/complex values -- the repeats are bit-identical
-# because they come from the same pole data, so no rounding is applied and
-# no result can be silently aliased onto a nearby-but-different argument.
-_CHAIN_SIMPLEX_MEMO_MAX = 200_000
-_chain_simplex_memo_fast = {}
-_chain_simplex_memo_poly = {}
-
-# ── M4 (P5): memo for ``_chain_with_intermediate_uppers`` ──────────────
-# That function is pure and deterministic of (alphas, L, uppers, U) and the
-# kernel flags below, and the poset walk calls it many times with identical
-# arguments (the m >= 3 chain path at higher loop order; models with repeated
-# poles).  The memo changes NO number: a hit returns the very object the
-# first call computed, so every result is bit-identical to the memo off.
-#
-# ``USE_CHAIN_UPPERS_MEMO`` (bool, read at call time); environment
-# ``DAEDALUS_CHAIN_UPPERS_MEMO`` = 1 | 0 (also true/false, yes/no, on/off;
-# default 1).  It is a pure speed switch, so the umbrella
-# ``DAEDALUS_PHASE_J_LEGACY`` (which reproduces pre-M1 NUMBERS) does not
-# touch it.
+# ── M4 (P5): memo of the m >= 3 chain integrals (``_chain_dd_log``) ────
+# A chain integral is a pure, deterministic function of (alphas, L, uppers,
+# U, decay margin), and the poset walk evaluates it many times with
+# identical arguments (higher loop orders; models with repeated poles).  The
+# memo changes NO number: a hit returns the very object the first call
+# computed.  (Its switch, ``USE_CHAIN_UPPERS_MEMO`` /
+# ``DAEDALUS_CHAIN_UPPERS_MEMO``, was retired in audit W7: always on.)
 #
 # Thread safety: the spatial path runs Phase J under a ThreadPoolExecutor.
 # Lookup (with its counter) and miss-insert (with eviction) hold
@@ -4450,235 +3375,47 @@ _DD_BATCH_MIN = 8
 DD_BATCH_SKIP_ZERO_GROUPS = True
 
 
-def _initial_chain_uppers_memo_flag(environ=None):
-    """The import-time value of ``USE_CHAIN_UPPERS_MEMO`` from ``environ``
-    (default ``os.environ``).  An unknown value raises."""
-    env = _os.environ if environ is None else environ
-    v = env.get('DAEDALUS_CHAIN_UPPERS_MEMO', '').strip().lower()
-    if v in ('', '1', 'true', 'yes', 'on'):
-        return True
-    if v in ('0', 'false', 'no', 'off'):
-        return False
-    raise ValueError(
-        f'DAEDALUS_CHAIN_UPPERS_MEMO={v!r}: expected 1 or 0')
 
 
-USE_CHAIN_UPPERS_MEMO = _initial_chain_uppers_memo_flag()
-
-
-def _chain_uppers_memo_on():
-    """``USE_CHAIN_UPPERS_MEMO`` (call time), validated."""
-    flag = USE_CHAIN_UPPERS_MEMO
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'final_integral.USE_CHAIN_UPPERS_MEMO={flag!r}: '
-                     f'expected True or False')
-
-
-# ── M6: divided-difference kernels (``expdd``), opt-in only ─────────────
-# ``CHAIN_UPPERS_KERNEL`` (str, read at call time) selects the evaluator of
-# ``_chain_with_intermediate_uppers_uncached``: ``'legacy'`` (default) is
-# the cut-tuple enumeration over the fast / polynomial chain-simplex
-# routines, unchanged; ``'transfer'`` is ``expdd.chain_with_uppers`` (a
-# transfer matrix with projections, log domain).  The two agree to rounding,
-# not bit for bit, so the selector is part of ``_chain_uppers_kernel_tag``.
-# Environment ``DAEDALUS_CHAIN_UPPERS_KERNEL`` = legacy | transfer (default
-# legacy); any other value raises.
-#
-# ``USE_PHASE_J_DD_KERNELS`` (bool, read at call time through
-# ``_phase_j_dd_kernels_on``); environment ``DAEDALUS_PHASE_J_DD_KERNELS`` =
-# 1 | 0 (also true/false, yes/no, on/off; default 1 since M9, 0.2.0).  It
-# routes the Phase J closed forms to ``expdd`` (M7; see "M7: box-free exact
-# routing" below).  ``CHAIN_UPPERS_KERNEL`` stays 'legacy' by default: the
-# DD route evaluates its chains with ``expdd`` and never reads it, so it
-# selects the evaluator of the legacy route only (``=0`` or the umbrella).
-# The umbrella ``DAEDALUS_PHASE_J_LEGACY`` sets both to their legacy values
-# (M7 decision: the umbrella reproduces the pre-M1 numbers, and neither
-# 'transfer' nor the DD kernels do that bit for bit).
-_CHAIN_UPPERS_KERNELS = ('legacy', 'transfer')
-
-
-def _initial_chain_uppers_kernel(environ=None):
-    """The import-time value of ``CHAIN_UPPERS_KERNEL`` from ``environ``
-    (default ``os.environ``).  An unknown value raises; the umbrella
-    ``DAEDALUS_PHASE_J_LEGACY`` wins ('legacy', M7)."""
-    env = _os.environ if environ is None else environ
-    v = env.get('DAEDALUS_CHAIN_UPPERS_KERNEL', '').strip().lower()
-    if v not in ('',) + _CHAIN_UPPERS_KERNELS:
-        raise ValueError(
-            f'DAEDALUS_CHAIN_UPPERS_KERNEL={v!r}: expected legacy or transfer')
-    if v == '' or _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
-        return 'legacy'
-    return v
-
-
-CHAIN_UPPERS_KERNEL = _initial_chain_uppers_kernel()
-
-
-def _chain_uppers_kernel():
-    """``CHAIN_UPPERS_KERNEL`` (call time), validated."""
-    kernel = CHAIN_UPPERS_KERNEL
-    if isinstance(kernel, str) and kernel in _CHAIN_UPPERS_KERNELS:
-        return kernel
-    raise ValueError(f'final_integral.CHAIN_UPPERS_KERNEL={kernel!r}: '
-                     f"expected 'legacy' or 'transfer'")
-
-
-def _initial_phase_j_dd_kernels_flag(environ=None):
-    """The import-time value of ``USE_PHASE_J_DD_KERNELS`` from ``environ``
-    (default ``os.environ``): on unless set to 0 (M9).  An unknown value
-    raises; the umbrella ``DAEDALUS_PHASE_J_LEGACY`` wins (False, M7)."""
-    env = _os.environ if environ is None else environ
-    v = env.get('DAEDALUS_PHASE_J_DD_KERNELS', '').strip().lower()
-    if v in ('0', 'false', 'no', 'off'):
-        return False
-    if v in ('', '1', 'true', 'yes', 'on'):
-        return not _env_truthy('DAEDALUS_PHASE_J_LEGACY', env)
-    raise ValueError(
-        f'DAEDALUS_PHASE_J_DD_KERNELS={v!r}: expected 1 or 0')
-
-
-USE_PHASE_J_DD_KERNELS = _initial_phase_j_dd_kernels_flag()
-
-
-def _phase_j_dd_kernels_on():
-    """``USE_PHASE_J_DD_KERNELS`` (call time), validated."""
-    flag = USE_PHASE_J_DD_KERNELS
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'final_integral.USE_PHASE_J_DD_KERNELS={flag!r}: '
-                     f'expected True or False')
-
-
-# ── M7: box-free exact routing (opt-in; M9 flips the defaults) ─────────
-# the internal Phase J plan (not distributed) §3.1 (layers L3, L4) and §14.  Every flag
-# is a module attribute read at call time; the environment initialises it.
-#
-# ``USE_PHASE_J_DD_KERNELS`` (M6, above), when True, routes
-#   * the m=2 polygon (plan and no-plan branch, so grouped too) to the
-#     ``expdd`` triangle kernel anchored at the vertex with the largest real
-#     exponent, the pole tuple's γ folded into the exponent;
-#   * the m=1 interval (per-diagram and grouped) to a first divided
-#     difference (no 1/α cancellation for a small α);
-#   * the m≥3 chain, intermediate uppers included, to ``expdd`` (transfer
-#     matrix; ``CHAIN_UPPERS_KERNEL`` is then not read), γ folded into the
-#     chain's log scale;
-#   * the grouped m=0 evaluation;
-#   * the DBM route's box from the absolute ±200 to ±max(200, 40/κ_min),
-#     κ_min the slowest decay rate (−Re λ) of the subset's modes (±200 when a
-#     mode does not decay).
-#   On those paths the bilateral |Re| > 600 guards are replaced by ONE
-#   one-sided test on the FINAL exponent: log|value| > 700 means the integral
-#   itself overflows; the path then bails with a ``*_dd_overflow`` reason
-#   (counter ``dd_overflow``) to the next route.  Never a silent inf/nan.
-# ``SEMIINF_CHAIN`` (bool; env ``DAEDALUS_PHASE_J_SEMIINF_CHAIN`` = 1 | 0;
-#   default since M9: on when the DD kernels are, else off; needs the DD
-#   kernels): the m≥3 poset path integrates a chain
-#   without a scalar lower from ``PHASE_J_T_MIN`` (default −inf: the
-#   semi-infinite chain, started from the dominant eigenvector) instead of
-#   ``earliest_ext − POSET_PHYSICAL_MARGIN``, and a chain top without a scalar
-#   upper to +inf (mirror form) instead of ``bbox_cap``; the DBM route then
-#   has no box at all (open directions integrated to infinity).
-# ``UNBOUNDED_2D`` ('box' | 'exact'; env ``DAEDALUS_PHASE_J_UNBOUNDED_2D``;
-#   default since M9: 'exact' when the DD kernels are on, else 'box'; 'exact'
-#   needs the DD kernels): the m=2
-#   polygon is built exactly -- finite vertices and the recession rays, no
-#   ±bbox_cap -- and integrated by the ideal-vertex fan (triangles,
-#   half-strips, wedges; ``boxfree.region_2d``).
+# ── M7: the box-free exact routes (the only Phase J routes since audit W7) ─
+# the internal Phase J plan (not distributed) §3.1 (layers L3, L4) and §14.
+#   * the m=2 region is built exactly -- finite vertices and the recession
+#     rays, no box -- and integrated by the ideal-vertex fan (triangles,
+#     half-strips, wedges; ``boxfree.region_2d``) on the ``expdd`` triangle
+#     kernel anchored at the vertex with the largest real exponent, the pole
+#     tuple's γ folded into the exponent;
+#   * the m=1 interval is a first divided difference (no 1/α cancellation
+#     for a small α);
+#   * the m≥3 chain, intermediate uppers included, is ``expdd``'s (transfer
+#     matrix), γ folded into the chain's log scale; a chain without a scalar
+#     lower starts at ``PHASE_J_T_MIN`` (default −inf: the semi-infinite
+#     chain, started from the dominant eigenvector), a chain top without a
+#     scalar upper is +inf (mirror form);
+#   * the DBM route has no box (open directions integrated to infinity).
+#   The bilateral |Re| > 600 guards of the pre-0.2.0 routes are replaced by
+#   ONE one-sided test on the FINAL exponent: log|value| > 700 means the
+#   integral itself overflows; the path then bails with a ``*_dd_overflow``
+#   reason (counter ``dd_overflow``) to the next route.  Never a silent
+#   inf/nan.
 # ``PHASE_J_T_MIN`` (float, default −inf; no environment variable): the lower
-#   bound of every integration time on the box-free routes.  The finite-
-#   lower-bound closed forms are kept for it (switch-on transients, feature
-#   plan S6): a finite value is honoured by the m=1 interval, the exact
-#   polygon, the semi-infinite chain and the DBM route, and needs all three
-#   switches above (a ``ValueError`` otherwise: no route ignores it).
+#   bound of every integration time.  The finite-lower-bound closed forms are
+#   kept for it (switch-on transients, feature plan S6): a finite value is
+#   honoured by the m=1 interval, the exact polygon, the semi-infinite chain
+#   and the DBM route (a ``ValueError`` when it reaches the scipy fallback,
+#   which cannot honour it).
 # An open direction that does not decay (Re(α·r) >= 0 on a recession ray, a
 # line in the region, a chain prefix sum with Re <= 0) is reported -- bail
 # ``*_divergent``, counter ``divergent_subsets`` -- and the subset goes on to
 # the next route (DBM, then the scipy fallback).  The divergence POLICY is
 # M8's.
-#
-# The umbrella ``DAEDALUS_PHASE_J_LEGACY=1`` sets all of these to their
-# legacy values, as it does ``USE_PHASE_J_DD_KERNELS`` and
-# ``CHAIN_UPPERS_KERNEL``.
-_UNBOUNDED_2D_MODES = ('box', 'exact')
-
-
-def _initial_m7_flags(environ=None):
-    """The import-time values of ``SEMIINF_CHAIN`` and ``UNBOUNDED_2D`` from
-    ``environ`` (default ``os.environ``).  Unset, each follows the DD kernels
-    (on / 'exact' when they are on, M9).  An unknown value raises; so does a
-    box-free switch set explicitly without the DD kernels (the box-free
-    closed forms are the DD kernels').  The umbrella wins."""
-    env = _os.environ if environ is None else environ
-    si = env.get('DAEDALUS_PHASE_J_SEMIINF_CHAIN', '').strip().lower()
-    if si not in _STRUCTURAL_ZEROS_ON + _STRUCTURAL_ZEROS_OFF:
-        raise ValueError(
-            f'DAEDALUS_PHASE_J_SEMIINF_CHAIN={si!r}: expected 1 or 0')
-    u2 = env.get('DAEDALUS_PHASE_J_UNBOUNDED_2D', '').strip().lower()
-    if u2 not in ('',) + _UNBOUNDED_2D_MODES:
-        raise ValueError(
-            f'DAEDALUS_PHASE_J_UNBOUNDED_2D={u2!r}: expected box or exact')
-    if _env_truthy('DAEDALUS_PHASE_J_LEGACY', env):
-        return {'SEMIINF_CHAIN': False, 'UNBOUNDED_2D': 'box'}
-    dd = _initial_phase_j_dd_kernels_flag(env)
-    semiinf = dd if si == '' else si not in _STRUCTURAL_ZEROS_OFF
-    if u2 == '':
-        u2 = 'exact' if dd else 'box'
-    if (semiinf or u2 == 'exact') and not dd:
-        raise ValueError(
-            'DAEDALUS_PHASE_J_SEMIINF_CHAIN / DAEDALUS_PHASE_J_UNBOUNDED_2D='
-            'exact need DAEDALUS_PHASE_J_DD_KERNELS=1')
-    return {'SEMIINF_CHAIN': semiinf, 'UNBOUNDED_2D': u2}
-
-
-_M7_FLAGS_AT_IMPORT = _initial_m7_flags()
-SEMIINF_CHAIN = _M7_FLAGS_AT_IMPORT['SEMIINF_CHAIN']
-UNBOUNDED_2D = _M7_FLAGS_AT_IMPORT['UNBOUNDED_2D']
-
-
-def _legacy_umbrella_flags():
-    """``{flag: value}`` for every module flag that the umbrella
-    ``DAEDALUS_PHASE_J_LEGACY=1`` sets at import (the Phase J flags, the M6
-    DD kernels and chain evaluator, the M7 box-free switches), from the same
-    initialisers: what a test or a caller sets to reproduce the pre-0.2.0
-    routes in a running process."""
-    env = {'DAEDALUS_PHASE_J_LEGACY': '1'}
-    flags = dict(_initial_phase_j_flags(env))
-    flags['USE_PHASE_J_DD_KERNELS'] = _initial_phase_j_dd_kernels_flag(env)
-    flags['CHAIN_UPPERS_KERNEL'] = _initial_chain_uppers_kernel(env)
-    flags.update(_initial_m7_flags(env))
-    return flags
+# The pre-0.2.0 boxed routes and their switches (``USE_PHASE_J_DD_KERNELS``,
+# ``CHAIN_UPPERS_KERNEL``, ``SEMIINF_CHAIN``, ``UNBOUNDED_2D``,
+# ``POLYGON_BBOX_CAP``, the chain-simplex routines) were retired in audit W7.
 PHASE_J_T_MIN = float('-inf')
 
 
-def _semiinf_chain_on():
-    """``SEMIINF_CHAIN`` (call time), validated: a bool, and on only with
-    the DD kernels on."""
-    flag = SEMIINF_CHAIN
-    if flag is not True and flag is not False:
-        raise ValueError(f'final_integral.SEMIINF_CHAIN={flag!r}: expected '
-                         f'True or False')
-    if flag and not _phase_j_dd_kernels_on():
-        raise ValueError('final_integral.SEMIINF_CHAIN needs '
-                         'USE_PHASE_J_DD_KERNELS')
-    return flag
-
-
-def _unbounded_2d_exact():
-    """True when ``UNBOUNDED_2D`` is 'exact' (call time), validated."""
-    mode = UNBOUNDED_2D
-    if not (isinstance(mode, str) and mode in _UNBOUNDED_2D_MODES):
-        raise ValueError(f'final_integral.UNBOUNDED_2D={mode!r}: expected '
-                         f"'box' or 'exact'")
-    if mode == 'exact' and not _phase_j_dd_kernels_on():
-        raise ValueError("final_integral.UNBOUNDED_2D='exact' needs "
-                         'USE_PHASE_J_DD_KERNELS')
-    return mode == 'exact'
-
-
 def _t_min():
-    """``PHASE_J_T_MIN`` (call time): ``-inf`` or a finite float.  A
-    finite value needs every box-free route on (``ValueError``)."""
+    """``PHASE_J_T_MIN`` (call time): ``-inf`` or a finite float."""
     t = PHASE_J_T_MIN
     try:
         t = float(t)
@@ -4690,10 +3427,6 @@ def _t_min():
     if not math.isfinite(t):
         raise ValueError(f'final_integral.PHASE_J_T_MIN={t!r}: expected '
                          f'-inf or a finite float')
-    if not (_semiinf_chain_on() and _unbounded_2d_exact()):
-        raise ValueError(
-            'a finite final_integral.PHASE_J_T_MIN needs the box-free routes '
-            "(USE_PHASE_J_DD_KERNELS, SEMIINF_CHAIN, UNBOUNDED_2D='exact')")
     return t
 
 
@@ -4818,117 +3551,21 @@ def _dd_status_bail(status, prefix):
     return _DD_BAILS[prefix][2]()
 
 
-def _chain_uppers_kernel_tag():
-    """The module state that can change ``_chain_with_intermediate_uppers``,
-    read at call time (part of every memo key, so toggling any of it misses).
-
-    On the function's call path (``_exp_over_chain_simplex_fast`` ->
-    ``_exp_over_chain_simplex_fast_uncached``, and the polynomial routine):
-      * ``USE_NUMBA_CHAIN_SIMPLEX`` / ``_HAVE_NUMBA``: numba core vs the
-        Python reference (they agree to rounding, not bit-for-bit);
-      * ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` and
-        ``_CHAIN_SIMPLEX_CANCEL_THRESHOLD``: the mpmath dispatch for
-        close-pole chains and its threshold.
-    Included defensively although they sit in the CALLER
-    (``_integrate_nd_polytope_poset_modesum``), not on this function's path,
-    so no result of this function depends on them today:
-      * ``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY``.
-    And the evaluator itself (M6):
-      * ``CHAIN_UPPERS_KERNEL``: ``'legacy'`` vs the ``expdd`` transfer
-        kernel (they agree to rounding, not bit for bit).  Kept raw here; an
-        invalid value is rejected by ``_chain_uppers_kernel`` in the
-        uncached function (an unhashable one makes the key unhashable, which
-        skips the memo and reaches the same check)."""
-    return (USE_NUMBA_CHAIN_SIMPLEX, _HAVE_NUMBA,
-            USE_CHAIN_SIMPLEX_PRECISION_FIX, _CHAIN_SIMPLEX_CANCEL_THRESHOLD,
-            USE_POSET_MPMATH_ACCUMULATION, USE_POSET_CAP_MATCH_SCIPY,
-            CHAIN_UPPERS_KERNEL,
-            )
-
-
 def _chain_simplex_memo_clear():
-    """Drop every chain-simplex memo table (call when poles change): the
-    fast and polynomial tables and the M4 ``_chain_with_intermediate_uppers``
-    table (with the M7b batch table of the DD route)."""
-    _chain_simplex_memo_fast.clear()
-    _chain_simplex_memo_poly.clear()
+    """Drop the chain memo tables (call when poles change): the M4 chain
+    table of ``_chain_dd_log`` and the M7b batch table."""
     with _CHAIN_UPPERS_LOCK:
         _chain_uppers_memo.clear()
         _chain_dd_batch_memo.clear()
         _chain_dd_batch_size[0] = 0
 
 
-def _chain_simplex_fast_tag():
-    """The module state ``_exp_over_chain_simplex_fast_uncached`` reads, at
-    call time: the numba switch (and whether numba imported), the
-    close-pole precision gate and its threshold.  Part of the fast table's
-    key, so a toggle can never be answered from a stale entry (M4; before it
-    the key held only the arguments).  The polynomial routine reads no
-    module flag, so its key carries no tag."""
-    return (USE_NUMBA_CHAIN_SIMPLEX, _HAVE_NUMBA,
-            USE_CHAIN_SIMPLEX_PRECISION_FIX, _CHAIN_SIMPLEX_CANCEL_THRESHOLD)
-
-
-def _chain_simplex_key(alphas, lower, upper, eps, tag=()):
-    return (tuple(alphas), lower, upper, eps, tag)
-
-
-def _exp_over_chain_simplex_fast(alphas, lower, upper, eps=1e-9):
-    """Memoised wrapper -- see ``_exp_over_chain_simplex_fast_uncached``."""
-    try:
-        key = _chain_simplex_key(alphas, lower, upper, eps,
-                                 _chain_simplex_fast_tag())
-    except TypeError:            # unhashable argument: skip the cache
-        return _exp_over_chain_simplex_fast_uncached(alphas, lower, upper, eps)
-    memo = _chain_simplex_memo_fast
-    if key in memo:
-        _RUNTIME_COUNTERS['chain_simplex_memo_hits'] += 1
-        val = memo[key]
-        if val is None:
-            _RUNTIME_COUNTERS['chain_simplex_fast_returned_none'] += 1
-        return val
-    _RUNTIME_COUNTERS['chain_simplex_memo_misses'] += 1
-    val = _exp_over_chain_simplex_fast_uncached(alphas, lower, upper, eps)
-    if val is None:
-        _RUNTIME_COUNTERS['chain_simplex_fast_returned_none'] += 1
-    if len(memo) < _CHAIN_SIMPLEX_MEMO_MAX:
-        memo[key] = val
-    return val
-
-
-def _exp_over_chain_simplex_polynomial(alphas, lower, upper, eps=1e-9):
-    """Memoised wrapper -- see ``_exp_over_chain_simplex_polynomial_uncached``."""
-    try:
-        key = _chain_simplex_key(alphas, lower, upper, eps)
-    except TypeError:
-        return _exp_over_chain_simplex_polynomial_uncached(
-            alphas, lower, upper, eps)
-    _RUNTIME_COUNTERS['chain_simplex_polynomial_called'] += 1
-    memo = _chain_simplex_memo_poly
-    if key in memo:
-        _RUNTIME_COUNTERS['chain_simplex_memo_hits'] += 1
-        val = memo[key]
-        if val is None:
-            _RUNTIME_COUNTERS['chain_simplex_polynomial_returned_none'] += 1
-        return val
-    _RUNTIME_COUNTERS['chain_simplex_memo_misses'] += 1
-    val = _exp_over_chain_simplex_polynomial_uncached(
-        alphas, lower, upper, eps)
-    if val is None:
-        _RUNTIME_COUNTERS['chain_simplex_polynomial_returned_none'] += 1
-    if len(memo) < _CHAIN_SIMPLEX_MEMO_MAX:
-        memo[key] = val
-    return val
-
-
 def _chain_uppers_key_suffix(L, upper_per_position, U_chain_top):
-    """The (L, uppers, U) part of a ``_chain_with_intermediate_uppers`` memo
-    key.  Independent of the alphas, so the poset plan loop builds it once
-    per linear extension instead of once per pole-tuple group (M4 "A2").
-    ``uppers`` is sorted (dict-order invariant) and keeps a ``None``-valued
-    entry as ``None``: the uncached function treats a key mapped to ``None``
-    as absent when forming effective uppers but as a direct constraint when
-    placing cuts, so dropping it could alias two different results.
+    """The (L, uppers, U) part of a chain memo key (``_chain_dd_log``).
+    Independent of the alphas, so the poset loop builds it once per linear
+    extension instead of once per pole-tuple group (M4 "A2").  ``uppers`` is
+    sorted (dict-order invariant) and keeps a ``None``-valued entry as
+    ``None``, so two different upper maps never alias.
     Raises ``TypeError`` on an input that cannot be keyed, among them a
     position that is not an integer (``2.5`` must not share the key of
     ``2``: the callee treats them differently)."""
@@ -4942,266 +3579,6 @@ def _chain_uppers_key_suffix(L, upper_per_position, U_chain_top):
     else:
         uppers = ()
     return (float(L), uppers, float(U_chain_top))
-
-
-def _chain_with_intermediate_uppers(
-    alphas_chain,
-    L,
-    upper_per_position,
-    U_chain_top,
-    _key_suffix=None,
-):
-    """Memoised wrapper (M4; ``USE_CHAIN_UPPERS_MEMO``) -- see
-    ``_chain_with_intermediate_uppers_uncached``.  ``_key_suffix`` is an
-    optional precomputed ``_chain_uppers_key_suffix(L, upper_per_position,
-    U_chain_top)`` (the plan loop hoists it)."""
-    if not _chain_uppers_memo_on():
-        return _chain_with_intermediate_uppers_uncached(
-            alphas_chain, L, upper_per_position, U_chain_top)
-    try:
-        if _key_suffix is None:
-            _key_suffix = _chain_uppers_key_suffix(
-                L, upper_per_position, U_chain_top)
-        tag = _chain_uppers_kernel_tag()
-        key = (tuple(alphas_chain), _key_suffix, tag)
-        with _CHAIN_UPPERS_LOCK:
-            # hashing the key (a ``TypeError`` for an unhashable alpha)
-            # happens in this first lookup, before any counter moves
-            val = _chain_uppers_memo.get(key, _CHAIN_UPPERS_MISS)
-            if val is not _CHAIN_UPPERS_MISS:
-                _RUNTIME_COUNTERS['chain_uppers_memo_hits'] += 1
-                return val
-            _RUNTIME_COUNTERS['chain_uppers_memo_misses'] += 1
-    except (TypeError, ValueError, OverflowError):
-        # unhashable / unkeyable (the callee's own handling of the input
-        # applies): skip the cache
-        return _chain_with_intermediate_uppers_uncached(
-            alphas_chain, L, upper_per_position, U_chain_top)
-    val = _chain_with_intermediate_uppers_uncached(
-        alphas_chain, L, upper_per_position, U_chain_top)
-    if _chain_uppers_kernel_tag() != tag:
-        # a kernel flag moved while this call was computing (another thread
-        # toggling it): the value may belong to either state, so do not
-        # store it under the tag read before the compute
-        return val
-    with _CHAIN_UPPERS_LOCK:
-        if len(_chain_uppers_memo) >= _CHAIN_UPPERS_MEMO_MAX:
-            _chain_uppers_memo.clear()
-            _RUNTIME_COUNTERS['chain_uppers_memo_evictions'] += 1
-        _chain_uppers_memo[key] = val
-    return val
-
-
-def _chain_with_intermediate_uppers_uncached(
-    alphas_chain,
-    L,
-    upper_per_position,
-    U_chain_top,
-):
-    r"""Chain-simplex integral with scalar uppers at arbitrary positions
-    (Stage 3b-maximality, generalisation of ``_exp_over_chain_simplex``).
-
-    Computes
-
-       ∫_{L ≤ s_{σ(0)} ≤ … ≤ s_{σ(m-1)} ≤ U_chain_top  ∧  s_{σ(k)} ≤ U_k for k ∈ keys}
-            ∏_k exp(α_k · s_{σ(k)})  ds
-
-    where ``upper_per_position[k] = U_k`` is the scalar upper bound on
-    position ``k`` in the chain (positions not in the dict are bounded
-    only by chain ordering + ``U_chain_top``).
-
-    Math
-    ----
-    Chain ordering + per-position scalar uppers give an "effective upper"
-    at each position:
-
-        effective_upper[k] = min over j ≥ k of (upper_per_position[j], U_chain_top)
-
-    which is non-decreasing in ``k``.  Group consecutive positions
-    with identical ``effective_upper`` into "levels"; for ``q+1``
-    levels the top level has the largest upper (= ``effective_upper[m-1]``).
-
-    For each lower level (i = 0..q-1, value ``U_i < U_top``), the chain
-    crosses ``U_i`` at some position ``c_i ∈ [level_i.start, m-1]``.
-    By chain ordering, the crossings are monotonic:
-    ``c_0 ≤ c_1 ≤ … ≤ c_{q-1}``.  Enumerating valid tuples
-    ``(c_0, c_1, …, c_{q-1})`` and computing a piece-product per
-    tuple decomposes the integral exactly.
-
-    Pieces from a cut tuple:
-    * Piece ``i`` (``i = 0..q-1``): positions ``[c_{i-1}+1 … c_i]``
-      with bounds ``[U_{i-1}, U_i]`` (where ``U_{-1} = L``).  May be
-      empty when ``c_{i-1} = c_i`` (consecutive cuts at same position).
-    * Final piece: positions ``[c_{q-1}+1 … m-1]`` with bounds
-      ``[U_{q-1}, U_top]``.  May be empty when ``c_{q-1} = m-1``.
-
-    Each non-empty piece is an independent chain simplex; the product
-    gives the case's contribution.
-
-    Returns ``None`` if every case produces ``None`` from the
-    underlying chain simplex (genuine overflow); otherwise returns
-    the analytic closed-form sum.
-
-    With ``CHAIN_UPPERS_KERNEL = 'transfer'`` (M6, opt-in) the value comes
-    from ``_chain_with_uppers_transfer`` instead; everything below is the
-    ``'legacy'`` evaluator.
-    """
-    if _chain_uppers_kernel() == 'transfer':
-        return _chain_with_uppers_transfer(
-            alphas_chain, L, upper_per_position, U_chain_top)
-    m = len(alphas_chain)
-    if m == 0:
-        return 1.0 + 0.0j
-    if upper_per_position is None:
-        upper_per_position = {}
-
-    # Compute effective upper at each position.
-    effective_upper = [U_chain_top] * m
-    running_min = U_chain_top
-    for k in range(m - 1, -1, -1):
-        u_k = upper_per_position.get(k)
-        if u_k is not None:
-            running_min = min(running_min, float(u_k))
-        effective_upper[k] = running_min
-
-    if any(effective_upper[k] <= L for k in range(m)):
-        return 0.0 + 0.0j
-
-    # Group consecutive positions with identical effective_upper into
-    # levels.  ``levels[i] = (start, end_inclusive, upper_value)``.
-    levels = []
-    k = 0
-    while k < m:
-        v = effective_upper[k]
-        start = k
-        while k < m and effective_upper[k] == v:
-            k += 1
-        levels.append((start, k - 1, v))
-
-    # If only one level, no intermediate uppers: standard chain.
-    if len(levels) == 1:
-        top = levels[0][2]
-        v = _exp_over_chain_simplex_fast(alphas_chain, L, top)
-        if v is None:
-            v = _exp_over_chain_simplex_polynomial(alphas_chain, L, top)
-        return v
-
-    # q non-top levels (with strictly smaller uppers than the top level).
-    q = len(levels) - 1
-
-    # For each non-top level, find the LATEST position with a direct
-    # constraint (i.e., upper_per_position[k] is set).  This is the
-    # minimum cut position for the level: the cut must happen at or
-    # after the constraint's original position, not just at the level's
-    # extended start (positions before the constraint inherit the
-    # upper via chain ordering, not via a direct constraint).
-    cut_min_per_level = []
-    for i in range(q):
-        start, end, _ = levels[i]
-        latest_direct = None
-        for k in range(start, end + 1):
-            if k in upper_per_position:
-                latest_direct = k
-        cut_min_per_level.append(
-            latest_direct if latest_direct is not None else start
-        )
-
-    total = 0.0 + 0.0j
-    any_returned = False
-    any_failed = False
-
-    # Enumerate cut tuples (c_0, c_1, …, c_{q-1}) with each
-    # c_i ∈ [cut_min_per_level[i], m-1] and c_0 ≤ c_1 ≤ … ≤ c_{q-1}.
-    def _gen_cuts(i, prev_c):
-        if i == q:
-            yield ()
-            return
-        lo = max(prev_c, cut_min_per_level[i])
-        for c in range(lo, m):
-            for rest in _gen_cuts(i + 1, c):
-                yield (c,) + rest
-
-    for cuts in _gen_cuts(0, 0):
-        pieces = []
-        prev_end = -1
-        prev_upper = L
-        for i, c in enumerate(cuts):
-            positions = list(range(prev_end + 1, c + 1))
-            upper_val = levels[i][2]
-            pieces.append({
-                'positions': positions,
-                'lower': prev_upper,
-                'upper': upper_val,
-            })
-            prev_end = c
-            prev_upper = upper_val
-        # Final piece: top-level positions with [last_cut_upper, top_upper].
-        top_upper = levels[-1][2]
-        pieces.append({
-            'positions': list(range(prev_end + 1, m)),
-            'lower': prev_upper,
-            'upper': top_upper,
-        })
-
-        # Multiply chain simplex evaluations across non-empty pieces.
-        case_value = 1.0 + 0.0j
-        case_ok = True
-        for piece in pieces:
-            if not piece['positions']:
-                continue
-            if piece['upper'] <= piece['lower']:
-                case_value = 0.0 + 0.0j
-                break
-            alphas_piece = [alphas_chain[k] for k in piece['positions']]
-            v = _exp_over_chain_simplex_fast(
-                alphas_piece, piece['lower'], piece['upper'],
-            )
-            if v is None:
-                v = _exp_over_chain_simplex_polynomial(
-                    alphas_piece, piece['lower'], piece['upper'],
-                )
-            if v is None:
-                case_ok = False
-                break
-            case_value *= v
-
-        if case_ok:
-            total += case_value
-            any_returned = True
-        else:
-            any_failed = True
-
-    if any_returned and any_failed:
-        _RUNTIME_COUNTERS['chain_uppers_legacy_partial'] += 1
-    if any_returned and abs(total) > _LEGACY_HUGE:
-        _RUNTIME_COUNTERS['chain_uppers_legacy_huge'] += 1
-    return total if any_returned else None
-
-
-# |value| above which a legacy uppers result is counted as beyond the range
-# a true Phase J integral can have (e^700, the DD kernels' overflow limit).
-_LEGACY_HUGE = 1.0142320547350045e+304
-
-
-def _chain_with_uppers_transfer(
-    alphas_chain,
-    L,
-    upper_per_position,
-    U_chain_top,
-):
-    """``CHAIN_UPPERS_KERNEL = 'transfer'``: the same integral as
-    ``_chain_with_intermediate_uppers_uncached`` by
-    ``expdd.chain_with_uppers`` (transfer matrix with projections, log
-    domain), with the same contract: a complex, or ``None`` when there is
-    no finite value: a true overflow, a divergent ``L = -inf`` chain (no
-    Phase J caller passes one today) or a chain state that underflowed below
-    double range (``FloatingPointError``; far outside Phase J's regime)."""
-    from engine.integration.time_domain import expdd
-    try:
-        return expdd.chain_with_uppers(
-            alphas_chain, L, upper_per_position, U_chain_top)
-    except (expdd.DivergentIntegralError, FloatingPointError):
-        return None
 
 
 USE_POSET_INTEGRATOR = True
@@ -5247,12 +3624,11 @@ USE_POSET_CAP_MATCH_SCIPY = False
 
 
 def _nquad_outer_cap():
-    """Half-width of the box on which the legacy default-tolerance
-    scipy.nquad routine (``_integrate_nd_polytope``) closes an open
-    direction: ``OUTER_CAP`` (read at call time).  The DBM route closes the
-    directions its rows leave open at the same ±cap.  (The hardened
-    fallback truncates certified directions at K/κ instead; see the
-    ``USE_DBM_FALLBACK`` comment.)"""
+    """Half-width of the box on which the default-tolerance scipy.nquad
+    routine (``_integrate_nd_polytope``) closes an open direction:
+    ``OUTER_CAP`` (read at call time).  The box-free DBM route takes its
+    β-zero threshold from it (``_integrate_subset_dbm``).  (The hardened
+    fallback truncates certified directions at K/κ instead.)"""
     return POSET_PHYSICAL_MARGIN if USE_POSET_CAP_MATCH_SCIPY else 200.0
 
 # ─── Experimental: mpmath accumulation in the m≥3 poset evaluator ─────
@@ -5285,7 +3661,6 @@ def _integrate_nd_polytope_poset_modesum(
     subset_constraint_data,
     free_ext_vals,
     m,
-    bbox_cap=None,
     pole_tuples=None,
     plan=None,
     row_kinds=None,
@@ -5295,12 +3670,11 @@ def _integrate_nd_polytope_poset_modesum(
                                 ds_1 … ds_m`` for m ≥ 3 via causal-
     poset decomposition.
 
-    ``bbox_cap=None`` resolves at call time (``_resolve_bbox_cap``);
     ``row_kinds`` is the rows' provenance (``None``: all 'edge');
     ``tie_ctx`` orders an exact external-time tie (``_tie_order_sign``).
-    With THETA0_CONST_ROW_MODE 'ito' a region that is empty by construction
-    (``_EMPTY_POSET``: a constant EMPTY row, or an order cycle whose shifts
-    sum to <= 0) returns 0j, in both the plan and the no-plan branch.
+    A region that is empty by construction (``_EMPTY_POSET``: a constant
+    EMPTY row, or an order cycle whose shifts sum to <= 0) returns 0j, in
+    both the plan and the no-plan branch.
 
     Procedure:
       1. Extract the causal poset (DAG + scalar bounds) from the
@@ -5309,34 +3683,28 @@ def _integrate_nd_polytope_poset_modesum(
          bound).
       2. Resolve the COMMON scalar lower bound ``L`` for all
          integration variables.  Fail if scalar lowers differ across
-         variables (the simple chain simplex form would over- or
-         under-include regions), and (M3, ``USE_DBM_FALLBACK``) if a
-         variable has neither a scalar lower nor a lower-bounded
-         predecessor (``'poset_lower_not_inherited'``; the dispatch then
-         takes the exact DBM route).  Fall back to ``-bbox_cap`` when no
-         scalar lower is present.
+         variables (the single chain form would over- or under-include
+         regions), and (M3) if a variable has neither a scalar lower nor a
+         lower-bounded predecessor (``'poset_lower_not_inherited'``; the
+         dispatch then takes the exact DBM route).  Without a scalar lower,
+         ``L = PHASE_J_T_MIN`` (default -inf: the semi-infinite chain).
       3. Enumerate every linear extension σ of the poset.  Each is a
-         disjoint chain simplex
+         disjoint chain
            L ≤ s_{σ(0)} ≤ s_{σ(1)} ≤ … ≤ s_{σ(m-1)} ≤ U_σ
-         where U_σ is the scalar upper of σ(m-1) (or ``bbox_cap``).
-      4. For each pole tuple (α_e)_e:
-           α_v = Σ_e λ_α_e · a_int_e[v]                (per orig var)
-           γ   = Σ_e λ_α_e · c_ext_e                   (ext-time part)
-           α_chain[k] = α_{σ(k)}                       (permute)
-           contribution = pref · ∏ C_α_e · exp(γ) ·
-                          _exp_over_chain_simplex(α_chain, L, U_σ)
-      5. Sum across extensions and tuples.  Fail if any chain
-         simplex returns ``None`` (degenerate β).
+         where U_σ is the scalar upper of σ(m-1) (or +inf).
+      4. Per linear extension and pole-tuple group, the chain integral on
+         the DD kernels in the log domain (``_poset_modesum_dd``), the
+         tuples' γ folded in before any exp.
+      5. Sum across extensions and tuples.  Fail if a chain is divergent or
+         overflows.
 
-    Returns ``complex`` or ``None``.  ``None`` triggers a fallback to
-    scipy.nquad in the caller.
+    Returns ``complex`` or ``None``.  ``None`` sends the subset on to the
+    DBM route, then the scipy fallback.
     """
-    import cmath
     if m < 3:
         return _bail('poset_m_lt_3')  # m=2 has its own dedicated path
     _t_min()                    # M7: a finite PHASE_J_T_MIN is never ignored
     _RUNTIME_COUNTERS['poset_attempted'] += 1
-    bbox_cap = _resolve_bbox_cap(bbox_cap)
     n_smooth = len(smooth_edge_modes)
     if len(subset_constraint_data) != n_smooth:
         _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
@@ -5363,239 +3731,29 @@ def _integrate_nd_polytope_poset_modesum(
             _RUNTIME_COUNTERS['poset_lower_not_inherited'] += 1
             return _bail('poset_lower_not_inherited')
         return _bail('poset_lower_inconsistent')
-    # ── Lower bound: tight physical fallback (Stage 3b-bounds) ──────
-    # When ``_causal_poset_consistent_scalar_lower`` returns no scalar
-    # lower (L_value is None), the integrand still extends "to the
-    # past" only as far as the retarded propagator chain decays.
-    # Using ``-bbox_cap = -200`` here was too loose: combined with
-    # cumulative pole sums |Re β| > 3 (sum of 3+ retarded poles),
-    # ``exp(β · L)`` in the closed form's lower-bound term overflows
-    # past the 600 real-exponent threshold and the path bails to
-    # scipy.  A physical bound — earliest external time minus a few
-    # correlation times — is more than adequate.
-    # M7 (``SEMIINF_CHAIN``): no margin; the chain starts at PHASE_J_T_MIN
-    # (default -inf: semi-infinite) unless a scalar lower bounds it.
-    semiinf = _semiinf_chain_on()
-    if semiinf:
-        t_min = _t_min_frame(free_ext_vals, tie_ctx)
-        L = float(L_value) if L_value is not None else t_min
-        if t_min > L:
-            L = t_min
-    elif L_value is not None:
-        L = float(L_value)
-    else:
-        earliest_ext = min(list(free_ext_vals) + [0.0])
-        L = earliest_ext - POSET_PHYSICAL_MARGIN
+    # M7: no margin; the chain starts at PHASE_J_T_MIN (default -inf:
+    # semi-infinite) unless a scalar lower bounds it.
+    t_min = _t_min_frame(free_ext_vals, tie_ctx)
+    L = float(L_value) if L_value is not None else t_min
+    if t_min > L:
+        L = t_min
 
     upper_per_var = _causal_poset_consistent_scalar_upper(poset)
 
-    # M7: the DD kernels (``USE_PHASE_J_DD_KERNELS``), both branches.
-    if _phase_j_dd_kernels_on():
-        return _poset_modesum_dd(
-            poset, L, upper_per_var, m,
-            float('inf') if semiinf else float(bbox_cap),
-            smooth_edge_modes, prefactor_complex, subset_constraint_data,
-            free_ext_vals, pole_tuples, plan)
-
-    # Pre-extract per-edge linear data (constant in pole tuple).
-    c_ext_per_edge = [
-        float(c0) + sum(
-            float(a_ext[j]) * float(free_ext_vals[j])
-            for j in range(len(a_ext))
-        )
-        for (a_int, a_ext, c0) in subset_constraint_data
-    ]
-    a_int_per_edge = [
-        tuple(float(a_int[i]) for i in range(m))
-        for (a_int, _a_ext, _c0) in subset_constraint_data
-    ]
-
-    pref = complex(prefactor_complex)
-    # Experimental: accumulate the pole-tuple sum in mpmath to preserve
-    # precision when the per-tuple terms have large opposite-signed
-    # magnitudes that cancel down to a small result.  When the flag is
-    # off (default), behaviour is bit-identical to the float64 path.
-    use_mp_accum = USE_POSET_MPMATH_ACCUMULATION
-    if use_mp_accum:
-        from mpmath import mp as _mp, mpc as _mpc
-        _saved_dps = _mp.dps
-        _mp.dps = 50
-        total_mp = _mpc(0, 0)
-    total = 0.0 + 0.0j
-    extensions = list(_enumerate_linear_extensions(poset))
-    if not extensions:
-        return _bail('poset_no_extension')
-
-    # Pre-resolve the chain-top upper bound per extension.
-    # The upper-bound fallback stays at bbox_cap — retarded β gives
-    # Re(β · U) < 0 here, which the exp underflows safely; the
-    # closed-form's truncation at U=bbox_cap is negligible for typical
-    # Hawkes pole magnitudes.  The lower-bound fix (above) is what
-    # addresses the overflow guard firing in the closed form.
-    upper_for_ext = [
-        upper_per_var.get(sigma[m - 1], float(bbox_cap))
-        for sigma in extensions
-    ]
-    # Pre-resolve the per-position upper map per extension.  Maps
-    # chain position k → scalar upper on σ[k] (for the intermediate-
-    # upper-aware chain integrator below).
-    upper_per_position_per_ext = []
-    for sigma in extensions:
-        upp = {}
-        for k in range(m):
-            v = sigma[k]
-            if v in upper_per_var:
-                upp[k] = float(upper_per_var[v])
-        upper_per_position_per_ext.append(upp)
-
-    # ── Plan-cache fast path (Stage 4a-plan, 2026-05-15) ────────────
-    # When the caller threads a pre-built plan through, the per-tuple
-    # ``alphas_orig`` and the γ decomposition have been computed once
-    # at subset setup.  Per call we only contract γ_slope with
-    # free_ext_vals and reorder alphas per linear extension.  The
-    # poset structure, scalar bounds, linear extensions and cut tuples
-    # are all τ-dependent (they read free_ext_vals via c_eff) and
-    # stay above this branch — they're rebuilt per call regardless.
-    if plan is not None:
-        pole_iter = plan['pole_tuples']
-        alphas_per_tuple = plan['alphas_per_tuple']
-        gamma_const_per_tuple = plan['gamma_const_per_tuple']
-        gamma_slope_per_tuple_per_ext = plan[
-            'gamma_slope_per_tuple_per_ext'
-        ]
-        n_ext = len(free_ext_vals)
-        # M4 (A2): the (L, uppers, U) memo-key suffix depends on the
-        # extension only, so build it once here, not per tuple group.
-        # ``None`` (memo off, or an unkeyable input) = the callee decides.
-        chain_key_suffixes = [None] * len(extensions)
-        if _chain_uppers_memo_on():
-            for i_ext, (U_ext, upp_per_pos) in enumerate(
-                    zip(upper_for_ext, upper_per_position_per_ext)):
-                try:
-                    chain_key_suffixes[i_ext] = _chain_uppers_key_suffix(
-                        L, upp_per_pos, float(U_ext))
-                except (TypeError, ValueError, OverflowError):
-                    pass
-        # Iterate GROUPS of pole tuples sharing an alpha vector: the chain
-        # integral is evaluated once per group with the group's summed
-        # prefactor, instead of once per tuple.  See ``_build_modesum_plan``.
-        for alphas_orig, t_idxs in plan['tuple_groups']:
-            term_const = 0.0 + 0.0j
-            for t_idx in t_idxs:
-                C_prod = pole_iter[t_idx][0]
-                gamma = gamma_const_per_tuple[t_idx]
-                slope_row = gamma_slope_per_tuple_per_ext[t_idx]
-                for j in range(n_ext):
-                    gamma = gamma + slope_row[j] * free_ext_vals[j]
-                if gamma.real > 600.0:
-                    return _bail('poset_gamma_overflow')
-                try:
-                    term_const = term_const + pref * C_prod * cmath.exp(gamma)
-                except (OverflowError, ValueError):
-                    return _bail('poset_exp_overflow')
-            if term_const == 0:
-                continue
-            for sigma, U_ext, upp_per_pos, key_suffix in zip(
-                    extensions, upper_for_ext,
-                    upper_per_position_per_ext, chain_key_suffixes):
-                alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
-                chain_val = _chain_with_intermediate_uppers(
-                    alphas_chain, L, upp_per_pos, float(U_ext),
-                    _key_suffix=key_suffix,
-                )
-                if chain_val is None:
-                    _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
-                    _RUNTIME_COUNTERS[
-                        'chain_simplex_polynomial_returned_none'
-                    ] += 1
-                    if use_mp_accum:
-                        _mp.dps = _saved_dps
-                    return _bail('poset_chain_none')
-                if use_mp_accum:
-                    _term_f64 = term_const * chain_val
-                    total_mp = total_mp + _mpc(_term_f64.real, _term_f64.imag)
-                else:
-                    total += term_const * chain_val
-        if use_mp_accum:
-            _result = complex(float(total_mp.real), float(total_mp.imag))
-            _mp.dps = _saved_dps
-            return _result
-        return total
-
-    # ── Legacy path (no plan) ─────────────────────────────────────
-    pole_iter = (
-        pole_tuples if pole_tuples is not None
-        else _enumerate_pole_tuples(smooth_edge_modes)
-    )
-    for C_prod, lambdas in pole_iter:
-        # α_v for each ORIGINAL integration variable.
-        alphas_orig = [0.0 + 0.0j] * m
-        gamma = 0.0 + 0.0j
-        for e in range(n_smooth):
-            lam = lambdas[e]
-            for v in range(m):
-                alphas_orig[v] += lam * a_int_per_edge[e][v]
-            gamma += lam * c_ext_per_edge[e]
-        # Overflow guard on the γ-prefactor.  Stage 4a optim
-        # (2026-05-15): only positive Re(γ) overflows ``cmath.exp``;
-        # negative direction underflows to 0 (correct for decayed
-        # integrand).  Matches the polygon/interval guards.
-        if gamma.real > 600.0:
-            return _bail('poset_gamma_overflow')
-        try:
-            term_const = pref * C_prod * cmath.exp(gamma)
-        except (OverflowError, ValueError):
-            return _bail('poset_exp_overflow')
-        if term_const == 0:
-            continue
-        # Sum across linear extensions of the poset.
-        for sigma, U_ext, upp_per_pos in zip(
-                extensions, upper_for_ext, upper_per_position_per_ext):
-            alphas_chain = [alphas_orig[sigma[k]] for k in range(m)]
-
-            # Check whether any non-maximal variable has a scalar upper.
-            # If so, route through the intermediate-uppers helper which
-            # handles the chain split via 2^p case enumeration.  When
-            # all scalar uppers (if any) sit on the chain-top variable
-            # σ[m-1], the helper short-circuits to the standard chain
-            # closed form (no case enumeration).  This subsumes the
-            # old "maximality bail" — we never return None on that
-            # ground anymore.
-            chain_val = _chain_with_intermediate_uppers(
-                alphas_chain, L, upp_per_pos, float(U_ext),
-            )
-            if chain_val is None:
-                # All sub-pieces overflowed.  Fall back to scipy.
-                _RUNTIME_COUNTERS['poset_returned_none_total'] += 1
-                _RUNTIME_COUNTERS[
-                    'chain_simplex_polynomial_returned_none'
-                ] += 1
-                if use_mp_accum:
-                    _mp.dps = _saved_dps
-                return _bail('poset_chain_none')
-            if use_mp_accum:
-                _term_f64 = term_const * chain_val
-                total_mp = total_mp + _mpc(_term_f64.real, _term_f64.imag)
-            else:
-                total += term_const * chain_val
-    if use_mp_accum:
-        _result = complex(float(total_mp.real), float(total_mp.imag))
-        _mp.dps = _saved_dps
-        return _result
-    return total
+    # M7: the DD kernels, both branches.
+    return _poset_modesum_dd(
+        poset, L, upper_per_var, m, float('inf'),
+        smooth_edge_modes, prefactor_complex, subset_constraint_data,
+        free_ext_vals, pole_tuples, plan)
 
 
 def _chain_dd_log(alphas_chain, L, upper_per_position, U_chain_top,
                   _key_suffix=None, tol=0.0):
     """``boxfree.chain_log`` (``(status, log_scale, mant)``), memoised in the
-    M4 table (``USE_CHAIN_UPPERS_MEMO``) under a key that carries the
-    ``'dd'`` tag, the kernel backend and the decay margin ``tol``, so it never
-    meets a legacy entry; an infinite ``L`` / ``U`` is part of the key as
-    such."""
+    M4 table under a key that carries the ``'dd'`` tag, the kernel backend
+    and the decay margin ``tol``; an infinite ``L`` / ``U`` is part of the
+    key as such."""
     bf = _bf()
-    if not _chain_uppers_memo_on():
-        return bf.chain_log(alphas_chain, L, upper_per_position, U_chain_top,
-                            tol)
     try:
         if _key_suffix is None:
             _key_suffix = _chain_uppers_key_suffix(
@@ -5675,28 +3833,26 @@ def _m7b_gammas(arrs, free_ext_vals):
 
 
 def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol,
-                    memo=True, live=None):
+                    live=None):
     """``(status, log_scale, mant)`` arrays of the chain of extension
     ``sigma`` for every group of ``plan`` (``_chain_dd_log`` per group, so
     the very values of the per-chain memo), memoised per (group alphas,
     ``sigma``, suffix, tag).  ``None`` when a chain cannot be evaluated (the
-    scalar loop then meets the same input and decides).  ``memo=False``
-    (the chain memo is off): computed, not kept.  ``live`` (item 35, F2):
+    scalar loop then meets the same input and decides).  ``live`` (item 35, F2):
     the indices of the groups to compute, in order (``None``: all); the
     arrays then hold those groups only, keyed on their alphas."""
     bf = _bf()
     groups = plan['tuple_groups']
     if live is not None:
         groups = [groups[g] for g in live]
-    if memo:
-        ga_bytes = (arrs['group_alpha_bytes'] if live is None
-                    else arrs['GA'][live].tobytes())
-        key = (ga_bytes, m, tuple(sigma), key_suffix,
-               ('dd', bf.expdd.BACKEND, float(tol)))
-        with _CHAIN_UPPERS_LOCK:
-            val = _chain_dd_batch_memo.get(key)
-        if val is not None:
-            return val
+    ga_bytes = (arrs['group_alpha_bytes'] if live is None
+                else arrs['GA'][live].tobytes())
+    key = (ga_bytes, m, tuple(sigma), key_suffix,
+           ('dd', bf.expdd.BACKEND, float(tol)))
+    with _CHAIN_UPPERS_LOCK:
+        val = _chain_dd_batch_memo.get(key)
+    if val is not None:
+        return val
     G = len(groups)
     ST = np.empty(G, dtype=np.int64)
     LS = np.empty(G, dtype=np.float64)
@@ -5709,8 +3865,6 @@ def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol,
     except (TypeError, ValueError, ArithmeticError):
         return None
     val = (ST, LS, MANT)
-    if not memo:
-        return val
     with _CHAIN_UPPERS_LOCK:
         if _chain_dd_batch_size[0] + G > _CHAIN_DD_BATCH_MAX:
             _chain_dd_batch_memo.clear()
@@ -5729,12 +3883,9 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     (``boxfree.chain_fold``), in the scalar loop's order: ``(value,
     Σ|term|, scale)`` (``_dd_accuracy``).  ``None`` when any term leaves the
     plain case (the scalar loop then runs and decides)."""
-    # with the chain memo off the batch still runs (so the memo changes no
-    # number, as M4 promises) but keeps nothing
-    memo = _chain_uppers_memo_on()
     # the UNPRUNED group count decides (item 35), as before the pruning
     if (plan.get('n_groups_full', len(plan['tuple_groups'])) < _DD_BATCH_MIN
-            or (memo and any(k is None for k in key_suffixes))):
+            or any(k is None for k in key_suffixes)):
         return None
     arrs = _m7b_plan_arrays(plan)
     if arrs is None:
@@ -5760,7 +3911,7 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
                                       upper_per_position_per_ext,
                                       key_suffixes):
         b = _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key, tol,
-                            memo, live)
+                            live)
         if b is None:
             return None
         rows.append(b)
@@ -5817,13 +3968,12 @@ def _poset_modesum_dd(poset, L, upper_per_var, m, U_default,
                 upp[k] = float(upper_per_var[v])
         upper_per_position_per_ext.append(upp)
     key_suffixes = [None] * len(extensions)
-    if _chain_uppers_memo_on():
-        for i_ext, (U_ext, upp) in enumerate(
-                zip(upper_for_ext, upper_per_position_per_ext)):
-            try:
-                key_suffixes[i_ext] = _chain_uppers_key_suffix(L, upp, U_ext)
-            except (TypeError, ValueError, OverflowError):
-                pass
+    for i_ext, (U_ext, upp) in enumerate(
+            zip(upper_for_ext, upper_per_position_per_ext)):
+        try:
+            key_suffixes[i_ext] = _chain_uppers_key_suffix(L, upp, U_ext)
+        except (TypeError, ValueError, OverflowError):
+            pass
     pref = complex(prefactor_complex)
     tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
                      subset_constraint_data)
@@ -5919,7 +4069,7 @@ def _poset_dd_finish(total, L, upper_for_ext, mag=0.0, scale=0.0):
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Exact DBM route for m≥3 subsets (M3; ``USE_DBM_FALLBACK``)
+# Exact DBM route for m≥3 subsets (M3)
 # ───────────────────────────────────────────────────────────────────────
 from engine.integration.time_domain import dbm_integral as _dbm
 
@@ -5937,19 +4087,21 @@ def _integrate_subset_dbm(
     cap=None,
     poset_bail_reason=None,
 ):
-    r"""Exact ``∫_{region ∩ box} pref · Π_e [Σ_α C_α exp(λ_α · Δt_e)] ds``
-    for an m ≥ 3 subset whose poset path bailed: the DBM route
+    r"""Exact ``∫_{region} pref · Π_e [Σ_α C_α exp(λ_α · Δt_e)] ds`` for an
+    m ≥ 3 subset whose poset path bailed: the DBM route
     (``dbm_integral.integrate_exp_sum``).
 
     The integrand and its arguments are those of
     ``_integrate_nd_polytope_poset_modesum`` (one row of
     ``subset_constraint_data`` per smooth edge; the pole tuples from
-    ``plan``, ``pole_tuples`` or ``smooth_edge_modes``).  A direction the
-    rows leave open is closed at ±``cap``, ``_nquad_outer_cap()`` (the
-    scipy fallback's ``OUTER_CAP``) unless given; a finite bound is kept as
-    it is, even beyond the box.  The box is absolute (from the time
-    origin), as in the legacy scipy routine: a region bounded above near or
-    below -cap with a time open below is truncated or emptied by it.
+    ``plan``, ``pole_tuples`` or ``smooth_edge_modes``).  By default
+    (``cap=None``) the region is box-free: a direction the rows leave open
+    is integrated to infinity (``'dbm_divergent'`` when it does not decay
+    by more than the rounding margin of ``_decay_tol``).  An explicit
+    ``cap`` closes such directions at ±``cap`` instead (absolute, from the
+    time origin; a finite bound is kept as it is, even beyond the box):
+    the boxed reference of a test, the box of the pre-0.2.0 route at
+    ``cap=200.0``.
 
     Rows: a constant row (zero normal) is decided by the Θ(0) = 0 rule with
     the external-time tie order (``_const_row_decision`` with ``tie_ctx``):
@@ -6057,15 +4209,13 @@ def _integrate_subset_dbm(
     # (an ill-conditioned closed form in a correlator tail passed, its mp
     # retry skipped) and [time]^m (the verdict changed with the time unit).
     scale = None
-    # M7: the box.  Default: ±_nquad_outer_cap(), absolute (as before).  DD
-    # kernels: ±max(that, 40/κ_min + max|free time|), κ_min the slowest
-    # decay rate of the decaying modes, so that the truncation e^{-κ·(cap -
-    # |t|)} stays below e^{-40} wherever the region sits.  SEMIINF_CHAIN: no
-    # box (open directions integrated to infinity, DIVERGENT when one does
-    # not decay by more than the rounding margin of ``_decay_tol``), with
-    # the β-zero threshold of that box.  A finite PHASE_J_T_MIN (box-free
-    # routes only, ``_t_min``) adds the rows s_v > PHASE_J_T_MIN whatever the
-    # box.
+    # M7: no box (open directions integrated to infinity, DIVERGENT when
+    # one does not decay by more than the rounding margin of
+    # ``_decay_tol``), with the β-zero threshold of the box
+    # ±max(_nquad_outer_cap(), 40/κ_min + max|free time|) that the
+    # pre-0.2.0 DD route used (κ_min the slowest decay rate of the decaying
+    # modes).  A finite PHASE_J_T_MIN (``_t_min``) adds the rows
+    # s_v > PHASE_J_T_MIN.  An explicit ``cap``: that box, no β threshold.
     eps = None
     beta_tol = None
     t_min = _t_min_frame(free_ext_vals, tie_ctx)
@@ -6075,39 +4225,31 @@ def _integrate_subset_dbm(
             rows.append((e_v, -t_min))
     if cap is None:
         base = _nquad_outer_cap()
-        if _semiinf_chain_on() or _phase_j_dd_kernels_on():
-            # every mode of every edge (item 35: from the edges when they
-            # are given, since a pruned plan or grouped tuple list lacks the
-            # exact-zero modes; the same set as the full product's)
-            if smooth_edge_modes is not None:
-                lam_all = [lam for ems in smooth_edge_modes
-                           for (_C, lam) in ems.modes]
-            else:
-                lam_all = [lam for (_C, lams) in (
-                    plan['pole_tuples'] if plan is not None
-                    else pole_tuples) for lam in lams]
-            # decay rates above the rounding margin only (a slower one
-            # cannot count as decay; it would also overflow 40/κ)
-            k_floor = _decay_tol(smooth_edge_modes, pole_tuples, plan,
-                                 subset_constraint_data)
-            kmin = min((-complex(lam).real for lam in lam_all
-                        if -complex(lam).real > k_floor),
-                       default=math.inf)
-            t_far = max((abs(float(t)) for t in free_ext_vals), default=0.0)
-            slow_cap = (max(base, 40.0 / kmin + t_far) if kmin < math.inf
-                        else base)
-            if _semiinf_chain_on():
-                cap = math.inf
-                eps = _dbm.BETA_ZERO_SPAN / max(slow_cap, 1.0)
-                beta_tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
-                                      subset_constraint_data)
-                _RUNTIME_COUNTERS['dbm_box_free'] += 1
-            else:
-                cap = slow_cap
-                if cap > base:
-                    _RUNTIME_COUNTERS['dbm_slow_mode_box'] += 1
+        # every mode of every edge (item 35: from the edges when they are
+        # given, since a pruned plan or grouped tuple list lacks the
+        # exact-zero modes; the same set as the full product's)
+        if smooth_edge_modes is not None:
+            lam_all = [lam for ems in smooth_edge_modes
+                       for (_C, lam) in ems.modes]
         else:
-            cap = base
+            lam_all = [lam for (_C, lams) in (
+                plan['pole_tuples'] if plan is not None
+                else pole_tuples) for lam in lams]
+        # decay rates above the rounding margin only (a slower one cannot
+        # count as decay; it would also overflow 40/κ)
+        k_floor = _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                             subset_constraint_data)
+        kmin = min((-complex(lam).real for lam in lam_all
+                    if -complex(lam).real > k_floor),
+                   default=math.inf)
+        t_far = max((abs(float(t)) for t in free_ext_vals), default=0.0)
+        slow_cap = (max(base, 40.0 / kmin + t_far) if kmin < math.inf
+                    else base)
+        cap = math.inf
+        eps = _dbm.BETA_ZERO_SPAN / max(slow_cap, 1.0)
+        beta_tol = _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                              subset_constraint_data)
+        _RUNTIME_COUNTERS['dbm_box_free'] += 1
     res = _dbm.integrate_exp_sum(rows, m, seeds, cap, scale=scale, eps=eps,
                                  beta_tol=beta_tol)
     if res.status == _dbm.STATUS_DIVERGENT:
@@ -6373,7 +4515,6 @@ def _integrate_1d_polytope_modesum(
     prefactor_complex,
     subset_constraint_data,
     free_ext_vals,
-    bbox_cap=None,
     pole_tuples=None,
     plan=None,
     row_kinds=None,
@@ -6387,43 +4528,34 @@ def _integrate_1d_polytope_modesum(
         α_s = Σ_e λ_α_e · a_int_e[0]
         γ   = Σ_e λ_α_e · c_ext_e,  c_ext_e = c0_e + Σ_j a_ext_e[j]·t_free[j]
     Each term is integrated in closed form over the polytope interval
-    ``[L, U]``.
+    ``[L, U]`` (a first divided difference on the DD kernels,
+    ``_interval_dd_total``; ``L`` is at least ``PHASE_J_T_MIN``).
 
     The interval bounds come from the smooth-edge retardation
     constraints ``a_int_e[0]·s + c_ext_e > 0``.  Unbounded sides are
-    tracked as ±∞: the corresponding closed-form boundary term
-    evaluates to 0 if the integrand decays in that direction
-    (``sign(Re α_s)`` matches), else ``None`` (caller falls back to
-    scipy.quad which handles the unbounded endpoint via the standard
-    adaptive-quadrature substitution).
+    tracked as ±∞: a term that does not decay in that direction is a
+    divergence (bail ``'interval_divergent'``).
 
     ``pole_tuples`` (optional): pre-built iterable of ``(C_prod,
     lambdas)`` pairs that replaces ``_enumerate_pole_tuples
-    (smooth_edge_modes)``.  Used by the grouped Phase J path to
-    inject merged residues ``B_α = Σ_td cp_td · Π_e C^{(td)}_{α_e, e}``.
+    (smooth_edge_modes)``.
 
-    Returns ``complex`` or ``None`` on overflow / divergent unbounded
-    integrand.
+    Returns ``complex`` or ``None`` (through ``_bail``) on overflow or a
+    divergent unbounded integrand.
 
-    Constant rows: THETA0_CONST_ROW_MODE 'ito' (call time) uses
-    ``_const_row_verdict`` (EMPTY -> 0j, DROP -> no bound; the row still
-    enters γ); 'legacy_clip' the pre-M1 ``|a| < 1e-15``, ``c_eff <= 0``
-    rule.  ``bbox_cap`` is unused (both sides are tracked exactly); it is
-    accepted for signature symmetry.  ``row_kinds``: the rows' provenance;
+    Constant rows: ``_const_row_verdict`` (EMPTY -> 0j, DROP -> no bound;
+    the row still enters γ).  ``row_kinds``: the rows' provenance;
     ``tie_ctx``: see ``_tie_order_sign``.
     """
-    import cmath
     import math
     _t_min()                    # M7: a finite PHASE_J_T_MIN is never ignored
     n_smooth = len(smooth_edge_modes)
     _RUNTIME_COUNTERS['interval_attempted'] += 1
-    bbox_cap = _resolve_bbox_cap(bbox_cap)          # (unused; see docstring)
     if len(subset_constraint_data) != n_smooth:
         _RUNTIME_COUNTERS['interval_returned_none'] += 1
         return _bail('interval_rows_mismatch')
 
     # Resolve the feasible interval — track unboundedness exactly.
-    legacy = _theta0_legacy()
     L = -math.inf
     U = +math.inf
     for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
@@ -6432,15 +4564,10 @@ def _integrate_1d_polytope_modesum(
             float(a_ext[i]) * float(free_ext_vals[i])
             for i in range(len(a_ext))
         )
-        if not legacy:
-            if abs(a) <= _ROW_COEF_ATOL:
-                if _const_row_verdict(
-                        (a,), a_ext, c0, free_ext_vals,
-                        _row_kind(row_kinds, idx), tie_ctx) == 'EMPTY':
-                    return 0.0 + 0.0j
-                continue
-        elif abs(a) < 1e-15:
-            if c_eff <= 0:
+        if abs(a) <= _ROW_COEF_ATOL:
+            if _const_row_verdict(
+                    (a,), a_ext, c0, free_ext_vals,
+                    _row_kind(row_kinds, idx), tie_ctx) == 'EMPTY':
                 return 0.0 + 0.0j
             continue
         bound = -c_eff / a
@@ -6452,150 +4579,17 @@ def _integrate_1d_polytope_modesum(
                 U = bound
     if L >= U:
         return 0.0 + 0.0j
-    L_inf = math.isinf(L)
-    U_inf = math.isinf(U)
 
     pref = complex(prefactor_complex)
-    total = 0.0 + 0.0j
 
-    # M7: the DD kernels (``USE_PHASE_J_DD_KERNELS``), both branches.
-    if _phase_j_dd_kernels_on():
-        return _interval_dd_total(
-            _modesum_tuples(smooth_edge_modes, subset_constraint_data,
-                            free_ext_vals, 1, pole_tuples, plan),
-            pref, L, U, 'interval',
-            _decay_tol(smooth_edge_modes, pole_tuples, plan,
-                       subset_constraint_data),
-            _t_min_frame(free_ext_vals, tie_ctx))
-
-    # ── Plan-cache fast path (Stage 4a-plan, 2026-05-15) ────────────
-    # When the caller threads a pre-built plan through, the per-tuple
-    # ``α_s`` and ``γ`` decomposition has been computed once at
-    # subset setup — only the γ slope contraction with free_ext_vals
-    # remains.  See ``_build_modesum_plan``.
-    if plan is not None:
-        pole_iter = plan['pole_tuples']
-        alphas_per_tuple = plan['alphas_per_tuple']
-        gamma_const_per_tuple = plan['gamma_const_per_tuple']
-        gamma_slope_per_tuple_per_ext = plan[
-            'gamma_slope_per_tuple_per_ext'
-        ]
-        n_ext = len(free_ext_vals)
-        for t_idx, (C_prod, _lambdas) in enumerate(pole_iter):
-            alpha_s = alphas_per_tuple[t_idx][0]
-            gamma = gamma_const_per_tuple[t_idx]
-            slope_row = gamma_slope_per_tuple_per_ext[t_idx]
-            for j in range(n_ext):
-                gamma = gamma + slope_row[j] * free_ext_vals[j]
-            # Same overflow guard / closed-form as the non-plan path
-            # below.  Duplicated rather than fall-through so the hot
-            # path stays branch-free on (plan is not None).
-            if gamma.real > 600.0:
-                return _bail('interval_gamma_overflow')
-            try:
-                term_const = pref * C_prod
-            except (OverflowError, ValueError):
-                return _bail('interval_exp_overflow')
-            if term_const == 0:
-                continue
-            try:
-                if abs(alpha_s) < 1e-15:
-                    if L_inf or U_inf:
-                        return _bail('interval_divergent_flat')
-                    contrib = (U - L) * cmath.exp(gamma)
-                else:
-                    if U_inf:
-                        if alpha_s.real >= 0:
-                            return _bail('interval_divergent_upper')
-                        term_U = 0.0 + 0.0j
-                    else:
-                        arg = alpha_s * U + gamma
-                        if arg.real > 600.0:
-                            return _bail('interval_arg_overflow')
-                        term_U = cmath.exp(arg)
-                    if L_inf:
-                        if alpha_s.real <= 0:
-                            return _bail('interval_divergent_lower')
-                        term_L = 0.0 + 0.0j
-                    else:
-                        arg = alpha_s * L + gamma
-                        if arg.real > 600.0:
-                            return _bail('interval_arg_overflow')
-                        term_L = cmath.exp(arg)
-                    contrib = (term_U - term_L) / alpha_s
-            except (OverflowError, ValueError):
-                return _bail('interval_exp_overflow')
-            total += term_const * contrib
-        return total
-
-    # ── Legacy path (no plan): rebuild per-edge data per call ──────
-    c_ext_per_edge = [
-        float(c0) + sum(
-            float(a_ext[j]) * float(free_ext_vals[j])
-            for j in range(len(a_ext))
-        )
-        for (a_int, a_ext, c0) in subset_constraint_data
-    ]
-    a_int_per_edge = [
-        float(a_int[0]) if a_int else 0.0
-        for (a_int, _a_ext, _c0) in subset_constraint_data
-    ]
-
-    pole_iter = (
-        pole_tuples if pole_tuples is not None
-        else _enumerate_pole_tuples(smooth_edge_modes)
-    )
-    for C_prod, lambdas in pole_iter:
-        alpha_s = 0.0 + 0.0j
-        gamma = 0.0 + 0.0j
-        for e in range(n_smooth):
-            lam = lambdas[e]
-            alpha_s += lam * a_int_per_edge[e]
-            gamma += lam * c_ext_per_edge[e]
-        # Overflow guard on the γ-prefactor (matches polygon path).
-        # Stage 4a optim (2026-05-15): only positive Re(γ) overflows
-        # ``cmath.exp``; negative direction underflows to 0 (which
-        # gives the correct result for a fully-decayed integrand).
-        if gamma.real > 600.0:
-            return _bail('interval_gamma_overflow')
-        try:
-            term_const = pref * C_prod
-        except (OverflowError, ValueError):
-            return _bail('interval_exp_overflow')
-        if term_const == 0:
-            continue
-        try:
-            if abs(alpha_s) < 1e-15:
-                # α_s ≈ 0: integrand is constant exp(γ) in s.
-                if L_inf or U_inf:
-                    return _bail('interval_divergent_flat')  # diverges
-                contrib = (U - L) * cmath.exp(gamma)
-            else:
-                if U_inf:
-                    if alpha_s.real >= 0:
-                        # would diverge at +∞
-                        return _bail('interval_divergent_upper')
-                    term_U = 0.0 + 0.0j
-                else:
-                    arg = alpha_s * U + gamma
-                    if arg.real > 600.0:
-                        return _bail('interval_arg_overflow')
-                    term_U = cmath.exp(arg)
-                if L_inf:
-                    if alpha_s.real <= 0:
-                        # would diverge at -∞
-                        return _bail('interval_divergent_lower')
-                    term_L = 0.0 + 0.0j
-                else:
-                    arg = alpha_s * L + gamma
-                    if arg.real > 600.0:
-                        return _bail('interval_arg_overflow')
-                    term_L = cmath.exp(arg)
-                contrib = (term_U - term_L) / alpha_s
-        except (OverflowError, ValueError):
-            return _bail('interval_exp_overflow')
-        total += term_const * contrib
-    return total
+    # M7: the DD kernels, both branches.
+    return _interval_dd_total(
+        _modesum_tuples(smooth_edge_modes, subset_constraint_data,
+                        free_ext_vals, 1, pole_tuples, plan),
+        pref, L, U, 'interval',
+        _decay_tol(smooth_edge_modes, pole_tuples, plan,
+                   subset_constraint_data),
+        _t_min_frame(free_ext_vals, tie_ctx))
 
 
 def _integrate_2d_polygon_modesum(
@@ -6603,22 +4597,21 @@ def _integrate_2d_polygon_modesum(
     prefactor_complex,
     subset_constraint_data,
     free_ext_vals,
-    bbox_cap=None,
     pole_tuples=None,
     plan=None,
     row_kinds=None,
     tie_ctx=None,
 ):
-    r"""Analytic ∫∫_polygon Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor
+    r"""Analytic ∫∫_region Π_e [Σ_α C_α exp(λ_α · Δt_e)] · prefactor
                   ds_0 ds_1.
 
     Each per-edge mode sum is pole-expanded; the resulting sum of
     single-exponential terms ``A · exp(α·s_0 + β·s_1 + γ)`` is
-    integrated analytically over the polygon defined by
-    ``subset_constraint_data``.
+    integrated analytically over the exact (possibly unbounded) region
+    defined by ``subset_constraint_data`` (``_polygon_modesum_dd``).
 
-    Returns ``complex`` or ``None`` if construction fails (e.g.
-    polygon empty / degenerate, or the per-edge data is missing).
+    Returns ``complex`` or ``None`` (through ``_bail``) when the rows do not
+    match the modes, the region is divergent or the value overflows.
 
     Δt_e for each smooth edge is expressed as
         Δt_e = c0_e + a_int_e[0]·s_0 + a_int_e[1]·s_1 + Σ_j a_ext_e[j]·t_free[j]
@@ -6630,170 +4623,35 @@ def _integrate_2d_polygon_modesum(
 
     ``pole_tuples`` (optional): pre-built iterable of ``(C_prod, lambdas)``
     pairs that replaces ``_enumerate_pole_tuples(smooth_edge_modes)``.
-    Used by the grouped Phase J path
-    (``engine.integration.time_domain.grouped_integral``) to inject a
-    merged-residue tensor ``B_α = Σ_td cp_td · Π_e C^{(td)}_{α_e, e}``
-    in place of the per-edge Cartesian product.  When ``None``, the
-    per-diagram default iterator runs.
 
-    ``bbox_cap=None`` resolves at call time (``_resolve_bbox_cap``).  The
-    polygon (shared by the plan and the no-plan branch) follows
-    THETA0_CONST_ROW_MODE through ``_polygon_from_2d_constraints``; a
-    constant DROP row only skips the clip and still enters γ.
-    ``row_kinds``: the rows' provenance (``None``: all 'edge');
-    ``tie_ctx``: see ``_tie_order_sign``.
+    The region (shared by the plan and the no-plan branch) decides constant
+    rows by the Θ(0) rule (``_polygon_region_dd``); a constant DROP row only
+    leaves the geometry and still enters γ.  ``row_kinds``: the rows'
+    provenance (``None``: all 'edge'); ``tie_ctx``: see ``_tie_order_sign``.
     """
-    import cmath
     _t_min()                    # M7: a finite PHASE_J_T_MIN is never ignored
     n_smooth = len(smooth_edge_modes)
     _RUNTIME_COUNTERS['polygon_attempted'] += 1
-    bbox_cap = _resolve_bbox_cap(bbox_cap)
     if len(subset_constraint_data) != n_smooth:
         # Smooth-edges-to-constraints mismatch shouldn't happen — the
         # caller built both from ``smooth_edges`` in lock-step.  Bail
-        # to scipy.nquad fallback.
+        # to the scipy fallback.
         _RUNTIME_COUNTERS['polygon_returned_none'] += 1
         return _bail('polygon_rows_mismatch')
 
-    # M7: the DD kernels (``USE_PHASE_J_DD_KERNELS``; with ``UNBOUNDED_2D``
-    # 'exact' the region is box-free), both branches.
-    if _phase_j_dd_kernels_on():
-        return _polygon_modesum_dd(
-            smooth_edge_modes, prefactor_complex, subset_constraint_data,
-            free_ext_vals, bbox_cap, pole_tuples, plan, row_kinds, tie_ctx)
-
-    # Polygon is shared across all pole tuples.
-    polygon = _polygon_from_2d_constraints(
-        subset_constraint_data, free_ext_vals, bbox_cap,
-        row_kinds=row_kinds, tie_ctx=tie_ctx,
-    )
-    if len(polygon) < 3:
-        # Empty or degenerate polygon → integral is zero.
-        return 0.0 + 0.0j
-
-    # Fan triangulation.
-    triangles = [
-        (polygon[0], polygon[i], polygon[i + 1])
-        for i in range(1, len(polygon) - 1)
-    ]
-
-    total = 0.0 + 0.0j
-    pref = complex(prefactor_complex)
-
-    # ── Plan-cache fast path (Stage 4a-plan, 2026-05-15) ────────────
-    # Per-tuple α_s, β_s and γ decomposition pre-computed at subset
-    # setup; only γ_slope contraction and the per-triangle integral
-    # remain per τ.  See ``_build_modesum_plan``.
-    if plan is not None:
-        pole_iter = plan['pole_tuples']
-        alphas_per_tuple = plan['alphas_per_tuple']
-        gamma_const_per_tuple = plan['gamma_const_per_tuple']
-        gamma_slope_per_tuple_per_ext = plan[
-            'gamma_slope_per_tuple_per_ext'
-        ]
-        n_ext = len(free_ext_vals)
-        for t_idx, (C_prod, _lambdas) in enumerate(pole_iter):
-            alpha_s, beta_s = alphas_per_tuple[t_idx]
-            gamma = gamma_const_per_tuple[t_idx]
-            slope_row = gamma_slope_per_tuple_per_ext[t_idx]
-            for j in range(n_ext):
-                gamma = gamma + slope_row[j] * free_ext_vals[j]
-            if gamma.real > 600.0:
-                return _bail('polygon_gamma_overflow')
-            try:
-                term_const = pref * C_prod * cmath.exp(gamma)
-            except (OverflowError, ValueError):
-                return _bail('polygon_exp_overflow')
-            if term_const == 0:
-                continue
-            tri_sum = 0.0 + 0.0j
-            for (v0, v1, v2) in triangles:
-                tri_contrib = _exp_over_triangle(
-                    v0, v1, v2, alpha_s, beta_s
-                )
-                if tri_contrib is None:
-                    return _bail('polygon_triangle_guard')
-                tri_sum += tri_contrib
-            total += term_const * tri_sum
-        return total
-
-    # ── Legacy path (no plan): rebuild per-edge data per call ──────
-    # Precompute per-edge "ext-time c-contribution":
-    #   c_ext_e = c0_e + Σ_j a_ext_e[j] · t_free[j]
-    # so that γ for a given pole tuple is Σ_e λ_α_e · c_ext_e.
-    c_ext_per_edge = [
-        float(c0) + sum(
-            float(a_ext[j]) * float(free_ext_vals[j])
-            for j in range(len(a_ext))
-        )
-        for (a_int, a_ext, c0) in subset_constraint_data
-    ]
-    a_int_per_edge = [
-        (float(a_int[0]), float(a_int[1]))
-        for (a_int, _a_ext, _c0) in subset_constraint_data
-    ]
-
-    pole_iter = (
-        pole_tuples if pole_tuples is not None
-        else _enumerate_pole_tuples(smooth_edge_modes)
-    )
-    for C_prod, lambdas in pole_iter:
-        # α_s, β_s, γ for this pole tuple.
-        alpha_s = 0.0 + 0.0j
-        beta_s = 0.0 + 0.0j
-        gamma = 0.0 + 0.0j
-        for e in range(n_smooth):
-            lam = lambdas[e]
-            a0, a1 = a_int_per_edge[e]
-            alpha_s += lam * a0
-            beta_s += lam * a1
-            gamma += lam * c_ext_per_edge[e]
-        # Overflow guard on the γ-prefactor.  cmath.exp overflows for
-        # Re(γ) > ~709 and underflows to 0 for Re(γ) < ~-745;
-        # underflow is the right behaviour (term decays to 0).
-        # Stage 4a optim (2026-05-15): check only the positive-
-        # overflow side, matching the fixed-direction guard inside
-        # ``_exp_over_triangle``.
-        if gamma.real > 600.0:
-            return _bail('polygon_gamma_overflow')
-        try:
-            term_const = pref * C_prod * cmath.exp(gamma)
-        except (OverflowError, ValueError):
-            return _bail('polygon_exp_overflow')
-        if term_const == 0:
-            continue
-        # Triangle sum.  ``_exp_over_triangle`` returns ``None`` when
-        # any per-term exp would overflow — propagate that as a
-        # whole-subset fallback signal.
-        tri_sum = 0.0 + 0.0j
-        for (v0, v1, v2) in triangles:
-            tri_contrib = _exp_over_triangle(v0, v1, v2, alpha_s, beta_s)
-            if tri_contrib is None:
-                return _bail('polygon_triangle_guard')
-            tri_sum += tri_contrib
-        total += term_const * tri_sum
-    return total
+    # M7: the DD kernels on the exact (box-free) region, both branches.
+    return _polygon_modesum_dd(
+        smooth_edge_modes, prefactor_complex, subset_constraint_data,
+        free_ext_vals, pole_tuples, plan, row_kinds, tie_ctx)
 
 
-def _polygon_region_dd(subset_constraint_data, free_ext_vals, bbox_cap,
+def _polygon_region_dd(subset_constraint_data, free_ext_vals,
                        row_kinds=None, tie_ctx=None):
-    """The ``boxfree.Region2D`` of an m=2 subset on the DD route.
-
-    ``UNBOUNDED_2D`` 'box': the legacy clipped polygon
-    (``_polygon_from_2d_constraints``, ±``bbox_cap``), fanned from its first
-    vertex as before.  'exact': the exact region (``boxfree.region_2d``) of
-    the rows, constant rows decided as in ``_polygon_from_2d_constraints``
-    (THETA0_CONST_ROW_MODE; DROP skips the row, which stays in γ), plus
-    ``s_i > PHASE_J_T_MIN`` when that is finite."""
+    """The ``boxfree.Region2D`` of an m=2 subset: the exact region
+    (``boxfree.region_2d``) of the rows, constant rows decided by
+    ``_const_row_verdict`` (EMPTY empties the region; DROP skips the row,
+    which stays in γ), plus ``s_i > PHASE_J_T_MIN`` when that is finite."""
     bf = _bf()
-    if not _unbounded_2d_exact():
-        polygon = _polygon_from_2d_constraints(
-            subset_constraint_data, free_ext_vals, bbox_cap,
-            row_kinds=row_kinds, tie_ctx=tie_ctx)
-        if len(polygon) < 3:
-            return bf.Region2D('empty')
-        return bf.region_from_polygon(polygon)
-    legacy = _theta0_legacy()
     rows = []
     for idx, (a_int, a_ext, c0) in enumerate(subset_constraint_data):
         c_eff = float(c0) + sum(
@@ -6804,32 +4662,27 @@ def _polygon_region_dd(subset_constraint_data, free_ext_vals, bbox_cap,
         a1 = float(a_int[1])
         if abs(a0) <= _ROW_COEF_ATOL and abs(a1) <= _ROW_COEF_ATOL:
             _RUNTIME_COUNTERS['zero_normal_rows_seen'] += 1
-            if not legacy:
-                verdict = _const_row_verdict(
-                    (a0, a1), a_ext, c0, free_ext_vals,
-                    _row_kind(row_kinds, idx), tie_ctx)
-                if verdict == 'EMPTY':
-                    return bf.Region2D('empty')
-                continue            # DROP: no geometry; γ keeps exp(λ·c_eff)
-            if a0 == 0.0 and a1 == 0.0:
-                if not (c_eff >= 0.0):
-                    return bf.Region2D('empty')
-                continue
+            verdict = _const_row_verdict(
+                (a0, a1), a_ext, c0, free_ext_vals,
+                _row_kind(row_kinds, idx), tie_ctx)
+            if verdict == 'EMPTY':
+                return bf.Region2D('empty')
+            continue                # DROP: no geometry; γ keeps exp(λ·c_eff)
         rows.append((a0, a1, c_eff))
     t_min = _t_min_frame(free_ext_vals, tie_ctx)
     if t_min != float('-inf'):
         rows.append((1.0, 0.0, -t_min))
         rows.append((0.0, 1.0, -t_min))
     region = bf.region_2d(rows)
-    if region.kind == 'empty' and not legacy and region.reason in (
+    if region.kind == 'empty' and region.reason in (
             'opposite', 'measure_zero'):
-        # the exact emptiness tests of _polygon_from_2d_constraints
+        # the exact emptiness tests (``_opposite_rows_empty``, measure zero)
         _RUNTIME_COUNTERS['polygon_zero_area'] += 1
     return region
 
 
 def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
-                        subset_constraint_data, free_ext_vals, bbox_cap,
+                        subset_constraint_data, free_ext_vals,
                         pole_tuples, plan, row_kinds, tie_ctx):
     """``_integrate_2d_polygon_modesum`` on the DD kernels (M7): the region
     once per call, then ``Σ pref·C ∫ exp(α s_0 + β s_1 + γ)`` with γ folded
@@ -6837,7 +4690,7 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
     bails ('polygon_dd_overflow' / 'polygon_divergent')."""
     bf = _bf()
     region = _polygon_region_dd(subset_constraint_data, free_ext_vals,
-                                bbox_cap, row_kinds, tie_ctx)
+                                row_kinds, tie_ctx)
     if region.kind == 'empty':
         return 0.0 + 0.0j
     if region.kind == 'lineality':
@@ -7059,69 +4912,30 @@ DEBUG_HEAVISIDE_GUARD = False
 
 
 # ── M5 (P6): per-diagram setup levers (pure speed-ups, no number moves) ──
-# Four independent levers cut the setup that ``integrate_diagram`` pays per
-# diagram.  Each has a module flag (bool, read at CALL time, so
-# ``monkeypatch.setattr`` works) and an environment variable read at import
-# (1 | 0, also true/false, yes/no, on/off; default ON; anything else raises):
+# Four levers cut the setup that ``integrate_diagram`` pays per diagram; all
+# are always on (their switches -- ``USE_SETUP_*``, ``DAEDALUS_SETUP_*`` and
+# the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP`` -- were retired in audit
+# W7; each was ``np.array_equal`` to its legacy path on every result):
 #
-#   USE_SETUP_ZERO_EXIT   DAEDALUS_SETUP_ZERO_EXIT   L1: a diagram whose
-#       prefactor is numerically exactly 0 returns a zero contribution before
-#       any setup.
-#   USE_SETUP_PROP_TD     DAEDALUS_SETUP_PROP_TD     L2: model-level data
-#       built once per ``compute_correction_td`` call.
-#   USE_SETUP_LAZY_SR     DAEDALUS_SETUP_LAZY_SR     L3: the SR objects only
-#       the shot-noise / SR-integrand branches need are built on demand.
-#   USE_AUT_MEMO (engine.diagrams.symmetry)  DAEDALUS_SETUP_AUT_MEMO   L5.
-#   USE_SETUP_DELTA_SOLVE DAEDALUS_SETUP_DELTA_SOLVE M10 (L4a): the δ-edge
-#       eliminations by exact rational linear algebra instead of Maxima
-#       (``sage_solve``) and SR ``==`` tests (see ``_delta_solve_exact``).
-#
-# ``DAEDALUS_PHASE_J_LEGACY_SETUP=1`` (read at call time) forces every one of
-# them off.  It is NOT ``DAEDALUS_PHASE_J_LEGACY``: that one reproduces older
-# NUMBERS, this one only restores the old setup path, which gives the same
-# numbers.  Neither umbrella touches the other.  A lever on is ``np.array_equal``
-# to the lever off on every result.
-_SETUP_TRUE = ('', '1', 'true', 'yes', 'on')
-_SETUP_FALSE = ('0', 'false', 'no', 'off')
+#   L1: a diagram whose prefactor is numerically exactly 0 returns a zero
+#       contribution before any setup (``_zero_exit_applies``).
+#   L2: model-level data built once per ``compute_correction_td`` call
+#       (``PropagatorTD``).
+#   L3: the SR objects only the shot-noise / SR-integrand branches need are
+#       built on demand.
+#   L5: the automorphism-order memo (``engine.diagrams.symmetry``).
+#   M10 (L4a): the δ-edge eliminations by exact rational linear algebra
+#       instead of Maxima (``sage_solve``) and SR ``==`` tests (see
+#       ``_delta_solve_exact``).
 
-
-def _initial_setup_flag(env_name, environ=None):
-    """The import-time value of a setup-lever flag from ``environ`` (default
-    ``os.environ``).  An unknown value raises."""
-    env = _os.environ if environ is None else environ
-    v = env.get(env_name, '').strip().lower()
-    if v in _SETUP_TRUE:
-        return True
-    if v in _SETUP_FALSE:
-        return False
-    raise ValueError(f'{env_name}={v!r}: expected 1 or 0')
-
-
-USE_SETUP_ZERO_EXIT = _initial_setup_flag('DAEDALUS_SETUP_ZERO_EXIT')
-USE_SETUP_PROP_TD = _initial_setup_flag('DAEDALUS_SETUP_PROP_TD')
-USE_SETUP_LAZY_SR = _initial_setup_flag('DAEDALUS_SETUP_LAZY_SR')
-USE_SETUP_DELTA_SOLVE = _initial_setup_flag('DAEDALUS_SETUP_DELTA_SOLVE')
-
-# M10 validation mode (default OFF): with ``USE_SETUP_DELTA_SOLVE`` on, every
-# δ-subset is also solved the legacy way (``sage_solve``) and the two must
+# M10 validation mode (default OFF): every δ-subset is also solved the
+# legacy way (``sage_solve``) and the two must
 # agree EXACTLY: same eliminated variables, every substitution RHS equal as a
 # polynomial and the same SR tree, the same residual external-time verdicts, and every constraint
 # row (``a_int``, ``a_ext``, ``c0``) built from them equal with ``==``.  A
 # mismatch raises ``DeltaSolveValidationError``.  On when the module bool is
 # True or ``DAEDALUS_PHASE_J_VALIDATE_DELTA`` is truthy at CALL time.
 VALIDATE_DELTA = _env_truthy('DAEDALUS_PHASE_J_VALIDATE_DELTA')
-
-
-def _setup_lever_on(flag_name):
-    """The module flag ``flag_name`` (call time, validated), unless the
-    umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP`` is set."""
-    if _env_truthy('DAEDALUS_PHASE_J_LEGACY_SETUP'):
-        return False
-    flag = globals()[flag_name]
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'final_integral.{flag_name}={flag!r}: '
-                     f'expected True or False')
 
 
 class _LazyDict(dict):
@@ -7429,7 +5243,7 @@ def _zero_exit_result(D, leaves, ext_time_vars, diag_serial, rerun):
          'edge_info': lambda: _full()['edge_info']})
 
 
-# ── M10 (L4a): exact δ-edge elimination (``USE_SETUP_DELTA_SOLVE``) ──
+# ── M10 (L4a): exact δ-edge elimination ──
 # Every δ edge of a subset sets ``dt_e = 0``; ``integrate_diagram`` solves it
 # for the first remaining integration variable that occurs.  On every model
 # in the repo ``dt_e`` is (after the previous substitutions) a linear form in
@@ -7556,23 +5370,14 @@ def _delta_eliminate_exact(eq_expr, var):
 
 
 # ── Feature B: integrated shot-noise δ records ─────────────────────────
-# USE_SHOTNOISE_INTEGRATED (bool, read at call time; env
-# DAEDALUS_SHOTNOISE_INTEGRATED, default on): a shot-noise subset (one
-# residual external-time equality) that keeps integration variables after
-# the δ elimination becomes a ``delta_contributions`` record whose
-# ``coeff_fc`` is the subset's polytope integral, instead of being skipped.
-# It never enters ``contribution`` / ``C_tau``: off, only the records change.
-USE_SHOTNOISE_INTEGRATED = _initial_setup_flag(
-    'DAEDALUS_SHOTNOISE_INTEGRATED')
-
-
-def _shotnoise_integrated_on():
-    """``USE_SHOTNOISE_INTEGRATED`` (call time), validated."""
-    flag = USE_SHOTNOISE_INTEGRATED
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'final_integral.USE_SHOTNOISE_INTEGRATED={flag!r}: '
-                     f'expected True or False')
+# A shot-noise subset (one residual external-time equality) that keeps
+# integration variables after the δ elimination becomes a
+# ``delta_contributions`` record whose ``coeff_fc`` is the subset's polytope
+# integral, and one with several independent equalities a
+# ``delta_contributions_multi`` record.  Neither enters ``contribution`` /
+# ``C_tau``.  (The switch ``USE_SHOTNOISE_INTEGRATED`` /
+# ``DAEDALUS_SHOTNOISE_INTEGRATED``, whose off path dropped those subsets
+# silently, was retired in audit W7.)
 
 
 def _shot_equality(eqs, free_ext_syms):
@@ -8027,8 +5832,7 @@ def integrate_diagram(
         Model-level data shared by the diagrams of one
         ``compute_correction_td`` call (M5 L2).  ``None`` (the default):
         everything is built here, per diagram, as before.  Used only when
-        ``USE_SETUP_PROP_TD`` is on and it matches ``propagator_data`` /
-        ``num_params``.
+        it matches ``propagator_data`` / ``num_params``.
     on_divergence : None or 'fallback' | 'warn' | 'raise'
         The divergence policy of the box-free routes (M8; see the
         "Divergence policy" block).  ``None``: ``PHASE_J_ON_DIVERGENCE``
@@ -8070,7 +5874,7 @@ def integrate_diagram(
             f"the diagram has {len(leaves)} leaves."
         )
 
-    # ── 0. Zero-prefactor early exit (M5 L1, ``USE_SETUP_ZERO_EXIT``) ──
+    # ── 0. Zero-prefactor early exit (M5 L1) ──
     # A diagram whose prefactor is numerically exactly 0 contributes 0 at
     # every point: every subset is skipped at the "numerical zero-skip"
     # below.  Return that result before ``build_G_t_matrix`` and the
@@ -8078,8 +5882,7 @@ def integrate_diagram(
     # structurally-zero diagrams).  ``_setup_full`` is set by the lazy keys
     # of the early result: they re-run the full path to build themselves.
     _cp_pre = None
-    if (_setup_full is None and _SUBSET_HOOK is None
-            and _setup_lever_on('USE_SETUP_ZERO_EXIT')):
+    if _setup_full is None and _SUBSET_HOOK is None:
         _cp_pre = SR(combined_prefactor) if combined_prefactor is not None \
             else SR(1)
         if num_params:
@@ -8104,7 +5907,7 @@ def integrate_diagram(
     # call-scoped ``PropagatorTD`` when one that matches this propagator data
     # was handed in.
     _ptd = None
-    if prop_td is not None and _setup_lever_on('USE_SETUP_PROP_TD'):
+    if prop_td is not None:
         if prop_td.matches(propagator_data, num_params):
             _ptd = prop_td
             _RUNTIME_COUNTERS['setup_prop_td_used'] += 1
@@ -8189,7 +5992,7 @@ def integrate_diagram(
             _compensation = 1
         else:
             from engine.diagrams import symmetry as _symmetry
-            if len(_all_mappings) == 1 and _symmetry._aut_memo_on():
+            if len(_all_mappings) == 1:
                 # M5 L5: one mapping means every external field occurs once,
                 # so the leaves are pairwise distinguished by their field in
                 # ``_colored_incidence_digraph`` whether or not they are
@@ -8392,9 +6195,7 @@ def integrate_diagram(
     # on: it takes the 'leg' path and the subsets without a pole route go to
     # the state-space route (``_ss_only_kernels``: kernels with no image the
     # pole routes can use at all).
-    _engine_env = _os.environ.get('DAEDALUS_PHASE_J_ENGINE')
-    _engine_poles = (_engine_env is not None
-                     and _engine_env.strip().lower() == 'poles')
+    _engine_poles = _env.phase_j_engine() == 'poles'
     _ss_only_kernels = []
     _ss_only_idx = set()        # their kernel edges (indices into edge_info)
 
@@ -8594,7 +6395,12 @@ def integrate_diagram(
                                f'repeated or near-repeated rate, a '
                                f'polynomial factor such as t e^{{-t/tau}}, '
                                f'or no usable image); write it as an '
-                               f'auxiliary linear field (Markov embedding)'),
+                               f'auxiliary linear field (Markov embedding)'
+                               + ('; the default state-space engine (unset '
+                                  'DAEDALUS_PHASE_J_ENGINE) realizes such '
+                                  'kernels exactly: the pole engine cannot '
+                                  '(audit LOUD-05)' if _engine_poles else
+                                  '')),
                 }
             if (kmodes is not None and _can_dress
                     and ek not in (_conv_force_leg or ())):
@@ -8647,7 +6453,6 @@ def integrate_diagram(
     # M5 L3: ``smooth_factor`` (an SR object from ``G_t_entry``) is read only
     # by the shot-noise branch and the SR-integrand branch below; build it on
     # first read.  The key stays present in every ``edge_info`` record.
-    _lazy_sr = _setup_lever_on('USE_SETUP_LAZY_SR')
     edges = list(D.edges())
     edge_info = []
     for (u, v, lbl) in edges:
@@ -8662,22 +6467,12 @@ def integrate_diagram(
         dt = SR(t_v - t_u)
         delta_c = (_ptd.delta_coeff(pi, ri) if _ptd is not None
                    else G_t_delta_coeff(G_t_obj, pi, ri))
-        if _lazy_sr:
-            _RUNTIME_COUNTERS['setup_lazy_sr_deferred'] += 1
-            edge_info.append(_LazyDict(
-                [('u', u), ('v', v), ('lbl', lbl), ('ri', ri), ('pi', pi),
-                 ('dt_sym', dt), ('delta_coeff', delta_c),
-                 ('smooth_factor', None)],
-                {'smooth_factor': _lazy_smooth_thunk(G_t_obj, pi, ri, dt)}))
-            continue
-        smooth_factor = G_t_entry(G_t_obj, pi, ri, dt, include_heaviside=False)
-        edge_info.append({
-            'u': u, 'v': v, 'lbl': lbl,
-            'ri': ri, 'pi': pi,
-            'dt_sym': dt,
-            'delta_coeff': delta_c,
-            'smooth_factor': smooth_factor,
-        })
+        _RUNTIME_COUNTERS['setup_lazy_sr_deferred'] += 1
+        edge_info.append(_LazyDict(
+            [('u', u), ('v', v), ('lbl', lbl), ('ri', ri), ('pi', pi),
+             ('dt_sym', dt), ('delta_coeff', delta_c),
+             ('smooth_factor', None)],
+            {'smooth_factor': _lazy_smooth_thunk(G_t_obj, pi, ri, dt)}))
 
     # ── 3a. Mode-sum cache (Stage 2 of Phase J refactor) ─────────
     # Build one ``EdgeModeSum`` per edge, extracting the per-pole
@@ -8997,8 +6792,8 @@ def integrate_diagram(
     n_branch = len(branch_edge_indices)
     n_subsets_total = 2 ** n_branch
 
-    # M2a structural zeros (``STRUCTURAL_ZEROS``, read when the subsets are
-    # built): the mirror image of the forced-smooth edges.  An edge whose
+    # M2a structural zeros (decided when the subsets are built): the
+    # mirror image of the forced-smooth edges.  An edge whose
     # smooth part is provably zero (every stored residue of its entry is an
     # exact zero and its ``G_ft`` entry contains no ω; for a propagator
     # without any pole: the ``G_ft`` test alone) contributes nothing when
@@ -9014,7 +6809,7 @@ def integrate_diagram(
     _forced_delta = (
         _forced_delta_edges(edge_info[:n_prop_edges], propagator_data,
                             num_params=num_params)
-        if edge_mode_sums_builder is None and _structural_zeros_on()
+        if edge_mode_sums_builder is None
         else frozenset())
     if dressed_idx and _forced_delta:
         # a dressed line always has a smooth part (D g + c G + g ∗ G), so it
@@ -9027,9 +6822,8 @@ def integrate_diagram(
     # the unexpanded product: nothing reads it numerically, and expanding it
     # blows up combinatorially for multi-mode kernels (alpha-function
     # synapses: >10 min per diagram on quadratic_hawkes_alpha at ell=1).
-    # (M5 L3: display only -- nothing in the package reads it -- so with
-    # ``USE_SETUP_LAZY_SR`` it is built on first read of the result's
-    # ``stripped_integrand``.)
+    # (M5 L3: display only -- nothing in the package reads it -- so it is
+    # built on first read of the result's ``stripped_integrand``.)
     _ds_cell = []
 
     def _display_stripped_value():
@@ -9038,16 +6832,10 @@ def integrate_diagram(
             for ei in edge_info:
                 _ds = _ds * ei['smooth_factor']
             _ds_cell.append(_ds)
-            if _lazy_sr:
-                _RUNTIME_COUNTERS['setup_lazy_display_built'] += 1
+            _RUNTIME_COUNTERS['setup_lazy_display_built'] += 1
         return _ds_cell[0]
 
-    if not _lazy_sr:
-        _display_stripped_value()
     display_constraints = [ei['dt_sym'] for ei in edge_info]
-
-    # M10 lever, read once per call (``_setup_lever_on``).
-    _delta_exact = _setup_lever_on('USE_SETUP_DELTA_SOLVE')
 
     # Accumulators
     subset_contributions = []   # continuous smooth contributions (callable)
@@ -9092,23 +6880,19 @@ def integrate_diagram(
         # an integration variable appearing in the equation; if no
         # integration variable is available, the equation becomes a
         # constraint among external times (shot-noise δ, skip).
-        # M10 (``USE_SETUP_DELTA_SOLVE``): exact rational elimination, the
-        # same substitutions as ``sage_solve`` (``_delta_solve_exact``);
-        # ``VALIDATE_DELTA`` also runs the legacy solve and compares.
-        if _delta_exact:
-            _solved = _delta_solve_exact(edge_info, delta_edges,
-                                         integration_vars)
-            if _validate_delta_on():
-                _validate_delta_subset(
-                    _solved,
-                    _delta_solve_legacy(edge_info, delta_edges,
-                                        integration_vars),
-                    edge_info, smooth_edges, free_ext_syms,
-                    f'diagram serial {_diag_serial}, subset '
-                    f'{bin(branch_bits)}, δ edges {delta_edges}')
-        else:
-            _solved = _delta_solve_legacy(edge_info, delta_edges,
-                                          integration_vars)
+        # M10: exact rational elimination, the same substitutions as
+        # ``sage_solve`` (``_delta_solve_exact``); ``VALIDATE_DELTA`` also
+        # runs the legacy solve and compares.
+        _solved = _delta_solve_exact(edge_info, delta_edges,
+                                     integration_vars)
+        if _validate_delta_on():
+            _validate_delta_subset(
+                _solved,
+                _delta_solve_legacy(edge_info, delta_edges,
+                                    integration_vars),
+                edge_info, smooth_edges, free_ext_syms,
+                f'diagram serial {_diag_serial}, subset '
+                f'{bin(branch_bits)}, δ edges {delta_edges}')
         if _solved is None:
             continue
         substitutions, remaining_int_vars, ext_time_equalities = _solved
@@ -9125,7 +6909,7 @@ def integrate_diagram(
         for eq in ext_time_equalities:
             # M10: an exactly rational linear form is zero iff all its
             # coefficients are; anything else keeps the SR test.
-            _eq_zero = _residual_is_zero_exact(eq) if _delta_exact else None
+            _eq_zero = _residual_is_zero_exact(eq)
             if _eq_zero is None:
                 try:
                     if bool(eq.is_zero()):
@@ -9137,7 +6921,7 @@ def integrate_diagram(
             # Nontrivial equation → shot-noise
             has_shotnoise = True
             nontrivial_equalities.append(SR(eq))
-        # Feature B (``USE_SHOTNOISE_INTEGRATED``): a single-equality
+        # Feature B: a single-equality
         # shot-noise subset that keeps integration variables (a loop
         # correction to a δ weight, e.g. the one-loop mean rate under the
         # spike) used to be skipped.  Its weight is the subset's polytope
@@ -9145,8 +6929,7 @@ def integrate_diagram(
         # evaluator below and becomes a ``delta_contributions`` record
         # (``integrated=True``) instead of a ``subset_contributions`` term.
         _shot_pending = None
-        if (has_shotnoise and remaining_int_vars
-                and _shotnoise_integrated_on()):
+        if has_shotnoise and remaining_int_vars:
             _shot_pending = _shot_equality(nontrivial_equalities,
                                            free_ext_syms)[0]
             if _shot_pending is not None:
@@ -9165,13 +6948,8 @@ def integrate_diagram(
             # would correspond to δ(τ_a − τ_b) · δ(τ_c − τ_d) style
             # "double-delta" spikes which are rare at tree level and
             # deferred to Extension 1.
-            # (Feature B, ``USE_SHOTNOISE_INTEGRATED``: several
-            # independent equalities give a ``delta_contributions_multi``
-            # record instead.)
-            if (len(nontrivial_equalities) != 1
-                    and not _shotnoise_integrated_on()):
-                n_delta_dropped += 1
-                continue
+            # (Feature B: several independent equalities give a
+            # ``delta_contributions_multi`` record instead.)
 
             if _ss_only_idx & set(smooth_edges):
                 # a kernel only the state-space route realizes (S3): this
@@ -9328,10 +7106,9 @@ def integrate_diagram(
         # edge whose Δt is a numeric constant after δ-elimination (no
         # integration variable, no external time: a_int ≡ 0, a_ext ≡ 0) with
         # c0 <= 0 empties this subset at EVERY τ under Θ(0) = 0.  The subset
-        # is still built (its closure is what 'legacy_clip' integrates); the
-        # flag makes the closure return 0 without integrating while the mode
-        # read AT CALL TIME is 'ito' (so flipping the mode after the build
-        # takes effect, as for every other Phase J flag).
+        # is still built (as before audit W7, when a retired Θ(0) mode could
+        # integrate it); the flag makes the closure return 0 without
+        # integrating.
         _theta0_always_empty = False
         for c in subset_retard:
             try:
@@ -9754,9 +7531,9 @@ def integrate_diagram(
             # legs behind ``free_vals``; both are threaded to every
             # integrator for the Θ(0) rule (``_const_row_verdict``).
             # ``theta0_empty``: the subset has a τ-independent EMPTY row;
-            # it returns 0 while the call-time mode is 'ito'.
+            # it returns 0.
             def _contrib(free_vals, _hook_ctx=None, _tie_ctx=None):
-                if theta0_empty and not _theta0_legacy():
+                if theta0_empty:
                     _RUNTIME_COUNTERS['theta0_subsets_pruned'] += 1
                     return 0.0 + 0.0j
                 _hook = _SUBSET_HOOK
@@ -9852,37 +7629,36 @@ def integrate_diagram(
                         return poset_val
                     _attempted = 'poset'
                     _bail_reason = _pop_bail_reason()
-                    # M3: the exact DBM route (``USE_DBM_FALLBACK``).
-                    if _dbm_route_on():
-                        dbm_val = _integrate_subset_dbm(
-                            smooth_edge_modes=modes,
-                            prefactor_complex=pref_c,
-                            subset_constraint_data=cdata,
-                            free_ext_vals=free_vals,
-                            m=m_val,
-                            pole_tuples=pole_tuples,
-                            plan=plan,
-                            row_kinds=row_kinds,
-                            tie_ctx=_tie_ctx,
-                            poset_bail_reason=_bail_reason,
-                        )
-                        if dbm_val is not None:
-                            if _hook is not None:
-                                _emit_subset_hook(
-                                    _hook, hook_meta, _hook_ctx, free_vals,
-                                    m_val, cdata, path='dbm',
-                                    evaluator='_integrate_subset_dbm',
-                                    branch='plan' if plan is not None
-                                    else 'noplan',
-                                    value=dbm_val, bail_reason=_bail_reason,
-                                    attempted='poset', modes=modes,
-                                    prefactor=pref_c, plan=plan,
-                                    pole_tuples=pole_tuples, integrand=fc,
-                                    row_kinds=row_kinds, tie_ctx=_tie_ctx)
-                            return dbm_val
-                        # Declined (its reason is in the dbm_declined_*
-                        # counters); the poset's reason labels the fallback.
-                        _dbm_reason = _pop_bail_reason()
+                    # M3: the exact DBM route.
+                    dbm_val = _integrate_subset_dbm(
+                        smooth_edge_modes=modes,
+                        prefactor_complex=pref_c,
+                        subset_constraint_data=cdata,
+                        free_ext_vals=free_vals,
+                        m=m_val,
+                        pole_tuples=pole_tuples,
+                        plan=plan,
+                        row_kinds=row_kinds,
+                        tie_ctx=_tie_ctx,
+                        poset_bail_reason=_bail_reason,
+                    )
+                    if dbm_val is not None:
+                        if _hook is not None:
+                            _emit_subset_hook(
+                                _hook, hook_meta, _hook_ctx, free_vals,
+                                m_val, cdata, path='dbm',
+                                evaluator='_integrate_subset_dbm',
+                                branch='plan' if plan is not None
+                                else 'noplan',
+                                value=dbm_val, bail_reason=_bail_reason,
+                                attempted='poset', modes=modes,
+                                prefactor=pref_c, plan=plan,
+                                pole_tuples=pole_tuples, integrand=fc,
+                                row_kinds=row_kinds, tie_ctx=_tie_ctx)
+                        return dbm_val
+                    # Declined (its reason is in the dbm_declined_*
+                    # counters); the poset's reason labels the fallback.
+                    _dbm_reason = _pop_bail_reason()
                 # Closure-only fallback via scipy.nquad.
                 if _is_divergence_verdict(_bail_reason):
                     _divergence_verdict(on_divergence, _bail_reason, m_val,
@@ -10167,7 +7943,7 @@ def integrate_diagram(
         ('delta_contributions', delta_contributions),
         ('integration_vars', integration_vars),
         ('stripped_integrand',
-         None if _lazy_sr else _display_stripped_value()),
+         None),
         ('constraints', display_constraints),
         ('edge_info', edge_info),
         ('n_subsets_evaluated', len(subset_contributions)),
@@ -10179,11 +7955,9 @@ def integrate_diagram(
         ('cumulant_prefactor', cp if has_cumulant_kernel else None),
         ('has_cumulant_kernel', has_cumulant_kernel),
     ]
-    if _lazy_sr:
-        _RUNTIME_COUNTERS['setup_lazy_display_deferred'] += 1
-        return _LazyDict(_ok_items,
-                         {'stripped_integrand': _display_stripped_value})
-    return dict(_ok_items)
+    _RUNTIME_COUNTERS['setup_lazy_display_deferred'] += 1
+    return _LazyDict(_ok_items,
+                     {'stripped_integrand': _display_stripped_value})
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -10394,8 +8168,8 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
 
     s_constraints is a list of tuples `(a_int_list_of_len_m, c_eff)`.
 
-    Constant rows (M1): with THETA0_CONST_ROW_MODE 'ito' (call time) every
-    zero-normal row is first given its ``_const_row_verdict``.  An EMPTY
+    Constant rows (M1): every zero-normal row is first given its
+    ``_const_row_verdict``.  An EMPTY
     verdict returns 0j at once; for c_eff != 0 the downstream checks (the
     Heaviside filter's ``always_empty``, ``_integrate_2d_polytope``,
     ``_resolve_1d_bounds``, ``_outer_bounds``, the m = 0 loop) agree with
@@ -10406,26 +8180,24 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
     ``(a_int, a_ext, c0)`` rows behind ``s_constraints``, same order --
     let the helper see which legs a row compares (with ``tie_ctx``);
     without them (external callers) a tie is Θ(0) = 0.  ``row_kinds``: the
-    rows' provenance (``None``: all 'edge').  'legacy_clip' skips all of
-    this (pre-M1 behaviour).
+    rows' provenance (``None``: all 'edge').
 
-    Structural zeros (M2a, ``STRUCTURAL_ZEROS``, call time): after the
+    Structural zeros (M2a): after the
     constant rows, an m >= 2 region whose pair rows contain a directed
     cycle with shifts summing to <= 0 (``_region_structurally_empty``,
     exact) returns 0j without quadrature (counter ``polytope_empty_cycle``;
     the entry is still counted in ``nquad_calls`` / ``scipy_nquad_called_*``).
-    This covers every caller: an m=2 guard bail, a poset extraction that
-    bailed before its own cycle test, grouped m2/m≥3, the SR path of a
-    non-analytic subset, and direct callers.
+    This covers every caller: an analytic bail, a poset extraction that
+    bailed before its own cycle test, the SR path of a non-analytic subset,
+    and direct callers.
 
-    Hardened quadrature (M2b, ``NQUAD_HARDENED``, call time): every m >= 1
-    region left after those exact tests is integrated by
-    ``_integrate_polytope_hardened`` instead of the default-tolerance
+    Hardened quadrature (M2b): every m >= 1 region left after those exact
+    tests is integrated by ``_integrate_polytope_hardened``; only a region
+    it declines (a non-finite row shift) reaches the default-tolerance
     scipy.nquad routines below.  ``mode_info`` (an ``_NquadModes``; default:
     the ``_nquad_modes`` attribute of the fast evaluators) supplies the
     integrand's modes for its tolerance and truncation; ``diag_meta`` (the
     dispatch's hook metadata) names the diagram in its one-time warning.
-    Neither changes anything with the flag off.
     """
     # M0.1 observational counters: m=0 is a direct evaluation, m>=1 is
     # real scipy.nquad quadrature.
@@ -10456,35 +8228,35 @@ def _integrate_polytope(integrand_callable, s_constraints, free_ext_vals, m,
         _RUNTIME_COUNTERS['scipy_nquad_called_m2'] += 1
     elif m >= 3:
         _RUNTIME_COUNTERS['scipy_nquad_called_mge3'] += 1
-    if not _theta0_legacy():
-        rows = (raw_rows if raw_rows is not None else
-                [(a_int, (), c_eff) for (a_int, c_eff) in s_constraints])
-        fv = free_ext_vals if raw_rows is not None else ()
-        keep = None
-        for idx, (a_int, a_ext, c0) in enumerate(rows):
-            verdict = _const_row_verdict(a_int, a_ext, c0, fv,
-                                         _row_kind(row_kinds, idx),
-                                         tie_ctx)
-            if verdict == 'EMPTY':
-                return 0.0 + 0.0j
-            if verdict == 'DROP' and not float(s_constraints[idx][1]) > 0.0:
-                keep = keep if keep is not None else set(
-                    range(len(s_constraints)))
-                keep.discard(idx)              # a tie ordered as holding
-        if keep is not None:
-            s_constraints = [row for i, row in enumerate(s_constraints)
-                             if i in keep]
-    if (m >= 2 and _structural_zeros_on()
+    rows = (raw_rows if raw_rows is not None else
+            [(a_int, (), c_eff) for (a_int, c_eff) in s_constraints])
+    fv = free_ext_vals if raw_rows is not None else ()
+    keep = None
+    for idx, (a_int, a_ext, c0) in enumerate(rows):
+        verdict = _const_row_verdict(a_int, a_ext, c0, fv,
+                                     _row_kind(row_kinds, idx),
+                                     tie_ctx)
+        if verdict == 'EMPTY':
+            return 0.0 + 0.0j
+        if verdict == 'DROP' and not float(s_constraints[idx][1]) > 0.0:
+            keep = keep if keep is not None else set(
+                range(len(s_constraints)))
+            keep.discard(idx)              # a tie ordered as holding
+    if keep is not None:
+        s_constraints = [row for i, row in enumerate(s_constraints)
+                         if i in keep]
+    if (m >= 2
             and _region_structurally_empty(s_constraints, m) == 'cycle'):
         _RUNTIME_COUNTERS['polytope_empty_cycle'] += 1
         return 0.0 + 0.0j
-    if m >= 1 and _nquad_hardened_on():
+    if m >= 1:
         val = _integrate_polytope_hardened(
             integrand_callable, s_constraints, free_ext_vals, m,
             mode_info=mode_info, diag_meta=diag_meta)
         if val is not None:
             return val
-        # ``None``: a non-finite row shift; the legacy routines below.
+        # ``None``: a non-finite row shift; the default-tolerance routines
+        # below.
     if m == 0:
         # Zero integration variables — the "integrand" is just a number.
         # Still have to check the constraints (they may be vacuous or
@@ -10570,8 +8342,8 @@ def _make_heaviside_filtered_integrand(integrand_callable, s_constraints,
     # A pre-check here handles constraints that are purely trivial
     # (all `a` zero): if `c_eff > 0` the constraint is always satisfied
     # and we drop it; if `c_eff <= 0` the polytope is empty and the
-    # filter always returns 0.  (M1: with THETA0_CONST_ROW_MODE 'ito',
-    # ``_integrate_polytope`` has already applied ``_const_row_verdict``,
+    # filter always returns 0.  (M1: ``_integrate_polytope`` has already
+    # applied ``_const_row_verdict``,
     # returned 0 for an EMPTY constant row and removed a tie ordered as
     # holding, so only rows with c_eff > 0 reach this check from there.)
     sparse = []
@@ -11141,7 +8913,7 @@ def _outer_bounds(s_constraints, k_var):
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Hardened quadrature fallback (M2b; plan §3.1 L1b; flag NQUAD_HARDENED)
+# Hardened quadrature fallback (M2b; plan §3.1 L1b)
 # ───────────────────────────────────────────────────────────────────────
 # The default-tolerance scipy.nquad routines above integrate a region over
 # a ±200 (m = 2 outer axis, m >= 3) box with the integrand Heaviside-
@@ -13035,7 +10807,7 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                                  diag_meta=None):
     r"""The hardened scipy quadrature of ``integrand_callable(s_0..s_{m-1},
     *free_ext_vals)`` over ``{s : a_int·s + shift > 0 for every row}``
-    (``NQUAD_HARDENED``; the design is in the comment block above).  s_0 is
+    (the design is in the comment block above).  s_0 is
     the innermost variable, s_{m-1} the outermost.
 
     ``mode_info``: an ``_NquadModes`` (default: the integrand's
@@ -13973,7 +11745,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
 
     Per diagram, each propagator edge ``(pi, ri)`` has ``n_e`` modes: its
     NONZERO residues when the exact-zero modes are pruned (``prune``,
-    default ``PRUNE_ZERO_MODES``), else all poles; an entry without any
+    default ``True``), else all poles; an entry without any
     nonzero residue has no smooth part to keep (``n_e = 0``: the
     structural-zero rule never builds a subset that keeps it smooth).  An edge with a δ part (``|delta_coeff| >= 1e-15``) is smooth in
     some δ-subsets and δ in the others, so the sum over the subsets of the
@@ -13999,7 +11771,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     checked before it is built); ``tuples`` counts the diagrams charged
     their pole tuples."""
     if prune is None:
-        prune = PRUNE_ZERO_MODES
+        prune = True
     try:
         ptd = PropagatorTD(propagator_data, num_params)
         lam = ptd.poles()

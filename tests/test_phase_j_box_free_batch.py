@@ -17,8 +17,8 @@ import numpy as np
 import pytest
 
 from engine.integration.time_domain import boxfree as bf
-from tests.test_phase_j_box_free import (_CHAIN_ROWS, _ROUTES, _WEDGE_FAST,
-                                         _WEDGE_ROWS, _ems, _set_flags)
+from tests.test_phase_j_box_free import (_CHAIN_ROWS, _WEDGE_FAST,
+                                         _WEDGE_ROWS, _ems)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -285,7 +285,6 @@ _WEDGE_MANY = [[(1.0, -1.3 + 0.4j), (0.5, -2.0), (0.2, -1.7)],
 
 
 def test_polygon_batch_agrees_with_the_scalar_loop(FI, monkeypatch):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     calls = _spy(monkeypatch, bf, 'region_modesum_mag')
     v, c = _run(FI, _poly_plan, _WEDGE_ROWS, _WEDGE_MANY, (0.7,))
     assert len(calls) == 1 and calls[0] is not None
@@ -297,7 +296,6 @@ def test_polygon_batch_agrees_with_the_scalar_loop(FI, monkeypatch):
 
 def test_polygon_batch_hands_a_divergent_subset_to_the_scalar_loop(
         FI, monkeypatch):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     growing = [[(1.0, 2.0)] + _WEDGE_MANY[0][1:]] + _WEDGE_MANY[1:]
     calls = _spy(monkeypatch, bf, 'region_modesum_mag')
     v, c = _run(FI, _poly_plan, _WEDGE_ROWS, growing, (0.7,))
@@ -319,7 +317,6 @@ _CHAIN_MODES = [[(1.0, -2.0 + 1j), (0.3, -1.1), (0.2, -1.1 + 1e-9)],
 ])
 def test_poset_batch_agrees_with_the_scalar_loop(FI, monkeypatch, rows,
                                                  modes):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     calls = _spy(monkeypatch, FI, '_poset_dd_batch')
     v, c = _run(FI, _poset_plan, rows, modes, (0.7,))
     assert len(calls) == 1 and calls[0] is not None
@@ -331,7 +328,6 @@ def test_poset_batch_agrees_with_the_scalar_loop(FI, monkeypatch, rows,
 
 def test_poset_batch_hands_a_divergent_chain_to_the_scalar_loop(
         FI, monkeypatch):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     growing = [[(1.0, 0.5), (0.5, 0.6)], [(0.8, -0.1), (0.4, -0.2)],
                [(1.0, -3.0), (0.5, -2.5)]]                  # 8 groups
     calls = _spy(monkeypatch, FI, '_poset_dd_batch')
@@ -342,7 +338,6 @@ def test_poset_batch_hands_a_divergent_chain_to_the_scalar_loop(
 
 
 def test_small_plans_stay_on_the_scalar_loops(FI, monkeypatch):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     assert FI._DD_BATCH_MIN == 8
     poly = _spy(monkeypatch, bf, 'region_modesum_mag')
     batches = _spy(monkeypatch, FI, '_chain_dd_batch')
@@ -362,7 +357,6 @@ def _batch_args(fi, modes, sigma=(0, 1, 2), L=-math.inf, upp=None, U=0.7,
 
 
 def test_chain_batch_memo_keys_are_exact(FI, monkeypatch):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     modes = _CHAIN_MODES[:3]
     a = FI._chain_dd_batch(*_batch_args(FI, modes))
     # same rows, a fresh plan: the very same object
@@ -388,25 +382,50 @@ def test_chain_batch_memo_keys_are_exact(FI, monkeypatch):
     assert FI._chain_dd_batch(*_batch_args(FI, modes)) is not a
 
 
-def test_poset_batch_runs_without_its_memo_when_the_chain_memo_is_off(
-        FI, monkeypatch):
-    """The chain memo changes no number (M4): with it off the batch still
-    runs (bit-identical values) but keeps nothing."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
-    v_on, _c = _run(FI, _poset_plan, _CHAIN_ROWS, _CHAIN_MODES[:3], (0.7,))
-    monkeypatch.setattr(FI, 'USE_CHAIN_UPPERS_MEMO', False)
-    calls = _spy(monkeypatch, FI, '_poset_dd_batch')
-    v_off, c = _run(FI, _poset_plan, _CHAIN_ROWS, _CHAIN_MODES[:3], (0.7,))
-    assert len(calls) == 1 and calls[0] is not None and c['dd_poset'] == 1
-    assert v_off == v_on
-    assert not FI._chain_dd_batch_memo
+# The chain memo of the DD route (``_chain_dd_log``; M4, always on since
+# audit W7 retired ``USE_CHAIN_UPPERS_MEMO``): a hit is the stored object,
+# the key is exact and dict-order invariant.
+_DD_ALPHAS = [-0.3 + 0.1j, -0.5 + 0.0j, -0.7 - 0.2j]
+
+
+def test_chain_memo_hit_is_the_stored_value(FI):
+    FI._reset_runtime_counters()
+    v1 = FI._chain_dd_log(_DD_ALPHAS, -5.0, {0: -1.0, 1: -0.5}, 0.0)
+    v2 = FI._chain_dd_log(list(_DD_ALPHAS), -5.0, {1: -0.5, 0: -1.0}, 0.0)
+    assert v1 is v2
+    assert FI._RUNTIME_COUNTERS['chain_uppers_memo_misses'] == 1
+    assert FI._RUNTIME_COUNTERS['chain_uppers_memo_hits'] == 1
+    assert v1 == bf.chain_log(_DD_ALPHAS, -5.0, {0: -1.0, 1: -0.5}, 0.0)
+
+
+def test_chain_memo_keys_do_not_alias(FI):
+    a = _DD_ALPHAS
+    base = FI._chain_dd_log(a, -5.0, {0: -1.0}, 0.0)
+    others = [FI._chain_dd_log(a, -5.0, {0: -1.5}, 0.0),
+              FI._chain_dd_log(a, -5.0, {1: -1.0}, 0.0),
+              FI._chain_dd_log(a, -4.0, {0: -1.0}, 0.0),
+              FI._chain_dd_log(a, -5.0, {0: -1.0}, 0.5),
+              FI._chain_dd_log(a, -5.0, {0: -1.0}, 0.0, tol=1e-12),
+              # one ulp apart is another key
+              FI._chain_dd_log([np.nextafter(a[0].real, 0) + 0.1j] + a[1:],
+                               -5.0, {0: -1.0}, 0.0)]
+    assert all(o is not base for o in others)
+    assert len(FI._chain_uppers_memo) == 7
+    # a None-valued upper is kept in the key (never aliased with absent)
+    assert (FI._chain_uppers_key_suffix(-5.0, {0: None, 1: -1.0}, 0.0)
+            != FI._chain_uppers_key_suffix(-5.0, {1: -1.0}, 0.0))
+    # a non-integer position cannot be keyed: computed, not stored
+    with pytest.raises(TypeError):
+        FI._chain_uppers_key_suffix(-5.0, {2.5: -1.0}, 0.5)
+    n = len(FI._chain_uppers_memo)
+    FI._chain_dd_log(a, -5.0, {2.5: -1.0}, 0.5)
+    assert len(FI._chain_uppers_memo) == n
 
 
 def test_batch_and_scalar_book_the_same_error_accounting(FI, monkeypatch):
     """The error accounting (``_dd_accuracy``) of the chain route counts the
     cancellation inside each group's fold the same way batched and scalar
     (review finding: the batched path counted only after the fold)."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     # 12 groups, two pairs nearly cancelling inside their group's fold
     modes = [[(1.0, -2.0 + 1j), (-0.999999, -2.0 + 1j), (0.3, -1.1)],
              [(0.8, -1.5), (0.4, -0.7 - 0.3j)],
