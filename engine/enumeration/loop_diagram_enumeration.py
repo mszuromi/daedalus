@@ -926,6 +926,12 @@ def _remove_isomorphic_undirected(candidates):
     return out
 
 
+def _threads_allowed(n_threads):
+    """``n_threads``, or 1 under ``DAEDALUS_PARALLEL=0`` (the kill switch)."""
+    from engine.fork_safety import parallel_disabled
+    return 1 if n_threads != 1 and parallel_disabled() else n_threads
+
+
 def _enumerate_topologies_raw(k, ell, n_threads=1, max_vertices_search=50, verbose=True,
                               trees_with_j=None):
     """Internal: returns unique_multigraphs list."""
@@ -936,6 +942,7 @@ def _enumerate_topologies_raw(k, ell, n_threads=1, max_vertices_search=50, verbo
         print(f"  {len(trees_with_j)} valid trees found")
 
     candidates = []
+    n_threads = _threads_allowed(n_threads)
 
     if n_threads == 1:
         for i, (tree, j, num_leaves) in enumerate(trees_with_j):
@@ -1190,6 +1197,7 @@ def process_orientation_parallel(args):
 def _enumerate_prediagrams_raw(topologies, n_threads=1, verbose=True):
     """Internal: returns unique_directed_diagrams list."""
     all_directed = []
+    n_threads = _threads_allowed(n_threads)
 
     if n_threads == 1:
         for i, (G, leaves, internal) in enumerate(topologies):
@@ -1414,9 +1422,14 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
     """Map ``fn`` over ``items``, with processes when that is safe here.
 
     Threads are GIL-bound for Sage graph work, so processes are the point.
-    macOS + Jupyter forbids fork entirely (it has hard-crashed this project's
-    machine), so the guard degrades to serial there rather than to threads.
+    macOS never forks (it has hard-crashed this project's machine from a
+    notebook), so the guard degrades to serial there rather than to threads;
+    ``DAEDALUS_PARALLEL=0`` makes it serial everywhere.
     """
+    from engine.fork_safety import (fork_unsafe, parallel_disabled,
+                                    warn_fork_fallback_once)
+    if n_procs != 1 and parallel_disabled():
+        n_procs = 1
     if n_procs == 1 or len(items) == 0:
         for i, it in enumerate(items):
             if verbose and (i + 1) % 200 == 0:
@@ -1424,22 +1437,17 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
             yield fn(it)
         return
 
-    from engine.fork_safety import fork_unsafe_in_notebook
-    if fork_unsafe_in_notebook('fork'):
-        import warnings
-        warnings.warn(
-            'Streaming enumeration: fork-based multiprocessing is unsafe in a '
-            'Jupyter kernel on macOS; falling back to serial.  Run as a script '
-            '(`sage -python run.py`) to use all cores.')
+    if fork_unsafe('fork'):
+        warn_fork_fallback_once('Streaming enumeration')
         for it in items:
             yield fn(it)
         return
 
-    # 'fork', not the macOS default 'spawn': spawn re-imports the calling
-    # module in every worker, which both re-runs an unguarded caller and pays
-    # a full `from sage.all import *` per process.  The guard above has
-    # already established that forking here is safe (script, not notebook),
-    # which is the same contract the temporal pipeline runs under.
+    # 'fork', not 'spawn': spawn re-imports the calling module in every
+    # worker, which both re-runs an unguarded caller and pays a full
+    # `from sage.all import *` per process.  The guard above has already
+    # established that forking is allowed here (not macOS), the same contract
+    # the temporal pipeline runs under.
     import multiprocessing as mp
     from concurrent.futures import ProcessPoolExecutor
     with ProcessPoolExecutor(max_workers=n_procs,

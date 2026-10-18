@@ -1759,6 +1759,17 @@ def compute_coupled_loop_correlator(
     return np.real(C1).astype(float), info
 
 
+def _spatial_threads_gate(parallel, heavy, n_workers, n_tasks):
+    """Whether the numerical-FT spatial path fans (q, diagram) tasks out to
+    threads: ``parallel``, not turned off by ``DAEDALUS_PARALLEL=0``, a
+    loop-order >= 2 diagram present (threads pay only there, ~2.5x; L=1 is
+    dispatch-bound, 0.7x), more than one worker and enough tasks."""
+    from engine.fork_safety import parallel_disabled
+    if not parallel or parallel_disabled():
+        return False
+    return bool(heavy) and n_workers > 1 and n_tasks >= max(8, 2 * n_workers)
+
+
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, q_cut=30.0, n_q=64, max_ell=1,
@@ -2144,7 +2155,7 @@ def compute_spatial_correlator_generic(
         # released — ~2.5×); L=1 is dispatch-bound (0.7×, slower).  Threads only
         # (no fork — safe in Jupyter/macOS); main-thread accumulate → bit-identical.
         _heavy = any(rec[3] >= 2 for rec in live_g)
-        if parallel and _heavy and _nw > 1 and _ntasks >= max(8, 2 * _nw):
+        if _spatial_threads_gate(parallel, _heavy, _nw, _ntasks):
             from concurrent.futures import ThreadPoolExecutor
 
             def _one(task):                           # one diagram's column at one q

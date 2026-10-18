@@ -1298,7 +1298,9 @@ def compute_cumulants(
         Enable fork-based multiprocessing for the two heavy stages
         that support it: per-prediagram type assignment in step [5]
         and per-τ Phase J evaluation in step [7].  Both stages share
-        the same flag.
+        the same flag.  macOS never forks: there both stages run
+        serially (one warning per process).  ``DAEDALUS_PARALLEL=0``
+        turns every worker pool off, spatial threads included.
     n_workers : int or None, default None
         Worker process count when ``parallel=True``.  ``None`` lets
         each stage pick its own default (``min(os.cpu_count(),
