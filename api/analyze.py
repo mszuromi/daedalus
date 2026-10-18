@@ -339,7 +339,7 @@ class ModelTraits:
     undriven_fields: tuple = ()
     # G2
     time_homogeneous: Optional[bool] = None
-    mf_solver: Optional[str] = None       # 'dae' | 'iteration'
+    mf_solver: Optional[str] = None       # 'dae' (every model)
     n_saddles: Optional[int] = None
     n_stable_saddles: Optional[int] = None
     saddle_index: Optional[int] = None    # index used (pipeline semantics)
@@ -1538,18 +1538,24 @@ def _g2_dae_gate(ctx):
 
 
 def _g2_iteration_gate(ctx):
-    """The single saddle of the mean-field iteration rows (legacy models)."""
+    """Every root of the ``.set_mf_equation`` saddle equations (models
+    without ``.equation`` rows; the same multi-root solver)."""
     model, fund = ctx.model, ctx.fundamental
     if not _g2_ready(ctx) or model.get('equations'):
         return
     fpi = ctx.q.fixed_point_index
-    ctx.t['mf_solver'] = 'iteration'
+    ctx.t['mf_solver'] = 'dae'
     try:
         from api._mean_field import solve_mean_field
         with _quiet():
-            mf = solve_mean_field(ctx.ft, model, fund, verbose=False)
+            mf = solve_mean_field(ctx.ft, model, fund, verbose=False,
+                                  fixed_point_index=(0 if fpi is None
+                                                     else int(fpi)))
     except Exception as exc:
-        ctx.add('G2_MF_FAILED', f'the mean-field solve failed: {_exc_text(exc)}',
+        msg = _exc_text(exc)
+        code = ('G2_NO_SADDLE' if 'no MF fixed point found' in msg
+                else 'G2_MF_FAILED')
+        ctx.add(code, f'the mean-field solve failed: {msg}',
                 'check the mean-field equations and the parameter point')
         ctx.stop_numeric = True
         return
@@ -1558,26 +1564,28 @@ def _g2_iteration_gate(ctx):
 
 
 def _g2_iteration_record(ctx, mf, fpi):
-    """The iteration solver's single saddle (``mf``: its result)."""
-    ctx.t['mf_solver'] = 'iteration'
+    """The roots of the ``.set_mf_equation`` saddle equations (``mf``: the
+    solver result, its selected root)."""
+    ctx.t['mf_solver'] = 'dae'
     ctx.num_params = mf['num_params']
-    ctx.t['n_saddles'] = 1
-    ctx.t['saddle_index'] = 0
-    sv = mf.get('saddle_values') or {}
-    if not sv:
-        sv = {k: v for k, v in (('nstar', mf.get('nstar_vals')),
-                                ('vstar', mf.get('vstar_vals'))) if v}
-    ctx.t['saddle'] = _saddle_tuple(sv)
+    roots = [r['values'] for r in (mf.get('mf_all_roots') or [])]
+    ctx.t['n_saddles'] = len(roots) or 1
+    ctx.t['saddle_index'] = mf.get('mf_index_used', 0)
+    ctx.t['saddle'] = _saddle_tuple(mf.get('saddle_values') or {})
     ctx.add('G2_SINGLE_SADDLE_SOLVER',
-            'the model declares mean-field iteration rows (no '
-            '.equation(...)): the iteration solver returns one saddle; '
-            'other saddles are not searched. Stability is read from the '
-            'propagator poles (G3).',
-            'declare .equation(lhs=..., rhs=...) rows to search every saddle')
-    if fpi not in (None, 0):
+            f'the model declares saddle equations (.set_mf_equation, no '
+            f'.equation(...)): {len(roots) or 1} root(s) found'
+            + (': ' + '; '.join(_fmt_root(r) for r in roots[:4])
+               if len(roots) > 1 else '')
+            + '. Their stability is not classified here (no Dt terms); it '
+            'is read from the propagator poles (G3).',
+            'declare .equation(lhs=..., rhs=...) rows for a linear '
+            'stability analysis of every saddle')
+    if fpi is not None and not (0 <= fpi < max(len(roots), 1)):
         ctx.add('G2_FIXED_POINT_INDEX',
-                f'fixed_point_index={fpi} is ignored by the iteration '
-                'solver (one saddle).', 'drop fixed_point_index')
+                f'fixed_point_index={fpi} is out of range: {len(roots)} '
+                'saddle(s) to choose from (the pipeline clamps it with a '
+                'warning).', f'use 0..{max(len(roots), 1) - 1}')
 
 
 def _saddle_tuple(values):
@@ -1771,8 +1779,10 @@ def _check_positivity(ctx):
     saddle = dict(ctx.t['saddle'])
     nat = ((ctx.model.get('naming_convention') or {})
            .get('mean_field_saddles') or {})
+    from api.naming import saddle_for_field
     for nm in names:
-        key = nm if nm in saddle else nat.get(nm, f'{nm}star')
+        key = (nm if nm in saddle
+               else nat.get(nm) or saddle_for_field(ctx.model, nm) or nm)
         vals = saddle.get(key)
         if vals is None:
             ctx.ledger_add('assertion', f'positive_at_saddle:{nm}',
@@ -2223,7 +2233,10 @@ def _g3_spatial(ctx):
         q = SR.var('_analyze_q')
         with _quiet():
             Ms, Ds, Vs = reaction_diffusion_matrices(
-                ctx.K_ft, ctx.omega, q, lap, getattr(ns, 'GradX', None))
+                ctx.K_ft, ctx.omega, q, lap,
+                # the operator IR lowers Dx to the global symbol GradX (the
+                # namespace has no GradX attribute)
+                getattr(ns, 'GradX', None) or SR.var('GradX'))
         sub = ctx.num_params
         num = [np.array([[complex(SR(m[i, j]).subs(sub))
                           for j in range(m.ncols())] for i in range(m.nrows())])

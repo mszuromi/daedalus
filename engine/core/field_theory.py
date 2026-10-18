@@ -1252,6 +1252,15 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 f"  bigrade={key}  monomial_exponents={exp_vec}\n"
                 f"    symbolic residual: {c_simpl}\n"
                 f"    numerical residual: {num_str}")
+        solve_exc = mf_memo.get('num_params')
+        if isinstance(solve_exc, Exception):
+            # the numerical check could not run: say why (it was swallowed
+            # into a bare 'N/A' before, audit GEN-01)
+            lines.append(
+                f"  the numerical check could not run: the mean-field solve "
+                f"at the model's default parameter point raised "
+                f"{type(solve_exc).__name__}: {solve_exc}")
+            raise AssertionError('\n'.join(lines)) from solve_exc
         raise AssertionError('\n'.join(lines))
 
     if soft_passes:
@@ -1303,7 +1312,7 @@ def _mf_numerical_residual(expr, ns, model, memo=None, raw=None):
         num_params = _mf_saddle_values(ns, model)
         if memo is not None:
             memo['num_params'] = num_params
-    if num_params is None:
+    if num_params is None or isinstance(num_params, Exception):
         return None
     vals, errs = num_params
     return mf_sector_residual(expr, vals, errs, unbound=1.0, raw=raw)
@@ -1312,41 +1321,22 @@ def _mf_numerical_residual(expr, ns, model, memo=None, raw=None):
 def _mf_saddle_values(ns, model):
     """``(num_params, errors)``: the numerical saddle used by the residual
     check and the error estimates of its values (``{}`` when the solver
-    gives none), or ``None`` when no saddle can be built."""
+    gives none); ``None`` without a parameter point, the solver's exception
+    when the solve fails."""
     fundamental = (model.get('fundamental_defaults') or
                    _default_fundamental_point(ns, model))
     if fundamental is None:
         return None
 
-    # Prefer the DAE-based solver when the model has declared
-    # ``.equation(...)``-style residuals — the legacy iterative
-    # solver doesn't know how to iterate self-referential
-    # implicit equations (e.g. ``xstar = -eps*xstar^3``), so it
-    # returns no saddle values and the residual check would default
-    # to xstar=1.0 from the all-ones fallback (wildly wrong).
-    mf = None
-    if model.get('equations'):
-        try:
-            from api._mean_field_dae import solve_mean_field_dae_compat
-            ft_proxy = _MFProxyForSolver(
-                ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
-            mf = solve_mean_field_dae_compat(
-                ft_proxy, model, fundamental, verbose=False)
-        except Exception:
-            mf = None
-
-    if mf is None:
-        try:
-            from api._mean_field import solve_mean_field
-        except ImportError:
-            return None
-        try:
-            ft_proxy = _MFProxyForSolver(
-                ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
-            mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
-        except Exception:
-            return None
-
+    # the one multi-root solver (``.equation`` rows or saddle equations);
+    # a failure is recorded, not swallowed: the sector check names it
+    try:
+        from api._mean_field import solve_mean_field
+        ft_proxy = _MFProxyForSolver(
+            ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
+        mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
+    except Exception as exc:                            # noqa: BLE001
+        return exc
     return dict(mf.get('num_params', {})), dict(mf.get('num_params_err') or {})
 
 
@@ -1818,6 +1808,7 @@ class FieldTheory:
         ns._entity_axis_sizes = _entity_axis_sizes
 
         # ---- Field variables as SR symbols ----
+        from engine.core.vertices import field_symbol_name
         tilde_sr_vars: list = []
         phys_sr_vars:  list = []
         tilde_names:   list = []
@@ -1829,16 +1820,18 @@ class FieldTheory:
             lx      = fspec.get('latex', fname)
             if indexed:
                 idx_list = _field_indices(fspec)
-                arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
+                arr = [SR.var(field_symbol_name(fname, i + 1),
+                              latex_name=f'{lx}_{{{i+1}}}')
                        for i in idx_list]
                 setattr(ns, fname, arr)
                 tilde_sr_vars.extend(arr)
-                tilde_names.extend(f"{fname}{i+1}" for i in idx_list)
+                tilde_names.extend(field_symbol_name(fname, i + 1)
+                                  for i in idx_list)
             else:
-                v = SR.var(fname, latex_name=lx)
+                v = SR.var(field_symbol_name(fname), latex_name=lx)
                 setattr(ns, fname, v)
                 tilde_sr_vars.append(v)
-                tilde_names.append(fname)
+                tilde_names.append(field_symbol_name(fname))
 
         for fspec in m['physical_fields']:
             fname   = fspec['name']
@@ -1846,16 +1839,18 @@ class FieldTheory:
             lx      = fspec.get('latex', fname)
             if indexed:
                 idx_list = _field_indices(fspec)
-                arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
+                arr = [SR.var(field_symbol_name(fname, i + 1),
+                              latex_name=f'{lx}_{{{i+1}}}')
                        for i in idx_list]
                 setattr(ns, fname, arr)
                 phys_sr_vars.extend(arr)
-                phys_names.extend(f"{fname}{i+1}" for i in idx_list)
+                phys_names.extend(field_symbol_name(fname, i + 1)
+                                  for i in idx_list)
             else:
-                v = SR.var(fname, latex_name=lx)
+                v = SR.var(field_symbol_name(fname), latex_name=lx)
                 setattr(ns, fname, v)
                 phys_sr_vars.append(v)
-                phys_names.append(fname)
+                phys_names.append(field_symbol_name(fname))
 
         ns._tilde_sr_vars    = tilde_sr_vars
         ns._phys_sr_vars     = phys_sr_vars

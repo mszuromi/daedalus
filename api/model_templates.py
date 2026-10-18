@@ -14,7 +14,8 @@ Templates currently provided:
                    recurrent_weight='w', external_drive='E',
                    membrane_timescale='tau',
                    response_spike='nt', response_voltage='vt',
-                   physical_spike='dn', physical_voltage='dv')``
+                   physical_spike='dn', physical_voltage='dv',
+                   spike_saddle='nstar', voltage_saddle='vstar')``
 
       The canonical 2-pop Hawkes-style action used by every model in
       ``simulations/hawkes_*.py``.  Generates action, mf_bg_conditions,
@@ -39,7 +40,13 @@ Templates currently provided:
       Adds the dm/mt fields, the GTaS feedforward action term, the
       mt·dm MSR pairing, the saddle shift in mf_bg_conditions, the
       ``mstar = b_X`` MF equation, and the ``correlated_noises['X']``
-      block with κ⁽²⁾ (cross + auto) and the κ⁽³⁾ / κ⁽⁴⁾ Poisson auto.
+      block with the cluster-process cumulants κ⁽²⁾, κ⁽³⁾, κ⁽⁴⁾ of every
+      cell combination (auto and mixed).
+
+Every name a template reads is one of its own name fields (the model's
+parameter / field / kernel names); the builder declares the parameters a
+template needs WITHOUT values (they must be given, by ``.parameter(...,
+default=...)`` or at run time), never with invented physical defaults.
 
 To add a new model variant: subclass the templates and override only
 the methods that change.  For genuinely new structure (different
@@ -95,6 +102,10 @@ class HawkesAction:
     physical_spike, physical_voltage : str
         Names of the cortical physical-fluctuation fields.  Defaults
         ``'dn'``, ``'dv'``.
+    spike_saddle, voltage_saddle : str
+        Names of the mean-field saddle parameters of the two fields
+        (``physical_field('dn', natural_name='n')`` declares ``nstar``).
+        Defaults ``'nstar'``, ``'vstar'``.
     """
     phi: str = 'linear'
     gain_param: str = 'a'
@@ -106,6 +117,8 @@ class HawkesAction:
     response_voltage: str = 'vt'
     physical_spike: str = 'dn'
     physical_voltage: str = 'dv'
+    spike_saddle: str = 'nstar'
+    voltage_saddle: str = 'vstar'
 
     # The optional GTaS noise add-on (set by ModelBuilder when the user
     # chains .add_correlated_noise(GTaSNoise(...)) ).  None = no GTaS.
@@ -156,8 +169,8 @@ class HawkesAction:
                    for i in ns.pop},
             }
         else:  # quadratic
-            return lambda ns, _g=gain: {
-                **{SR.var(f'phi1_{i+1}'): 2 * SR.var(_g) * ns.vstar[i]
+            return lambda ns, _g=gain, _v=self.voltage_saddle: {
+                **{SR.var(f'phi1_{i+1}'): 2 * SR.var(_g) * getattr(ns, _v)[i]
                    for i in ns.pop},
                 **{SR.var(f'phi2_{i+1}'): 2 * SR.var(_g) for i in ns.pop},
                 **{SR.var(f'phi{k}_{i+1}'): SR(0)
@@ -179,72 +192,91 @@ class HawkesAction:
             },
             {
                 'name':  'ndot_bg',
-                'value': lambda ns: [+ns.nstar[i] for i in ns.pop],
+                'value': lambda ns, _n=self.spike_saddle: [
+                    +getattr(ns, _n)[i] for i in ns.pop],
             },
         ]
 
-    # ---- mf_bg_conditions ---------------------------------------------
+    # ---- mean-field ---------------------------------------------------
+    def _drive(self, ns, i, with_kernel=True):
+        """``E_i + sum_j w_ij g n*_j`` (+ the GTaS feedforward
+        ``w_X g lambda_X p``), every symbol by this template's names."""
+        n = getattr(ns, self.spike_saddle)
+        E = getattr(ns, self.external_drive)
+        w = getattr(ns, self.recurrent_weight)
+        g = getattr(ns, self.synaptic_kernel) if with_kernel else SR(1)
+        out = E[i] + sum(w[i][j] * g * n[j] for j in ns.pop)
+        gtas = self._gtas
+        if gtas is not None:
+            out = out + (getattr(ns, gtas.feedforward_weight) * g
+                         * getattr(ns, gtas.mother_rate)
+                         * getattr(ns, gtas.participation))
+        return out
+
     def mf_bg_conditions(self):
-        """Returns the lambda for ``model['mf_bg_conditions']``.
+        """Returns the lambda for the ACTION-side mean-field dict.
 
         v*_i  = E_i + Σ_j w_{ij}·g·n*_j  +  (GTaS feedforward if any)
         phi0_i = n*_i  (constant phi value at saddle)
         """
-        gtas = self._gtas
-
         def _bg(ns):
-            base = {SR.var(f'phi0_{i+1}'): ns.nstar[i] for i in ns.pop}
+            v = getattr(ns, self.voltage_saddle)
+            n = getattr(ns, self.spike_saddle)
+            base = {SR.var(f'phi0_{i+1}'): n[i] for i in ns.pop}
             for i in ns.pop:
-                vstar_expr = (
-                    ns.E[i]
-                    + sum(ns.w[i][j] * ns.g * ns.nstar[j] for j in ns.pop)
-                )
-                if gtas is not None:
-                    # GTaS feedforward saddle shift:
-                    #   v* += w_X · g · b_X = w_X · g · λ_X · p_part
-                    vstar_expr = vstar_expr + (
-                        getattr(ns, gtas.feedforward_weight)
-                        * ns.g
-                        * getattr(ns, gtas.mother_rate)
-                        * getattr(ns, gtas.participation)
-                    )
-                base[ns.vstar[i]] = vstar_expr
+                base[v[i]] = self._drive(ns, i)
             return base
 
         return _bg
+
+    def mf_bg_solver(self):
+        """Returns the lambda for the SOLVER mean-field dict: every saddle
+        with its equation (the solver needs one per saddle): the action-side
+        entries plus ``n*_i = phi(v*_i)`` and, with GTaS,
+        ``m*_i = lambda_X p``."""
+        bg, phi = self.mf_bg_conditions(), self.phi_concrete()
+
+        def _solver(ns):
+            out = bg(ns)
+            v = getattr(ns, self.voltage_saddle)
+            n = getattr(ns, self.spike_saddle)
+            for i in ns.pop:
+                out[n[i]] = phi(ns, i, v[i])
+            gtas = self._gtas
+            if gtas is not None and gtas.background_param is not None:
+                m = getattr(ns, gtas.background_param)
+                for i in ns.pop:
+                    out[m[i]] = (getattr(ns, gtas.mother_rate)
+                                 * getattr(ns, gtas.participation))
+            return out
+
+        return _solver
 
     # ---- mf_equations -------------------------------------------------
     def mf_equations(self):
         """Returns the lambda for ``model['mf_equations']``.
 
-        Linear:        n*_i  =  a · (E_i + Σ w_{ij}·n*_j + w_X·b_X)
-        Linear unit:   n*_i  =  E_i + Σ w_{ij}·n*_j + w_X·b_X
-        Quadratic:     n*_i  =  a · (E_i + Σ w_{ij}·n*_j + w_X·b_X)²
+        Linear:        n*_i  =  a · (E_i + Σ w_{ij}·g·n*_j + w_X·g·b_X)
+        Linear unit:   n*_i  =  E_i + Σ w_{ij}·g·n*_j + w_X·g·b_X
+        Quadratic:     n*_i  =  a · (E_i + Σ w_{ij}·g·n*_j + w_X·g·b_X)²
+        (the kernel symbol at its integral, as in mf_bg_conditions)
         """
         phi = self.phi
         gain = self.gain_param
         gtas = self._gtas
 
         def _eq(ns):
+            n = getattr(ns, self.spike_saddle)
             cortical_equations = []
             for i in ns.pop:
-                base = (
-                    ns.E[i]
-                    + sum(ns.w[i][j] * ns.nstar[j] for j in ns.pop)
-                )
-                if gtas is not None:
-                    base = base + (
-                        getattr(ns, gtas.feedforward_weight)
-                        * getattr(ns, gtas.mother_rate)
-                        * getattr(ns, gtas.participation)
-                    )
+                base = self._drive(ns, i)
                 if phi == 'linear_unit_gain':
                     rhs = base
                 elif phi == 'linear':
                     rhs = SR.var(gain) * base
                 else:  # quadratic
                     rhs = SR.var(gain) * base**2
-                cortical_equations.append(ns.nstar[i] == rhs)
+                cortical_equations.append(n[i] == rhs)
 
             extra = []
             if gtas is not None and gtas.background_param is not None:
@@ -273,11 +305,17 @@ class HawkesAction:
         dv_name = self.physical_voltage
 
         def _action(ns, _gtas=gtas, _nt=nt_name, _vt=vt_name,
-                    _dn=dn_name, _dv=dv_name):
+                    _dn=dn_name, _dv=dv_name, _self=self):
             nt = getattr(ns, _nt)
             vt = getattr(ns, _vt)
             dn = getattr(ns, _dn)
             dv = getattr(ns, _dv)
+            tau = getattr(ns, _self.membrane_timescale)
+            E = getattr(ns, _self.external_drive)
+            w = getattr(ns, _self.recurrent_weight)
+            g = getattr(ns, _self.synaptic_kernel)
+            nstar = getattr(ns, _self.spike_saddle)
+            vstar = getattr(ns, _self.voltage_saddle)
 
             terms = SR(0)
             for i in ns.pop:
@@ -288,16 +326,16 @@ class HawkesAction:
                 )
                 # Cortical voltage equation
                 voltage = (
-                    (ns.tau * ns.Dt + 1) * dv[i]
-                    + ns.vstar[i] - ns.E[i]
-                    - sum(ns.w[i][j] * ns.g * (ns.nstar[j] + dn[j])
+                    (tau * ns.Dt + 1) * dv[i]
+                    + vstar[i] - E[i]
+                    - sum(w[i][j] * g * (nstar[j] + dn[j])
                           for j in ns.pop)
                 )
                 if _gtas is not None:
                     # − w_X · g · (λ p + dm[i])
                     dm = getattr(ns, _gtas.physical_field)
                     voltage = voltage - (
-                        getattr(ns, _gtas.feedforward_weight) * ns.g
+                        getattr(ns, _gtas.feedforward_weight) * g
                         * (getattr(ns, _gtas.mother_rate)
                            * getattr(ns, _gtas.participation)
                            + dm[i])
@@ -359,9 +397,9 @@ class ExpSynapticKernel:
     timescale_param: str = 'tau_g'
 
     def kernel_ft_image(self):
-        ts = self.timescale_param
-        return lambda ns, omega, _ts=ts: {
-            ns.g: SR(1) / (SR(1) + I * omega * SR.var(_ts)),
+        ts, k = self.timescale_param, self.kernel_name
+        return lambda ns, omega, _ts=ts, _k=k: {
+            getattr(ns, _k): SR(1) / (SR(1) + I * omega * SR.var(_ts)),
         }
 
     def extra_specializations(self):
@@ -390,7 +428,7 @@ class DeltaKernel:
         δ(t) in the time-domain propagator construction.  The
         ModelBuilder merges this into the HawkesAction template's
         specializations dict at build time."""
-        return lambda ns: {ns.g: ns.delta_D}
+        return lambda ns, _k=self.kernel_name: {getattr(ns, _k): ns.delta_D}
 
 
 # ───────────────────────────────────────────────────────────────────────

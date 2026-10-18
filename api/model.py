@@ -1827,7 +1827,7 @@ class _BaseModelBuilder:
             # saddle.  The ``'AUTO'`` sentinel tells _classify_mf_eqs
             # to treat every mf_eq whose RHS is a single function
             # call as a closure saddle.
-            iter_sentinel = ('AUTO' if self.populations else 'nstar')
+            iter_sentinel = 'AUTO'
             self._mf_bg = make_mf_bg_conditions_lambda(
                 self._mf_eqs_text, primary_fn_spec,
                 field_names  = field_names,
@@ -1955,6 +1955,37 @@ class _BaseModelBuilder:
             if getattr(f, 'population', None) is None:
                 f.population = 'pop'
 
+    def _inject_legacy_population(self) -> None:
+        """``n_populations=N`` (N >= 2) without ``.population(...)``: declare
+        the explicit population ``pop`` of size N and index every legacy
+        ``indexed=`` field, parameter, kernel and one-argument function by
+        it (vector -> ``['pop']``, matrix -> ``['pop', 'pop']``).  The model
+        is then an ordinary population model (same symbols, same index set
+        ``pop``), solved by the population mean-field path, which reads no
+        field or parameter spelling; the former flat-population solver read
+        the names ``nstar``/``vstar``/``E``/``g`` (audit GEN-01)."""
+        name, size = 'pop', int(self.n_populations)
+        self.populations.append({
+            'name': name, 'size': size,
+            'description': f'n_populations={size} index set'})
+        self.n_populations = len(self.populations)
+        for f in list(self.physical_fields) + list(self.response_fields):
+            if f.indexed and getattr(f, 'population', None) is None:
+                f.population = name
+        for p in self.parameters:
+            if p.indexed_by is None and p.indexed:
+                p.indexed_by = [name, name] if p.matrix else [name]
+        for k in self.kernels:
+            if k.indexed_by is None and k.indexed:
+                k.indexed_by = [name, name] if k.matrix else [name]
+        for ks in self._kernel_specs:
+            if ks.get('indexed_by') is None and ks.get('indexed'):
+                ks['indexed_by'] = ([name, name] if ks['indexed'] == 'matrix'
+                                    else [name])
+        for fn in self._function_specs:
+            if fn.get('population') is None:
+                fn['population'] = name
+
     def _resolve_spatial_dim(self) -> int:
         """Resolve the model's single spatial dimension from the physical
         fields (``0`` = time-only); validate the v1 single-dimension
@@ -1995,20 +2026,16 @@ class _BaseModelBuilder:
         # truly scalar models — bare ``xt * x`` instead of
         # ``sum(xt[i]*x[i] for i in pop)``.
         #
-        # Gate on ``n_populations <= 1``: the autopop always injects a
-        # size-1 population, so firing it for a legacy
-        # ``n_populations >= 2`` model (e.g. the 2-pop Hawkes models,
-        # which declare indexed fields but never call
-        # ``.population(...)``) would clobber the requested population
-        # count down to 1 — dropping ``nt2``/``vt2``/… and zeroing
-        # every cross-population correlator.  Those models instead
-        # keep an empty ``populations`` list and fall through to the
-        # flat ``index_sets = {'pop': range(n_populations)}`` legacy
-        # path (and the matching legacy ``solve_mean_field`` branch),
-        # exactly as the hand-written ``simulations/hawkes_*`` dicts do.
+        # Gate on ``n_populations <= 1``: the autopop injects a size-1
+        # population.  A legacy ``n_populations >= 2`` model (indexed fields,
+        # no ``.population(...)``) gets the explicit population ``pop`` of
+        # that size instead (``_inject_legacy_population``), so every model
+        # reaching the solvers declares its populations.
         if (not self.populations and self.physical_fields
                 and self.n_populations <= 1):
             self._inject_autopop()
+        elif not self.populations and self.physical_fields:
+            self._inject_legacy_population()
 
         # Apply the colored-noise → Markovian-embedding preprocessor
         # BEFORE compiling text declarations: this rewrite mutates
@@ -2107,7 +2134,7 @@ class _BaseModelBuilder:
             from api.model_compiler import (
                 _classify_mf_eqs as _classify,
             )
-            iter_sentinel = ('AUTO' if self.populations else 'nstar')
+            iter_sentinel = 'AUTO'
             classification = _classify(
                 self._mf_eqs_text, iter_sentinel,
                 functions=self._function_specs,
