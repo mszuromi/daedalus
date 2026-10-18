@@ -157,6 +157,30 @@ _REFROZEN_NPZ = os.path.join(os.path.dirname(__file__), 'fixtures',
 # baseline already at main, unchanged here).
 _REFROZEN_NPZ_W6 = os.path.join(os.path.dirname(__file__), 'fixtures',
                                 'phase_j_legacy_baseline_refrozen_w6.npz')
+# Spatial entries, refrozen from main dca8804 (W5 slow-test triage; every move is documented by a merged
+# PR, bisected per commit): #44 (spatial loops at tau != 0 split the chamber time grid at the kinks; tau = 0
+# rows bit-identical) moved spatial-allen_cahn_1d-l2 by <= 1.05e-3, spatial-reaction_diffusion_conserved_1d-l1
+# by 3.4e-5 and spatial-coupled_rd_2species_1d-l1 by 1.4e-3 relative on their tau = 0.5 rows; #58 (the
+# radial-simplex equal-time rule and the derivative-vertex kink segments) then moved the Allen-Cahn tau = 0
+# rows by <= 2.2e-6 and the conserved model by <= 4.5e-4 (tau = 0) / 1.7e-5 (tau = 0.5).  The coupled model
+# is bit-identical across #55 / #58.
+_REFROZEN_NPZ_W5S = os.path.join(os.path.dirname(__file__), 'fixtures',
+                                 'phase_j_legacy_baseline_refrozen_w5s.npz')
+# The model text fingerprint of the colored-noise models changed in #50 (W3b: the spec signature of a model with
+# CGF rows carries the new row semantics, so caches of rows read the old way are rebuilt once); their values are
+# unchanged (W3b zoo A/B: bit-identical).  {entry: (baseline signature, current signature)}.
+# The linear_hawkes fingerprint changed in #59 (W6, GEN-01: n_populations=N is an explicit population, so its
+# fields carry a population name); its values moved by 2.2e-16 (documented there).
+_RESIGNED = {'ou_quartic_colored-k2-l1': ('2943c44b21ec6c37', '59405a1a4fc0c8b1'),
+             'ou_quartic_two_dim_color_corr-k2-l1': ('325029e162ea2dea', '4c5aa2778ffe21fe'),
+             'linear_hawkes-k2-l1': ('34e554dcae108db0', '5cafdb79feb04f7a')}
+# Strict entries whose cross-platform scatter exceeds 1e-13 (measured on CI's stack, ubuntu / openblas / scipy
+# 1.17.1, against the macOS baseline): ou_quartic_two_dim_color_corr ell1 4.0e-13 relative (an ill-conditioned
+# realization, W4b's G6_ILL_CONDITIONED); its values did not move (the same at every commit since the baseline).
+_PLATFORM_RTOL = {'ou_quartic_two_dim_color_corr-k2-l1': 1e-12}
+# Entries that refuse by design now: #44 (UV-divergent loop subgraphs refuse; reaction_diffusion_2d has a
+# tadpole at d = 2).  {entry: the error class the run must report}.
+_REFUSED_NOW = {'spatial-reaction_diffusion_2d-l1': 'SpatialUVDivergenceError'}
 
 
 # The one route counter that the cluster route changes on that entry: the
@@ -172,7 +196,7 @@ def _refrozen_arrays(name):
     reviewed reason, ``{array: values}`` (empty for every other entry)."""
     out = {}
     prefix = name + '/'
-    for path in (_REFROZEN_NPZ, _REFROZEN_NPZ_W6):
+    for path in (_REFROZEN_NPZ, _REFROZEN_NPZ_W6, _REFROZEN_NPZ_W5S):
         if not os.path.exists(path):
             continue
         with np.load(path) as z:
@@ -411,12 +435,20 @@ def _reproduce(baseline, name, mode, monkeypatch):
     strict = (_baseline_cache_state(entry)
               or not s['counters'].get('nquad_calls'))
     rec = Z.run_entry(entry, with_provenance=False)
+    if name in _REFUSED_NOW:
+        assert str(rec['status']).startswith('ERR') and _REFUSED_NOW[name] in rec['status'], rec['status']
+        return
     assert rec['status'] == 'ok', rec.get('status')
     assert rec['params_effective'] == s['params_effective'], name
     # The MODEL must be the one baselined (its file may change elsewhere).
-    assert rec['model_spec_signature'] == s['model_spec_signature'], (
+    want_sig = s['model_spec_signature']
+    if name in _RESIGNED:
+        assert _RESIGNED[name][0] == want_sig, name
+        want_sig = _RESIGNED[name][1]
+    assert rec['model_spec_signature'] == want_sig, (
         f'{name}: model definition changed since the baseline')
     rtol = 1e-13 if strict else _OTHER_REPRESENTATIVES_RTOL
+    rtol = max(rtol, _PLATFORM_RTOL.get(name, 0.0))
     ref, cur = dict(arrays[name]), Z.result_arrays(rec)
     ref.update(_refrozen_arrays(name))
     if rec['counters'].get('nquad_hardened_calls'):

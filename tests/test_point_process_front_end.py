@@ -68,8 +68,8 @@ def _run(m, k, max_ell, ext, tau):
                              parallel=False, verbose=False, use_cache=False)
 
 
-def _identical(r1, r2, max_ell):
-    assert r1['status'] == r2['status'] == 'ok'
+def _identical(r1, r2, max_ell, status='ok'):
+    assert r1['status'] == r2['status'] == status
     assert repr(r1['mf_values']) == repr(r2['mf_values'])
     for ell in range(max_ell + 1):
         a = np.asarray(r1['C_tau_by_ell'][ell])
@@ -289,8 +289,12 @@ def test_delayed_alpha_network_voltage_form_bit_identical_to_builder():
     """~45 min on a loaded machine: the 2-neuron delayed network's one loop (Pade loops), twice."""
     ext, tau = [('n', 1), ('n', 2)], np.array([-3.0, 0.5, 3.0])
     _run(_delay_builder(), 2, 0, ext, tau)                      # warm-up
-    _identical(_run(_delay_pp('voltage').build(), 2, 1, ext, tau),
-               _run(_delay_builder(), 2, 1, ext, tau), 1)
+    # the automatic Pade order stops at n_max = 16 with an estimated 1.4e-5 against the 1e-8 target, which
+    # #50 marks status 'target_missed' (was 'ok'); both forms must agree on that too
+    r1, r2 = _run(_delay_pp('voltage').build(), 2, 1, ext, tau), _run(_delay_builder(), 2, 1, ext, tau)
+    _identical(r1, r2, 1, status='target_missed')
+    assert r1['delay']['n'] == r2['delay']['n'] == 16
+    assert r1['delay']['est_rel_error'] == r2['delay']['est_rel_error'] < 1e-4
 
 
 @pytest.mark.slow
