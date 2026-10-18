@@ -154,14 +154,17 @@ def numeric_K(K_ft, omega, num_params):
 def lambert_roots(alpha, beta, gamma, X, branches=None):
     """Roots of ``alpha s + beta + gamma e^{-s X} = 0`` on the Lambert branches
     ``-K..K``.  ``K`` (default) covers every root with ``|Im s| <= R``,
-    ``R = |beta/alpha| + |gamma/alpha| + 1`` (the bound on right-half-plane
-    roots; ``Im W_k ~ 2 pi k``), at least 60.  ``z = -(gamma/alpha) X
+    ``R = |beta/alpha| + |gamma/alpha|`` (the bound on right-half-plane
+    roots; ``Im W_k ~ 2 pi k``), plus 10, at least 60.  ``z = -(gamma/alpha) X
     e^{beta X/alpha}`` is formed in mpmath (no overflow for large ``beta X``)."""
     import mpmath as mp
     alpha, beta, gamma, X = complex(alpha), complex(beta), complex(gamma), float(X)
     if gamma == 0:
         return [(-beta / alpha)]
-    R = abs(beta / alpha) + abs(gamma / alpha) + 1.0
+    # every root with Re s >= 0 has |s| <= R (|alpha s + beta| = |gamma e^{-sX}|
+    # <= |gamma| there); ``R X`` is unit free (the former ``+ 1.0`` made the
+    # branch count grow with the time unit: 8e7 branches at a 1e9 rescaling)
+    R = abs(beta / alpha) + abs(gamma / alpha)
     K = int(branches) if branches is not None else max(60, int(R * X / (2 * math.pi)) + 10)
     with mp.workdps(30):
         z = -(mp.mpc(gamma) / mp.mpc(alpha)) * X * mp.exp(mp.mpc(beta) * X / mp.mpc(alpha))
@@ -475,7 +478,7 @@ def _acausal_images(K_ft, omega, num_params):
         r = np.roots(co[::-1]) if len(co) > 1 else []
         for w in r:
             s = 1j * w
-            if s.real > 1e-9 * max(1.0, abs(s)):
+            if s.real > 1e-9 * abs(s):                 # relative, no unit floor
                 bad.append(s)
     return bad
 
@@ -493,7 +496,7 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                 xv = float(Xv)
             except TypeError:
                 return KernelStability('undetermined', detail=f'delay {X} has no value')
-            if not any(abs(xv - y) <= 1e-14 * max(1.0, abs(y)) for y in delays):
+            if not any(abs(xv - y) <= 1e-14 * max(abs(xv), abs(y)) for y in delays):
                 delays.append(xv)
     delays = [x for x in delays if x != 0.0]             # exp(0) = 1: no delay
     if any(x < 0 for x in delays):
@@ -519,15 +522,28 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                     gamma = complex(K1)
                     Xv = float(SR(X).subs(num_params))
                     rts = lambert_roots(alpha, beta, gamma, Xv)
-                    rhp = sorted([z for z in rts if z.real > 0], key=lambda z: -z.real)
-                    marg = [z for z in rts if abs(z.real) <= _MARGINAL_REL * max(1.0, abs(z))]
+                    # the marginal band is relative to the root, plus the
+                    # rounding of W_k(z)/d - beta/alpha (formed at 30 digits)
+                    # on the model's own rates; never relative to 1 (an
+                    # absolute 1e-9 band called a stable model in slow time
+                    # units marginal); a root strictly to the right of it is
+                    # unstable whatever else sits on the axis (UNIT-04)
+                    rate = max(abs(beta / alpha), abs(gamma / alpha))
+                    band = [_MARGINAL_REL * abs(z) + 1e-25 * rate for z in rts]
+                    rhp = sorted([z for z, b in zip(rts, band) if z.real > b],
+                                 key=lambda z: -z.real)
+                    marg = [z for z, b in zip(rts, band) if abs(z.real) <= b]
                     right = max(rts, key=lambda z: z.real)
-                    st = ('marginal' if marg else 'unstable' if rhp else 'stable')
+                    st = ('unstable' if rhp else 'marginal' if marg else 'stable')
+                    nb = (len(rts) - 1) // 2
                     return KernelStability(
                         st, n_rhp=len(rhp), roots=tuple(rhp or marg), rightmost=right,
                         method='lambert_w', delays=(Xv,),
                         detail=f'Lambert W roots s_k = W_k(z)/d - beta/alpha, '
-                               f'branches -60..60; rightmost {right:.8g}',
+                               f'branches -{nb}..{nb}; rightmost {right:.8g}'
+                               + (f'; also on the imaginary axis: '
+                                  f'{", ".join(f"{z:.6g}" for z in marg[:4])}'
+                                  if rhp and marg else ''),
                         wall_s=time.perf_counter() - t0)
             except (TypeError, ValueError, ZeroDivisionError, OverflowError, ArithmeticError):
                 pass                                # the argument principle below

@@ -104,9 +104,54 @@ headers.
 | correlator order `k` | `k = 2` (two-point) through `compute_cumulants`; **any `k` at the integrator/bridge level** (June 2026): matrix-`𝓑` Symanzik + multivariate heat-kernel IFT (`_heat_kernel_x_general`) + the orbit–stabilizer external-Wick mapping sum (`diagram_correlator_pts` ÷ `external_wick_compensation`) — plain vertices, any `d`; trust battery in `tests/test_spatial_general_k.py` (k=2 bit-reduction, per-sample `momfac = pref·e^{−q⃗ᵀ𝓑q⃗}` identity vs the independent q-path, analytic IFT vs 2-d quadrature, k=3 route equivalence q-path↔x-path tree+1-loop, permutation invariance, k=3 third-cumulant vs lattice sim) | `method='bessel'` at k≥3; coupled k≥3 through `compute_cumulants` (bridge driver `compute_coupled_kpoint` works — scalar-D, plain vertices; decoupled-limit anchor 4e-5, cross-coupled complex-mode reality 5e-18 at tree+1-loop); coupled unequal-D loop dressing at k≥3 (at k=2 the insertion machinery supports **any Dyson order** — Bell/partition expansion of (1/Dⁿ)∂ⁿV/V + generalized-partial-fraction 𝓗_n labels, symbolic-exact to 2e-14 at n≤4, ladder-validated O(ρ)→O(ρ²)→O(ρ³); cost grows combinatorially with order). NOTE k≥3 public API: `compute_cumulants(k>=3, spatial_points=(n_pts,k-1,2))` → `C_kpoint`; k≥3 derivative-vertex analytic IFT via the multivariate Wick moment (`_build_wick_moment_multi`, KPZ route equivalence tree 7e-13 / 1-loop 6e-9); cross-coupled 1-loop needs the memory-safe grid (the (grid×assignments) amp array is the cost driver). |
 | loop order `ℓ` | `0, 1, 2` (gated and validated) | `ℓ ≥ 3`: unvalidated and costly; the k=2 mirror completion is now index-based (`_needs_mirror`, paper Prop. `prop_ext_compensation`) so ℓ=3 is at least *correct* in principle (`tests/test_spatial_external_index.py`, slow test), but nothing above ℓ=2 has been checked against a simulation |
 | dimension `d` | `d ∈ {1,2,3}` for **all** vertex types — polynomial AND derivative/form-factor (the `d≥2` transverse-momentum average is the `L·d`-dim GH, validated vs brute `∫dᵈℓ` to 1e-14 at d=2) | `d ≥ 2` loops are more UV-divergent (the bare value is cutoff-sensitive — needs renormalisation, like the `d≥2` tadpole) |
-| vertices | simple polynomial `φⁿ` (any degree); **composite-derivative ∇/∂ vertices** `∇²(φⁿ)`/`∂ₓ(φ²)` (Model B, Burgers), **per-leg-derivative** `(∂ₓφ)²` (KPZ), AND **any MIX of them** in one theory (per-node coupling-weighted form-factor table — Allen-Cahn⊕Model B⊕KPZ computes), generic in `ℓ` and `k` | field-degree≥3 composite (`∇²φ³`), genuine constant drift `v·∂ₓφ` in loops (integrator-gated), convolution/non-local vertices. NB a *same-signature* cross of two derivative vertices (e.g. Model B `∇²(φ²)` × KPZ `(∂φ)²`) gives a higher-degree loop form factor that can be **UV-divergent** — computed honestly, but the bare value is cutoff-dependent (needs renormalisation). |
+| vertices | simple polynomial `φⁿ` (any degree); **composite-derivative ∇/∂ vertices** `∇²(φⁿ)`/`∂ₓ(φ²)` (Model B, Burgers), **per-leg-derivative** `(∂ₓφ)²` (KPZ), AND **any MIX of them** in one theory (per-node coupling-weighted form-factor table — Allen-Cahn⊕Model B⊕KPZ computes), generic in `ℓ` and `k` | field-degree≥3 composite (`∇²φ³`), a drift that differs between fields or is off-diagonal (no Galilean frame; refused), a drift at `d≥2`, convolution/non-local vertices. NB a *same-signature* cross of two derivative vertices (e.g. Model B `∇²(φ²)` × KPZ `(∂φ)²`) gives a higher-degree loop form factor that can be **UV-divergent** — computed honestly, but the bare value is cutoff-dependent (needs renormalisation). |
 | noise | white Gaussian (2-point φ̃² → C lines); **non-Gaussian white-in-time κ⁽ⁿ⁾ point sources** (φ̃ⁿ, n≥3 → an internal vertex with n retarded edges through the same chamber integrator; tree validated vs a semi-analytic oracle to 2e-10 at converged n_t — `test_k3_nongaussian_noise_source_tree`; equal-point κ₃(0,0) is UV log-divergent in d=1, computed honestly/cutoff-sensitive) | spatially-colored or temporally-colored spatial noise (temporal pipeline supports colored kernels; spatial port open) |
 | initial condition | stationary | transient ICs |
+
+### Constant drift — the Galilean boost
+
+A drift `v·Dx(φ, 0)` shared by every field (inverse propagator `K ∋ V·k`,
+`V = i·v·I` after `GradX → i·k`) is removed exactly by `x → x − v·t`: the
+Laplacian, spatial-derivative vertices, a homogeneous saddle and the δ-correlated
+white noise are invariant. So every driver (k=2 tree and loops, coupled trees
+and loops, k ≥ 3) computes the drift-free theory (`GradX → 0`) at the boosted
+points: `C_v(x, τ) = C_0(x − v·τ, τ)` with the convention
+`C(x, τ) = ⟨φ(0,0) φ(x,τ)⟩` (slot `j` of a k-point at `(x_j − v·τ_j, τ_j)`).
+Validated against the erfc closed form (infinite line and periodic image sum,
+5.6e-17) and its exact rate-rescaled twins (1e-6, 1e8). Unequal drifts,
+off-diagonal `V` (cross-advection) and a real part of `V` refuse; the
+thresholds are relative to the velocity scale `sqrt(|eig M|·|eig D|)`
+(`pipeline_bridge._drift_velocity`). `d ≥ 2` with a non-zero drift refuses
+(the output grid holds distances).
+
+### Multi-population fields
+
+A leg `(name, population)` resolves to that population's column
+(`pipeline_bridge._legs_to_phys_idx`): `('p', 2)` is population 2. A field with
+a single population accepts any population label (legacy `[('phi',1),('phi',2)]`
+auto-correlations); an absent population or a bare name of a multi-population
+field raises.
+
+### Memory guard
+
+Every causal chamber of `full_integrator.diagram_kinematic` checks its exact
+sample count against `chamber_peak_bytes` (sample arrays, Symanzik blocks, the
+`(P, n_x)` heat kernel, the derivative-vertex moments, or the `d ≥ 2` q-path
+Gauss–Hermite grid `gh^{L·d}`) before allocating, so the k=2, k-point and q-path
+drivers are all guarded (`SpatialMemoryBudgetError`; budget
+`SPATIAL_MEM_BUDGET_GB` or the RAM-aware default). Measured tracemalloc peaks
+are 0.4–0.9 of the estimate. The k=2 loop driver also refuses up front with the
+same estimate on the sample-count bound.
+
+### Unequal diffusion: the dressed tree in real space
+
+`G^{(N)}(q,t) = e^{−D₀q²t} Σ_n (−q²)^n 𝓗_n(t)` with q-independent `𝓗_n`, so
+each Dyson term's `q → x` transform is the Laguerre–Gaussian closed form
+`K_a(x)·p!·a^{−p}·L_p^{(d/2−1)}(|x|²/4a)` and only a smooth s-integral remains
+(adaptive, error-checked; `dyson_dressing.dressed_tree_C_x`). No q-grid, no
+`q_cut`, no fixed mode count (the periodic box sums images, or the dual modes for
+a wide Gaussian, to convergence). `SPATIAL_FORCE_NUMERICAL_FT=1` keeps the old
+grid transform as a cross-check.
 
 ### Derivative (∇) vertices — momentum-space form factors
 
@@ -151,9 +196,8 @@ count, chain, mode), and `diagram_form_factor` sums the matching types PER NODE
 prefactor's merged coupling cancels the weight normalisation — exactly the
 single-type behaviour when one vertex.  **Remaining (genuine, non-bespoke)
 limits:** field-degree≥3 composite vertices (`∇²φ³` — a ≥3-leg/sunset topology,
-gated in `theory_compiler`); a genuine constant drift
-`v·∂ₓφ` with `V≠0` at the saddle (validated at the heat-kernel oracle level but
-not yet wired into the Symanzik loop reduction — bridge raises cleanly).
+gated in `theory_compiler`); a drift `V` that is not one common `v·∂ₓφ` for
+every field (see *Constant drift* below).
 **`d=2`/`d=3` derivative vertices are now done** (the `L·d`-dim transverse-moment
 GH average, `_formfactor_average(…, spatial_dim)` + the per-component
 `diagram_form_factor(…, d)`; `Lap→−|p|²`, `Dx_i→i p_i`, KPZ `(∇h)²=Σ_i(∂_i h)²`)

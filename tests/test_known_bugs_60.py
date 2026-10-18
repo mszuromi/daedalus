@@ -276,7 +276,7 @@ def test_bug3_dae_residual_penalizes_nan_and_overflow(monkeypatch):
                           tau_grid=np.array([0.0]), **RUN)
     assert abs(r['mf_values']['xstar'][0] - 0.5) < 1e-12
     assert cap['R'](np.array([0.5]))[0] == 0.0
-    assert cap['R'](np.array([2.0]))[0] == 1e10              # 0*inf = NaN before
+    assert cap['R'](np.array([2.0]))[0] == MD._PENALTY       # 0*inf = NaN before (penalty 1e10 then)
 
 
 def test_bug3_saddle_residual_check():

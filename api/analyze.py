@@ -1505,10 +1505,12 @@ def _classify_eigs(eigs):
     eigs = np.asarray(eigs, dtype=complex)
     if eigs.size == 0:
         return None, 0
-    scale = max(1.0, float(np.max(np.abs(eigs))))
+    # relative to the largest eigenvalue, no floor (a floor of 1.0 called
+    # every mode of a model in slow time units marginal: audit UNIT-03)
+    scale = float(np.max(np.abs(eigs)))
     tol = _MARGINAL_RTOL * scale
     re = eigs.real
-    n_marg = int(np.sum(np.abs(re) < tol))
+    n_marg = int(np.sum(np.abs(re) <= tol))
     if np.any(re > tol):
         return 'unstable', n_marg
     if n_marg:
@@ -2142,7 +2144,7 @@ def _g3_pole_findings(ctx, res):
     if delta:
         ctx.add('G3_DELTA_COMPONENT',
                 f'G(omega) has an instantaneous (delta) part in entries {delta}.', '')
-    scale = max([1.0] + [abs(p) for p in poles])
+    scale = max([0.0] + [abs(p) for p in poles])     # relative, no unit floor
     tol = _MARGINAL_RTOL * scale
     lower = [p for p in poles if p.imag < -tol]
     marginal = [p for p in poles if abs(p.imag) <= tol]
@@ -2233,8 +2235,15 @@ def _g3_spatial(ctx):
                 'spatial rate checks are skipped.', '')
         return
     M, D, V = num
-    scale = max(1.0, float(np.max(np.abs(M))), float(np.max(np.abs(D))))
-    tol = _MARGINAL_RTOL * scale
+    # each tolerance relative to the matrix it tests (M: a rate, D: a
+    # diffusion constant, M + V q + D q^2: the decay rate at q), no unit floor
+    tol_M = _MARGINAL_RTOL * float(np.max(np.abs(M)))
+    tol_D = _MARGINAL_RTOL * float(np.max(np.abs(D)))
+
+    def tol_q(qq):
+        return _MARGINAL_RTOL * max(float(np.max(np.abs(M))),
+                                    float(np.max(np.abs(V))) * qq,
+                                    float(np.max(np.abs(D))) * qq * qq)
     mass = float(np.min(np.linalg.eigvals(M).real))
     diff = float(np.min(np.linalg.eigvals(D).real))
     rates = [(qq, float(np.min(np.linalg.eigvals(M + V * qq + D * qq * qq).real)))
@@ -2243,21 +2252,21 @@ def _g3_spatial(ctx):
     ctx.t['spatial_mass_min'] = mass
     ctx.t['spatial_diffusion_min'] = diff
     ctx.t['spatial_rate_min'] = r_min
-    if diff < -tol:
+    if diff < -tol_D:
         ctx.add('G3_SPATIAL_UNSTABLE',
                 f'the diffusion matrix has a negative eigenvalue ({diff:.4g}): '
                 'anti-diffusive, every mode of large wavenumber grows '
                 '(ill-posed, no stationary state).',
                 'check the sign of the Laplacian term (+D*Laplacian on the '
                 'right-hand side is diffusive)')
-    elif any(r < -tol for qq, r in rates if qq > 0):
+    elif any(r < -tol_q(qq) for qq, r in rates if qq > 0):
         ctx.add('G3_SPATIAL_UNSTABLE',
                 f'the mode at wavenumber q = {q_min:g} grows (decay rate '
                 f'{r_min:.4g} < 0) although the homogeneous mode is stable: a '
                 'finite-wavelength (Turing-type) instability; no stationary '
                 'state around this saddle.',
                 'change the parameters to a regime where every mode decays')
-    if abs(mass) <= tol:
+    if abs(mass) <= tol_M:
         _spatial_massless(ctx)
 
 
@@ -2440,7 +2449,9 @@ def _g4_noise(ctx):
     ctx.t['noise_sources'] = tuple(names[i] for i in sources)
     if not unresolved:
         w = np.linalg.eigvalsh(Nmat) if nf else np.array([])
-        scale = max(1.0, float(np.max(np.abs(Nmat)))) if nf else 1.0
+        # relative to the covariance itself (a floor of 1.0 let a small
+        # noise with a negative variance through)
+        scale = float(np.max(np.abs(Nmat))) if nf else 0.0
         if w.size and w.min() < -1e-10 * scale:
             ctx.add('G4_NEGATIVE_VARIANCE',
                     f'the Gaussian noise covariance at the saddle has a '
