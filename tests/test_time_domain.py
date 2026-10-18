@@ -23,6 +23,12 @@ import os
 import sys
 import warnings
 
+import pytest
+
+_LINUX_FORK_ONLY = pytest.mark.skipif(
+    sys.platform == 'darwin',
+    reason='macOS never forks (engine.fork_safety); Linux CI covers the fork path')
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import (
@@ -1445,6 +1451,7 @@ def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
     )
 
 
+@_LINUX_FORK_ONLY
 def test_phase_J_total_C_batch_parallel_matches_serial():
     r"""
     Parallel-eval regression (parallel-eval branch, 2026-04-21):
@@ -1524,6 +1531,7 @@ def test_phase_J_total_C_batch_parallel_matches_serial():
     )
 
 
+@_LINUX_FORK_ONLY
 def test_phase_J_total_C_batch_nested_matches_serial():
     r"""
     Nested per-(τ, diagram) parallel regression (parallel-eval branch,
@@ -1589,43 +1597,7 @@ def test_phase_J_total_C_batch_nested_matches_serial():
     )
 
 
-def test_phase_J_fork_in_notebook_guard_degrades_to_serial(monkeypatch):
-    r"""Fork-in-notebook crash guard (spatial→temporal safety lesson, 2026-06).
-
-    ``total_C_batch`` / ``eval_per_diagram_batch`` default to fork-based
-    multiprocessing.  Forking after Cocoa/BLAS init inside a Jupyter kernel
-    on macOS can HARD-CRASH the kernel and the OS (it did, twice).  The guard
-    ``_fork_unsafe_in_notebook`` must:
-
-      (a) be INERT outside that exact context — plain scripts / pytest / Linux
-          / terminal IPython keep the fast fork path (otherwise this whole
-          test file, which exercises the fork path above, would change
-          behaviour); and
-      (b) TRIP inside a *simulated* macOS Jupyter (ZMQ) kernel, degrading
-          ``parallel=True`` to a serial evaluation that is bit-identical to
-          the explicit serial path — and NEVER forking.
-
-    The simulation patches ``sys.platform`` and ``IPython.get_ipython`` so the
-    test is deterministic on any host OS (CI is typically Linux).
-    """
-    from engine.integration.time_domain import pipeline as P
-
-    # (a) No ZMQ kernel → guard inert for every start method.
-    monkeypatch.setattr(P.sys, 'platform', 'darwin', raising=False)
-    monkeypatch.setattr('IPython.get_ipython', lambda: None, raising=False)
-    assert P._fork_unsafe_in_notebook('fork') is False
-    assert P._fork_unsafe_in_notebook('spawn') is False
-
-    # (b) Simulated macOS Jupyter kernel: fork unsafe, spawn still safe.
-    class ZMQInteractiveShell:           # class name is what the guard checks
-        pass
-    monkeypatch.setattr('IPython.get_ipython',
-                        lambda: ZMQInteractiveShell(), raising=False)
-    assert P._fork_unsafe_in_notebook('fork') is True
-    assert P._fork_unsafe_in_notebook('spawn') is False
-
-    # End-to-end: in the simulated kernel, parallel=True must degrade to
-    # serial (warn once) and match the serial result EXACTLY — no fork.
+def _guard_fixture_batch():
     pd = _propagator_data_2pop_nondiagonal()
     td = _tree_k2_cross_population()
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
@@ -1633,22 +1605,73 @@ def test_phase_J_fork_in_notebook_guard_degrades_to_serial(monkeypatch):
         kernel_groups=kernel_groups, propagator_data=pd, k=2,
         num_params=None, origin_leaf_idx=1,
     )
-    total_C_batch = j_result['total_C_batch']
     tau_points = [(tv, 0.0) for tv in (-3.0, -1.0, 0.3, 1.0, 3.0, 5.0, 7.0)]
+    return j_result, tau_points
 
-    P._FORK_GUARD_WARNED = False          # reset one-shot so warning is catchable
+
+def _no_fork(monkeypatch):
+    import multiprocessing as mp
+
+    def boom(*a, **k):
+        raise AssertionError('a Phase J batch started a process pool')
+    monkeypatch.setattr(mp, 'get_context', boom)
+
+
+def test_phase_J_fork_guard_macos_never_forks(monkeypatch):
+    r"""Fork safety (2026-06 crash lesson; S0 of the parallelization plan).
+
+    Forking after Cocoa/BLAS/ECL init has hard-crashed a macOS Jupyter kernel
+    AND the OS, and a Sage process is multithreaded after its first symbolic
+    step, so macOS never forks: ``total_C_batch`` / ``eval_per_diagram_batch``
+    with ``parallel=True`` run serially there, warn once, and match the
+    serial result exactly -- in a plain script as much as in a kernel.  Linux
+    keeps the fork path.  ``sys.platform`` is patched, so the test is
+    deterministic on any host and never forks.
+    """
+    import engine.fork_safety as fs
+    from engine.integration.time_domain import pipeline as P
+
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    assert P._fork_unsafe('fork') is False and P._fork_unsafe('spawn') is False
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    monkeypatch.setattr('IPython.get_ipython', lambda: None, raising=False)
+    monkeypatch.delitem(sys.modules, 'ipykernel', raising=False)
+    assert P._fork_unsafe('fork') is True          # no kernel: still never
+    assert P._fork_unsafe('spawn') is False
+
+    j_result, tau_points = _guard_fixture_batch()
+    serial = j_result['total_C_batch'](tau_points, parallel=False)
+    serial_pd, _ = j_result['eval_per_diagram_batch'](tau_points, parallel=False)
+    _no_fork(monkeypatch)
+    monkeypatch.setattr(fs, '_WARNED', set())
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
-        guarded = total_C_batch(tau_points, parallel=True, n_workers=8)
-    serial = total_C_batch(tau_points, parallel=False)
+        guarded = j_result['total_C_batch'](tau_points, parallel=True,
+                                            n_workers=8)
+        guarded_pd, _ = j_result['eval_per_diagram_batch'](
+            tau_points, parallel=True, n_workers=8)
+    msgs = [str(r.message) for r in rec if 'disabled on macOS' in str(r.message)]
+    assert len(msgs) == 1 and msgs[0].startswith('Phase J parallel batch')
+    assert guarded == serial and guarded_pd == serial_pd
 
-    assert any('fork-based multiprocessing is UNSAFE' in str(r.message)
-               for r in rec), 'fork-guard fallback warning was not emitted'
-    maxdiff = max(abs(complex(a) - complex(b))
-                  for a, b in zip(guarded, serial))
-    assert maxdiff == 0.0, (
-        f'guarded parallel→serial fallback != serial: max |diff| = {maxdiff!r}'
-    )
+
+def test_phase_J_parallel_kill_switch(monkeypatch):
+    """``DAEDALUS_PARALLEL=0``: no pool on any platform, no warning, the
+    serial numbers."""
+    import engine.fork_safety as fs
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    j_result, tau_points = _guard_fixture_batch()
+    serial = j_result['total_C_batch'](tau_points, parallel=False)
+    monkeypatch.setenv('DAEDALUS_PARALLEL', '0')
+    _no_fork(monkeypatch)
+    monkeypatch.setattr(fs, '_WARNED', set())
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter('always')
+        got = j_result['total_C_batch'](tau_points, parallel=True, n_workers=8)
+        vals, _ = j_result['eval_per_diagram_batch'](tau_points, parallel=True,
+                                                     n_workers=8)
+    assert got == serial and len(vals) == len(tau_points)
+    assert not [r for r in rec if 'fork' in str(r.message)]
 
 
 def test_phase_J_k3_star_tree_finite_and_stationary():

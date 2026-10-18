@@ -11,6 +11,28 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Changed: macOS never forks; `DAEDALUS_PARALLEL=0` kill switch; the OBJC fork-safety flag is never set
+
+- **macOS never forks**, in any process (notebook, terminal IPython, script, pytest). `engine.fork_safety.fork_unsafe`
+  is True for the `fork` start method on macOS, and every fork-based pool (Phase J `total_C_batch` /
+  `eval_per_diagram_batch`, type assignment `enumerate_all`, streaming enumeration with `DAEDALUS_PREDIAGRAM_PROCS` > 1)
+  runs serially there with one `RuntimeWarning` per process. Before, plain macOS scripts forked. A Sage process is
+  multithreaded after its first symbolic step (Boehm GC marker threads of ECL), and forking a macOS Jupyter kernel has
+  hard-crashed the OS. Linux keeps the fork path. Numbers do not move: the parallel paths were bit-identical to serial.
+- **`DAEDALUS_PARALLEL=0`** (also false/no/off) turns every worker pool off, silently, read at call time: the fork
+  pools above, the spatial thread pool and the legacy eager enumerator's `n_threads`. Any value other than 0/1,
+  false/true, no/yes or off/on raises `ValueError`.
+- **`OBJC_DISABLE_INITIALIZE_FORK_SAFETY` is never set** (three library sites and one test removed). The
+  Objective-C runtime reads it once, at image load, so setting it from Python never affected the forks it was meant
+  to guard. It only stayed in `os.environ` and disabled the runtime's fork check in every process exec'd later, where
+  that turns a controlled abort into a hard crash.
+- `engine.fork_safety.in_jupyter_kernel()` is public (any ipykernel, `ZMQInteractiveShell` anywhere in the shell's MRO
+  as in SageMath and Spyder, or a shell with a kernel). `fork_unsafe_in_notebook` keeps its meaning (the kernel case).
+- Tests: fake SageMath / Spyder / VS Code shells, the macOS rule without a kernel, kill-switch parsing and every pool
+  under `DAEDALUS_PARALLEL=0`, one warning per process, a source scan that nothing sets the OBJC flag, and (Linux
+  only) a forked child that runs Maxima and a full ECL garbage collection within a timeout. The fork bit-identity
+  tests skip on macOS; Linux CI runs them.
+
 #### Fixed: the fork guard missed the SageMath Jupyter kernel
 
 `engine.fork_safety.fork_unsafe_in_notebook` tested the shell's class name for exactly `ZMQInteractiveShell`. The
