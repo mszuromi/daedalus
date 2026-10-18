@@ -84,13 +84,14 @@ def test_cubic_root_set_is_field_unit_invariant(s):
     """The three roots are found and kept distinct in any field unit (a 1e-10
     absolute dedup floor merged {1,2,3}e-9; the default seed box scaled with
     the largest parameter K = 1/s^2 and missed s and 2s), and the selected
-    root is the same one."""
-    for idx in (0, 2):
+    root is the same one (stability analysis off: the stable roots s, 3s
+    first, then 2s; audit W6)."""
+    for idx, want in ((0, 1.0), (1, 3.0), (2, 2.0)):
         r = _quiet(solve_mean_field_dae, _cubic(1 / s**2, s), {'K': 1 / s**2, 's': s, 'D': 0.01},
                    fixed_point_index=idx)
         roots = sorted(x['values']['xstar'][0] / s for x in r['mf_all_roots'])
         assert roots == pytest.approx([1.0, 2.0, 3.0], rel=1e-13, abs=0)
-        assert r['mf_values']['xstar'][0] / s == pytest.approx(1.0 + idx, rel=1e-13)
+        assert r['mf_values']['xstar'][0] / s == pytest.approx(want, rel=1e-13)
 
 
 @pytest.mark.parametrize('a', (1e-9,) + TIME + (1e9,))

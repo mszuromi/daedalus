@@ -584,49 +584,6 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
             if declared.get(var) is None and var not in (seed_box or {})]
 
 
-def _negative_roots(R, mirror_points, roots, root_errs, state_vars, slices,
-                    names, rtol, atol, stray=(), stray_errs=()):
-    """Roots the default search cannot reach.  A field with no declared
-    domain is seeded on the non-negative half line only (widening that box
-    moved existing models' roots, see ``_seed_box_default``), so a root with
-    a negative value there (``x - x^3`` at ``x = -1``) is out of reach of
-    ``fixed_point_index``.  The same seeds with those components negated
-    (``mirror_points``: where they converged) find them; warn, naming the
-    roots found and the remedy.  ``stray``: such roots the default seeds
-    happened to reach (never selectable either: whether a seed overshoots
-    to the negative side depends on the field's units, audit W6).  Returns
-    the new roots."""
-    cols = np.concatenate([np.arange(*slices[v]) for v in names])
-    cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
-    cand, cand_e = list(stray) + list(cand), list(stray_errs) + list(cand_e)
-    new, new_e = [], []
-    for r, e in zip(cand, cand_e):
-        # negative beyond its own error estimate (a root at 0 snaps to 0)
-        if not np.any(r[cols] < -10.0 * e[cols]):
-            continue
-        known = list(roots) + new
-        if len(_dedup_roots(known + [r], rtol=rtol, atol=atol,
-                            errs=list(root_errs) + new_e + [e])[0]) > len(known):
-            new.append(r)
-            new_e.append(e)
-    if new:
-        new.sort(key=lambda r: float(r[cols[0]]))
-        shown = '; '.join(
-            ', '.join(f'{v}*={r[slices[v][0]:slices[v][1]].tolist()}'
-                      for v in names)
-            for r in new[:4])
-        warnings.warn(
-            f'solve_mean_field_dae: field(s) {", ".join(names)} declare no '
-            f'domain, so the root search covers only their non-negative '
-            f'values; {len(new)} more fixed point(s) exist with negative '
-            f'values ({shown}) and are NOT among the roots '
-            f'fixed_point_index ranges over.  Declare the field with '
-            f"domain='real' (SDE.field(name, domain='real') or "
-            f"physical_field(name, domain='real')), or pass mf_dae_seed_box, "
-            f'to include them.', stacklevel=3)
-    return new
-
-
 # ── Root refinement, acceptance and deduplication ───────────────────
 #
 # Every criterion below is relative (to the root, to the row's own linear
@@ -1292,29 +1249,24 @@ def solve_mean_field_dae(
             break
     n_converged = len(points)
     unsearched = []
-    stray, stray_errs = [], []
+    mirror_only, mirror_only_e = [], []
     if mirror_cols is not None:
-        # a root negative (beyond its error) in a field the search covers on
-        # the non-negative half line only is not selectable, however it was
-        # reached: a seed overshoots to it in some units and not in others,
-        # so the selectable set (and fixed_point_index) depended on the
-        # field's units (audit W6: an exactly rescaled cubic lost a root)
-        keep, keep_e = [], []
-        for x, e in zip(deduped, root_errs):
-            if np.any(x[mirror_cols] < -10.0 * e[mirror_cols]):
-                stray.append(x)
-                stray_errs.append(e)
-            else:
-                keep.append(x)
-                keep_e.append(e)
-        deduped, root_errs = keep, keep_e
-        # the default seeds (and the ladder, when it ran) mirrored, as before;
-        # not the second-pass boxes (their roots are reached from seeds that
-        # are mirrored already)
+        # The default seeds (and the ladder, when it ran) mirrored in the
+        # fields that declare no domain; the roots they reach are selectable
+        # like any other.  (They were only reported: a negative root was
+        # selectable when a seed happened to overshoot to it, which depends
+        # on the field's units -- an exactly rescaled cubic lost a root;
+        # audit W6.)  Not the second-pass boxes: their roots are reached
+        # from seeds that are mirrored already.
         run(mirrored(seeds[:n_mirror]), mirror_points)
-        unsearched = _negative_roots(
-            R, mirror_points, deduped, root_errs, state_vars, slices,
-            undeclared, rtol, atol, stray, stray_errs)
+        cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
+        for x, e in zip(cand, cand_e):
+            known = list(deduped) + mirror_only
+            if len(_dedup_roots(known + [x], rtol=rtol, atol=atol,
+                                errs=list(root_errs) + mirror_only_e + [e])[0]
+                   ) > len(known):
+                mirror_only.append(x)
+                mirror_only_e.append(e)
 
     # Sort ascending by first declared physical field's first index.
     first_var = state_vars[0][0]
@@ -1323,6 +1275,13 @@ def solve_mean_field_dae(
                    key=lambda q: float(deduped[q][first_start]))
     deduped = [deduped[q] for q in order]
     root_errs = [root_errs[q] for q in order]
+    # the roots only the mirrored seeds reach follow, ascending (where the
+    # linearization orders roots by stability, below, all are ordered
+    # together: then the order does not depend on which search found a root)
+    mo = sorted(range(len(mirror_only)),
+                key=lambda q: float(mirror_only[q][first_start]))
+    deduped = deduped + [mirror_only[q] for q in mo]
+    root_errs = list(root_errs) + [mirror_only_e[q] for q in mo]
 
     if not deduped and not model.get('equations') and not _reduced and (
             _saddle_system(model, fundamental, ns, reduced=True) is not None):
@@ -1401,10 +1360,34 @@ def solve_mean_field_dae(
             })
             rec_errs[id(all_root_records[-1])] = _build_root_dict(xe, err=True)
     else:
-        # Skip stability entirely.  Tag each record with ``stable=None``
-        # so callers can distinguish "not classified" from "classified
-        # unstable".
-        for x, xe in zip(deduped, root_errs):
+        # No stability filter.  Tag each record with ``stable=None`` so
+        # callers can distinguish "not classified" from "classified
+        # unstable".  Where the linearization decides (``.equation`` rows
+        # with Dt terms, no kernels), the linearly stable roots come first
+        # (each group ascending): the default fixed_point_index = 0 is then a
+        # stable root whenever one exists, whatever the roots' order on the
+        # axis (audit W6: the units decided which root was found, and so
+        # which one index 0 was).
+        stable_first = set()
+        if model.get('equations') and not model.get('kernels') and len(deduped) > 1:
+            for q, x in enumerate(deduped):
+                try:
+                    if linear_stability(model, fundamental, _build_root_dict(x),
+                                        verbose=False)['stable']:
+                        stable_first.add(q)
+                except NonlinearDtError:
+                    raise
+                except Exception:                        # noqa: BLE001
+                    pass
+        if stable_first:
+            asc = sorted(range(len(deduped)),
+                         key=lambda q: float(deduped[q][first_start]))
+            order = ([q for q in asc if q in stable_first]
+                     + [q for q in asc if q not in stable_first])
+        else:
+            order = list(range(len(deduped)))
+        for q in order:
+            x, xe = deduped[q], root_errs[q]
             all_root_records.append({
                 'values':              _build_root_dict(x),
                 'stable':              None,
