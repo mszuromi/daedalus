@@ -46,7 +46,9 @@ by as much); analyzer codes identical except `ou_quartic_two_dim_color_corr` on 
   root of `det K(ω)` is now Newton-refined with relative steps and kept only if `det K` vanishes there. The retarded
   test, the dedup and the residue circles use the frequency scale of those verified zeros (one Newton routine; the
   three drifted copies are gone). The review also caught a spurious root from a rounding-noise coefficient, about
-  1e16 times the true pole, which set the scale and emptied the pole list in slow units; this is now a test.
+  1e16 times the true pole, which set the scale and emptied the pole list in slow units; this is now a test. After a
+  leading-coefficient trim drops genuine poles, the untrimmed polynomial's roots are the candidates (one per root;
+  restored and trimmed copies of an ill-conditioned slow pole could otherwise both be kept).
 - **Retarded poles of the exact tier and of the cluster analysis** (`api._pole_clusters`): a decay rate below the
   absolute 1e-9 was dropped silently. Example: `y' = -b y` with `b = 5e-10` next to a unit-rate field, after
   downgrading `G2_MARGINAL_MODE`, gave `C_yy = 0` instead of 0.2. Its 1000-times-faster twin kept the pole. A root
