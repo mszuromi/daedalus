@@ -246,6 +246,46 @@ def _index_sets(model: dict) -> dict[str, list]:
 # ── Residual evaluation ──────────────────────────────────────────────
 
 
+def _magnitude_text(text: str) -> str:
+    """Python text for the sum of the magnitudes of the additive terms of
+    ``text`` (``a - b*c`` -> ``abs(a) + abs(b)*abs(c)``; a quotient by the
+    magnitude of its divisor's value; any other call or power by the
+    magnitude of its value; ``sum(... for ...)`` termwise).  The round-off
+    of evaluating ``text`` is ~eps times this, whatever cancels in it."""
+    import ast
+
+    def ab(node):
+        return ast.Call(func=ast.Name('abs', ast.Load()), args=[node],
+                        keywords=[])
+
+    def T(node):
+        if isinstance(node, ast.BinOp):
+            if isinstance(node.op, (ast.Add, ast.Sub)):
+                return ast.BinOp(T(node.left), ast.Add(), T(node.right))
+            if isinstance(node.op, ast.Mult):
+                return ast.BinOp(T(node.left), ast.Mult(), T(node.right))
+            if isinstance(node.op, ast.Div):
+                return ast.BinOp(T(node.left), ast.Div(), ab(node.right))
+            return ab(node)
+        if isinstance(node, ast.UnaryOp) and isinstance(
+                node.op, (ast.USub, ast.UAdd)):
+            return T(node.operand)
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == 'sum' and len(node.args) == 1
+                and isinstance(node.args[0], ast.GeneratorExp)):
+            g = node.args[0]
+            return ast.Call(func=node.func, args=[ast.GeneratorExp(
+                elt=T(g.elt), generators=g.generators)], keywords=[])
+        return ab(node)
+
+    try:
+        tree = ast.parse(text, mode='eval')
+        out = ast.Expression(T(tree.body))
+        return ast.unparse(ast.fix_missing_locations(out))
+    except (SyntaxError, ValueError, TypeError, RecursionError):
+        return f'abs({text})'
+
+
 def _build_residual(model: dict, params_np: dict,
                     phi_callables: dict[str, list],
                     index_sets: dict[str, list],
@@ -265,20 +305,25 @@ def _build_residual(model: dict, params_np: dict,
     # describing a SINGLE scalar residual.  Power operator ``^`` is
     # translated to ``**`` here so the strings are valid Python.
     expanded = []
+    mag_texts = []          # per row: magnitude texts (``_magnitude_text``)
     for eq in equations:
         pop = eq['population']
         pop_size_val = _pop_size(model, pop) if pop is not None else 1
         lhs_py = _sage_to_python(eq['lhs_text'])
         rhs_py = _sage_to_python(eq['rhs_text'])
+        lhs_m, rhs_m = _magnitude_text(lhs_py), _magnitude_text(rhs_py)
         for i in range(pop_size_val):
             expanded.append((lhs_py, rhs_py, i, pop))
+            mag_texts.append((lhs_m, rhs_m))
 
     # Identify single-position state vars so the namespace binds them
     # as bare numpy scalars (size-1 arrays support bare arithmetic
     # via numpy broadcasting; this matches the symbolic stability
     # path that wraps these in ``_FieldScalar``).  Multi-position
     # state vars stay as arrays — ``[i]`` indexing required.
-    def R(x: np.ndarray) -> np.ndarray:
+    def R(x: np.ndarray, mag: Optional[np.ndarray] = None) -> np.ndarray:
+        # ``mag`` (optional, filled in place): the sum of the magnitudes of
+        # each row's terms, the size against which its round-off is judged.
         # Pack state variables as numpy arrays keyed by their declared
         # name (so n[i], v[i] etc. work under Python's eval).
         state = {var: np.asarray(x[start:end], dtype=float)
@@ -328,6 +373,12 @@ def _build_residual(model: dict, params_np: dict,
                         f'{rhs_text!r}, i={i}) is not a scalar: shape '
                         f'{np.shape(lhs - rhs)}.')
                 val = float(diff[0])
+                if mag is not None:
+                    with np.errstate(all='ignore'):
+                        mv = (eval(mag_texts[k][0], ns)
+                              + eval(mag_texts[k][1], ns))
+                    mv = float(np.asarray(mv, dtype=float).reshape(-1)[0])
+                    mag[k] = mv if math.isfinite(mv) else _PENALTY
                 # an overflow / invalid operation silenced above gives inf or
                 # NaN, never an exception: penalize it like the exceptions
                 # below, so a NaN residual can never pass as a root (NaN
@@ -346,6 +397,8 @@ def _build_residual(model: dict, params_np: dict,
                     FloatingPointError):
                 # Penalize: send the solver away from this region.
                 out[k] = _PENALTY
+                if mag is not None:
+                    mag[k] = _PENALTY
         return out
 
     return R, expanded
@@ -611,13 +664,16 @@ def _hybr_point(R, x0):
 
 def _snap_zeros(R, x, f, mask):
     """``(x, f)`` with the components ``mask`` set to an exact 0 when that
-    does not increase any residual row (a root at 0 converges to values like
-    1e-20 that no relative test can tell from 0), else unchanged."""
+    does not increase any residual row beyond its round-off (a root at 0
+    converges to values like 1e-20 that no relative test can tell from 0),
+    else unchanged."""
     if not np.any(mask):
         return x, f
     xs = np.where(mask, 0.0, x)
-    fs = R(xs)
-    if np.all(np.isfinite(fs)) and np.all((fs == 0) | (np.abs(fs) <= np.abs(f))):
+    m = np.empty(len(f))
+    fs = R(xs, m)
+    noise = 16.0 * np.finfo(float).eps * m
+    if np.all(np.isfinite(fs)) and np.all(np.abs(fs) <= np.abs(f) + noise):
         return xs, fs
     return x, f
 
@@ -634,29 +690,71 @@ def _typical_scale(points):
     return out
 
 
+#: Largest growth (decades) of a finite-difference step over a residual that
+#: is flat in floating point (see ``_fd_jacobian``).
+_FD_MAX_DECADES = 10
+
+
 def _fd_jacobian(R, x, f, c):
-    """Forward-difference Jacobian at ``x`` (``f = R(x)``), steps
-    ``1e-7 max(|x_j|, c_j)`` (relative: no unit enters), ``None`` when a
-    column cannot be formed."""
+    """``(J, res)``: forward-difference Jacobian at ``x`` (``f = R(x)``),
+    steps ``1e-7 max(|x_j|, c_j)`` (relative: no unit enters), or ``None``
+    when a column cannot be formed.
+
+    A column over which the residual changes by round-off only (16 ulps of
+    the row's terms ``|lhs| + |rhs|``: an equation the builder wrote as
+    ``x = x + f(x)`` cancels to round-off wherever ``f(x)`` is below the
+    round-off of ``x``, around a degenerate root or far out where a drift
+    decays) is retried with the step grown by decades, both
+    ways, up to ``_FD_MAX_DECADES``; ``res_j`` is the step that resolved it
+    (or the largest tried), 0 when the first step did -- the distance over
+    which the point is not resolved, i.e. an error estimate."""
     n = len(x)
     J = np.empty((len(f), n))
+    res = np.zeros(n)
+    m = np.empty(len(f))
+    R(x, m)
+    # a change below 16 ulps of the row's terms is round-off, not a slope
+    noise = 16.0 * np.finfo(float).eps * m
+
+    def ok(v):
+        return np.all(np.isfinite(v)) and np.max(np.abs(v)) < _PENALTY
+
     for j in range(n):
-        h = 1e-7 * max(abs(x[j]), c[j])
-        if h == 0.0:
+        h0 = 1e-7 * max(abs(x[j]), c[j])
+        if h0 == 0.0:
             # every point is 0 in this component: probe at the largest
             # typical scale of the others (only the column's linear part
             # matters, and R is evaluated in floating point)
-            h = 1e-7 * (float(np.max(c)) if np.max(c) > 0 else 1.0)
-        e = np.zeros(n)
-        e[j] = h
-        fp = R(x + e)
-        if not np.all(np.isfinite(fp)) or np.max(np.abs(fp)) >= _PENALTY:
-            fp = R(x - e)
-            if not np.all(np.isfinite(fp)) or np.max(np.abs(fp)) >= _PENALTY:
-                return None
-            h = -h
-        J[:, j] = (fp - f) / h
-    return J
+            h0 = 1e-7 * (float(np.max(c)) if np.max(c) > 0 else 1.0)
+        col = None
+        for k in range(_FD_MAX_DECADES + 1):
+            h = h0 * 10.0 ** k
+            for hh in (h, -h):
+                e = np.zeros(n)
+                e[j] = hh
+                fp = R(x + e)
+                if not ok(fp):
+                    continue
+                if col is None:
+                    col = (fp - f) / hh          # first finite column
+                if np.any(np.abs(fp - f) > noise):
+                    col = (fp - f) / hh
+                    break
+            else:
+                if col is None and k == 0:
+                    return None                 # no finite neighbour at all
+                continue
+            break
+        if col is None:
+            return None
+        res[j] = 0.0 if k == 0 else h
+        J[:, j] = col
+        # the component is determined only to the round-off of the rows it
+        # enters (a value below that is indistinguishable from 0)
+        nz = np.abs(col) > 0
+        if np.any(nz):
+            res[j] = max(res[j], float(np.min(noise[nz] / np.abs(col[nz]))))
+    return J, res
 
 
 def _refine_root(R, x, c):
@@ -672,9 +770,10 @@ def _refine_root(R, x, c):
     f = R(x)
     if not (np.all(np.isfinite(x)) and np.all(np.isfinite(f))):
         return None
-    J = _fd_jacobian(R, x, f, c)
-    if J is None or not np.all(np.isfinite(J)):
+    fd = _fd_jacobian(R, x, f, c)
+    if fd is None or not np.all(np.isfinite(fd[0])):
         return None
+    J, res = fd
     absJ = np.abs(J)
 
     def rel(f, x):
@@ -701,14 +800,31 @@ def _refine_root(R, x, c):
         if not qn < q:
             break
         x, f, q, rho = xn, fn, qn, rn
-    small = (x != 0) & (np.abs(x) <= 10.0 * err)
-    xs, fs = _snap_zeros(R, x, f, small)
-    if xs is not x:
-        err = np.where(small, np.maximum(err, np.abs(x)), err)
-        x, f = xs, fs
+    err = np.maximum(err, res)
+    # each component whose value changes no row beyond its round-off (to
+    # first order and in fact) is set to an exact 0: it is 0 within what
+    # the equations resolve
+    snapped = False
+    m = np.empty(len(f))
+    R(x, m)
+    noise = 16.0 * np.finfo(float).eps * m
+    for j in np.flatnonzero(x != 0):
+        # the value's own contribution must be round-off (else 0 being
+        # another root would pass the residual test below)
+        if np.any(np.abs(J[:, j] * x[j]) > noise):
+            continue
+        mask = np.zeros(len(x), dtype=bool)
+        mask[j] = True
+        xs, fs = _snap_zeros(R, x, f, mask)
+        if xs is not x:
+            err[j] = max(err[j], abs(x[j]))
+            x, f, snapped = xs, fs, True
+    if snapped:
         q, rho = rel(f, x)
     if not np.all((f == 0) | (np.abs(f) <= _ROOT_RTOL * rho)):
         return None
+    if np.any((x != 0) & (err >= np.abs(x))):
+        return None                    # its position is not resolved
     return x, err
 
 
@@ -751,11 +867,14 @@ def _dedup_roots(roots: list, rtol=1e-6, atol=0.0, errs=None) -> list:
         errs_in = errs
     for r, e in zip(roots, errs_in):
         merged = False
-        for kept, ke in zip(out, out_e):
+        for q, (kept, ke) in enumerate(zip(out, out_e)):
             tol = (atol + rtol * np.maximum(np.abs(r), np.abs(kept))
                    + 10.0 * (e + ke))
             if np.all(np.abs(r - kept) <= tol):
                 merged = True
+                # keep the better-resolved representative
+                if float(np.max(e, initial=0.0)) < float(np.max(ke, initial=0.0)):
+                    out[q], out_e[q] = r, e
                 break
         if not merged:
             out.append(r)
@@ -1445,12 +1564,13 @@ def _check_selected_root(ft, model, num_params, index_used, mf_values,
     raw = getattr(ft, '_mf_sector_raw', None)
     if not raw:
         return
-    from engine.core.field_theory import (kernel_dc_gains_of,
+    from engine.core.field_theory import (MF_SECTOR_ULPS, kernel_dc_gains_of,
                                           mf_sector_residual)
     from sage.all import SR
     gains = kernel_dc_gains_of(ft._ns, model)
     subs = dict(num_params)
     failures = []
+    checked = []
     for key, poly in raw.items():
         try:
             items = poly.dict().items()
@@ -1465,11 +1585,15 @@ def _check_selected_root(ft, model, num_params, index_used, mf_values,
             if k_subs:
                 c = c.subs(k_subs)
             res = mf_sector_residual(c, subs, errs)
-            if res is None:
-                continue
-            resid, tol, scale = res
-            if not np.isfinite(resid) or resid > tol:
-                failures.append((key, exp_vec, coeff, resid, scale))
+            if res is not None:
+                checked.append((key, exp_vec, coeff) + tuple(res))
+    # round-off allowance on the scale of the whole sector (a float residue
+    # collapsed to a bare number has no terms of its own)
+    floor = (MF_SECTOR_ULPS * np.finfo(float).eps
+             * max([0.0] + [sc for *_, sc in checked if np.isfinite(sc)]))
+    for key, exp_vec, coeff, resid, tol, scale in checked:
+        if not np.isfinite(resid) or resid > tol + floor:
+            failures.append((key, exp_vec, coeff, resid, scale))
     if failures:
         lines = [
             "This model's mean-field saddle does not satisfy its own "

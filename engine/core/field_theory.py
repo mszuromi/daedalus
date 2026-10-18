@@ -21,6 +21,7 @@ Usage
     ft.summary()
 """
 
+import sys
 import warnings
 
 from sage.all import (
@@ -1052,7 +1053,36 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
 MF_SECTOR_RTOL = 1e-6
 
 
-def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
+#: Round-off allowance of the sector checks: this many ulps of the largest
+#: term scale of the whole mean-field sector (a float residue such as a
+#: noise source's K(0) = 3e-17, collapsed to a bare number, has no terms of
+#: its own to be judged against).
+MF_SECTOR_ULPS = 64
+
+
+def _terms_scale(expr, num_subs, unbound=None):
+    """Sum of the magnitudes of the expanded terms of ``expr`` at
+    ``num_subs`` (0 when it cannot be evaluated)."""
+    try:
+        terms = SR(expr).expand()
+        ops = (terms.operands()
+               if getattr(terms.operator(), '__name__', '') == 'add_vararg'
+               else [terms])
+        tot = 0.0
+        for t in ops:
+            v = SR(t).subs(num_subs)
+            if v.free_variables():
+                if unbound is None:
+                    return 0.0
+                v = v.subs({f: unbound for f in v.free_variables()})
+            tot += abs(complex(v))
+        return tot
+    except Exception:                                   # noqa: BLE001
+        return 0.0
+
+
+def mf_sector_residual(expr, num_subs, errs=None, unbound=None,
+                       raw=None, floor=0.0):
     """``(resid, tol, scale)`` of a mean-field sector coefficient at a
     numerical point, or ``None`` when it cannot be evaluated.
 
@@ -1063,7 +1093,10 @@ def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
     root at 0 is known to ~its own size only: its terms vanish with it).
     Every part scales with the coefficient, so the verdict does not depend
     on the units.  ``unbound``: the value given to a symbol ``num_subs``
-    does not bind (``None``: such a coefficient is not evaluated)."""
+    does not bind (``None``: such a coefficient is not evaluated).  ``raw``:
+    the coefficient before the saddle substitution (its terms set the scale
+    too: a closed-form saddle collapses ``-mu x* + m`` to a bare float);
+    ``floor``: an absolute round-off allowance added to ``tol``."""
     c = SR(expr)
     try:
         # exactly zero at the point: no scale needed (and no expansion)
@@ -1071,7 +1104,7 @@ def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
         if unbound is not None and whole.free_variables():
             whole = whole.subs({f: unbound for f in whole.free_variables()})
         if not whole.free_variables() and complex(whole) == 0:
-            return 0.0, 0.0, 0.0
+            return 0.0, floor, 0.0
     except Exception:                                   # noqa: BLE001
         pass
     try:
@@ -1093,7 +1126,9 @@ def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
         return None
     resid = abs(sum(vals))
     scale = sum(abs(v) for v in vals)
-    tol = MF_SECTOR_RTOL * scale
+    if raw is not None:
+        scale = max(scale, _terms_scale(raw, num_subs, unbound))
+    tol = MF_SECTOR_RTOL * scale + floor
     if not resid <= tol and errs:
         sens = 0.0
         for sym, e in errs.items():
@@ -1142,6 +1177,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
     soft_passes: list = []
     mf_memo: dict = {}      # the saddle solve is the same for every coefficient
     dc_gains = getattr(ns, '_kernel_dc_gains', None)
+    pending: list = []      # numerically checked, judged after the sector scale
 
     for key in mf_sector_keys:
         sector_poly = by_tp.get(key)
@@ -1171,17 +1207,30 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 # ``simplify_full`` cannot reach 0 and is skipped; it is
                 # only run to word a failure (below).
                 c_simpl = None
-            num = _mf_numerical_residual(c_subbed, ns, model, mf_memo)
-            num_resid = None if num is None else num[0]
-            if num is not None and num[0] <= num[1]:
-                soft_passes.append((key, exp_vec, c_simpl, num_resid))
-            else:
-                if c_simpl is None:
-                    try:
-                        c_simpl = c_subbed.simplify_full()
-                    except Exception:
-                        c_simpl = c_subbed
-                failures.append((key, exp_vec, c_simpl, num_resid))
+            raw = SR(coeff)
+            if dc_gains is not None:
+                k_raw = dc_gains.subs_dict(raw)
+                if k_raw:
+                    raw = raw.subs(k_raw)
+            num = _mf_numerical_residual(c_subbed, ns, model, mf_memo, raw)
+            pending.append((key, exp_vec, c_simpl, c_subbed, num))
+
+    # round-off allowance: MF_SECTOR_ULPS ulps of the largest term scale of
+    # the sector (a float residue collapsed to a bare number has none)
+    sector_scale = max([0.0] + [num[2] for *_, num in pending
+                                if num is not None])
+    floor = MF_SECTOR_ULPS * sys.float_info.epsilon * sector_scale
+    for key, exp_vec, c_simpl, c_subbed, num in pending:
+        num_resid = None if num is None else num[0]
+        if num is not None and num[0] <= num[1] + floor:
+            soft_passes.append((key, exp_vec, c_simpl, num_resid))
+        else:
+            if c_simpl is None:
+                try:
+                    c_simpl = c_subbed.simplify_full()
+                except Exception:
+                    c_simpl = c_subbed
+            failures.append((key, exp_vec, c_simpl, num_resid))
 
     if failures:
         lines = [
@@ -1235,8 +1284,8 @@ def kernel_dc_gains_of(ns, model):
     return gains
 
 
-def _mf_numerical_residual(expr, ns, model, memo=None):
-    """``(residual, tolerance)`` of an SR expression at the MF saddle
+def _mf_numerical_residual(expr, ns, model, memo=None, raw=None):
+    """``(residual, tolerance, scale)`` of an SR expression at the MF saddle
     (:func:`mf_sector_residual`; a symbol the saddle point does not bind
     is set to 1.0).
 
@@ -1257,8 +1306,7 @@ def _mf_numerical_residual(expr, ns, model, memo=None):
     if num_params is None:
         return None
     vals, errs = num_params
-    res = mf_sector_residual(expr, vals, errs, unbound=1.0)
-    return None if res is None else (res[0], res[1])
+    return mf_sector_residual(expr, vals, errs, unbound=1.0, raw=raw)
 
 
 def _mf_saddle_values(ns, model):
