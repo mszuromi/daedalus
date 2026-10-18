@@ -181,9 +181,12 @@ gives the reasons, a `SpatialAccuracyWarning` is issued, G6 records
 `G6_SPATIAL_*`, `policy={'mode': 'strict'}` raises `SpatialAccuracyError`):
 - **derivative-vertex loops** (KPZ, Model B, Burgers, any τ): the form factor
   makes the loop-shrink corner an integrable `ρ^{−1/2}` singularity (UV count
-  below, `ω = +½` for the KPZ C–C bubble), which the product grid resolves only
-  like `n^{−2}` (percent level at the default grid). The result carries the
-  measured spread against a 0.7× coarser grid;
+  below, `ω = +½` for the KPZ C–C bubble). For those diagrams the Schwinger
+  grid is `σ = s_cap·v⁶` (`DERIV_SIGMA_POWER`) and the kink segments get `n_t`
+  nodes: the KPZ C–C bubble at the default grid went from 6 % to ~1e-4 of its
+  value (~1e-6 of the total C), but convergence stays algebraic, so the result
+  carries the measured spread against a 0.7× coarser grid; a sector-adapted
+  corner quadrature would make it spectral (research);
 - equal-time diagrams left on the grid (above the rule's dimension), and
   coupled (spectral) loops at τ = 0.
 
