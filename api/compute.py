@@ -1835,19 +1835,28 @@ def _run_spatial(state):
             _ns = ft._ns
             _Msr, _Dsr, _Vsr = reaction_diffusion_matrices(
                 prop['K_ft'], prop['omega'], SR.var('k'),
-                _ns.Laplacian, getattr(_ns, 'GradX', None))
+                _ns.Laplacian, getattr(_ns, 'GradX', None) or SR.var('GradX'))
             _nf = int(_Msr.nrows())
             _sub = _norm_sr(num_params)
 
             def _numm(sm):
                 return _np.array(
-                    [[complex(SR(sm[a_, b_]).subs(_sub)).real
+                    [[complex(SR(sm[a_, b_]).subs(_sub))
                       for b_ in range(_nf)] for a_ in range(_nf)],
-                    dtype=float)
-            _Mn, _Dn, _Vn = _numm(_Msr), _numm(_Dsr), _numm(_Vsr)
-            if not _np.allclose(_Vn, 0.0, atol=1e-9):
-                raise NotImplementedError(
-                    'coupled k>=3: drift (V != 0) not supported.')
+                    dtype=complex)
+            _Mc, _Dc = _numm(_Msr), _numm(_Dsr)
+            # M and D are real for a real action; never drop an imaginary
+            # part silently (relative to the matrix's own scale)
+            for _nm, _mc in (('reaction M', _Mc), ('diffusion D', _Dc)):
+                if _np.max(_np.abs(_mc.imag)) > 1e-12 * max(
+                        float(_np.max(_np.abs(_mc))), 1e-300):
+                    raise NotImplementedError(
+                        f'coupled k>=3: the {_nm} matrix is complex at the '
+                        f'saddle; a real matrix is required.')
+            _Mn, _Dn = _Mc.real, _Dc.real
+            # the drift V = i*v*I (GradX -> i k, purely imaginary): a common
+            # drift is boosted away exactly inside compute_coupled_kpoint;
+            # any other V refuses there (pipeline_bridge._drift_velocity)
             _D0, _Dhat = split_reference_diffusion(_Dn)
             tree_info_k = {
                 'M': _Mn, 'Dhat': _Dhat, 'D0': float(_D0),

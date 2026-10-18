@@ -919,9 +919,12 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # on the mean.  The action's field unwrapped to ``phistar + fluctuation``,
     # so the saddle symbols are the ``*star*`` variables now present.  (For a
     # future inhomogeneous saddle this kill becomes opt-out.)
+    # Any operator argument free of the dynamical fields and the coordinates
+    # is a space/time constant (saddle values and parameters), so
+    # Lap(lam*pstar^2) = 0 as lam*Lap(pstar^2) is (``keep_syms``).
     saddles = [v for v in SR(s).variables() if 'star' in str(v)]
-    if saddles:
-        s = kill_means(s, saddles)
+    s = kill_means(s, saddles,
+                   keep_syms=list(flucts) + [SR.var(c) for c in ('x', 'y', 'z')])
     s, genmap = to_derived_generators(s, flucts)
     ns._operator_ir_genmap = genmap
 
