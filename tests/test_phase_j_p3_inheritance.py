@@ -319,11 +319,13 @@ _SPIKE = {'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
 # independently (M3 brief: -3.8660e-3 to 5 digits).
 # τ: (pre-M3, M3, independent).
 # (pre-M3 value, M3 value, independent reference).  The tau = 3 pre-M3 value
-# was re-read at audit W6: the saddle is now solved to round-off (it was ~1e-12
-# off), which moves this one-loop value by 9.3e-12 relative.
+# and the M3 values (both taus) were re-read at audit W6: the saddle is now
+# solved to round-off (it was ~1e-12 off), which moves the pre-M3 value at
+# tau = 3 by 9.3e-12 and the M3 values by 2.2e-12 / 4.8e-12 relative (the M3
+# tolerance was tightened to 1e-12 on the pre-W6 values, audit W5).
 _ONE_LOOP = {
-    1.0: (-6.3683627449738905e-03, -3.865960659466003e-03, -3.8660e-03),
-    3.0: (-1.2953050283678446e-03, -1.0261461422474269e-03, -1.0261e-03),
+    1.0: (-6.3683627449738905e-03, -3.865960659457402e-03, -3.8660e-03),
+    3.0: (-1.2953050283678446e-03, -1.0261461422524007e-03, -1.0261e-03),
 }
 
 
