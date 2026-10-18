@@ -1273,17 +1273,12 @@ def _kalman_minimal(A, B, C, F):
     return Am, Bm, Cm
 
 
-def _routh_hurwitz(A, F):
-    """Exact Routh test of the characteristic polynomial: True iff every root
-    has negative real part (no roots computed).  None for complex fields."""
-    S = _sage()
-    n = A.nrows()
-    if n == 0:
-        return True
-    if F is not S.QQ:
-        return None
-    p = A.charpoly()
-    a = list(reversed(p.list()))                          # a0 s^n + a1 s^{n-1} + ...
+def _routh_real(a):
+    """Routh test of a real polynomial given by its coefficients ``a``
+    (``a0 s^n + a1 s^{n-1} + ...``, exact rationals): True iff every root
+    has negative real part."""
+    if a and a[0] < 0:
+        a = [-x for x in a]
     if any(x <= 0 for x in a):
         return False
     row0 = a[0::2]
@@ -1297,6 +1292,34 @@ def _routh_hurwitz(A, F):
             new.append(row0[k + 1] - row0[0] * nxt / row1[0])
         row0, row1 = row1, new
     return True
+
+
+def _routh_hurwitz(A, F):
+    """Exact Routh test of the characteristic polynomial: True iff every root
+    has negative real part (no roots computed).  Over ``QQ[I]`` the test runs
+    on ``p(s) conj(p)(s)``: real rational coefficients, and the roots of
+    ``conj(p)`` are the conjugates of those of ``p`` (same real parts), so it
+    is Hurwitz iff ``p`` is.  (Returned None for complex fields: a complex
+    realization never got the a-posteriori check, audit GEN-15.)"""
+    S = _sage()
+    n = A.nrows()
+    if n == 0:
+        return True
+    p = A.charpoly()
+    if F is S.QQ:
+        return _routh_real(list(reversed(p.list())))
+    try:
+        pbar = p.map_coefficients(lambda c: c.conjugate())
+        q = p * pbar
+        coeffs = []
+        for c in reversed(q.list()):
+            re, im = (list(c.list()) + [0, 0])[:2]
+            if im != 0:
+                return None
+            coeffs.append(S.QQ(re))
+    except (AttributeError, TypeError, ValueError, ArithmeticError):
+        return None
+    return _routh_real(coeffs)
 
 
 def _balance(A, B, C):

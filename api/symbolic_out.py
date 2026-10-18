@@ -222,6 +222,21 @@ def _qq_from_numeric(e) -> Any:
         f'parameters).')
 
 
+def _integral_exponent(ex):
+    """The integer value of a numeric exponent that is an integer, also
+    when float-typed (a float model's ``x^1.000``, audit GEN-08); else
+    ``None``."""
+    if ex.is_integer():
+        return int(ex)
+    try:
+        x = complex(ex)
+    except (TypeError, ValueError):
+        return None
+    if x.imag == 0 and float(x.real).is_integer():
+        return int(x.real)
+    return None
+
+
 class _Bridge:
     """Conversion between Sage SR expressions in ``omega`` and the field
     ``QQ(s, params...)``."""
@@ -305,8 +320,8 @@ class _Bridge:
                 out *= self._conv(o, memo)
         elif _opname(op) == 'pow':
             base, ex = e.operands()
-            if ex.is_numeric() and ex.is_integer():
-                out = self._conv(base, memo) ** int(ex)
+            if ex.is_numeric() and _integral_exponent(ex) is not None:
+                out = self._conv(base, memo) ** _integral_exponent(ex)
             elif ex.is_numeric() and base.is_symbol():
                 x = QQ(ex.pyobject())
                 nm = (f'pw__{base}__{"m" if x < 0 else "p"}'
@@ -506,6 +521,32 @@ def _as_name_dict(d: Optional[dict]) -> dict:
     return out
 
 
+def _check_supplied_inverse(Gs, Gf, bridge, omega):
+    """Raise when the supplied ``G`` (SR) is not ``K^-1`` (``Gf``, exact)
+    at a numeric point (``omega`` real, every other symbol a fixed value in
+    [0.5, 1.5]): a row / column convention mismatch differs at O(1); the
+    float round-off of a pipeline ``G`` is ~1e-16."""
+    import itertools
+    free = sorted({v for e in Gs.list() for v in SR(e).variables()
+                   if v != omega}, key=str)
+    for w0, shift in ((0.731, 0.0), (1.913, 0.29)):
+        pt = {omega: SR(w0)}
+        pt.update({v: SR(0.5 + ((0.618034 * (k + 1) + shift) % 1.0))
+                   for k, v in enumerate(free)})
+        diff = scale = 0.0
+        for i, j in itertools.product(range(Gs.nrows()), range(Gs.ncols())):
+            try:
+                a = complex(SR(Gs[i, j]).subs(pt))
+                b = complex(SR(bridge.frac_to_sr(Gf[i, j])).subs(pt))
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+            diff, scale = max(diff, abs(a - b)), max(scale, abs(a), abs(b))
+        if diff > 1e-9 * max(scale, 1e-300):
+            raise SymbolicOutError(
+                'K * G != identity: the supplied G is not the inverse of '
+                'K (row/column convention mismatch?)')
+
+
 def tree_covariance_from_matrices(G, D, omega, *, K=None,
                                   phys_names: Sequence[str] | None = None,
                                   resp_names: Sequence[str] | None = None,
@@ -514,8 +555,9 @@ def tree_covariance_from_matrices(G, D, omega, *, K=None,
                                   reference: Optional[dict] = None
                                   ) -> 'TreeCovariance':
     """Core constructor: ``G`` (phys x resp), ``D`` (resp x resp) and
-    ``omega``, all Sage SR.  If ``G`` is ``None`` it is ``K^{-1}``.  When both
-    are given the identity ``K G = 1`` is verified in the rational field."""
+    ``omega``, all Sage SR.  With ``K`` given, ``G = K^{-1}`` exactly in the
+    rational field (a supplied ``G`` is checked against it numerically);
+    without, the supplied ``G`` is used."""
     if G is None and K is None:
         raise SymbolicOutError('need G or K')
     omega = SR(omega)
@@ -566,20 +608,21 @@ def tree_covariance_from_matrices(G, D, omega, *, K=None,
         return matrix(F, rows)
 
     Df = to_F(Ds, 'noise matrix D')
-    if Gs is not None:
-        Gf = to_F(Gs, 'G')
-        if Ks is not None:
-            Kf = to_F(Ks, 'K')
-            if Kf * Gf != matrix(F, n, n, 1):
-                raise SymbolicOutError(
-                    'K * G != identity: the supplied G is not the inverse of '
-                    'K (row/column convention mismatch?)')
-    else:
+    if Ks is not None:
+        # G = K^-1 exactly in the rational field.  A supplied G (the
+        # pipeline's, inverted in floats for a float model) is only checked
+        # against it numerically: its rationalized float coefficients are
+        # not the exact inverse (audit GEN-08: 'K * G != identity' on a fully
+        # coupled float model).
         Kf = to_F(Ks, 'K')
         try:
             Gf = Kf.inverse()
         except ZeroDivisionError as exc:
             raise SymbolicOutError('kernel matrix K is singular') from exc
+        if Gs is not None:
+            _check_supplied_inverse(Gs, Gf, bridge, omega)
+    else:
+        Gf = to_F(Gs, 'G')
     if Df.nrows() != Gf.ncols() or Df != Df.transpose():
         raise SymbolicOutError(
             'the noise matrix must be symmetric with the size of the '
