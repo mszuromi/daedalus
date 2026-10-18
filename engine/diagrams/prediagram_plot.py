@@ -76,12 +76,6 @@ def _edge_rads(pos, edges):
     unless its segment passes too close to another node, in which case it bows
     away from the offenders (rad sign: positive pushes the apex to the right of
     travel u→v, i.e. toward −(perp) since the control point is mid + rad·(dy,−dx))."""
-    xcols = sorted(set(round(pos[v][0], 2) for v in pos))
-    rank_of = {x: i for i, x in enumerate(xcols)}
-
-    def _rank(v):
-        return rank_of[round(pos[v][0], 2)]
-
     pair = collections.defaultdict(list)
     for e in edges:
         pair[frozenset((e[0], e[1]))].append(e)

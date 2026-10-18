@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph, matrix, I
 
-from engine.integration.symbolic import (
+from tests.oracles.symbolic import (
     assign_frequencies,
     solve_conservation,
     build_integrand_stationary,

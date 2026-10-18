@@ -102,7 +102,6 @@ _REPRODUCE = [
     ('spike_reset-k2-l1', 'legacy'),
 ]
 _REPRODUCE_SLOW = [
-    ('spike_reset-k2-l1-grouped', 'legacy'),     # mover, grouped dispatch
     # non-mover WITH zero-normal rows (all c_eff < 0: EMPTY either way)
     ('quad_exp-k2-l1', 'legacy'),
     ('quad_exp-k2-l1', 'default'),
@@ -479,8 +478,8 @@ def test_cheap_entries_reproduce(baseline, name, mode, monkeypatch):
                          ids=[f'{n}-{m}' for n, m in _REPRODUCE_SLOW])
 def test_heavier_entries_reproduce(baseline, name, mode, monkeypatch):
     """As ``test_cheap_entries_reproduce``, for the rest of the tracked
-    non-movers (current defaults) and the grouped mover / a zero-normal
-    non-mover under the umbrella."""
+    non-movers (current defaults) and a zero-normal non-mover under the
+    umbrella."""
     _reproduce(baseline, name, mode, monkeypatch)
 
 

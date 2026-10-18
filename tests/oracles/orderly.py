@@ -1,6 +1,9 @@
 """
-engine.enumeration.orderly
-==========================
+tests.oracles.orderly
+=====================
+Test-only reference (was ``engine.enumeration.orderly``; moved out of
+the library in audit W7: no production module imports it).
+
 EXPERIMENT (Sept 2026), NOT used by the pipeline: level-wise topology
 generation, kept as the record of a measured negative result.
 

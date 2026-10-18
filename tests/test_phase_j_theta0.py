@@ -30,11 +30,9 @@ diagrams for the row provenance of τ box rows) except the last sections,
 which use the public one-population spike-reset model (the ``spike1``
 configuration of ``tests/test_phase_j_subset_hook.py``), ``ou_quartic``
 and ``single_population_linear_delta_spikes_test`` in a private empty cwd.
-Each analytic-integrator test runs on the three branches production uses:
-``plan`` (per-diagram, pre-built plan), ``noplan`` (per-diagram without a
-plan) and ``grouped`` (merged ``pole_tuples`` and no plan -- the call shape
-of ``grouped_integral``'s dispatch; for m=1 and m=0 the grouped helpers
-themselves).
+Each analytic-integrator test runs on the two branches production uses:
+``plan`` (per-diagram, pre-built plan) and ``noplan`` (per-diagram without a
+plan).
 
 Run:  sage -python -m pytest tests/test_phase_j_theta0.py -q
 """
@@ -53,9 +51,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
 import engine.integration.time_domain.final_integral as FI       # noqa: E402
-import engine.integration.time_domain.grouped_integral as GI     # noqa: E402
 
-VARIANTS = ('plan', 'noplan', 'grouped')
+VARIANTS = ('plan', 'noplan')
 RTOL = 1e-13
 
 
@@ -75,18 +72,12 @@ def _analytic(fn, variant, modes, rows, free, m, row_kinds=None, **kw):
     if variant == 'plan':
         args['plan'] = FI._build_modesum_plan(list(modes), rows, m,
                                               len(free))
-    elif variant == 'grouped':
-        args['pole_tuples'] = list(FI._enumerate_pole_tuples(list(modes)))
     else:
         assert variant == 'noplan'
     return fn(**args)
 
 
 def _m1(variant, modes, rows, free, row_kinds=None, tie_ctx=None):
-    if variant == 'grouped':
-        return GI._integrate_grouped_m1_modesum(
-            list(FI._enumerate_pole_tuples(list(modes))), rows, list(free),
-            row_kinds=row_kinds, tie_ctx=tie_ctx)
     return _analytic(FI._integrate_1d_polytope_modesum, variant, modes, rows,
                      free, 1, row_kinds, tie_ctx=tie_ctx)
 
@@ -103,6 +94,15 @@ def _m3(variant, modes, rows, free, row_kinds=None, tie_ctx=None):
 
 def _counter(name):
     return FI._RUNTIME_COUNTERS[name]
+
+
+def _any_const_row_empty(rows, free_ext_vals, row_kinds=None, tie_ctx=None):
+    """True if some constant row of ``rows`` has the Θ(0) verdict 'EMPTY'
+    (``final_integral._const_row_verdict``, row by row)."""
+    return any(
+        FI._const_row_verdict(a_int, a_ext, c0, free_ext_vals,
+                              FI._row_kind(row_kinds, idx), tie_ctx) == 'EMPTY'
+        for idx, (a_int, a_ext, c0) in enumerate(rows))
 
 
 _LEGACY_ROUTES = (('USE_PHASE_J_DD_KERNELS', False), ('SEMIINF_CHAIN', False),
@@ -435,18 +435,7 @@ def test_integrate_diagram_labels_every_row(build, expected, monkeypatch):
         box = kinds.index(expected[-2])
         rows[box][0] = [0.0] * len(rows[box][0])        # δ-forced τ
         with pytest.raises(ValueError, match='constant'):
-            FI._any_const_row_empty(rows, p['free_ext_vals'], kinds)
-    # the grouped build never sees these rows: its guard refuses colored
-    # noise sources and convolution vertices (the per-diagram path runs
-    # them), so its 'noise_box' labels are unreachable while it is there
-    from engine.integration.time_domain.grouped_integral import (
-        integrate_grouped_diagram)
-    gres = integrate_grouped_diagram(
-        typed_diagrams=[td], combined_prefactors=[SR(0.3) * sym],
-        propagator_data=_hand_built_prop(),
-        ext_time_vars=[SR.var('t_1'), SR.var('t_2')],
-        external_fields=[('x', 1), ('x', 1)])
-    assert gres['status'] == 'failed'
+            _any_const_row_empty(rows, p['free_ext_vals'], kinds)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -538,9 +527,8 @@ def test_legacy_clip_m1_and_poset(variant, legacy):
 
 
 def test_m0_rows():
-    """m = 0 (every row constant): ``_integrate_polytope`` and the grouped
-    m0 helper -- exact rule, and the tie context orders an external tie."""
-    pt = [(3.0 + 0j, (LAM,))]
+    """m = 0 (every row constant): ``_integrate_polytope`` -- exact rule,
+    and the tie context orders an external tie."""
     free = [0.0]
     for (a_ext, ctx, value) in (((1.0,), IDENTITY, 0.0),
                                 ((-1.0,), IDENTITY, 3.0),
@@ -551,25 +539,16 @@ def test_m0_rows():
         f = (lambda *a: 3.0) if value else _never_called
         assert FI._integrate_polytope(f, resolved, free, 0, raw_rows=rows,
                                       tie_ctx=ctx) == value
-        assert GI._evaluate_grouped_m0_modesum(pt, rows, free,
-                                               tie_ctx=ctx) == value
-    # a rounding-level positive value is not a tie
-    rows = [((), (1.0, 1.0, -1.0), 0.0)]
-    v = GI._evaluate_grouped_m0_modesum(pt, rows, [0.1, 0.2, 0.3])
-    assert abs(v - 3.0 * cmath.exp(LAM * (0.1 + 0.2 - 0.3))) < 1e-15
-    assert v != 0                       # DROP, not EMPTY
-    drop = [((), (1.0,), 0.0)]
-    v = GI._evaluate_grouped_m0_modesum(pt, drop, [0.5])
-    assert abs(v - 3.0 * cmath.exp(-0.5)) < 1e-15
+    # a rounding-level positive value is not a tie: DROP, not EMPTY
+    assert FI._const_row_verdict((), (1.0, 1.0, -1.0), 0.0,
+                                 [0.1, 0.2, 0.3]) == 'DROP'
+    assert FI._const_row_verdict((), (1.0,), 0.0, [0.5]) == 'DROP'
 
 
 def test_m0_legacy(legacy):
     tie = [((), (1.0,), 0.0)]
     assert FI._integrate_polytope(lambda *a: 7.0, [([], 0.0)], [0.0], 0,
                                   raw_rows=tie, tie_ctx=SWAPPED) == 0
-    v = GI._evaluate_grouped_m0_modesum([(3.0 + 0j, (LAM,))], tie, [0.0],
-                                        tie_ctx=SWAPPED)
-    assert v == 0
 
 
 def test_nquad_fallback_applies_the_helper():
@@ -842,8 +821,6 @@ def test_mode_is_read_at_call_time_by_a_built_plan(variant, monkeypatch):
               subset_constraint_data=rows, free_ext_vals=[0.0])
     if variant == 'plan':
         kw['plan'] = plan
-    elif variant == 'grouped':
-        kw['pole_tuples'] = list(FI._enumerate_pole_tuples(modes))
     assert FI._integrate_2d_polygon_modesum(**kw) == 0
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'legacy_clip')
     assert abs(FI._integrate_2d_polygon_modesum(**kw) - EXTRA[0]) < 1e-12
@@ -932,11 +909,6 @@ _ALLOWED_CONST_ROW_CHECKS = {
         '_outer_bounds': 1,
         '_resolve_1d_bounds': 1,
     },
-    'grouped_integral.py': {
-        # 'legacy_clip' branches
-        '_evaluate_grouped_m0_modesum': 1,
-        '_integrate_grouped_m1_modesum': 1,
-    },
 }
 
 
@@ -1004,9 +976,9 @@ def spike1_model(private_cwd):
     return _spike_reset_one_population()
 
 
-def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
+def _spike1(model, k, max_ell, tau_grid=(0.0, 3.0), mode='ito'):
     # the engine is part of the key (S3: some tests pin the pole engine)
-    key = (k, max_ell, grouped, tuple(tau_grid), mode,
+    key = (k, max_ell, tuple(tau_grid), mode,
            os.environ.get('DAEDALUS_PHASE_J_ENGINE', ''),
            os.environ.get('DAEDALUS_TAU0', ''))
     if key not in _E2E:
@@ -1030,7 +1002,7 @@ def _spike1(model, k, max_ell, grouped, tau_grid=(0.0, 3.0), mode='ito'):
                 model, k=k, max_ell=max_ell,
                 external_fields=[('n', 1)] * k, parameters=_SPIKE1_PARAMS,
                 tau_grid=np.array(tau_grid), use_cache=True, parallel=False,
-                verbose=False, use_grouped_phase_j=grouped)
+                verbose=False)
         finally:
             for n, v in saved.items():
                 setattr(FI, n, v)
@@ -1045,32 +1017,26 @@ def _arrays(res):
             for ell, v in res['C_tau_by_ell'].items()}
 
 
-@pytest.mark.parametrize('grouped', [False, True], ids=['perdiag', 'grouped'])
-def test_spike1_legacy_reproduces_pre_m1_values(spike1_model, grouped):
+def test_spike1_legacy_reproduces_pre_m1_values(spike1_model):
     """'legacy_clip' reproduces the values captured before M0.1/M1 (rtol
     1e-13: cross-process ulp jitter, plan §4.4)."""
     from tests.test_phase_j_subset_hook import _BEFORE
-    res, _c = _spike1(spike1_model, 2, 1, grouped, mode='legacy_clip')
+    res, _c = _spike1(spike1_model, 2, 1, mode='legacy_clip')
     got = _arrays(res)
-    for ell, vals in _BEFORE[('spike1', grouped)].items():
+    for ell, vals in _BEFORE['spike1'].items():
         np.testing.assert_allclose(got[ell], np.array(vals, dtype=complex),
                                    rtol=1e-13, atol=0)
 
 
-@pytest.mark.parametrize('grouped', [False, True], ids=['perdiag', 'grouped'])
 def test_spike1_ito_moves_one_loop_only_and_never_reaches_nquad(
-        spike1_model, grouped, monkeypatch):
+        spike1_model, monkeypatch):
     """M1 moves the one-loop (Θ(0) rows in the polygon path), not the tree;
     with the Itô rule every subset is answered analytically.  (Both modes at
     the same τ = 0 sample: 'legacy_clip' keeps τ = −1e−6, see
     ``api.compute._tau0_lag``.)"""
     monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
-    if grouped:
-        # the grouped evaluator's counters (S3: on the default state-space
-        # route the groups are integrated per diagram)
-        monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
-    res_i, c_i = _spike1(spike1_model, 2, 1, grouped)
-    res_l, c_l = _spike1(spike1_model, 2, 1, grouped, mode='legacy_clip')
+    res_i, c_i = _spike1(spike1_model, 2, 1)
+    res_l, c_l = _spike1(spike1_model, 2, 1, mode='legacy_clip')
     ito, leg = _arrays(res_i), _arrays(res_l)
     np.testing.assert_allclose(ito[0], leg[0], rtol=1e-14, atol=0)
     assert np.all(np.abs(ito[1] - leg[1]) > 1e-3 * np.abs(leg[1]))
@@ -1078,10 +1044,7 @@ def test_spike1_ito_moves_one_loop_only_and_never_reaches_nquad(
     assert c_i['theta0_const_empty'] > 0
     # δ-subsets with a τ-independent EMPTY row return 0 without
     # integration (Itô only; the flag is read at call time)
-    if not grouped:
-        assert c_i['theta0_subsets_pruned'] > 0
-    else:
-        assert c_i['theta0_tie'] > 0
+    assert c_i['theta0_subsets_pruned'] > 0
     for key in ('theta0_const_empty', 'theta0_const_drop', 'theta0_tie',
                 'theta0_tie_ordered', 'theta0_subsets_pruned',
                 'polygon_zero_area', 'poset_empty_const',
@@ -1089,21 +1052,12 @@ def test_spike1_ito_moves_one_loop_only_and_never_reaches_nquad(
         assert c_l[key] == 0, key
 
 
-def test_spike1_ito_perdiag_equals_grouped(spike1_model):
-    pd = _arrays(_spike1(spike1_model, 2, 1, False)[0])
-    gr = _arrays(_spike1(spike1_model, 2, 1, True)[0])
-    for ell in pd:
-        np.testing.assert_allclose(pd[ell], gr[ell], rtol=1e-12, atol=1e-17)
-
-
-@pytest.mark.parametrize('grouped', [False, True], ids=['perdiag', 'grouped'])
-def test_spike1_mode_flip_after_the_build(spike1_model, grouped,
-                                          monkeypatch):
+def test_spike1_mode_flip_after_the_build(spike1_model, monkeypatch):
     """The mode is read at CALL time, also for the τ-independent EMPTY
     subsets: a callable built under one mode and evaluated under the other
     equals the callable built under the other mode."""
-    fn_i = _spike1(spike1_model, 2, 1, grouped)[0]['total_C_by_ell'][1]
-    fn_l = _spike1(spike1_model, 2, 1, grouped,
+    fn_i = _spike1(spike1_model, 2, 1)[0]['total_C_by_ell'][1]
+    fn_l = _spike1(spike1_model, 2, 1,
                    mode='legacy_clip')[0]['total_C_by_ell'][1]
     pts = [(0.0, -1e-6), (0.0, 3.0)]
     out = {}
@@ -1121,7 +1075,7 @@ def test_spike1_mode_flip_after_the_build(spike1_model, grouped,
 def test_spike1_hook_records_row_kinds(spike1_model):
     """The hook payload carries the row provenance and the tie context."""
     from tests.tools import phase_j_subset_diff as PSD
-    _spike1(spike1_model, 2, 1, False)                   # warm cache
+    _spike1(spike1_model, 2, 1)                          # warm cache
     run = PSD.run(spike1_model, k=2, max_ell=1,
                   external_fields=[('n', 1), ('n', 1)],
                   parameters=_SPIKE1_PARAMS, tau_grid=[3.0], keep_live=False)
@@ -1153,23 +1107,22 @@ def test_callables_accept_the_pre_0_2_0_time_arguments(spike1_model, mode,
     from sage.all import SR
     t = SR.var('t')
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', mode)
-    res1, _c = _spike1(spike1_model, 1, 1, False, tau_grid=(0.0,))
+    res1, _c = _spike1(spike1_model, 1, 1, tau_grid=(0.0,))
     fn1 = res1['phase_j_by_ell'][1]['total_C']
     ref = complex(fn1(0.0))
     for arg in (0j, np.array([0.0, 1.0]), t):
         assert complex(fn1(arg)) == ref, arg
-    for grouped in (False, True):
-        res2, _c = _spike1(spike1_model, 2, 1, grouped)
-        for ell in (0, 1):
-            fn = res2['phase_j_by_ell'][ell]['total_C']
-            FI._reset_runtime_counters()
-            tie = complex(fn(0.0, 0.0))
-            n_num = _counter('theta0_tie_ordered')
-            FI._reset_runtime_counters()
-            assert complex(fn(t, t)) == tie, (grouped, ell)
-            assert _counter('theta0_tie_ordered') == n_num, (grouped, ell)
-            assert (n_num > 0) == (mode == 'ito'), (grouped, ell)
-            assert complex(fn(t, t + 3)) == complex(fn(0.0, 3.0))
+    res2, _c = _spike1(spike1_model, 2, 1)
+    for ell in (0, 1):
+        fn = res2['phase_j_by_ell'][ell]['total_C']
+        FI._reset_runtime_counters()
+        tie = complex(fn(0.0, 0.0))
+        n_num = _counter('theta0_tie_ordered')
+        FI._reset_runtime_counters()
+        assert complex(fn(t, t)) == tie, ell
+        assert _counter('theta0_tie_ordered') == n_num, ell
+        assert (n_num > 0) == (mode == 'ito'), ell
+        assert complex(fn(t, t + 3)) == complex(fn(0.0, 3.0))
 
 
 # k=3 ties on a spike-train field, tree level.  Legs 1 and 2 coincide
@@ -1188,10 +1141,9 @@ def _richardson(vals, hs=None):
     return float(np.linalg.solve(A, np.array(vals))[0])
 
 
-@pytest.fixture(scope='module', params=[False, True],
-                ids=['perdiag', 'grouped'])
-def k3_tree(request, spike1_model):
-    res, _c = _spike1(spike1_model, 3, 0, request.param, tau_grid=(0.0,))
+@pytest.fixture(scope='module')
+def k3_tree(spike1_model):
+    res, _c = _spike1(spike1_model, 3, 0, tau_grid=(0.0,))
     fn = res['total_C_by_ell'][0]
     return lambda *t: complex(fn(*t)).real
 
@@ -1282,25 +1234,21 @@ def test_ou_quartic_near_ties_do_not_depend_on_the_mode(private_cwd,
 # the n2 leg meets an n1 leg, so the value at the coincident point is a
 # convention.  It must be the one-sided limit in which the leg with the
 # larger index approaches from below (the k=2 Itô left limit, extended),
-# not the other one and not the pre-M1 value, which was neither.  Checked
-# on the per-diagram AND the grouped path (grouped_integral builds its own
-# ``_TieContext``; a single-field model cannot tell the two orientations
-# apart, this one can).
+# not the other one and not the pre-M1 value, which was neither.  (A
+# single-field model cannot tell the two orientations apart, this one can.)
 _LD_PARAMS = {'Em': [0.8, 0.78], 'tau': [10.0, 9.0],
               'w': [[0.0, 0.25], [0.2, 0.0]]}
 
 
-@pytest.fixture(scope='module', params=[False, True],
-                ids=['perdiag', 'grouped'])
-def ld_cross_k3(request, private_cwd):
+@pytest.fixture(scope='module')
+def ld_cross_k3(private_cwd):
     import daedalus as dd
     from api import compute_cumulants
     model, _ = dd.load_model('single_population_linear_delta_spikes_test')
     res = compute_cumulants(model, k=3, max_ell=0,
                             external_fields=[('n', 1), ('n', 2), ('n', 1)],
                             parameters=_LD_PARAMS, tau_grid=np.array([0.0]),
-                            use_cache=True, parallel=False, verbose=False,
-                            use_grouped_phase_j=request.param)
+                            use_cache=True, parallel=False, verbose=False)
     fn = res['total_C_by_ell'][0]
     return lambda *t: complex(fn(*t)).real
 

@@ -13,14 +13,15 @@ Nothing here may move a number:
       reset's k=2 ell=1 output is also not bit-reproducible ACROSS PROCESSES
       at PYTHONHASHSEED=0 (<=2.6e-14 rel).  Strict old-vs-new bit-identity
       was proven in-process on the ``ou`` and ``spike`` configurations
-      below, per-diagram and grouped (the pre-M0.1 sources exec'd into the
-      live modules vs the M0.1 sources, all ``array_equal``).  The
+      below (the pre-M0.1 sources exec'd into the
+      live modules vs the M0.1 sources, all ``array_equal``; then also on
+      the since-retired grouped path).  The
       one-population spike-reset (``spike1``) values were captured on the
       f822c33 sources (engine identical to b2bf559, PYTHONHASHSEED=0), fresh
       cwd, same run order.  With the hook INSTALLED, the recorded run
       matches the same pre-M0.1 values to rtol 1e-13 too.
-(ii)  with the hook installed, calls are recorded on the per-diagram AND the
-      grouped path and the results are ``np.array_equal`` to the hook-unset
+(ii)  with the hook installed, calls are recorded on the per-diagram path
+      and the results are ``np.array_equal`` to the hook-unset
       run in the same process and the same cache state (both runs load the
       diagrams from the cache a warm-up run wrote); the hook is read at call
       time.
@@ -76,7 +77,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
 import daedalus as dd                                            # noqa: E402
 from api import compute_cumulants                                # noqa: E402
 import engine.integration.time_domain.final_integral as FI       # noqa: E402
-import engine.integration.time_domain.grouped_integral as GI     # noqa: E402
 from tests.tools import phase_j_subset_diff as PSD               # noqa: E402
 
 _SPIKE_PARAMS = {'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
@@ -146,54 +146,32 @@ _PRE_M1_MODE = {'ou': None, 'spike1': 'legacy_clip', 'spike': 'legacy_clip'}
 
 # C_tau_by_ell captured on b2bf559 before the M0.1 edit (exact reprs).
 _BEFORE = {
-    ('ou', False): {
-        0: [0.9999990000005 - 6.12322174927796e-17j,
-            0.6065306597126334 - 1.8569645775045228e-17j],
-        1: [-0.059999999999969994 + 7.347880794876769e-18j,
-            -0.054587759374137006 + 6.127983105764925e-18j]},
-    ('ou', True): {
+    'ou': {
         0: [0.9999990000005 - 6.12322174927796e-17j,
             0.6065306597126334 - 1.8569645775045228e-17j],
         1: [-0.059999999999969994 + 7.347880794876769e-18j,
             -0.054587759374137006 + 6.127983105764925e-18j]},
     # captured on the f822c33 sources (pre-M0.1 engine), see the docstring
-    ('spike1', False): {
+    'spike1': {
         0: [-0.4759643876300507 + 2.914439591429286e-17j,
             -0.08039546532128111 - 3.8318398056310674e-18j],
         1: [0.019073172166059516 - 2.335789995410257e-18j,
             0.012632042663118966 - 8.297314695362206e-19j]},
-    ('spike1', True): {
-        0: [-0.4759643876300507 + 2.914439591429286e-17j,
-            -0.08039546532128111 - 3.8318398056310674e-18j],
-        1: [0.019073172166059516 - 2.335789995410256e-18j,
-            0.012632042663118966 - 8.297314695362202e-19j]},
-    ('spike', False): {
+    'spike': {
         0: [0.5309889247725774 - 5.479611401951156e-16j,
             0.0025024048332344248 - 5.476278882510659e-17j],
         1: [-0.042525758149856235 + 1.285900923694143e-16j,
             -0.004618608811512337 + 4.9085013452590543e-17j]},
-    ('spike', True): {
-        0: [0.5309889247725773 - 5.479611401951154e-16j,
-            0.0025024048332344187 - 5.4762788825106595e-17j],
-        1: [-0.04252575815925349 + 1.285900923694143e-16j,
-            -0.00461860881995695 + 4.908501345259056e-17j]},
 }
 
 _SLOW = pytest.mark.slow
-
-
-def _key_param(name, grouped, slow=False):
-    return pytest.param(
-        (name, grouped), id=f'{name}-{"grouped" if grouped else "perdiag"}',
-        marks=[_SLOW] if slow else [])
 
 
 def _name_param(name, slow=False):
     return pytest.param(name, id=name, marks=[_SLOW] if slow else [])
 
 
-_KEYS = [_key_param(n, g, slow=(n == 'spike'))
-         for n in ('ou', 'spike1', 'spike') for g in (False, True)]
+_KEYS = [_name_param(n, slow=(n == 'spike')) for n in ('ou', 'spike1', 'spike')]
 _DELTA_MODELS = ['spike1', _name_param('spike', slow=True)]
 
 
@@ -270,15 +248,14 @@ def _model(spec):
     return _MODELS[spec]
 
 
-def _compute(cfg, grouped, tau_grid=None):
+def _compute(cfg, tau_grid=None):
     assert FI._SUBSET_HOOK is None
     return compute_cumulants(
         _model(cfg['model']), k=cfg['k'], max_ell=cfg['max_ell'],
         external_fields=cfg['external_fields'], parameters=cfg['parameters'],
         tau_grid=np.array(tau_grid if tau_grid is not None
                           else cfg['tau_grid']),
-        use_cache=True, parallel=False, verbose=False,
-        use_grouped_phase_j=grouped)
+        use_cache=True, parallel=False, verbose=False)
 
 
 def _warm(name):
@@ -287,7 +264,7 @@ def _warm(name):
     cache: a fresh run and a cache-loaded run can differ in the last ulp."""
     if name not in _WARM:
         cfg = _CONFIGS[name]
-        _compute(cfg, False, tau_grid=cfg['tau_grid'][-1:])
+        _compute(cfg, tau_grid=cfg['tau_grid'][-1:])
         _WARM.add(name)
 
 
@@ -296,12 +273,12 @@ def _plain_arrays(res):
             for ell, v in res['C_tau_by_ell'].items()}
 
 
-def _hooked_run(cfg, grouped, **run_kw):
+def _hooked_run(cfg, **run_kw):
     """The same run through the harness (hook installed)."""
     run = PSD.run(_model(cfg['model']), k=cfg['k'], max_ell=cfg['max_ell'],
                   external_fields=cfg['external_fields'],
                   parameters=cfg['parameters'], tau_grid=cfg['tau_grid'],
-                  use_grouped_phase_j=grouped, keep_live=False, **run_kw)
+                  keep_live=False, **run_kw)
     assert FI._SUBSET_HOOK is None            # restored on exit
     from api.compute import _tau0_lag
     by_ell = {}
@@ -314,40 +291,39 @@ def _hooked_run(cfg, grouped, **run_kw):
 
 
 def _runs(key):
-    """(model, grouped) -> {'plain': arrays, 'run': harness run,
+    """model -> {'plain': arrays, 'run': harness run,
     'hooked': arrays}: warm-up, then plain, then hooked, same process."""
     if key not in _RUNS:
-        name, grouped = key
+        name = key
         _warm(name)
-        plain = _plain_arrays(_compute(_CONFIGS[name], grouped))
-        run, hooked = _hooked_run(_CONFIGS[name], grouped)
+        plain = _plain_arrays(_compute(_CONFIGS[name]))
+        run, hooked = _hooked_run(_CONFIGS[name])
         _RUNS[key] = {'plain': plain, 'run': run, 'hooked': hooked}
     return _RUNS[key]
 
 
 def _hooked(key):
-    """(model, grouped) -> (harness run, arrays).  Reuses the hooked run of
+    """model -> (harness run, arrays).  Reuses the hooked run of
     ``_runs`` when that exists; otherwise ONE harness run with no warm-up
     (the first run of a configuration fills its caches)."""
     if key in _RUNS:
         return _RUNS[key]['run'], _RUNS[key]['hooked']
     if key not in _HOOKED:
-        name, grouped = key
-        _HOOKED[key] = _hooked_run(_CONFIGS[name], grouped)
+        _HOOKED[key] = _hooked_run(_CONFIGS[key])
     return _HOOKED[key]
 
 
 def _pre_m1_runs(key):
     """Like ``_runs`` but in the mode that reproduces the pre-M1 captures
     (``_PRE_M1_MODE``): warm-up, then plain, then hooked, same process."""
-    name, grouped = key
+    name = key
     # (always its own run, also for the default-mode model: the captures
     # sample τ = 0 at −1e-6, see ``_tau0_nudge``)
     if key not in _PRE:
         _warm(name)
         with _theta0_mode(_PRE_M1_MODE[name]), _tau0_nudge():
-            plain = _plain_arrays(_compute(_CONFIGS[name], grouped))
-            run, hooked = _hooked_run(_CONFIGS[name], grouped)
+            plain = _plain_arrays(_compute(_CONFIGS[name]))
+            run, hooked = _hooked_run(_CONFIGS[name])
         _PRE[key] = {'plain': plain, 'run': run, 'hooked': hooked}
     return _PRE[key]
 
@@ -384,7 +360,7 @@ def test_legacy_mode_hook_is_transparent(key):
         assert np.array_equal(r['plain'][ell], r['hooked'][ell]), ell
 
 
-# ── (ii) hook installed: transparent, records both dispatches ─────────
+# ── (ii) hook installed: transparent, records the dispatch ────────────
 
 @pytest.mark.parametrize('key', _KEYS)
 def test_hook_is_transparent(key):
@@ -395,8 +371,8 @@ def test_hook_is_transparent(key):
 
 
 def _known_bail_reasons():
-    """Every fine-grained reason string passed to ``_bail`` in FI / GI."""
-    src = inspect.getsource(FI) + inspect.getsource(GI)
+    """Every fine-grained reason string passed to ``_bail`` in FI."""
+    src = inspect.getsource(FI)
     return set(re.findall(r"_bail\('([a-z0-9_]+)'\)", src))
 
 
@@ -427,7 +403,7 @@ def _check_records(recs):
 # validity is asserted; the answering PATHS are structural.
 @pytest.mark.parametrize('name', _DELTA_MODELS)
 def test_hook_records_per_diagram(name):
-    recs = _hooked((name, False))[0]['records']
+    recs = _hooked(name)[0]['records']
     assert recs and {r['source'] for r in recs} == {'per_diagram'}
     paths = {(r['path'], r['branch']) for r in recs}
     assert {('m1', 'plan'), ('polygon', 'plan'), ('poset', 'plan'),
@@ -435,34 +411,15 @@ def test_hook_records_per_diagram(name):
     assert (('nquad', 'plan') in paths) == (name in _NQUAD_CONFIGS)
     _check_records(recs)
     # the nquad-path payload, on the pre-M1 route
-    lrecs = _pre_m1_runs((name, False))['run']['records']
+    lrecs = _pre_m1_runs(name)['run']['records']
     assert ('nquad', 'plan') in {(r['path'], r['branch']) for r in lrecs}
     _check_records(lrecs)
-
-
-@pytest.mark.parametrize('name', ['ou'] + _DELTA_MODELS)
-def test_hook_records_grouped(name):
-    grecs = _hooked((name, True))[0]['records']
-    assert 'grouped' in {r['source'] for r in grecs}
-    _check_records(grecs)
-    gpaths = {(r['path'], r['branch']) for r in grecs
-              if r['source'] == 'grouped'}
-    assert ('m1', 'grouped') in gpaths
-    assert {('poset', 'noplan'), ('polygon', 'noplan')} & gpaths
-    if name in _NQUAD_CONFIGS:
-        assert {('polygon', 'noplan'), ('nquad', 'noplan')} <= gpaths
-    if _PRE_M1_MODE[name] is not None:
-        lrecs = _pre_m1_runs((name, True))['run']['records']
-        _check_records(lrecs)
-        lpaths = {(r['path'], r['branch']) for r in lrecs
-                  if r['source'] == 'grouped'}
-        assert {('polygon', 'noplan'), ('nquad', 'noplan')} <= lpaths
 
 
 def test_hook_is_read_at_call_time():
     """Setting the hook AFTER the closures were built still records."""
     cfg = _CONFIGS['ou']
-    res = _compute(cfg, False, tau_grid=[0.5])
+    res = _compute(cfg, tau_grid=[0.5])
     fn = res['phase_j_by_ell'][1]['total_C']
     seen = []
     with PSD.installed_hook(seen.append):
@@ -528,8 +485,8 @@ def test_points_mode_records_only_the_requested_points(name):
 @pytest.mark.parametrize('pre_m1', [True, False], ids=['legacy', 'ito'])
 @pytest.mark.parametrize('name', _DELTA_MODELS)
 def test_new_counters_present_and_consistent(name, pre_m1):
-    run = (_pre_m1_runs((name, False)) if pre_m1
-           else {'run': _hooked((name, False))[0]})['run']
+    run = (_pre_m1_runs(name) if pre_m1
+           else {'run': _hooked(name)[0]})['run']
     c = run['counters']
     by = c['nquad_fallback_by_reason']
     assert set(by) == set(FI._NQUAD_FALLBACK_REASONS)
@@ -596,7 +553,6 @@ def test_stub_report_labels_the_counters(name):
 @pytest.mark.parametrize('fn', [
     FI._integrate_1d_polytope_modesum, FI._integrate_2d_polygon_modesum,
     FI._integrate_nd_polytope_poset_modesum,
-    GI._evaluate_grouped_m0_modesum, GI._integrate_grouped_m1_modesum,
 ])
 def test_every_analytic_bail_records_a_reason(fn):
     src = inspect.getsource(fn)
@@ -743,6 +699,15 @@ def _tie_payload(tie_ctx, perm_index, value, integrand):
     }
 
 
+def _any_const_row_empty(rows, free_ext_vals, row_kinds=None, tie_ctx=None):
+    """True if some constant row of ``rows`` has the Θ(0) verdict 'EMPTY'
+    (``final_integral._const_row_verdict``, row by row)."""
+    return any(
+        FI._const_row_verdict(a_int, a_ext, c0, free_ext_vals,
+                              FI._row_kind(row_kinds, idx), tie_ctx) == 'EMPTY'
+        for idx, (a_int, a_ext, c0) in enumerate(rows))
+
+
 def test_harness_references_every_tie_orientation():
     """(Review round 3.)  At an exact tie two Wick permutations evaluate
     the same subset at the same free values, but with different legs
@@ -759,7 +724,7 @@ def test_harness_references_every_tie_orientation():
     swapped = ((0.0, 0.0), (0,), 1)         # free value = t_0 − t_1
     tc = [FI._TieContext(*c) for c in (identity, swapped)]
     rows = [((-1.0,), (1.0,), 0.0), ((0.0,), (1.0,), 0.0)]
-    assert [FI._any_const_row_empty(rows, (0.0,), None, c) for c in tc] == [
+    assert [_any_const_row_empty(rows, (0.0,), None, c) for c in tc] == [
         True, False]
     one = 1.0 - math.exp(-200.0)            # ∫_{-200}^{0} e^{s} ds
     rec = PSD.SubsetRecorder()

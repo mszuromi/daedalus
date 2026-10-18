@@ -333,9 +333,10 @@ def _per_diagram_contributions(result):
     ``result['diagrams']`` order, and a per-diagram group's ``kernel_id`` is
     the index into THAT per-``ell`` list; rebuilding the list here from the
     same records maps every callable back to its own diagram whatever order
-    the enumeration produced.  The grouped path (``use_grouped_phase_j``)
-    has no per-diagram callables (its groups carry no ``'contribution'``),
-    so its pages show none.
+    the enumeration produced.  Results of the retired grouped path
+    (``use_grouped_phase_j``, 0.2.1 and earlier) have no per-diagram
+    callables (their groups carry no ``'contribution'``), so their pages
+    show none.
     """
     out = {}
     for ell, pj in (result.get('phase_j_by_ell') or {}).items():

@@ -3,8 +3,11 @@
 (see ``docs/spatial_pipeline.md``); reached only by its own test(s).  Kept as an
 independent numerical cross-check — ``compute_cumulants`` does NOT use this module.
 
-engine.integration.spatial.loop_parametric
-==========================================
+tests.oracles.loop_parametric
+=============================
+Test-only reference (was ``engine.integration.spatial.loop_parametric``; moved out of
+the library in audit W7: no production module imports it).
+
 Momentum-FIRST parametric loop integration for spatial (heat-kernel) field
 models — the general loop integrator's core (Stage C.5 pivot).
 

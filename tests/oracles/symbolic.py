@@ -1,6 +1,9 @@
 """
-engine.integration.symbolic
-============================
+tests.oracles.symbolic
+======================
+Test-only reference (was ``engine.integration.symbolic``; moved out of
+the library in audit W7: no production module imports it).
+
 Construct and evaluate diagram integral expressions symbolically
 for **stationary** systems using frequency-domain methods.
 
@@ -516,10 +519,8 @@ def _residue_at_pole(expr, var, pole):
             dg = diff(dg, var)
         return limit(dg, **{str(var): pole}) / factorial(n - 1)
     except Exception:
-        try:
-            return limit((var - pole) * expr, **{str(var): pole})
-        except Exception:
-            return SR(0)
+        # a failed residue is an error, never a silent 0 (audit ACC-68)
+        return limit((var - pole) * expr, **{str(var): pole})
 
 
 class PoleSearchError(NotImplementedError):
@@ -569,12 +570,21 @@ def _integrate_by_residues(expr, var, close_upper=True):
 
     residue_sum = SR(0)
     for p in poles:
+        # a pole whose half-plane Sage cannot decide (a parameter without
+        # an assumption) or that lies on the real axis is an error, never
+        # dropped (audit ACC-68: it gave 0 with status 'ok')
         try:
-            p_imag = p.imag_part()
+            p_imag = SR(p).imag_part()
             in_upper = bool(p_imag > 0)
             in_lower = bool(p_imag < 0)
-        except (TypeError, ValueError):
-            continue
+        except (TypeError, ValueError) as exc:
+            raise PoleSearchError(
+                f'cannot locate the pole {var} = {p}: {exc}') from exc
+        if not (in_upper or in_lower):
+            raise PoleSearchError(
+                f'the pole {var} = {p} is on the real axis or its half-plane '
+                f'is undecidable (Im = {p_imag}); give the parameters an '
+                f"assumption (e.g. SR.var(..., domain='positive'))")
 
         if close_upper and in_upper:
             residue_sum += _residue_at_pole(expr_s, var, p)

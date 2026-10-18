@@ -53,11 +53,9 @@ def model():
     return _oscillator()
 
 
-def _cumulants(model, k=2, ell=1, field='dT', grouped=False):
+def _cumulants(model, k=2, ell=1, field='dT'):
     kw = dict(k=k, max_ell=ell, external_fields=[(field, 1)] * k,
               parallel=False, verbose=False)
-    if grouped:
-        kw['use_grouped_phase_j'] = True
     if k <= 2:
         r = compute_cumulants(model, tau_grid=np.array([-0.4, 0.0, 0.7]),
                               **kw)
@@ -113,15 +111,6 @@ def test_k3_one_loop_pruned_equals_unpruned(monkeypatch, model):
     loop = complex(runs[0][0][1])
     assert abs(tree.real - 0.12476252951567) < 1e-12
     assert abs(loop.real - 0.0419736529578) < 1e-11
-
-
-def test_grouped_route_pruned_equals_unpruned(monkeypatch, model):
-    runs = _ab(monkeypatch, model, [dict(PRUNE_ZERO_MODES=True),
-                                    dict(PRUNE_ZERO_MODES=False)],
-               grouped=True)
-    assert runs[0][0] == runs[1][0]
-    assert runs[0][1]['zero_modes_pruned'] > 0
-    assert runs[1][1]['zero_modes_pruned'] == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -489,23 +478,7 @@ def test_abandoned_pruned_plan_is_refunded(monkeypatch):
     assert sc.tuples == 32 and sc.plans == 1
 
 
-def test_grouped_fallback_does_not_swallow_the_budget_error(monkeypatch,
-                                                            model):
-    """Over budget inside the grouped route's per-diagram fallback: the
-    refusal propagates (it is not recorded as a skipped group)."""
-    import api._grouped_phase_j as GP
-    import api.compute as CO
-    monkeypatch.setattr(CO, '_phase_j_memory_preflight',
-                        lambda *a, **k: None)
-    monkeypatch.setattr(GP, 'integrate_grouped_diagram',
-                        lambda *a, **k: {'status': 'failed',
-                                         'reason': 'forced'})
-    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1e-7')
-    with pytest.raises(FI.PhaseJResourceError):
-        _cumulants(model, grouped=True)
-
-
-def test_grouped_m1_decay_margin_uses_every_pole(monkeypatch, model):
+def test_m1_decay_margin_uses_every_pole(monkeypatch, model):
     seen = []
     orig = FI._decay_tol
 
@@ -513,7 +486,7 @@ def test_grouped_m1_decay_margin_uses_every_pole(monkeypatch, model):
         seen.append(modes)
         return orig(modes, tuples, plan, cdata)
     monkeypatch.setattr(FI, '_decay_tol', spy)
-    _cumulants(model, k=1, field='dh', grouped=True)
+    _cumulants(model, k=1, field='dh')
     assert seen and all(m is not None for m in seen)
 
 

@@ -593,23 +593,20 @@ def test_interval_routes_agree_and_the_small_alpha_case(FI, monkeypatch,
     assert abs(v_leg - ref) > 1e-10 * abs(ref)
 
 
-def test_grouped_m1_routes_agree(FI, monkeypatch):
-    import engine.integration.time_domain.grouped_integral as GI
-    free = [0.4]
-    pts = [(0.6 + 0.1j, (-1.3 + 0.2j, -0.8 + 1j)), (-0.2, (-0.5, -0.8 + 1j))]
-    rows = [(list(a), list(e), c) for (a, e, c) in _INTERVAL_ROWS]
-    _set_flags(monkeypatch, FI)
-    leg = GI._integrate_grouped_m1_modesum(pts, rows, free)
-    _set_flags(monkeypatch, FI, dd=True)
-    dd = GI._integrate_grouped_m1_modesum(pts, rows, free)
-    assert abs(dd - leg) <= 1e-13 * abs(leg)
-    # semi-infinite side (only the t - s row): -inf < s < t
-    rows1 = rows[:1]
-    pts1 = [(1.0, (-0.7 + 0.3j,)), (0.5, (-2.0,))]
-    ref = sum(B * _mp_interval(-lams[0], lams[0] * 0.4, -math.inf, 0.4)
-              for B, lams in pts1)
-    v = GI._integrate_grouped_m1_modesum(pts1, rows1, free)
-    assert abs(v - ref) <= 1e-14 * abs(ref)
+def test_semi_infinite_interval_routes_agree_with_the_exact_integral(
+        FI, monkeypatch):
+    """The semi-infinite side (only the t - s row): -inf < s < t, on every
+    route (ported from the retired grouped m = 1 test)."""
+    free = (0.4,)
+    rows1 = _INTERVAL_ROWS[:1]
+    modes = [[(1.0, -0.7 + 0.3j), (0.5, -2.0)]]
+    ref = (0.7 - 0.1j) * sum(
+        C * _mp_interval(-lam, lam * 0.4, -math.inf, 0.4)
+        for C, lam in modes[0])
+    for name, kw in _ROUTES.items():
+        _set_flags(monkeypatch, FI, **kw)
+        v = _interval(FI, rows1, modes, free)
+        assert abs(v - ref) <= 1e-14 * abs(ref), (name, v, ref)
 
 
 # ── m >= 3 ────────────────────────────────────────────────────────────
@@ -1085,12 +1082,10 @@ def test_switch_on_transient_of_the_ou_tree(FI, monkeypatch):
     import tests.tools.phase_j_zoo_baseline as Z
     entry = Z._E('t-m7-switch-on', model='ou_quartic', k=2, max_ell=0,
                  ext=[('dx', 1), ('dx', 1)], params=Z.P_OU, tau_grid=[2.0])
-    for grouped in (False, True):
-        entry['grouped'] = grouped
-        _set_flags(monkeypatch, FI, t_min=-3.0, **_ROUTES['box_free'])
-        arr, _ctr = _zoo_run(entry)
-        assert abs(arr['ell0'][0] - math.exp(-2.0) * (1 - math.exp(-6.0))) \
-            <= 1e-13
+    _set_flags(monkeypatch, FI, t_min=-3.0, **_ROUTES['box_free'])
+    arr, _ctr = _zoo_run(entry)
+    assert abs(arr['ell0'][0] - math.exp(-2.0) * (1 - math.exp(-6.0))) \
+        <= 1e-13
     _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
     arr, _ctr = _zoo_run(entry)
     assert abs(arr['ell0'][0] - math.exp(-2.0)) <= 1e-13

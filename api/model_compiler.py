@@ -943,8 +943,6 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # propagator kernel; derivative-VERTEX generators (degree ≥3) carry per-leg
     # momentum form factors into the integrator.
     bilinear, vertex = classify_generators(s, genmap, flucts)
-    ns._operator_ir_bilinear = bilinear
-    ns._operator_ir_vertex = vertex
 
     # Phase 3b-i: lower the BILINEAR generators back to the v1 bare-symbol form
     # (Lap → ns.Laplacian, Dt → ns.Dt; composed for chains, so ∇⁴ → Laplacian²),
@@ -1151,21 +1149,8 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
     return _action
 
 
-def _iter_multi_indices(n_args, max_total):
-    """Yield every multi-index (k_1, ..., k_{n_args}) of non-negative
-    integers with  sum k_j  ≤ ``max_total``.
-
-    Iterative implementation (via ``itertools.product``) so it is
-    safe under ``%autoreload`` — a self-recursive generator would
-    fail to find itself in module globals after a hot-swap.
-    """
-    if n_args == 0:
-        yield ()
-        return
-    from itertools import product
-    for combo in product(range(max_total + 1), repeat=n_args):
-        if sum(combo) <= max_total:
-            yield combo
+# one copy (audit W7, RED-07)
+from engine.core.field_theory import _iter_multi_indices  # noqa: E402
 
 
 def _augment_saddle_renames(ns, functions, *,
