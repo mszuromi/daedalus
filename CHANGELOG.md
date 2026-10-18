@@ -11,6 +11,15 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
 
 ### Unreleased
 
+#### Fixed: the fork guard missed the SageMath Jupyter kernel
+
+`engine.fork_safety.fork_unsafe_in_notebook` tested the shell's class name for exactly `ZMQInteractiveShell`. The
+SageMath 10.x kernel uses the subclass `SageZMQInteractiveShell`, so inside Sage notebooks on macOS the guard returned
+False and `compute_cumulants(parallel=True)` (the default) could fork the kernel -- the crash the guard exists to prevent.
+The guard now treats any Jupyter kernel as unsafe for fork: `ipykernel` loaded, `ZMQInteractiveShell` anywhere in the
+shell's MRO, or a shell with a kernel. Those runs fall back to serial with the existing warning. Numbers do not move.
+Regression tests: `tests/test_fork_safety.py` (Sage subclass, loaded `ipykernel`, shell with a kernel).
+
 #### Front end: CGF rows, Markovian embedding, kernels, model files, delay controller (audit wave W3b)
 
 Silent wrong numbers before; models that were not affected keep their numbers bit for bit (zoo A/B below).
