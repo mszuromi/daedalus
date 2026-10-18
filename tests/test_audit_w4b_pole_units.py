@@ -317,6 +317,52 @@ def test_a_far_root_never_hides_a_slow_pole(ratio):
     assert [complex(p) for p in pv] == pytest.approx([slow], rel=1e-12)
 
 
+@pytest.mark.parametrize('S', [1e-6, 1.0, 1e6])
+@pytest.mark.parametrize('W', [1e2, 1e4, 1e6])
+def test_numerical_tier_keeps_damped_poles_of_a_non_normal_system(S, W):
+    """K = i w + S (diag(1..5) + W superdiagonal): poles i S, 2 i S, ..., 5 i S
+    whatever the coupling W.  A Hadamard-type noise bound of det K grows
+    like W^4 and dropped 4 of the 5 strongly damped poles at W = 1e4 (third
+    review); the decision is now the sign for a root off the axis, and a
+    first-order root sensitivity (singular vectors) near it."""
+    M = S * (np.diag([1.0, 2, 3, 4, 5]).astype(complex) + np.diag([W] * 4, 1))
+    K_at = lambda w: 1j * w * np.eye(5) + M
+    kept, zeros, _ = PR._refine_retarded_poles([1j * S * a * (1 + 1e-8) for a in range(1, 6)], K_at)
+    assert len(zeros) == 5
+    assert sorted(complex(p).imag / S for p in kept) == pytest.approx([1, 2, 3, 4, 5], rel=1e-6)
+
+
+def test_exact_tier_near_axis_roots_decided_in_high_precision():
+    """Degree 20: ten damped roots k (1 + 10^-(6 + k mod 4) i) and ten real
+    roots (2k+1)/2.  The double roots of this ill-conditioned Q carry
+    imaginary noise up to 1e-4 |r| of either sign; matched to the 60-digit
+    roots, exactly the ten damped ones are retarded (third review)."""
+    from sage.all import CyclotomicField, PolynomialRing, QQ, CDF, prod
+    CF = CyclotomicField(4)
+    i_ = CF.gen()
+    w = PolynomialRing(CF, 'w').gen()
+    Q = (prod(w - (QQ(k) + QQ(k) / 10 ** (6 + k % 4) * i_) for k in range(1, 11))
+         * prod(w - QQ(2 * k + 1) / 2 for k in range(10)))
+    rs = [complex(r) for r, _ in PolynomialRing(CDF, 'x')(
+        [complex(c) for c in Q.coefficients(sparse=False)]).roots(CDF)]
+    flags = PR._exact_retarded_flags(Q, rs)
+    assert flags is not None
+    kept = sorted(r.real for r, f in zip(rs, flags) if f)
+    assert kept == pytest.approx(list(range(1, 11)), rel=1e-4)
+
+
+def test_exact_tier_leaves_the_global_mpmath_precision_alone():
+    """The high-precision decision of near-axis roots ran in a private
+    mpmath context, which in Sage's mpmath backend set the GLOBAL precision
+    to 60 digits for the rest of the process (third review)."""
+    import mpmath
+    om = var('omega')
+    before = mpmath.mp.dps
+    K = matrix(SR, [[om, 0], [0, om - 3 * I]])     # a zero root: decided in high precision
+    PR._compute_residues_via_polynomial_fracfield(K, om, {}, 2)
+    assert mpmath.mp.dps == before
+
+
 @pytest.mark.parametrize('S', [1e5, 1e6, 1e7])
 def test_exact_tier_keeps_the_pole_next_to_a_far_root(S):
     """The 2 x 2 model below on the EXACT tier: its float parameters leave

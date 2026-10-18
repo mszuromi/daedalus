@@ -582,6 +582,11 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
         # high precision on the exact Q when near the axis:
         # ``_exact_retarded_flags``), in the (Im, Re) order
         ret_flags = _exact_retarded_flags(Q_poly, all_roots)
+        if ret_flags is None:
+            return _exact_route_fallback(
+                G_ft_F, Q_poly, nf, tau_max, analysis_out, verbose,
+                'a root near the real axis could not be placed in its half '
+                'plane in double precision', cluster_out)
         pole_idx = sorted(((p, r) for r, p in enumerate(all_roots)
                            if ret_flags[r]),
                           key=lambda t: (t[0].imag, t[0].real))
@@ -1361,12 +1366,13 @@ def _warn_zero_residue(pk):
 #: the pole list on the exact tier).  A root clearly off the real axis keeps
 #: its double-precision sign; a root within ``NEAR_AXIS_RTOL`` of the axis (or
 #: much smaller than the others) is decided in high precision on the exact
-#: polynomial (``_exact_retarded_flags``), or, on the numerical tiers, against
-#: its own rounding error (``_numeric_retarded``).
-NEAR_AXIS_RTOL = 1e-6
+#: polynomial (``_exact_retarded_flags``; undecidable ones go to the exact
+#: 50-digit route), or, on the numerical tiers, against its own first-order
+#: rounding error (``_numeric_retarded``).
+NEAR_AXIS_RTOL = 1e-3
 #: Numerical tiers: ``Im omega`` must exceed this many times the root's own
 #: rounding error estimate to count as retarded.
-RETARDED_NOISE_FACTOR = 1e3
+RETARDED_NOISE_FACTOR = 1e2
 
 
 def _omega_scale(roots):
@@ -1386,93 +1392,108 @@ def _median_scale(roots):
     return a[len(a) // 2] if a else 1.0
 
 
-def _exact_retarded_flags(Q_poly, roots, dps=60):
-    """``[bool]``: which double-precision roots of the exact polynomial
-    ``Q_poly`` (over ``QQ[i]``) are retarded (Im omega > 0).  A root clearly
-    off the axis (``|Im| > NEAR_AXIS_RTOL |r|``) and not much smaller than
-    the largest keeps its sign.  Any other root is decided exactly: the root
-    nearest 0 of a ``Q`` with a zero constant term IS 0 (marginal); else it
-    is Newton-refined on the exact ``Q`` at ``dps`` digits and is retarded
-    when ``Im > 1e-40 |r|`` (a real-axis root comes out ~1e-58 there).  If
-    the refinement fails, the double sign with a 1e-12 relative margin."""
-    import mpmath as _mp
-    from api._pole_clusters import _mpc
+def _suspicious_roots(roots):
+    """Indices of the roots whose half plane double precision may not
+    decide: within ``NEAR_AXIS_RTOL`` of the real axis (relative), or
+    ``NEAR_AXIS_RTOL`` times smaller than the largest root (rounding of a
+    zero root)."""
     roots = [complex(r) for r in roots]
     big = _omega_scale(roots)
+    return [k for k, r in enumerate(roots)
+            if abs(r.imag) <= NEAR_AXIS_RTOL * abs(r)
+            or abs(r) <= NEAR_AXIS_RTOL * big]
+
+
+def _exact_retarded_flags(Q_poly, roots, dps=60):
+    """``[bool]`` -- which double-precision roots of the exact polynomial
+    ``Q_poly`` (over ``QQ[i]``) are retarded (Im omega > 0) -- or ``None``
+    when some root cannot be decided (the caller then takes the exact
+    route).  When no root is in ``_suspicious_roots`` every root keeps its
+    double sign.  Otherwise all roots of the exact ``Q`` are computed at
+    ``dps`` digits (``mpmath.workdps``: the global precision is restored)
+    and matched one to one to the double roots (nearest; ``None`` if the
+    matching is not a bijection); a suspicious root is then decided on its
+    high-precision partner: the smallest root of a ``Q`` with a zero
+    constant term IS 0 (marginal), any other is retarded when
+    ``Im > 1e-40 |r|`` (a real-axis root comes out ~1e-58 there).  A root
+    that is not suspicious keeps its double sign."""
+    import mpmath as _mp
+    from api._pole_clusters import _mpc, _roots
+    roots = [complex(r) for r in roots]
     out = [r.imag > 0 for r in roots]
-    sus = [k for k, r in enumerate(roots)
-           if abs(r.imag) <= NEAR_AXIS_RTOL * abs(r)
-           or abs(r) <= NEAR_AXIS_RTOL * big]
+    sus = _suspicious_roots(roots)
     if not sus:
         return out
-    zero_root = None
-    try:
-        if Q_poly.constant_coefficient() == 0:
-            zero_root = min(range(len(roots)), key=lambda k: abs(roots[k]))
-    except Exception:
-        pass
-    ctx = _mp.MPContext()
-    ctx.dps = dps
-    try:
-        cs = [ctx.mpc(_mpc(c)) for c in Q_poly.list()]
-    except Exception:
-        cs = None
-    dcs = None if cs is None else [k * cs[k] for k in range(1, len(cs))]
-
-    def horner(c, x):
-        v = ctx.mpc(0)
-        for a in reversed(c):
-            v = v * x + a
-        return v
-    for k in sus:
-        r = roots[k]
-        if k == zero_root:
-            out[k] = False
-            continue
-        if cs is None:
-            out[k] = r.imag > 1e-12 * abs(r)
-            continue
-        x = ctx.mpc(r.real, r.imag)
-        ok = False
-        for _ in range(80):
-            d = horner(dcs, x)
-            if d == 0:
-                break
-            step = horner(cs, x) / d
-            x -= step
-            if abs(step) <= ctx.mpf(10) ** (-(dps - 8)) * max(abs(x), ctx.mpf(10) ** (-300)):
-                ok = True
-                break
-        if ok and abs(x - ctx.mpc(r.real, r.imag)) <= 1e-6 * max(abs(r), 1e-300):
-            out[k] = bool(x.imag > ctx.mpf(10) ** (-40) * abs(x))
-        else:
-            out[k] = r.imag > 1e-12 * abs(r)
+    with _mp.workdps(dps):
+        try:
+            cs = [_mp.mpc(_mpc(c)) for c in Q_poly.list()]
+            hp = _roots(cs)
+        except Exception:
+            return None
+        if len(hp) != len(roots):
+            return None
+        match = []
+        for r in roots:
+            x0 = _mp.mpc(r.real, r.imag)
+            match.append(min(range(len(hp)), key=lambda j: abs(hp[j] - x0)))
+        if len(set(match)) != len(match):
+            return None
+        try:
+            zero_hp = (min(range(len(hp)), key=lambda j: abs(hp[j]))
+                       if Q_poly.constant_coefficient() == 0 else None)
+        except Exception:
+            return None
+        for k in sus:
+            j = match[k]
+            x = hp[j]
+            out[k] = (j != zero_hp
+                      and bool(x.imag > _mp.mpf(10) ** (-40) * abs(x)))
     return out
 
 
 def _numeric_retarded(K_at, r, roots):
-    """Numerical tiers: ``Im r`` above ``RETARDED_NOISE_FACTOR`` times the
-    root's own rounding error, ``eps * H(K(r)) / |det' K(r)|`` (``H``: the
-    Hadamard bound, the product of the row norms, which bounds the rounding
-    of det K at r); ``det'`` by a central difference with a step 1e-4 of the
-    distance to the nearest other zero (``roots``)."""
+    """Numerical tiers: is the verified zero ``r`` of det K a retarded pole.
+    Not suspicious (``_suspicious_roots`` of ``roots``): its sign.
+    Suspicious: ``Im r`` above ``RETARDED_NOISE_FACTOR`` times its own
+    first-order rounding error ``eps |u|^T |K| |v| / |u^H K' v|`` (``u``,
+    ``v``: the singular vectors of the smallest singular value of ``K(r)``,
+    ``K'`` by a central difference with a step 1e-4 of the distance to the
+    nearest other zero) -- the root-sensitivity of the nonlinear eigenvalue
+    problem K(omega) v = 0, invariant under row / column scaling and
+    non-normality (a Hadamard-type bound of det K was not: it dropped
+    strongly damped poles of a non-normal system, review)."""
     import numpy as np
     r = complex(r)
     if not r.imag > 0:
         return False
-    others = [abs(complex(q) - r) for q in roots
-              if abs(complex(q) - r) > 1e-9 * max(abs(r), 1e-300)]
+    rl = [complex(q) for q in roots]
+    try:
+        k = min(range(len(rl)), key=lambda j: abs(rl[j] - r))
+    except ValueError:
+        k = None
+    sus = set(_suspicious_roots(rl))
+    if k is None or abs(rl[k] - r) > 1e-9 * abs(r):
+        sus_r = (abs(r.imag) <= NEAR_AXIS_RTOL * abs(r)
+                 or abs(r) <= NEAR_AXIS_RTOL * _omega_scale(rl + [r]))
+    else:
+        sus_r = k in sus
+    if not sus_r:
+        return True
+    others = [abs(q - r) for q in rl if abs(q - r) > 1e-9 * max(abs(r), 1e-300)]
     h = 1e-4 * (min(others) if others else max(abs(r), 1e-300))
     try:
-        M = K_at(r)
-        had = float(np.prod(np.linalg.norm(M, axis=1)))
-        dp = (complex(np.linalg.det(K_at(r + h)))
-              - complex(np.linalg.det(K_at(r - h)))) / (2 * h)
+        M = np.asarray(K_at(r), dtype=complex)
+        U, S, Vh = np.linalg.svd(M)
+        u, v = U[:, -1], Vh[-1].conj()
+        Kp = (np.asarray(K_at(r + h), dtype=complex)
+              - np.asarray(K_at(r - h), dtype=complex)) / (2 * h)
+        den = abs(u.conj() @ Kp @ v)
+        num = float(np.abs(u) @ np.abs(M) @ np.abs(v))
     except Exception:
         return r.imag > 1e-12 * abs(r)
-    if not (np.isfinite(had) and np.isfinite(dp)) or dp == 0:
+    if not (np.isfinite(den) and np.isfinite(num)) or den == 0:
         return r.imag > 1e-12 * abs(r)
-    err = np.finfo(float).eps * had / abs(dp)
+    err = np.finfo(float).eps * num / den
     return r.imag > RETARDED_NOISE_FACTOR * err
 
 

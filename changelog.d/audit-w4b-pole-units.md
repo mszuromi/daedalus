@@ -30,17 +30,20 @@ by as much); analyzer codes identical except `ou_quartic_two_dim_color_corr` on 
 - **Poles from the numerical tiers**: the retarded floor (`Im ω > 1e-9`), the pre-Newton dedup radius (1e-5), the
   Newton exits and steps (`|det| < 1e-13`, `1e-7 (1 + |ω|)`) and the probe frequencies were absolute. In slow units
   (`a = 1e-4`, `b = 1.05e-4`) two poles were merged, and `C_xx` came out 236 times too large with no warning. Every
-  root of `det K(ω)` is now Newton-refined with relative steps and kept only if `det K` vanishes there; a zero is a
-  retarded pole when `Im ω` exceeds 1e3 times its OWN rounding error (ε · Hadamard bound of `K(ω)` / `|det' K(ω)|`),
+  root of `det K(ω)` is now Newton-refined with relative steps and kept only if `det K` vanishes there. A zero off the
+  real axis (|Im| > 1e-3 |ω|) keeps its sign; one near it is a retarded pole when `Im ω` exceeds 100 times its OWN
+  first-order rounding error (from the singular vectors of `K(ω)`: invariant under scaling and non-normality),
   never a threshold set by other roots (one Newton routine; the three drifted copies are gone). After a
   leading-coefficient trim drops genuine poles, the untrimmed polynomial's roots are the candidates (one per root;
   restored and trimmed copies of an ill-conditioned slow pole could otherwise both be kept).
 - **Retarded poles of the exact tier and of the cluster analysis** (`api._pole_clusters`): a decay rate below the
   absolute 1e-9 was dropped silently. Example: `y' = -b y` with `b = 5e-10` next to a unit-rate field, after
   downgrading `G2_MARGINAL_MODE`, gave `C_yy = 0` instead of 0.2. Its 1000-times-faster twin kept the pole. The
-  decision is now made per root: a root clearly off the real axis keeps its sign; a root within 1e-6 of the axis
-  (relative), or 1e6 times smaller than the largest, is decided on the exact `Q(ω)` (an exact zero root via
-  `Q(0) = 0`, otherwise a 60-digit Newton refinement); the cluster analysis decides at its 50 digits per root. A
+  decision is now made per root: a root clearly off the real axis keeps its sign; when a root is within 1e-3 of the
+  axis (relative), or 1e3 times smaller than the largest, all roots of the exact `Q(ω)` are computed at 60 digits,
+  matched one to one, and the near ones decided there (an exact zero root via `Q(0) = 0`); a root that cannot be
+  matched sends the propagator to the exact 50-digit route. The cluster analysis decides per root at its 50 digits
+  (exact zero roots from the exact factors). A
   first version of this fix used a floor relative to the LARGEST root, which dropped the pole of a model whose
   float parameters leave a genuine far root (a cancelling mass matrix: root ~1e16 times the pole) -- on the exact
   tier on every platform, and on the numerical tier where that far root verifies (CI, Linux); both are tests now.
