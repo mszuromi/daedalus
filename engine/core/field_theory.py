@@ -719,17 +719,35 @@ def _sr_nonzero(c) -> bool:
     c = SR(c)
     if c.is_trivial_zero():
         return False
+    # the same large coefficient is tested once per typed diagram
+    # (``classify_coefficient_factors``): the verdict is memoised on its
+    # GiNaC hash (exact float bits) and ``repr``, and the assumptions in
+    # force (never ``==`` on SR, which can itself go to Maxima)
+    from sage.symbolic.assumptions import assumptions
+    key = (hash(c), repr(c), repr(assumptions()))
+    hit = _NONZERO_MEMO.get(key)
+    if hit is not None:
+        return hit
     if _proved_nonzero(c):
-        return True
+        out = True
     # Float coefficients (numeric rates baked into the action): Sage's
     # random-point test cannot certify a float expression, so ``bool(c)``
     # always asks Maxima, seconds per large coefficient (and an ECL stack
     # overflow on a whole multi-field action).  A proof that survives
     # perturbing every float by 1e-8 (``floats_ok``) is one ``bool(c)``
     # reaches too: a float expression that cancels to dust fails it.
-    if _proved_nonzero(c, floats_ok=True, above_float_dust=True):
-        return True
-    return bool(c)
+    elif _proved_nonzero(c, floats_ok=True, above_float_dust=True):
+        out = True
+    else:
+        out = bool(c)
+    if len(_NONZERO_MEMO) >= _NONZERO_MEMO_MAX:
+        _NONZERO_MEMO.clear()
+    _NONZERO_MEMO[key] = out
+    return out
+
+
+_NONZERO_MEMO: dict = {}
+_NONZERO_MEMO_MAX = 4096
 
 
 def _ring_from_nonzero_dict(R, d: dict):
