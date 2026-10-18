@@ -40,8 +40,29 @@ import itertools
 import numpy as np
 
 from engine.integration.spatial.spectral_propagator import (
-    spectral_projectors, phi_n_batch,
+    spectral_projectors, _opitz_bidiagonal,
 )
+
+
+def _exp_phi_batch(ts, m0, nus):
+    """``e^{−m₀t} Φ_n(t; ν)`` for an array of ``t`` as ONE exponential: the Opitz
+    matrix on the nodes ``m₀, m₀+ν_1, …`` (the eigenvalues themselves, Re > 0),
+    ``(−1)ⁿ expm(−t (Z + m₀ I))[0, n]``.  Equal to the product (the divided
+    difference of ``e^{−tz}`` shifts by ``e^{−t m₀}``) but never forms it: with a
+    gap ``ν < 0`` the factor ``Φ_n`` alone grows like ``e^{|ν| t}`` and overflows
+    while ``e^{−m₀t}`` underflows, ``0 · inf = NaN``; the combined exponential
+    only decays."""
+    from scipy.linalg import expm
+    ts = np.asarray(ts, dtype=float)
+    nus = np.asarray(nus, dtype=complex).ravel()
+    n = nus.size
+    if n == 0:
+        return np.exp(-complex(m0) * ts)
+    Z = _opitz_bidiagonal(nus) + complex(m0) * np.eye(n + 1)
+    sign = (-1) ** n
+    out = np.array([sign * expm(-float(t) * Z)[0, n] for t in ts.ravel()],
+                   dtype=complex)
+    return out.reshape(ts.shape)
 
 
 def hcal_n(ts, M, Dhat, n):
@@ -65,7 +86,7 @@ def hcal_n(ts, M, Dhat, n):
             continue
         m0 = eig[string[0]]
         nus = [eig[a_i] - m0 for a_i in string[1:]]
-        scal = np.exp(-m0 * ts) * phi_n_batch(ts, nus)
+        scal = _exp_phi_batch(ts, m0, nus)
         out += scal[:, None, None] * mat[None, :, :]
     return out
 
@@ -252,7 +273,7 @@ def dressed_tree_C_x(xs, tau, M, Dhat, D0, N, order, legs, spatial_dim=1,
     def _H(n, t):
         out = np.zeros(M.shape, dtype=complex)
         for mat, m0, nus in strings[n]:
-            out += mat * (np.exp(-m0 * t) * phi_n_batch(np.array([t]), nus)[0])
+            out += mat * _exp_phi_batch(np.array([t]), m0, nus)[0]
         return out
 
     S = 1.0 / mu_min
@@ -276,7 +297,22 @@ def dressed_tree_C_x(xs, tau, M, Dhat, D0, N, order, legs, spatial_dim=1,
                 acc = acc + ((-1) ** p) * w * Fc[p]
         return acc * (2.0 * S * v)
 
-    val, err = quad_vec(_f, 0.0, np.inf, epsabs=0.0, epsrel=epsrel,
+    # Upper limit from the integrand's own decay: every term carries
+    # e^{−λ(|τ|+s)} e^{−λ' s} with λ, λ' >= mu_min, i.e. e^{−mu_min|τ|} e^{−2v²},
+    # times polynomials in s of degree <= 2 order + 1 and the decreasing F_p.
+    # Beyond V the bound is below e^{−800}: the integrand is exactly 0 in double
+    # precision (checked at V, doubled if not), so [0, V] is the whole integral.
+    V = 20.0
+    while 2.0 * V * V - (2 * order + 2) * np.log1p(V * V * (1.0 + S * at)) < 800.0:
+        V *= 1.25
+    for _ in range(8):
+        tail = _f(V)
+        if np.all(np.isfinite(tail)) and np.max(np.abs(tail), initial=0.0) == 0.0:
+            break
+        V *= 2.0
+    else:
+        raise RuntimeError(f'dressed_tree_C_x: the integrand does not decay by v = {V:.3g}.')
+    val, err = quad_vec(_f, 0.0, V, epsabs=0.0, epsrel=epsrel,
                         norm='max', limit=4000)
     scale = float(np.max(np.abs(val))) or 1.0
     if not np.all(np.isfinite(val)) or err > 1e3 * epsrel * scale:
