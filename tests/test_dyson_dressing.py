@@ -202,6 +202,10 @@ def test_unequal_D_default_policy_raises_actionable():
 
 
 @pytest.mark.slow   # coupled-Dyson order-3 loop path: minutes-long; opt in with -m slow
+# bigmem: the coupled one loop at dressing order 2 / 3 needs 6.4 / 10.8 GB per chamber at the default grids
+# (P x 256 / 592 spectral assignments); before the memory guard (#44) it reached > 18.9 GB (killed at a 12 GB
+# watchdog), so it never fitted a standard runner.  Run with SPATIAL_MEM_BUDGET_GB raised on a big machine.
+@pytest.mark.bigmem
 def test_unequal_D_loops_order3_runs():
     """Loop insertions have NO order cap (exact at every order via the
     ln-derivative partition expansion + generalized-partial-fraction
@@ -257,6 +261,10 @@ _LUF = {'mua': _MU1, 'mub': _MU2, 'Da': _D1, 'Db': _D2, 'eps': 1e-8,
 
 
 @pytest.mark.slow   # coupled-Dyson loop-dressing ladder: minutes-long; opt in with -m slow
+# bigmem: the coupled one loop at dressing order 2 / 3 needs 6.4 / 10.8 GB per chamber at the default grids
+# (P x 256 / 592 spectral assignments); before the memory guard (#44) it reached > 18.9 GB (killed at a 12 GB
+# watchdog), so it never fitted a standard runner.  Run with SPATIAL_MEM_BUDGET_GB raised on a big machine.
+@pytest.mark.bigmem
 def test_unequal_D_loop_dressing_ladder():
     """THE loop-dressing referee: the decoupled-unequal-D loop correction dC
     must converge to the single-field answer at D=Da — order 0 (no dressing,
