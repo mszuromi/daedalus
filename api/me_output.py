@@ -694,7 +694,7 @@ class SideME:
         # (clamped to 0): the value would be another chamber's order of the
         # external times (audit G2-outputs 1).  Rounding slack 1e-12.
         if math.isfinite(self.u_max) and np.any(
-                u > self.u_max * (1.0 + 1e-12)):
+                u > self.u_max + 1e-12 * max(1.0, self.u_max)):
             raise ValueError(
                 f'u = {float(np.max(u)):g} is beyond this side\'s chamber '
                 f'(u_max = {self.u_max:g}); evaluate the slice (SliceME), '

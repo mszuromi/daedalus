@@ -1066,6 +1066,15 @@ def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
     does not bind (``None``: such a coefficient is not evaluated)."""
     c = SR(expr)
     try:
+        # exactly zero at the point: no scale needed (and no expansion)
+        whole = c.subs(num_subs)
+        if unbound is not None and whole.free_variables():
+            whole = whole.subs({f: unbound for f in whole.free_variables()})
+        if not whole.free_variables() and complex(whole) == 0:
+            return 0.0, 0.0, 0.0
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
         terms = c.expand()
         ops = (terms.operands()
                if getattr(terms.operator(), '__name__', '') == 'add_vararg'
@@ -1080,7 +1089,7 @@ def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
             fill = {f: unbound for f in free}
             vals = [v.subs(fill) for v in vals]
         vals = [complex(v) for v in vals]
-    except (TypeError, ValueError, ArithmeticError, AttributeError):
+    except Exception:                                   # noqa: BLE001
         return None
     resid = abs(sum(vals))
     scale = sum(abs(v) for v in vals)
@@ -1097,7 +1106,7 @@ def mf_sector_residual(expr, num_subs, errs=None, unbound=None):
                 if unbound is not None and d.free_variables():
                     d = d.subs({f: unbound for f in d.free_variables()})
                 sens += abs(complex(d)) * float(e)
-            except (TypeError, ValueError, ArithmeticError, AttributeError):
+            except Exception:                           # noqa: BLE001
                 continue
         tol += 10.0 * sens
     return resid, tol, scale

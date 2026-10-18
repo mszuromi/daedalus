@@ -568,8 +568,27 @@ _ZERO_FLOOR = 1e-8
 #: Chord-Newton refinement steps after the hybrid solve (hybr stops at a
 #: relative step ~1.5e-8, leaving saddles accurate to ~1e-11 only: ACC-21).
 _REFINE_STEPS = 8
-#: Linear stability: ``Re sigma < -_EIG_RTOL * max|sigma|`` for every mode.
-_EIG_RTOL = 1e-9
+#: Linear stability: ``Re sigma < -_EIG_RTOL * r`` for every mode, ``r`` the
+#: model's fastest rate (``_rate_scale``).
+_EIG_RTOL = 1e-12
+
+
+def _rate_scale(A, B, sigmas=()):
+    """The fastest rate of the pencil ``sigma A + B``: over the rows with a
+    ``Dt`` term, ``|B_kj| / |A_kj|`` at the row's largest ``A`` entry ``j``
+    (one column: the field units cancel; time units multiply it).  Falls
+    back to ``max |sigma|`` when every such ratio is 0 (a pure-integrator
+    pencil), and to 0."""
+    A = np.asarray(A, dtype=float)
+    B = np.asarray(B, dtype=float)
+    out = 0.0
+    for a, b in zip(A, B):
+        if a.size and np.max(np.abs(a)) > 0:
+            j = int(np.argmax(np.abs(a)))
+            out = max(out, abs(float(b[j])) / abs(float(a[j])))
+    if out == 0.0 and len(sigmas):
+        out = float(np.max(np.abs(sigmas)))
+    return out
 
 
 def _hybr_point(R, x0):
@@ -624,8 +643,8 @@ def _fd_jacobian(R, x, f, c):
     for j in range(n):
         h = 1e-7 * max(abs(x[j]), c[j])
         if h == 0.0:
-            # every point is 0 in this component: probe at the smallest
-            # normal scale of the others (only the column's linear part
+            # every point is 0 in this component: probe at the largest
+            # typical scale of the others (only the column's linear part
             # matters, and R is evaluated in floating point)
             h = 1e-7 * (float(np.max(c)) if np.max(c) > 0 else 1.0)
         e = np.zeros(n)
@@ -880,6 +899,7 @@ def solve_mean_field_dae(
     # basin, e.g. the middle root of a cubic, can be missed there)
     extra = _rescale_seeds(deduped, state_vars, slices, model, fundamental,
                            seed_box, n_starts, rng)
+    n_mirror = len(seeds)
     if len(extra):
         run(extra, points)
         deduped, root_errs = _roots_from_points(R, points, rtol, atol)
@@ -887,7 +907,10 @@ def solve_mean_field_dae(
     n_converged = len(points)
     unsearched = []
     if mirror_cols is not None:
-        run(mirrored(seeds), mirror_points)
+        # the default seeds (and the ladder, when it ran) mirrored, as before;
+        # not the second-pass boxes (their roots are reached from seeds that
+        # are mirrored already)
+        run(mirrored(seeds[:n_mirror]), mirror_points)
         unsearched = _negative_roots(
             R, mirror_points, deduped, root_errs, state_vars, slices,
             undeclared, rtol, atol)
@@ -1376,10 +1399,11 @@ def linear_stability(
     # Stability: every finite eigenvalue has strictly negative real part.
     # Use a small tolerance for the real-part comparison so eigenvalues
     # that are zero to roundoff don't get mis-classified -- relative to the
-    # largest eigenvalue (an absolute 1e-9 called a stable model in slow
-    # time units marginal, and a fast one's round-off stable).
-    EIG_TOL = _EIG_RTOL * (float(np.max(np.abs(sigmas_finite)))
-                           if sigmas_finite.size else 0.0)
+    # model's fastest rate read off the pencil (an absolute 1e-9 called a
+    # stable model in slow time units marginal; the largest eigenvalue
+    # itself is no scale: a stiff model's or an algebraic mode's QZ value
+    # ~1e15 would swamp the slow modes).
+    EIG_TOL = _EIG_RTOL * _rate_scale(A_mat, B_mat, sigmas_finite)
     stable = bool(
         sigmas_finite.size > 0
         and np.all(np.real(sigmas_finite) < -EIG_TOL)

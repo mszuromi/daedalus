@@ -11,7 +11,8 @@ Two exact symmetries of every model:
   variance multiplied by ``a``; ``C'(tau) = C(a tau)``; a spike train picks
   up a factor ``a`` per leg.
 
-The twins below change the units by up to 1e+-12 and assert identical status,
+The twins below change the units by up to 1e+-9 (the analyzer's and the
+eigenvalue classifier's by 1e+-12) and assert identical status,
 refusal codes, root sets and selected roots, and the rescaled values.  They
 cover the thresholds fixed in W4a (the mean-field DAE search and its checks,
 the analyzer's marginality floors, the Lambert-W branch of G2-K, the
@@ -137,6 +138,20 @@ def test_root_acceptance_rejects_a_point_that_is_not_a_root():
     assert len(xa) == 1                               # xa is linear given xb: one root
     assert par['qa'] * xa[0] + par['qb'] * xb[0] + par['qd'] * xb[0] * xa[0] == \
         pytest.approx(0.0, abs=1e-16)
+
+
+@pytest.mark.parametrize('a', (1e-9, 1.0, 1e9))
+def test_linear_stability_of_a_stiff_model(a):
+    """Rates 0.5 and 1e10 (times ``a``): both modes stable in every unit (an
+    absolute 1e-9 called the slow mode of the slow twin marginal; a tolerance
+    relative to the largest eigenvalue would call the slow mode of every twin
+    marginal)."""
+    from api._mean_field_dae import linear_stability
+    m = (SDE('w4a_stiff').parameter('r1', default=0.5 * a).parameter('r2', default=1e10 * a)
+         .field('x').field('y').drift('x', '-r1*x').drift('y', '-r2*y + x')
+         .noise('xi', Gaussian(var='1'), couples={'x': 1, 'y': 1}).build())
+    st = linear_stability(m, {'r1': 0.5 * a, 'r2': 1e10 * a}, {'xstar': [0.0], 'ystar': [0.0]})
+    assert st['stable'] and not st['unstable_eigenvalues']
 
 
 # ── 2. end-to-end twins on the default engine ────────────────────────────────────────────────

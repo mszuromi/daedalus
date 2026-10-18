@@ -522,14 +522,14 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                     gamma = complex(K1)
                     Xv = float(SR(X).subs(num_params))
                     rts = lambert_roots(alpha, beta, gamma, Xv)
-                    # the marginal band is relative to the root and to the
-                    # model's own rates |beta/alpha|, |gamma/alpha| (the
-                    # rounding of W_k(z)/d - beta/alpha), never to 1 (an
+                    # the marginal band is relative to the root, plus the
+                    # rounding of W_k(z)/d - beta/alpha (formed at 30 digits)
+                    # on the model's own rates; never relative to 1 (an
                     # absolute 1e-9 band called a stable model in slow time
                     # units marginal); a root strictly to the right of it is
                     # unstable whatever else sits on the axis (UNIT-04)
                     rate = max(abs(beta / alpha), abs(gamma / alpha))
-                    band = [_MARGINAL_REL * max(abs(z), rate) for z in rts]
+                    band = [_MARGINAL_REL * abs(z) + 1e-25 * rate for z in rts]
                     rhp = sorted([z for z, b in zip(rts, band) if z.real > b],
                                  key=lambda z: -z.real)
                     marg = [z for z, b in zip(rts, band) if abs(z.real) <= b]

@@ -210,11 +210,8 @@ class DeltaComponent:
         """True when ``times`` (length k) satisfies every equality."""
         t = np.asarray(times, dtype=float)
         r = self._M @ t + self._c
-        # relative to the size of the terms (no unit floor: a floor of 1.0
-        # accepted times off the surface when they are measured in small
-        # units)
-        scale = np.abs(self._M) @ np.abs(t) + np.abs(self._c)
-        return bool(np.all(np.abs(r) <= tol * scale))
+        return bool(np.all(np.abs(r) <= tol * max(1.0, float(np.max(np.abs(
+            t))) if t.size else 1.0)))
 
     def weight_at(self, times):
         """Coefficient of ``δ^m(M t + c)`` (the canonical form of
