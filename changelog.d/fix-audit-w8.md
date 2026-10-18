@@ -30,7 +30,7 @@
   - Cold-cache propagator builds (same machine load, base -> now): quad_exp 135 s (the symbolic block timed out:
     whether it completed depended on the machine's speed) -> 2.4 s, linear_hawkes 19.5 -> 0.5 s,
     linear_delta_spikes 14.6 -> 0.7 s.
-  - Zoo cold-run walls: quad_exp 101.5 -> 5.6 s, quadratic_hawkes_alpha 153.8 -> 23.1 s.
+  - Zoo cold-run walls: quad_exp 101.5 -> 6.7 s, quadratic_hawkes_alpha 153.8 -> 13.9 s.
 - The symbolic D_delta is taken only for inverse entries of up to 4,000 characters (the zoo's largest is ~800).
   Larger ones are left to the exact tier of `compute_poles_and_residues`, which already filled D_delta whenever
   the symbolic block ran out of time.
@@ -43,6 +43,6 @@
     one loop ECL crash -> 10.5 s (0.44 GB peak footprint), two loops crash -> 786 s (7.7 GB); n=4 tree 30.8 s,
     one loop 43.9 s (expand alone was 257 s);
   - symbolic indexed coefficients: n=2 one loop 474.7 s / 5.26 GB -> 4.9 s (regression test), n=3 one loop
-    1698.6 s -> TODO.
-- **No public number moves.** Every zoo entry is bit-identical. The dendritic_quad_soma_sigmoid 1.4e-16 that
-  shows up is base-vs-base scatter.
+    1698.6 s -> 116.9 s.
+- **No public number moves.** Every zoo entry is bit-identical up to base run-to-run scatter: dendritic 1.4e-16
+  also shows base-vs-base; spike_reset k2 l1 takes {0, 4.5e-16} with the same frequency on both sides.
