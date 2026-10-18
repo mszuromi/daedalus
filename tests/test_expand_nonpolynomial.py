@@ -110,6 +110,7 @@ def test_equals_legacy_taylor(monkeypatch):
 
 
 @pytest.mark.slow
+@pytest.mark.bigmem          # > 12 GB footprint: own job in .github/workflows/slow-tests.yml
 def test_equals_legacy_taylor_order3(monkeypatch):
     model = _model('exp')
     tn = _table(_expand(model, 3, monkeypatch=monkeypatch))

@@ -92,12 +92,13 @@ def test_single_edge_tree():
         pd, external_fields, [], [], G_ft, resp_idx, phys_idx
     ))
 
-    # Should get at least one diagram: nt1 -> dn1
     # With 2 external fields and 2 leaves, there are 2 permutations,
-    # but only the one where resp field is at the outgoing leaf works.
-    assert len(results) >= 1
-    for td in results:
-        assert isinstance(td, TypedDiagram)
+    # but only the one where resp field is at the outgoing leaf works:
+    # exactly one diagram, nt1 -> dn1 on the edge.
+    assert len(results) == 1
+    (td,) = results
+    assert isinstance(td, TypedDiagram)
+    assert td.edge_types == {(0, 1, None): (('nt', 1), ('dn', 1))}
 
 
 def test_source_vertex_diagram():
@@ -117,11 +118,15 @@ def test_source_vertex_diagram():
         pd, external_fields, [], stypes, G_ft, resp_idx, phys_idx
     ))
 
-    # Should produce typed diagrams with the source vertex
-    assert len(results) > 0
+    # the source emits nt1 and nt2 in either order onto the two edges, the
+    # leaves read dn1 / dn2 in either order: 2 x 2 typings, each once
+    assert len(results) == 4
     for td in results:
         assert 2 in td.vertex_assignments
         assert isinstance(td.vertex_assignments[2], SourceType)
+        resp = sorted(td.edge_types[e][0] for e in td.edge_types)
+        assert resp == [('nt', 1), ('nt', 2)]
+    assert len({tuple(sorted(td.edge_types.items())) for td in results}) == 4
 
 
 def test_propagator_zero_rejects():
@@ -142,6 +147,7 @@ def test_propagator_zero_rejects():
 
     # The assignment nt1->dn2 should fail due to zero propagator
     # Only nt1->dn1 or nt2->dn2 should work on diagonal propagator
+    assert results == []
     for td in results:
         for edge, (resp_leg, phys_leg) in td.edge_types.items():
             ri = resp_idx[resp_leg]
@@ -159,8 +165,10 @@ def test_no_propagator_check_when_none():
     results = list(enumerate_typed_diagrams(
         pd, external_fields, [], [], None, resp_idx, phys_idx
     ))
-    # Should still produce results (no propagator filtering)
-    assert len(results) > 0
+    # no propagator filtering: the off-diagonal nt1 -> dn2 edge is kept
+    # (test_propagator_zero_rejects drops it with a diagonal propagator)
+    assert len(results) == 1
+    assert results[0].edge_types == {(0, 1, None): (('nt', 1), ('dn', 2))}
 
 
 def test_interaction_vertex():
