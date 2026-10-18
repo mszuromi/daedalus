@@ -375,3 +375,70 @@ def test_two_population_spatial_nonlinear_solves_both_populations():
         C = np.real(np.asarray(r['C_tau_x']))
         ref = np.array([[_ou_closed(x, t, mu, 1.0, 1.0) for x in xs] for t in taus])
         assert np.max(np.abs(C - ref)) < 1e-13, (pop, C, ref)
+
+
+# ── order-2 noise kernels in their own leg orientation (found with GEN-05) ─
+def test_gtas_cross_covariance_is_the_cluster_process_in_both_orders():
+    """<m1(t) m2(t+tau)> of the GTaS noise field equals lambda p^2 N(tau;
+    mu, s2) (cell 2 fires mu after cell 1) and the reverse order its mirror:
+    the asymmetric cross kernel is no longer symmetrized."""
+    from api.model_templates import GTaSNoise
+    lam, p, mu, s2 = 1.7, 0.6, 0.5, 0.2
+    m = (_tmpl().parameter('w_X', default=0.25)
+         .parameter('lambda_X', default=lam, domain='positive')
+         .parameter('p_part', default=p, domain='positive')
+         .parameter('mu_shift_diff', default=mu)
+         .parameter('sigma_shift_diff_sq', default=s2, domain='positive')
+         .add_gtas_noise(GTaSNoise()).build())
+    taus = np.array([-1.0, 0.5, 3.0])
+    g = lambda t, c: lam * p**2 * math.exp(-(t - c)**2 / (2 * s2)) / math.sqrt(2 * math.pi * s2)
+    c12, r = _C(m, [('m', 1), ('m', 2)], taus=taus)
+    c21, _ = _C(m, [('m', 2), ('m', 1)], taus=taus)
+    assert np.allclose(c12.real, [g(t, mu) for t in taus], rtol=1e-13, atol=0)
+    assert np.allclose(c21.real, [g(t, -mu) for t in taus], rtol=1e-13, atol=0)
+    assert r['mf_values']['mstar'] == [pytest.approx(lam * p)] * 2
+
+
+def test_asymmetric_cross_field_cgf_row_matches_quadrature():
+    """A cross-field row (xt, yt) with a shifted-Gaussian kernel K(t_x - t_y)
+    (its swapped order is reconstructed as K(-tau)): <x(0) y(tau)> equals the
+    double integral of the two OU responses against K."""
+    from scipy.integrate import dblquad
+    a, b, c, m0, s2 = 1.0, 1.7, 0.3, 0.6, 0.15
+    m = (ModelBuilder('w6 xcgf asym').physical_field('x').physical_field('y')
+         .parameter('a', default=a).parameter('b', default=b).parameter('c', default=c)
+         .parameter('m0', default=m0).parameter('s2', default=s2)
+         .set_action_text('xt*((Dt + a)*x) + yt*((Dt + b)*y)')
+         .equation(lhs='(Dt + a)*x', rhs='0').equation(lhs='(Dt + b)*y', rhs='0')
+         .declare_cgf_term('Nx', response_legs=['xt', 'xt'], order=2, coefficient='1')
+         .declare_cgf_term('Ny', response_legs=['yt', 'yt'], order=2, coefficient='0.8')
+         .declare_cgf_term('Nxy', response_legs=['xt', 'yt'], order=2, coefficient='c',
+                           kernel='exp(-(tau - m0)^2/(2*s2))/sqrt(2*pi*s2)',
+                           markovianize=False)
+         .build())
+    taus = np.array([-1.0, 0.0, 0.6, 1.5])
+    C, _ = _C(m, [('x', 1), ('y', 1)], taus=taus)
+    K = lambda u: c * math.exp(-(u - m0)**2 / (2 * s2)) / math.sqrt(2 * math.pi * s2)
+    for t, v in zip(taus, C.real):
+        ref, _ = dblquad(lambda u, s: math.exp(a * s - b * (t - u)) * K(s - u),
+                         -40, 0, lambda s: -40, lambda s: t, epsabs=1e-13, epsrel=1e-11)
+        assert v == pytest.approx(ref, rel=1e-9)
+
+
+# ── LOUD-02 ───────────────────────────────────────────────────────────
+def test_loud02_cgmy_symbolic_exponent_mean_is_closed_form():
+    """CGMY with a parameter-named Y: its mean carries Gamma functions (Sage
+    prints gamma(1 - Y) as factorial(-Y)); the saddle solve evaluates them
+    (it raised NameError 'factorial')."""
+    from api.noise import CGMY
+    C_, G_, M_, Y_ = 0.2, 3.0, 2.0, 0.5
+    s = SDE('w6 cgmy sym').parameter('mu', default=1.0)
+    for nm, v in dict(cC=C_, cG=G_, cM=M_, cY=Y_).items():
+        s = s.parameter(nm, default=v)
+    m = (s.field('x').drift('x', '-mu*x')
+         .noise('xi', CGMY('cC', 'cG', 'cM', 'cY'), couples={'x': 1}).build())
+    c, r = _C(m, [('x', 1), ('x', 1)], taus=np.array([0.0]))
+    mean = C_ * math.gamma(1 - Y_) * (M_**(Y_ - 1) - G_**(Y_ - 1))
+    k2 = C_ * math.gamma(2 - Y_) * (M_**(Y_ - 2) + G_**(Y_ - 2))
+    assert r['mf_values']['xstar'][0] == pytest.approx(mean, rel=1e-15)
+    assert c[0].real == pytest.approx(k2 / 2, rel=1e-14)

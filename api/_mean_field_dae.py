@@ -40,10 +40,26 @@ _PENALTY = 1e100
 # Math functions that may appear in user equation text (LHS / RHS of
 # .equation(...), or inside .define_function(...) expressions).
 # Drawn from numpy so they work on both scalars and numpy arrays.
+def _factorial(x):
+    """``x! = Gamma(x + 1)`` for real ``x`` (Sage prints ``gamma(1 - y)`` of
+    a symbolic ``y`` as ``factorial(-y)``)."""
+    from scipy.special import gamma
+    return gamma(np.asarray(x, dtype=float) + 1.0)
+
+
+def _gamma(x):
+    from scipy.special import gamma
+    return gamma(np.asarray(x, dtype=float))
+
+
 _MATH_NS = {
     'tanh': np.tanh, 'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
     'exp':  np.exp,  'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
     'sinh': np.sinh, 'cosh': np.cosh,
+    # the mean of a library noise (CGMY, tempered stable, ...) with a
+    # symbolic exponent carries Gamma functions (audit LOUD-02: NameError
+    # 'factorial' in the saddle solve)
+    'gamma': _gamma, 'factorial': _factorial,
     'pi':   float(np.pi),
 }
 
@@ -1563,7 +1579,9 @@ def linear_stability(
                           cos as _sage_cos, tan as _sage_tan,
                           exp as _sage_exp, log as _sage_log,
                           sqrt as _sage_sqrt, sinh as _sage_sinh,
-                          cosh as _sage_cosh, pi as _sage_pi)
+                          cosh as _sage_cosh, pi as _sage_pi,
+                          gamma as _sage_gamma,
+                          factorial as _sage_factorial)
     import scipy.linalg
 
     if not model.get('equations'):
@@ -1598,6 +1616,7 @@ def linear_stability(
         'tan':  _sage_tan,  'exp':  _sage_exp,  'log':  _sage_log,
         'sqrt': _sage_sqrt, 'sinh': _sage_sinh, 'cosh': _sage_cosh,
         'abs':  abs,        'pi':   _sage_pi,
+        'gamma': _sage_gamma, 'factorial': _sage_factorial,
     }
 
     params_np = _numpy_params(model, fundamental)

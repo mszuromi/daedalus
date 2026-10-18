@@ -7881,6 +7881,13 @@ class _LazyIntegrand:
         return self._fn(*args)
 
 
+def _spec_leg_keys(spec):
+    """``((field, leg), (field, leg))`` of an order-2 cumulant spec (field
+    ``None`` when the spec does not name its leg fields)."""
+    lf = spec.get('leg_fields') or (None, None)
+    return ((lf[0], spec['legs'][0]), (lf[1], spec['legs'][1]))
+
+
 def integrate_diagram(
     typed_diagram,
     propagator_data,
@@ -8837,10 +8844,19 @@ def integrate_diagram(
             if tau_sym_v is None:
                 continue
             kv = []
+            # tau_sym_v is oriented by the FIRST spec's legs (2b: its leg 1
+            # sits at anchor - tau); a spec with the legs the other way
+            # round reads its kernel at -tau (an asymmetric cross kernel,
+            # k_ij(tau) != k_ij(-tau), was evaluated at the wrong sign and
+            # the pair came out symmetrized: audit W6, found with GEN-05)
+            ref = _spec_leg_keys(specs[0])
             for spec in specs:
                 i_leg, j_leg = spec['legs'][0], spec['legs'][1]
+                own = _spec_leg_keys(spec)
+                tau_eff = (-tau_sym_v if own != ref and own == ref[::-1]
+                           else tau_sym_v)
                 kappa_subs[spec['symbol']] = SR(
-                    spec['kernel_fn'](i_leg, j_leg, tau_sym_v)
+                    spec['kernel_fn'](i_leg, j_leg, tau_eff)
                 )
                 kv.append(kappa_subs[spec['symbol']].subs(num_params)
                           if num_params else kappa_subs[spec['symbol']])

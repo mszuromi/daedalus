@@ -741,6 +741,21 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
 # ``correlated_noises`` block, append -W_m[mt] to the action symbolically)
 # ---------------------------------------------------------------------------
 
+class _SwappedKernel:
+    """An order-2 cumulant kernel read in the swapped leg order:
+    ``K'(ns, i, j, tau) = K(ns, j, i, -tau)`` (a delta of ``-tau`` written
+    back as one of ``tau``: the delta extraction matches ``delta(tau)``
+    only).  Module level so it pickles like the kernel it wraps."""
+    __slots__ = ('inner',)
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __call__(self, ns, i, j, tau):
+        K = SR(self.inner(ns, j, i, -SR(tau)))
+        return K.subs({dirac_delta(-SR(tau)): dirac_delta(SR(tau))})
+
+
 def _build_cumulant_action(ns, model):
     r"""
     Construct the symbolic contribution
@@ -885,22 +900,31 @@ def _build_cumulant_action(ns, model):
                     'fields': perm_fields,
                     'arrays': perm_arrays,
                     'ranges': perm_ranges,
+                    'swapped': (order == 2
+                                and tuple(perm_indices) == (1, 0)),
                 })
 
             for perm_spec in distinct_field_perms:
               perm_leg_arrays = perm_spec['arrays']
               perm_leg_ranges = perm_spec['ranges']
               perm_leg_fields = list(perm_spec['fields'])
+              # The row's kernel K(i, j, tau) is written for its own leg
+              # order (tau = t_first - t_second); the reconstructed swapped
+              # order (yt, xt) of an order-2 cross-field row is
+              # K(j, i, -tau), so every registered spec carries its own
+              # orientation (Phase J evaluates each spec in it; audit W6).
+              kfn = (_SwappedKernel(kernel_fn) if perm_spec['swapped']
+                     else kernel_fn)
               for idx_tuple in _iter_product(*perm_leg_ranges):
                 # Evaluate the kernel at placeholder τ symbols.
                 try:
-                    K = SR(kernel_fn(ns, *idx_tuple, *tau_syms))
+                    K = SR(kfn(ns, *idx_tuple, *tau_syms))
                 except TypeError:
                     # Backward-compat: order 2 callers may use the old
                     # (ns, i, j, tau) signature with a single τ; expand.
                     if order == 2 and len(tau_syms) == 1:
-                        K = SR(kernel_fn(ns, idx_tuple[0], idx_tuple[1],
-                                         tau_syms[0]))
+                        K = SR(kfn(ns, idx_tuple[0], idx_tuple[1],
+                                   tau_syms[0]))
                     else:
                         raise
                 K = K.expand()
@@ -993,7 +1017,7 @@ def _build_cumulant_action(ns, model):
                              tuple(zip(perm_leg_fields, idx_tuple)))
                         ] = {
                             'symbol':    sym,
-                            'kernel_fn': kernel_fn,
+                            'kernel_fn': kfn,
                             'legs':      tuple(idx_tuple),
                             'leg_fields': tuple(perm_leg_fields),
                             'tau_var':   tau_syms[0],

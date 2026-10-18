@@ -1357,6 +1357,13 @@ class _BaseModelBuilder:
         ]
         if not state_var_names:
             return
+        # each state variable's saddle: the declared mean_field parameter of
+        # that natural name (any spelling), else the auto-saddle name
+        sad = {}
+        for v in state_var_names:
+            sad[v] = next((p.name for p in self.parameters
+                           if p.mean_field and p.natural_name == v),
+                          f'{v}star')
 
         for eq in self._equations:
             lhs_text   = eq['lhs_text']
@@ -1416,13 +1423,13 @@ class _BaseModelBuilder:
                 ranked = []
                 for v in cands:
                     sp = self._lhs_dt0_split(lhs_text, v, scalar_form,
-                                             state_var_names)
+                                             state_var_names, sad)
                     if sp is None:
                         continue
                     c_text, _rest, c_zero, c_state = sp
                     ranked.append((
                         0 if c_zero or c_state else 1,      # usable coefficient
-                        0 if f'{v}star' in self._mf_eqs_text else 1,
+                        0 if sad[v] in self._mf_eqs_text else 1,
                         1 if c_text.strip() in ('1', '-1') else 0,
                         -cands.index(v), v))
                 if ranked:
@@ -1447,7 +1454,7 @@ class _BaseModelBuilder:
             for v in state_var_names:
                 rewritten_rhs = re.sub(
                     rf'\b{re.escape(v)}\b',
-                    f'{v}star',
+                    sad[v],
                     rewritten_rhs,
                 )
             # For scalar (no-``[i]``) LHS, the saddle RHS should also
@@ -1455,11 +1462,12 @@ class _BaseModelBuilder:
             # because the legacy MF compiler expects per-population
             # indexed access.  (The DAE solver auto-handles both.)
             if scalar_form:
-                rewritten_rhs = re.sub(
-                    r'\b(\w+)star\b(?!\s*\[)',
-                    r'\1star[i]',
-                    rewritten_rhs,
-                )
+                for sname in set(sad.values()):
+                    rewritten_rhs = re.sub(
+                        rf'\b{re.escape(sname)}\b(?!\s*\[)',
+                        f'{sname}[i]',
+                        rewritten_rhs,
+                    )
 
             # The saddle condition is LHS|_{Dt=0} = RHS, i.e.
             # c·primary + rest = RHS.  The derivation above assumed
@@ -1470,7 +1478,7 @@ class _BaseModelBuilder:
             # non-vanishing tadpole with no hint why).  Read c and rest
             # off the LHS symbolically and correct both cases.
             split = self._lhs_dt0_split(lhs_text, primary, scalar_form,
-                                        state_var_names)
+                                        state_var_names, sad)
             if pure_eq is not None and (split is None or split[2]):
                 # the constraint 0 = RHS is not linear with a constant
                 # coefficient in any field: no saddle text to derive
@@ -1492,7 +1500,7 @@ class _BaseModelBuilder:
                         f'lhs={lhs_text!r} vanishes at Dt=0 (it is a pure '
                         f'time derivative), so its saddle-point condition '
                         f'is 0 = ({rhs_text}) - ({rest_text}) and it does '
-                        f'not define {primary}star.  Put the algebraic '
+                        f'not define {sad[primary]}.  Put the algebraic '
                         f'part of the drift on the LHS (e.g. '
                         f"lhs='Dt*m + u', rhs='a' rather than "
                         f"lhs='Dt*m', rhs='a - u'), or declare "
@@ -1514,13 +1522,13 @@ class _BaseModelBuilder:
                     warnings.warn(
                         f'ModelBuilder.build(): could not read the '
                         f'coefficient of {primary!r} off lhs={lhs_text!r}; '
-                        f'deriving the saddle text as {primary}star = RHS, '
+                        f'deriving the saddle text as {sad[primary]} = RHS, '
                         f'which is only right if the LHS reduces to '
                         f'{primary} at Dt=0.  If the mean-field sanity '
                         f'check fails, declare this saddle with '
                         f'set_mf_equation(...).', stacklevel=3)
 
-            saddle_name = f'{primary}star'
+            saddle_name = sad[primary]
             self._mf_eqs_text[saddle_name] = rewritten_rhs
 
     @staticmethod
@@ -1554,7 +1562,8 @@ class _BaseModelBuilder:
             return False
 
     @staticmethod
-    def _lhs_dt0_split(lhs_text, primary, scalar_form, state_var_names):
+    def _lhs_dt0_split(lhs_text, primary, scalar_form, state_var_names,
+                       saddles=None):
         """Split ``LHS|_{Dt=0}`` as ``c * primary + rest``.
 
         Returns ``(c_text, rest_text, c_is_zero, c_depends_on_state)`` with state variables
@@ -1601,10 +1610,11 @@ class _BaseModelBuilder:
         def back(e):
             s = str(e)
             for v in state_var_names:
+                sv = (saddles or {}).get(v, f'{v}star')
                 if scalar_form:
-                    s = re.sub(rf'\b{re.escape(v)}\b', f'{v}star[i]', s)
+                    s = re.sub(rf'\b{re.escape(v)}\b', f'{sv}[i]', s)
                 else:
-                    s = re.sub(rf'\b{re.escape(v)}__i\b', f'{v}star[i]', s)
+                    s = re.sub(rf'\b{re.escape(v)}__i\b', f'{sv}[i]', s)
             s = re.sub(r'\b(\w+)__([A-Za-z]\w*)__([A-Za-z]\w*)\b', r'\1[\2,\3]', s)
             s = re.sub(r'\b(\w+)__([A-Za-z]\w*)\b', r'\1[\2]', s)
             return s
