@@ -107,7 +107,7 @@ def test_i907_poset_path_refuses_and_dbm_is_exact(monkeypatch):
         v = FI._integrate_subset_dbm(modes, I907_PREF, I907_ROWS, I907_FREE,
                                      3, poset_bail_reason=(
                                          'poset_lower_not_inherited'), **kw)
-        assert abs(v - I907_EXACT) <= 1e-9 * I907_EXACT, (kw, v)
+        assert abs(v - I907_EXACT) <= 1e-12 * I907_EXACT, (kw, v)
         assert abs(v.imag) <= 1e-12 * I907_EXACT
     assert FI._RUNTIME_COUNTERS['dbm_answered_p3'] == 2
 
@@ -131,7 +131,7 @@ def test_i907_exact_value_by_independent_quadrature():
         f, 0.0, 1.0, lambda s0: -200.0, lambda s0: s0,
         lambda s0, s1: -200.0, lambda s0, s1: s1,
         epsabs=1e-20, epsrel=1e-11)
-    assert abs(val - I907_EXACT) <= 1e-9 * I907_EXACT, val
+    assert abs(val - I907_EXACT) <= 1e-12 * I907_EXACT, val
 
 
 def test_i907_flag_off_is_the_pre_m3_value(monkeypatch):
@@ -303,7 +303,7 @@ def test_tied_external_times_take_the_tie_order(sign, monkeypatch):
                 for (a, e, c0) in rows]
     nq = FI._integrate_polytope(fe, resolved, [t, t], 3, raw_rows=rows,
                                 tie_ctx=tie)
-    assert abs(nq - at_tie) <= 1e-8 * max(abs(at_tie), 1e-300) + 1e-14
+    assert abs(nq - at_tie) <= 1e-12 * max(abs(at_tie), 1e-300) + 1e-14
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -377,7 +377,7 @@ def test_spike_reset_p3_regions_take_the_dbm_route(spike_k2, tau):
     assert c_on['poset_lower_not_inherited'] > 0
     assert c_on['dbm_answered_p3'] == c_on['poset_lower_not_inherited']
     assert c_on['scipy_nquad_called_mge3'] == 0
-    assert abs(v_on.real - m3) <= 1e-9 * abs(m3)
+    assert abs(v_on.real - m3) <= 1e-12 * abs(m3)
     assert abs(v_on.real - independent) <= 1e-7
     v_off, c_off = _eval(fn, (0.0, tau), False)
     assert c_off['poset_lower_not_inherited'] == 0

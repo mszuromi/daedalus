@@ -60,7 +60,7 @@ def test_chamber_sum_tiles_cube():
     got = integrate_over_chambers(f, 3, [], LO, HI)
     ref, _ = integrate.nquad(lambda a, b, c: f((a, b, c)),
                              [[LO, HI], [LO, HI], [LO, HI]])
-    assert abs(got - ref) <= 1e-3 * abs(ref)
+    assert abs(got - ref) <= 1e-4 * abs(ref)
 
 
 # ── edge-restricted: Σ allowed chambers == direct ∫ over {t1>t0} ──
@@ -76,4 +76,4 @@ def test_chamber_sum_edge_matches_direct():
         LO, HI,
         lambda t0: LO, lambda t0: HI,
         lambda t0, t2: t0, lambda t0, t2: HI)
-    assert abs(got - ref) <= 1e-3 * abs(ref)
+    assert abs(got - ref) <= 1e-4 * abs(ref)

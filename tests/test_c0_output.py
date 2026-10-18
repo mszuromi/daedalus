@@ -275,7 +275,7 @@ def test_integrate_against_vs_quadrature(ouq, kname):
     ex = c.integrate_against(kern, method='exact')
     q = c.integrate_against(kern, method='quad')
     assert ex.method == 'exact' and q.method == 'quad'
-    assert abs(ex.value - q.value) <= 1e-10
+    assert abs(ex.value - q.value) <= 1e-12
     assert ex.contact == 0                       # no δ component here
     # 'auto' takes the exact route
     assert c.integrate_against(kern).method == 'exact'
@@ -300,7 +300,7 @@ def test_contact_rule_with_a_jump_at_zero(hawkes):
         c.integrate_against(L)
     ex = c.integrate_against(L, contact='mid')
     q = c.integrate_against(L, contact='mid', method='quad')
-    assert abs(ex.smooth - q.smooth) <= 1e-10
+    assert abs(ex.smooth - q.smooth) <= 1e-12
     assert abs(ex.contact - w0 * 0.25) <= 1e-14
     for rule, l0 in (('positive', 1.0), ('negative', -0.5), ('exclude', 0.0)):
         p = c.integrate_against(L, contact=rule)

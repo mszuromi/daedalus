@@ -53,7 +53,7 @@ def test_double_well_default_mu_positive_unchanged():
     cfg = dd.Config(k=2, max_ell=0, tau_grid=(-4.0, 4.0, 9))   # default mu=0.1>0
     res = dd.run(model, cfg, mod)
     xstar = np.atleast_1d(res['mf_values']['xstar']).astype(float)
-    assert np.allclose(xstar, 0.0, atol=1e-6), f'expected x*=0, got {xstar}'
+    assert np.allclose(xstar, 0.0, rtol=0, atol=1e-12), f'expected x*=0, got {xstar}'
 
 
 def test_rate_and_voltage_fields_keep_positive_box():

@@ -251,7 +251,7 @@ def test_bug13_conductance_term_with_a_point_process():
     assert r['status'] == 'ok' and np.all(np.isfinite(r['C_tau']))
     vstar = brentq(lambda v: v - (-1.5 + (1.0 - v) * 0.4 * np.exp(v)), -5, 1)
     assert abs(r['mf_values']['vstar'][0] - vstar) < 1e-10
-    assert abs(r['mf_values']['nstar'][0] - np.exp(vstar)) < 1e-10
+    assert abs(r['mf_values']['nstar'][0] - np.exp(vstar)) < 1e-11
 
 
 # ── bug 3: overflow / NaN never accepted by the mean-field solvers ───────────

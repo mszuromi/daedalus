@@ -84,7 +84,7 @@ def test_grouped_matches_perdiag_at_scipy_default(fx):
 
     np.testing.assert_allclose(
         r_grouped['C_values'], r_perdiag['C_values'],
-        rtol=1e-6, atol=1e-10,
+        rtol=1e-12, atol=1e-13,
         err_msg=(
             f'Grouped vs per-diagram disagreement on fixture '
             f'{fx.name!r} exceeds scipy.nquad default tolerance.\n'
@@ -127,7 +127,7 @@ def test_grouped_matches_perdiag_with_tight_quadrature(fx):
 
         np.testing.assert_allclose(
             r_grouped['C_values'], r_perdiag['C_values'],
-            rtol=1e-10, atol=1e-13,
+            rtol=1e-12, atol=1e-13,
             err_msg=(
                 f'Grouped vs per-diagram disagreement on fixture '
                 f'{fx.name!r} exceeds tightened quadrature precision.\n'

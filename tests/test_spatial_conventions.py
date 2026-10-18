@@ -123,7 +123,7 @@ def test_k2_completion_equals_general_k_mapping_sum(two_loop_records):
                                   comp=comp, **kw)
         cm = diagram_correlator_x(dd, pv, xs, -0.6, 1.0, 1.0, spatial_dim=1,
                                   comp=comp, **kw)
-        assert np.allclose(cp, cm, rtol=1e-12)
+        assert np.allclose(cp, cm, rtol=1e-12, atol=1e-12)
 
 
 def test_two_loop_correlator_needs_comp(two_loop_records):
@@ -190,7 +190,7 @@ def test_coupled_tree_lag_convention(legs, i, j):
     for it, tau in enumerate(th['tau_grid']):
         for ix, x in enumerate(xs):
             ref = _lyapunov_cross_x(float(x), float(tau), i, j)
-            assert C[it, ix] == pytest.approx(ref, rel=1e-7, abs=1e-10), \
+            assert C[it, ix] == pytest.approx(ref, rel=1e-10, abs=1e-12), \
                 (legs, tau, x)
     # genuinely τ-asymmetric (else the test could not see a mirror)
     assert abs(C[0, 0] - C[2, 0]) > 0.1 * abs(C[2, 0])

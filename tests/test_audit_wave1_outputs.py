@@ -118,8 +118,8 @@ def test_tree_covariance_refuses_unknown_values():
 def test_symbolic_loop_saddle_floor_is_relative():
     """G1-symbolic 7: the floor max(1, |x|) made the saddle checks absolute."""
     from api.symbolic_loop import _value_floor
-    assert _value_floor({'a': 1e-6, 'b': -2e-6}) == pytest.approx(2e-12)
-    assert _value_floor({'a': 3e4}) == pytest.approx(3e-2)
+    assert _value_floor({'a': 1e-6, 'b': -2e-6}) == pytest.approx(2e-12, rel=1e-12, abs=0)
+    assert _value_floor({'a': 3e4}) == pytest.approx(3e-2, rel=1e-12)
     # the audit's case: a 1e-6 saddle moved by 1.4 % is a move
     ref, new = 1e-6, 1e-6 * 1.014
     assert abs(new - ref) > 1e-9 * max(abs(ref), _value_floor({'x': ref, 'k': 1e-3}))

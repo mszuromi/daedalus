@@ -133,7 +133,7 @@ def test_A_from_result_matches_model_route(ou):
     # pipeline cross-check at tau > 0 (value D/mu exp(-mu tau) at defaults)
     f = cov2.callable('dx1', 'dx1', defaults=True)
     q = so.numeric_inverse_transform(lambda w: f(w), 0.5)
-    np.testing.assert_allclose(q.value.real, res['C_tau'][0].real, rtol=1e-6)
+    np.testing.assert_allclose(q.value.real, res['C_tau'][0].real, rtol=1e-12)
     with pytest.raises(so.SymbolicOutError, match='propagator'):
         so.tree_covariance_from_result({}, model=m)
 
@@ -228,20 +228,19 @@ def test_B_hawkes_cross_entry_matches_phase_j(hawkes):
         if tau == 0.0:
             continue
         q = _numeric_C(cov, 'dn1', 'dn2', npar, tau)
-        np.testing.assert_allclose(q.value.real, ref.real, rtol=1e-6)
-        assert abs(q.value.imag) < 1e-9
+        np.testing.assert_allclose(q.value.real, ref.real, rtol=1e-12)
+        assert abs(q.value.imag) < 1e-12
     # swapping the entry reverses tau
     q1 = _numeric_C(cov, 'dn2', 'dn1', npar, 1.0)
     q2 = _numeric_C(cov, 'dn1', 'dn2', npar, -1.0)
-    np.testing.assert_allclose(q1.value, q2.value, rtol=1e-9)
+    np.testing.assert_allclose(q1.value, q2.value, rtol=1e-12)
 
 
 def test_B_hawkes_diagonal_entries_three_taus(hawkes):
-    """The brief's check: (dv1,dv1) and (dn1,dn1) at three tau, rel 1e-6.
+    """The brief's check: (dv1,dv1) and (dn1,dn1) at three tau.
 
-    Ito convention at tau=0: the pipeline evaluates the left limit tau=-1e-6
-    (Theta(0)=0), so its tau=0 value differs from the exact smooth part by
-    O(1e-6) relative -- compared with a 5e-6 tolerance below.  The delta(tau)
+    Ito convention at tau=0: the pipeline evaluates the exact left limit
+    (Theta(0)=0), so its tau=0 value is the smooth part.  The delta(tau)
     contact term of dn (weight a v*) is NOT in C_tau: the numeric transform is
     the smooth part, matching the pipeline's "delta contributions reported but
     not added"."""
@@ -249,18 +248,17 @@ def test_B_hawkes_diagonal_entries_three_taus(hawkes):
     for ent, r in (('dv1', res_vv), ('dn1', res_nn)):
         for tau, ref in zip(taus, r['C_tau']):
             q = _numeric_C(cov, ent, ent, npar, tau)
-            rtol = 5e-6 if tau == 0.0 else 1e-6
-            np.testing.assert_allclose(q.value.real, ref.real, rtol=rtol)
+            np.testing.assert_allclose(q.value.real, ref.real, rtol=1e-10)
             assert q.error < 1e-9
     # even in tau for the diagonal entry
     qp = _numeric_C(cov, 'dv1', 'dv1', npar, 2.0)
     qm = _numeric_C(cov, 'dv1', 'dv1', npar, -2.0)
-    np.testing.assert_allclose(qp.value, qm.value, rtol=1e-9)
+    np.testing.assert_allclose(qp.value, qm.value, rtol=1e-12)
     # contact term value: lim_{w->inf} C0_dn1dn1 = a v1* = n1*
     f = cov.callable('dn1', 'dn1')
     big = f(1e7, **{k: npar[k] for k in f.params})
     np.testing.assert_allclose(big.real, npar['a'] * npar['vstar1'],
-                               rtol=1e-8)
+                               rtol=1e-12)
 
 
 def test_B_colored_noise_through_markov_embedding():
@@ -282,13 +280,13 @@ def test_B_colored_noise_through_markov_embedding():
         parameters=params, tau_grid=taus, use_cache=False, verbose=False)
     for tau, ref in zip(taus, res['C_tau']):
         q = _numeric_C(cov, 'dx1', 'dx1', params, tau)
-        np.testing.assert_allclose(q.value.real, ref.real, rtol=1e-6)
+        np.testing.assert_allclose(q.value.real, ref.real, rtol=1e-12)
     # closed form by residues agrees with the pipeline too
     r = cov.inverse_transform('dx1', 'dx1', reference=params)
     f = so.to_callable(r['even'], r['tau'], params=['D', 'mu', 'tauc'])
     for tau, ref in zip(taus, res['C_tau']):
         np.testing.assert_allclose(f(tau, **{k: params[k] for k in f.params}
-                                     ).real, ref.real, rtol=1e-6)
+                                     ).real, ref.real, rtol=1e-12)
 
 
 def test_B_cross_correlated_noise_matrix():
@@ -355,7 +353,7 @@ def test_C_pair_with_exponential_kernel(ou):
     td, _ = quad(lambda t: (np.exp(-t / 0.7) / 0.7) * (0.8 / 1.3)
                  * np.exp(-1.3 * abs(t)), 0, np.inf, epsabs=1e-13)
     assert abs(td - exact) < 1e-11
-    assert abs(q.value - td) < 1e-9
+    assert abs(q.value - td) < 1e-12
 
 
 def test_C_pair_with_kernel_numeric_fallback_for_non_rational_kernel(ou):
@@ -420,7 +418,7 @@ def test_inverse_transform_double_pole_and_quadratic_factor():
     for t in (0.3, 1.7, 6.0):
         q = so.numeric_inverse_transform(lambda x: c(x, **ref), t)
         got = complex(f(t, **ref)[()])
-        assert abs(q.value - got) < 1e-9
+        assert abs(q.value - got) < 1e-12
     # golden-ratio quartic: two quadratic factors with real s-roots
     C1 = 1 / (w ** 4 + 3 * w ** 2 + 1)
     r3 = so.inverse_transform(C1, w)
@@ -428,7 +426,7 @@ def test_inverse_transform_double_pole_and_quadratic_factor():
     c3 = so.to_callable(C1, w, params=[])
     for t in (0.4, 2.5):
         q = so.numeric_inverse_transform(lambda x: c3(x), t)
-        assert abs(q.value - complex(f3(t)[()])) < 1e-9
+        assert abs(q.value - complex(f3(t)[()])) < 1e-12
 
 
 def test_contact_term_is_split_off():
@@ -503,7 +501,7 @@ def test_D_residue_refusals():
     c6 = so.to_callable(C0, w, params=[])
     for t in (0.4, 2.5):
         q = so.numeric_inverse_transform(lambda x: c6(x), t)
-        assert abs(q.value - complex(r['modes'].evaluate([t])[0])) < 1e-9
+        assert abs(q.value - complex(r['modes'].evaluate([t])[0])) < 1e-12
     from scipy.integrate import quad
     ref6 = quad(lambda x: 1 / (x ** 6 + 5 * x ** 2 + 3), -np.inf, np.inf,
                 epsabs=1e-13)[0] / (2 * np.pi)
@@ -574,7 +572,7 @@ def test_inverse_transform_is_independent_of_symbol_domains():
         c = so.to_callable(C0, w, params=list(names))
         for t in (0.3, 1.7, 6.0):
             q = so.numeric_inverse_transform(lambda x: c(x, **ref), t)
-            assert abs(q.value - complex(f(t, **ref)[()])) < 1e-6
+            assert abs(q.value - complex(f(t, **ref)[()])) < 1e-12
     finally:
         # forget the assumptions, then redeclare plainly: var(..,
         # domain='complex') would ADD 'is complex' on top of '> 0'

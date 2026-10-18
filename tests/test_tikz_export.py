@@ -377,7 +377,7 @@ def test_printed_scale_shrinks_with_width():
     narrow = {1: (0.0, 0.0), 2: (-2.3, 1.0)}
     wide = {1: (0.0, 0.0), 2: (-23.0, 1.0)}
     assert mm_per_unit(narrow) > mm_per_unit(wide)
-    assert mm_per_unit(wide) * 23.0 == pytest.approx(46.0)
+    assert mm_per_unit(wide) * 23.0 == pytest.approx(46.0, rel=1e-12)
 
 
 def test_no_vertex_is_drawn_on_an_unrelated_propagator(prediagrams_2_2):
@@ -745,11 +745,11 @@ def test_a_label_box_is_where_tikz_actually_prints_the_glyphs():
     box = _label_box(0.0, 0.0, 90, dist, w, h, dot_r)
     cy = (box[1] + box[3]) / 2.0
     assert math.isclose(cy, dot_r + dist * _PT_MM + h / 2.0 + _INNER_SEP_MM,
-                        rel_tol=1e-9), 'the node padding is part of the reach'
+                        rel_tol=1e-12), 'the node padding is part of the reach'
     # The box handed back is still the size of the INK: padding moves the
     # label, it is not something the drawing has to be kept clear of.
-    assert math.isclose(box[2] - box[0], w, rel_tol=1e-9)
-    assert math.isclose(box[3] - box[1], h, rel_tol=1e-9)
+    assert math.isclose(box[2] - box[0], w, rel_tol=1e-12)
+    assert math.isclose(box[3] - box[1], h, rel_tol=1e-12)
     # A diagonal reaches further than a cardinal, and by more than the text
     # box alone would say -- which is why the two score honestly together.
     diag = _label_box(0.0, 0.0, 45, dist, w, h, dot_r)

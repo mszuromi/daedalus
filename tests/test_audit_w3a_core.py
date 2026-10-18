@@ -135,7 +135,7 @@ def test_mixed_field_moment_matches_isserlis(fields, output):
     want = _isserlis(fields, tau, output == 'central_moment')
     # k = 2: tau = 0 is the exact tie (no nudge); k >= 3 slices still place
     # coincident legs 1e-6 apart (``_kpoint_slice_times``)
-    tol = 1e-10 if len(fields) == 2 else 5e-6
+    tol = 1e-12
     assert np.allclose(got, want, rtol=tol, atol=tol), (got, want)
 
 
@@ -282,7 +282,7 @@ def test_compute_cumulants_accepts_numpy_bool_discard_and_unsorted_grid():
     # an unsorted grid is taken as given: values aligned with its points
     C, Cs = np.real(r['C_tau']), np.real(s['C_tau'])
     assert np.allclose(C, Cs[[2, 0, 1]], rtol=1e-12, atol=0)
-    assert np.allclose(Cs[1:], np.exp(-np.array([0.5, 1.0])), rtol=1e-9)
+    assert np.allclose(Cs[1:], np.exp(-np.array([0.5, 1.0])), rtol=1e-12)
 
 
 @pytest.mark.parametrize('bad', [dict(k=0), dict(max_ell=-1),
@@ -382,7 +382,7 @@ def test_spatial_moment_accepts_list_legs():
                                 tau_max=0.0, tau_step=1.0, output='moment',
                                 external_fields=[['phi', 1], ['phi', 1]]), mod)
     assert np.allclose(np.real(r['moment']), np.real(r['C_tau_x'])
-                       + r['moment_means'][('phi', 1)][0] ** 2)
+                       + r['moment_means'][('phi', 1)][0] ** 2, rtol=1e-12, atol=1e-12)
 
 
 def test_k3_resampled_grid_warns():

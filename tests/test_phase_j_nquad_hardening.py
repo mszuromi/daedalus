@@ -536,7 +536,7 @@ def test_closed_form_innermost_matches_quadrature(ms, hardened, monkeypatch):
         q = FI._integrate_polytope(*args)
         scale = FI._NquadModes.bound(fe._nquad_modes, [-50] * m, [50] * m,
                                      free)
-        assert abs(a - q) <= 1e-9 * abs(q) + 1e-13 * scale, (trial, a, q)
+        assert abs(a - q) <= 1e-12 * abs(q) + 1e-13 * scale, (trial, a, q)
 
 
 # The fast-pole 2-cycle of plan Appendix C.2 (s1 < 0, s0 < τ, s1 > s0,
@@ -594,7 +594,7 @@ def test_tied_constant_edge_kept_by_the_tie_order(hardened, legacy_nquad,
     assert _rel(v_old, exact) < 1e-8
     # the bound keeps the constant edge's box range (no clip to Δt > 0)
     B = fe._nquad_modes.bound([-3.0], [0.0], free)
-    assert B == pytest.approx(abs(c0) * abs(c1))
+    assert B == pytest.approx(abs(c0) * abs(c1), rel=1e-12)
 
 
 def test_constant_row_and_closure_emptiness(hardened):
@@ -763,7 +763,7 @@ def test_dbm_bounds_equal_brute_force_bounds():
                         # of one float addition, and to the LP
                         assert abs(got - float(want)) <= 4e-16 * (
                             1 + abs(got)), (rows, k, outer, L, U, exact)
-                        assert abs(got - alt) <= 1e-9 * (1 + abs(alt))
+                        assert abs(got - alt) <= 1e-12 * (1 + abs(alt))
                 # with the integrator's one-ulp widening: never inside the
                 # exact projection
                 assert math.nextafter(L, -math.inf) <= exact[0]
@@ -947,7 +947,7 @@ def test_fm_level_intervals_equal_the_exact_projection():
                     else:
                         assert abs(got - float(want)) <= 1e-13 * (
                             1 + abs(got)), (rows, k, outer, L, U, exact)
-                        assert abs(got - alt) <= 1e-9 * (1 + abs(alt))
+                        assert abs(got - alt) <= 1e-12 * (1 + abs(alt))
                 assert L < s[k] < U
                 n_cmp += 1
     assert n_cmp > 200 and n_empty > 0
@@ -985,7 +985,7 @@ def test_open_direction_is_truncated_from_its_finite_end(hardened):
     assert _counter('nquad_hardened_capped') == 1
     assert _counter('nquad_hardened_uncertified') == 0
     assert _counter('nquad_hardened_cap_span_max') == pytest.approx(
-        FI.NQUAD_TAIL_K / 12.0)
+        FI.NQUAD_TAIL_K / 12.0, rel=1e-12)
 
 
 def test_truncation_scales_with_the_row_coefficient(hardened):
@@ -1002,7 +1002,7 @@ def test_truncation_scales_with_the_row_coefficient(hardened):
     assert _rel(v, 4.0) < 1e-12, v
     assert _counter('nquad_hardened_capped') == 1
     assert _counter('nquad_hardened_cap_span_max') == pytest.approx(
-        FI.NQUAD_TAIL_K / 0.25)
+        FI.NQUAD_TAIL_K / 0.25, rel=1e-12)
     # m = 2: the edge −s0/4 + s1 > 0 bounds the open s0 (s1 in (-5, 0),
     # unit-rate edges −s0/4 + s1, −s1, s1 + 5): the integrand is
     # e^{s0/4 − s1 − 5}, ∫_{-∞}^{4 s1} ds0 gives 4 e^{s1}, and the total is
@@ -1326,7 +1326,7 @@ def test_unbounded_slices_with_general_rows(hardened, fresh_warning_state):
     assert _counter('nquad_hardened_uncertified') == 1
     v = FI._integrate_polytope(fe, _resolved(rows, []), [], 3)
     ref = (math.exp(3.0) - 1.0) / math.exp(6.0)
-    assert _rel(v, ref) < 1e-10, v
+    assert _rel(v, ref) < 1e-12, v
     assert len(msgs) == 1 and ('1 with an open direction without a decay '
                                'certificate') in msgs[0], msgs
 
@@ -1371,7 +1371,7 @@ def test_uncertified_open_direction_uses_the_legacy_cap(hardened):
     FI._reset_runtime_counters()
     v = FI._integrate_polytope(lambda s, tt: math.exp(-(tt - s)),
                                _resolved(rows, [t]), [t], 1)
-    assert v == pytest.approx(1.0, rel=1e-8)
+    assert v == pytest.approx(1.0, rel=1e-12)
     assert _counter('nquad_hardened_no_modes') == 1
     assert _counter('nquad_hardened_uncertified') == 1
 
@@ -1525,7 +1525,7 @@ def test_oscillation_sets_the_subinterval_limit(hardened, monkeypatch):
     # the starting limit from the oscillation count
     FI._reset_runtime_counters()
     v = FI._integrate_polytope(*args)
-    assert _rel(v, OSCB_REF) < 1e-10, v
+    assert _rel(v, OSCB_REF) < 1e-11, v
     assert _counter('nquad_hardened_quad_flags') == 0
     assert _counter('nquad_hardened_quad_retries') == 0
     # without it: the call that reaches the base limit is repeated with
@@ -1533,7 +1533,7 @@ def test_oscillation_sets_the_subinterval_limit(hardened, monkeypatch):
     monkeypatch.setattr(FI, '_NQUAD_OSC_MIN', math.inf)
     FI._reset_runtime_counters()
     v = FI._integrate_polytope(*args)
-    assert _rel(v, OSCB_REF) < 1e-10, v
+    assert _rel(v, OSCB_REF) < 1e-11, v
     assert _counter('nquad_hardened_quad_retries') > 0
     assert _counter('nquad_hardened_quad_flags') == 0
     # without both: the flag persists, is counted and warned about
@@ -1606,7 +1606,7 @@ def test_tolerance_scale_is_floored_by_the_bound(case, grouped, hardened,
     assert _counter('nquad_hardened_quad_retries') == 0
     # the first pass's epsabs: 1e-13 × the floor 1e-3 × the bound 4 (the
     # sample alone: 1.7e-25 for G4, 1.0e-27 for G4c)
-    assert abs(eps[0] - 4e-16) <= 1e-9 * 4e-16, eps[0]
+    assert abs(eps[0] - 4e-16) <= 1e-12 * 4e-16, eps[0]
 
 
 # A part of a level's complex value that is only the rounding noise of the
@@ -1861,7 +1861,7 @@ def test_closed_form_innermost_cap(hardened, monkeypatch):
     FI._reset_runtime_counters()
     v = FI._integrate_polytope(fe, _resolved(rows, [0.5]), [0.5], 2)
     assert _counter('nquad_hardened_innermost_capped') == 1
-    assert abs(v - ref) <= 1e-10 * abs(ref), (v, ref)
+    assert abs(v - ref) <= 1e-12 * abs(ref), (v, ref)
 
 
 # ═══════════════════════════════════════════════════════════════════════

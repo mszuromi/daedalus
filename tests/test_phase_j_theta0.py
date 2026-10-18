@@ -586,7 +586,7 @@ def test_nquad_fallback_applies_the_helper():
     assert _counter('nquad_calls') == n0 + 1      # an entry, not quadrature
     v = FI._integrate_polytope(lambda s, t: math.exp(s - t), resolved, free,
                                1, raw_rows=rows, tie_ctx=IDENTITY)
-    assert abs(v - 1.0) < 1e-8, v                 # ∫_{s<0} e^{s} ds
+    assert abs(v - 1.0) < 1e-12, v                 # ∫_{s<0} e^{s} ds
     assert FI._integrate_polytope(_never_called, resolved, free, 1,
                                   raw_rows=rows, tie_ctx=SWAPPED) == 0
 
@@ -873,10 +873,10 @@ def test_bbox_cap_is_read_at_call_time(variant, mode, monkeypatch):
         return (_m2(variant, [SLOW, SLOW], BASE2, (0.0,)),
                 _m3(variant, [_ems((1.0, LAM))] * 3, UPPER_OPEN, (0.0,)))
     v200 = values()
-    assert abs(v200[0] - 399.80024030904514) < 1e-9
+    assert abs(v200[0] - 399.80024030904514) < 1e-12 * 399.8
     monkeypatch.setattr(FI, 'POLYGON_BBOX_CAP', 12.0)
     v12 = values()
-    assert abs(v12[0] - 48.760552899823075) < 1e-9
+    assert abs(v12[0] - 48.760552899823075) < 1e-12 * 48.76
     assert v12[1] != v200[1]
 
 
@@ -892,8 +892,8 @@ def test_legacy_theta0_value_follows_the_call_time_cap(variant, legacy,
     monkeypatch.setattr(FI, 'POLYGON_BBOX_CAP', 12.0)
     v12 = _m2(variant, modes, rows, (0.0,))
     C = EXTRA[0]
-    assert abs(v200 - C * 399.80024030904514) < 1e-9 * abs(v200)
-    assert abs(v12 - C * 48.760552899823075) < 1e-9 * abs(v12)
+    assert abs(v200 - C * 399.80024030904514) < 1e-12 * abs(v200)
+    assert abs(v12 - C * 48.760552899823075) < 1e-12 * abs(v12)
     monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
     assert _m2(variant, modes, rows, (0.0,)) == 0
 
@@ -1203,18 +1203,18 @@ def test_k3_exact_tie_is_the_one_sided_limit(k3_tree):
     assert _counter('nquad_calls') == 0 and _counter('theta0_tie_ordered') > 0
     below = _richardson([f(0.0, 0.7, 0.7 - h) for h in _H])  # leg 2 earlier
     above = _richardson([f(0.0, 0.7, 0.7 + h) for h in _H])
-    assert abs(tie - below) <= 1e-9 * abs(below)
-    assert abs(tie - above) <= 1e-9 * abs(above)
+    assert abs(tie - below) <= 1e-12 * abs(below)
+    assert abs(tie - above) <= 1e-12 * abs(above)
     # a tie with the anchor leg: leg 1 counts as earlier than leg 0
     anchor = f(0.0, 0.0, 0.7)
     left = _richardson([f(0.0, -h, 0.7) for h in _H])
-    assert abs(anchor - left) <= 1e-9 * abs(left)
+    assert abs(anchor - left) <= 1e-12 * abs(left)
     # both non-anchor legs at -1e-6: the origin of dd.run's full k=3 grid
     # (each leg at 0 -> -1e-6; the pre-0.2.0 slice point at τ = 0 too):
     # the limit with leg 2 below leg 1
     nudged = f(0.0, -1e-6, -1e-6)
     lim = _richardson([f(0.0, -1e-6, -1e-6 - h) for h in _H])
-    assert abs(nudged - lim) <= 1e-9 * abs(lim)
+    assert abs(nudged - lim) <= 1e-12 * abs(lim)
 
 
 def test_k3_near_ties_are_continuous_and_permutation_consistent(k3_tree):

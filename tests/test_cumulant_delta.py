@@ -53,13 +53,13 @@ def _lam_linear_hawkes(fund=None):
 def test_rref_jacobian():
     # δ(2 t1 − 2 t2) = δ(t1 − t2) / 2
     M, c, f = _rref([[2.0, -2.0]], [0.0])
-    assert np.allclose(M, [[1.0, -1.0]]) and f == pytest.approx(0.5)
+    assert np.allclose(M, [[1.0, -1.0]], rtol=1e-12, atol=1e-12) and f == pytest.approx(0.5, rel=1e-12)
     # δ(−t1 + t2 − 3) = δ(t1 − t2 + 3)
     M, c, f = _rref([[-1.0, 1.0]], [-3.0])
-    assert np.allclose(M, [[1.0, -1.0]]) and np.allclose(c, [3.0]) and f == 1
+    assert np.allclose(M, [[1.0, -1.0]], rtol=1e-12, atol=1e-12) and np.allclose(c, [3.0], rtol=1e-12, atol=1e-12) and f == 1
     # two rows: δ²(t1 − t3, t2 − t3) in another basis, |det| = 2
     M, c, f = _rref([[1.0, 1.0, -2.0], [1.0, -1.0, 0.0]], [0.0, 0.0])
-    assert np.allclose(M, [[1, 0, -1], [0, 1, -1]]) and f == pytest.approx(.5)
+    assert np.allclose(M, [[1, 0, -1], [0, 1, -1]], rtol=1e-12, atol=1e-12) and f == pytest.approx(.5, rel=1e-12)
     assert _rref([[1.0, -1.0], [2.0, -2.0]], [0.0, 0.0]) is None
 
 
@@ -74,13 +74,13 @@ def test_synthetic_record_wick_sum_and_scaling():
            'origin_leaf_idx': 0, 'n_ext': 2, 'diagram_index': 0}
     comps = _components_from_records([rec], 2, 0, 'test')
     got = sorted((d.location, d.weight.real) for d in comps)
-    assert got == [(pytest.approx(-0.5), pytest.approx(1.25)),
-                   (pytest.approx(0.5), pytest.approx(1.25))]
+    assert got == [(pytest.approx(-0.5, rel=1e-12), pytest.approx(1.25, rel=1e-12)),
+                   (pytest.approx(0.5, rel=1e-12), pytest.approx(1.25, rel=1e-12))]
     # compensation 2: each permutation carries half
     rec['wick_compensation'] = 2
     got2 = sorted(d.weight.real for d in
                   _components_from_records([rec], 2, 0, 'test'))
-    assert got2 == [pytest.approx(0.625), pytest.approx(0.625)]
+    assert got2 == [pytest.approx(0.625, rel=1e-12), pytest.approx(0.625, rel=1e-12)]
 
 
 def test_synthetic_k3_record_maps_each_permutation_to_its_plane():
@@ -98,20 +98,20 @@ def test_synthetic_k3_record_maps_each_permutation_to_its_plane():
              _components_from_records([rec], 3, 1, 'test')}
     p12, p13 = ((1.0, -1.0, 0.0), 0.0), ((1.0, 0.0, -1.0), 0.0)
     assert set(comps) == {p12, p13}
-    assert comps[p12].weight_at((0.0, 0.0, 0.5)) == pytest.approx(1.5)
+    assert comps[p12].weight_at((0.0, 0.0, 0.5)) == pytest.approx(1.5, rel=1e-12)
     assert comps[p12].weight_at((0.0, 0.0, -0.5)) == 0
-    assert comps[p13].weight_at((0.2, 0.9, 0.2)) == pytest.approx(1.7)
+    assert comps[p13].weight_at((0.2, 0.9, 0.2)) == pytest.approx(1.7, rel=1e-12)
     assert comps[p13].weight_at((0.2, 0.1, 0.2)) == 0
     assert comps[p12].location is None          # a hyperplane at k = 3
 
 
 def test_bin_index_nonuniform_and_outside():
     tau = np.array([-1.0, 0.0, 0.5, 2.0])
-    assert _bin_index(tau, 0.0) == (1, pytest.approx(0.75))
-    assert _bin_index(tau, 0.3) == (2, pytest.approx(1.0))
+    assert _bin_index(tau, 0.0) == (1, pytest.approx(0.75, rel=1e-12))
+    assert _bin_index(tau, 0.3) == (2, pytest.approx(1.0, rel=1e-12))
     assert _bin_index(tau, 3.0) == (None, None)
     # unsorted grid: same bins
-    assert _bin_index(tau[::-1], 0.3) == (1, pytest.approx(1.0))
+    assert _bin_index(tau[::-1], 0.3) == (1, pytest.approx(1.0, rel=1e-12))
 
 
 def test_spike_on_a_bin_edge_is_split():
@@ -120,8 +120,8 @@ def test_spike_on_a_bin_edge_is_split():
     dep = sorted(_bin_deposits(tau, 0.0))
     w = tau[1] - tau[0]
     assert [i for i, _ in dep] == [4, 5]
-    assert all(f == pytest.approx(0.5 / w) for _, f in dep)
-    assert _bin_deposits(tau, 0.05) == [(5, pytest.approx(1 / w))]
+    assert all(f == pytest.approx(0.5 / w, rel=1e-12) for _, f in dep)
+    assert _bin_deposits(tau, 0.05) == [(5, pytest.approx(1 / w, rel=1e-12))]
 
 
 # ── pipeline oracles ─────────────────────────────────────────────────────
@@ -220,7 +220,7 @@ def test_records_survive_the_pole_cluster_deformation(monkeypatch):
     assert c.complete and len(c.deltas) == 1
     d = c.deltas[0]
     assert d.provenance['pole_deformation_nodes'] >= 2
-    assert abs(d.weight - lam[1]) <= 1e-10 * lam[1]
+    assert abs(d.weight - lam[1]) <= 1e-12 * lam[1]
 
 
 def test_k3_hyperplanes_and_point_spike():
@@ -240,7 +240,7 @@ def test_k3_hyperplanes_and_point_spike():
     assert len(line) >= 2                      # several diagrams
     for t, c2 in zip(taus, r2['C_tau']):
         w = sum(d.weight_at((0.0, 0.0, t)) for d in line)
-        assert abs(w - c2) <= 1e-10 * abs(c2)
+        assert abs(w - c2) <= 1e-11 * abs(c2)
     with pytest.raises(ValueError):
         line[0].weight_at((0.0, 0.3, 1.0))      # off the surface
 

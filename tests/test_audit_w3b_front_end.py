@@ -453,12 +453,12 @@ def test_delay_controller_k3_is_unit_invariant():
                                   delay={'n_start': 2, 'n_max': 8, 'tol': 1e-4})
         recs[s] = r['delay']
         # min(longest delay 0.8, slowest local relaxation 1/|-a + c| = 1/2.7), in units s
-        assert r['delay']['sample_time_scale'] == pytest.approx(min(0.8, 1 / 2.7) / s, rel=1e-9)
+        assert r['delay']['sample_time_scale'] == pytest.approx(min(0.8, 1 / 2.7) / s, rel=1e-12)
     a, b = recs[1.0], recs[0.25]
     assert a['n'] == b['n'] and a['target_met'] == b['target_met']
     assert sorted(a['est_by_order']) == sorted(b['est_by_order'])
     for n in a['est_by_order']:
-        assert b['est_by_order'][n] == pytest.approx(a['est_by_order'][n], rel=1e-6)
+        assert b['est_by_order'][n] == pytest.approx(a['est_by_order'][n], rel=1e-9)
 
 
 def test_delay_target_missed_is_marked(monkeypatch):

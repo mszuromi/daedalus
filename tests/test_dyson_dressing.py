@@ -49,7 +49,7 @@ def test_hcal0_is_matrix_exponential():
     ts = np.array([0.0, 0.3, 1.1])
     H0 = hcal_n(ts, _M, np.zeros((2, 2)), 0)
     for i, t in enumerate(ts):
-        assert np.allclose(H0[i], expm(-_M * t), atol=1e-12)
+        assert np.allclose(H0[i], expm(-_M * t), rtol=1e-12, atol=1e-12)
 
 
 @pytest.mark.parametrize('qsq,t', [(1.0, 0.5), (2.5, 0.8)])
@@ -92,12 +92,12 @@ def test_order0_scalar_diffusion_reduces_to_coupled_two_point():
     coupled_two_point — pins the s-integral normalization."""
     Dsc = 0.7 * np.eye(2)
     D0, Dhat = split_reference_diffusion(Dsc)
-    assert np.allclose(Dhat, 0.0)
+    assert np.allclose(Dhat, 0.0, rtol=0, atol=1e-12)
     ref = build_reference(_M, Dsc)
     for q, tau in ((0.0, 0.0), (0.8, 0.5), (1.4, 1.0)):
         C_d = dressed_tree_C(q, tau, _M, Dhat, D0, _NZ, 0, n_s=64)
         C_l = coupled_two_point(ref, _NZ, q * q, tau)
-        assert np.allclose(C_d, C_l, atol=2e-6 * max(1.0, np.max(np.abs(C_l)))), \
+        assert np.allclose(C_d, C_l, rtol=1e-11, atol=1e-11 * max(1.0, np.max(np.abs(C_l)))), \
             f'(q={q},τ={tau}):\n{C_d}\nvs\n{C_l}'
 
 
@@ -105,7 +105,7 @@ def test_tau_negative_transpose():
     D0, Dhat = split_reference_diffusion(np.diag(_DVEC))
     Cp = dressed_tree_C(1.0, 0.5, _M, Dhat, D0, _NZ, 2)
     Cm = dressed_tree_C(1.0, -0.5, _M, Dhat, D0, _NZ, 2)
-    assert np.allclose(Cm, Cp.T, atol=1e-12)
+    assert np.allclose(Cm, Cp.T, rtol=1e-12, atol=1e-12)
 
 
 # ── D-4 policy wiring + D-5 end-to-end (unequal diffusion) ───────────────────

@@ -167,13 +167,13 @@ def test_first_order_model_is_unaffected():
     model = _ou_first_order()
     res = solve_mean_field_dae(model, _OU_FUND, n_starts=16)
     root = res['mf_values']
-    assert np.allclose(root['xstar'], [0.0], atol=1e-7)
+    assert np.allclose(root['xstar'], [0.0], atol=1e-12)
 
     stab = linear_stability(model, _OU_FUND, root)
-    assert np.allclose(stab['A'], [[1.0]])
-    assert np.allclose(stab['B'], [[_OU_FUND['mu']]])
+    assert np.allclose(stab['A'], [[1.0]], rtol=1e-12, atol=1e-12)
+    assert np.allclose(stab['B'], [[_OU_FUND['mu']]], rtol=1e-12, atol=1e-12)
     assert stab['stable'] is True
-    assert np.allclose(stab['eigenvalues_finite'], [-_OU_FUND['mu']])
+    assert np.allclose(stab['eigenvalues_finite'], [-_OU_FUND['mu']], rtol=1e-12, atol=1e-12)
 
     # And the action path is untouched.
     ft = FieldTheory(model, taylor_order=4)
@@ -192,15 +192,15 @@ def test_algebraic_constraint_row_is_not_rejected():
 
     # v = Em / (1 - w·a),  n = a·v
     v_expected = _DAE_FUND['Em'] / (1.0 - _DAE_FUND['w'] * _DAE_FUND['a'])
-    assert np.allclose(root['vstar'], [v_expected], atol=1e-8)
+    assert np.allclose(root['vstar'], [v_expected], rtol=1e-12, atol=1e-12)
     assert np.allclose(root['nstar'], [_DAE_FUND['a'] * v_expected],
-                       atol=1e-8)
+                       rtol=1e-12, atol=1e-12)
 
     stab = linear_stability(model, _DAE_FUND, root)
     # Differential row keeps tau in A; the algebraic row's A row is zero.
     A = np.asarray(stab['A'])
     assert np.count_nonzero(A) == 1
-    assert np.isclose(A.max(), _DAE_FUND['tau'])
+    assert np.isclose(A.max(), _DAE_FUND['tau'], rtol=1e-12, atol=1e-12)
     zero_rows = [k for k in range(A.shape[0]) if not np.any(A[k])]
     assert len(zero_rows) == 1, 'the algebraic row must give a zero A row'
 
@@ -208,5 +208,5 @@ def test_algebraic_constraint_row_is_not_rejected():
     finite = np.asarray(stab['eigenvalues_finite'])
     assert finite.size == 1
     sigma_expected = -(1.0 - _DAE_FUND['w'] * _DAE_FUND['a']) / _DAE_FUND['tau']
-    assert np.isclose(complex(finite[0]).real, sigma_expected, atol=1e-9)
+    assert np.isclose(complex(finite[0]).real, sigma_expected, rtol=1e-12, atol=1e-12)
     assert stab['stable'] is True

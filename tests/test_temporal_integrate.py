@@ -45,7 +45,7 @@ def test_c2_bubble_sigma_R_matches_backend_B(q, t):
     backend B's sigma_R_kernel (the validated 1-loop reference)."""
     got = sigma_parametric(bubble_edges('R'), q, t, MU, D, T)
     ref = sigma_R_kernel(q, t, MU, D, T)
-    assert abs(got - ref) <= 1e-6 * max(abs(ref), 1e-12)
+    assert abs(got - ref) <= 1e-8 * max(abs(ref), 1e-12)
 
 
 @pytest.mark.parametrize('q', [0.0, 0.8, 1.5])
@@ -94,7 +94,7 @@ def test_c2_bubble_d2_sigma_R_matches_brute_force(q, t):
     ref, _ = integrate.dblquad(integrand, -np.inf, np.inf,
                                lambda _lx: -np.inf, lambda _lx: np.inf)
     ref /= (2 * np.pi) ** 2
-    assert abs(got - ref) <= 1e-4 * max(abs(ref), 1e-12)
+    assert abs(got - ref) <= 1e-10 * max(abs(ref), 1e-12)
 
 
 # ── C3-lite capstone: the full bubble δC(q,0) end-to-end through the C stack ──

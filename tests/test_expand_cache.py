@@ -182,7 +182,7 @@ def test_compute_cumulants_warm_cache_speedup(
     t_warm = time.perf_counter() - t0
 
     # Outputs must match exactly.
-    assert np.allclose(th1['C_tau'], th2['C_tau']), \
+    assert np.allclose(th1['C_tau'], th2['C_tau'], rtol=1e-12, atol=1e-12), \
         'C_tau differs between cold and warm runs'
 
     # Warm run must be substantially faster than cold.  Conservative
@@ -427,8 +427,8 @@ def test_combined_operator_ir_cached_matches_uncached(combined_model,
     assert m_nc == m_cold == m_warm == 'composite+perleg', (
         f'vertex_mode dropped: no-cache={m_nc!r}, cold={m_cold!r}, '
         f'warm={m_warm!r} — form-factor table was lost on cache load')
-    assert np.allclose(C_cold, C_nc), 'cold-cache C(x) != uncached'
-    assert np.allclose(C_warm, C_nc), 'warm-cache C(x) != uncached'
+    assert np.allclose(C_cold, C_nc, rtol=1e-12, atol=1e-12), 'cold-cache C(x) != uncached'
+    assert np.allclose(C_warm, C_nc, rtol=1e-12, atol=1e-12), 'warm-cache C(x) != uncached'
     # The 1-loop value must be the corrected one, not the plain +0.495.
     assert C_nc.flat[0] < 0.0, (
         f'C(0,0)={C_nc.flat[0]} — expected the composite+perleg 1-loop '

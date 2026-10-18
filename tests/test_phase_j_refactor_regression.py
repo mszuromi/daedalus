@@ -122,14 +122,14 @@ def test_total_C_matches_frozen_reference(fx):
     # τ-probe arrays should match by construction (both come from the
     # same FixtureConfig).  Guard against accidental config drift.
     np.testing.assert_allclose(
-        current['tau_probes'], frozen['tau_probes'],
+        current['tau_probes'], frozen['tau_probes'], rtol=1e-12,
         err_msg=f'τ-probe drift in fixture {fx.name!r}: config was '
                 f'edited but fixture not re-frozen?'
     )
 
     np.testing.assert_allclose(
         current['C_values'], frozen['C_values'],
-        rtol=fx.rtol, atol=fx.atol,
+        rtol=min(fx.rtol, 1e-11), atol=fx.atol,
         err_msg=(
             f'total_C regression in fixture {fx.name!r}:\n'
             f'  τ_probes = {frozen["tau_probes"].tolist()}\n'

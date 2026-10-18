@@ -118,7 +118,7 @@ def test_indexed_kernel_with_per_entry_integrals_equals_normalised_twin():
     n = np.asarray(a['mf_values']['nstar'])
     A = np.array([[2.0, -0.5], [1.5, 3.0]])
     w = np.array([[0.05, 0.1], [-0.08, 0.04]])
-    assert np.allclose(n, np.exp(np.array([-1.0, -1.2]) + (w * A) @ n), rtol=1e-12)
+    assert np.allclose(n, np.exp(np.array([-1.0, -1.2]) + (w * A) @ n), rtol=1e-12, atol=1e-12)
 
 
 def test_normalised_kernel_expansion_is_unchanged():
@@ -298,7 +298,7 @@ def test_declared_real_domain_reaches_the_negative_root():
     assert a['mf_values']['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
     # x -> -x symmetry of x - x^3 with additive noise: the two wells have the same C(tau)
     for ell in (0, 1):
-        assert np.allclose(a['C_tau_by_ell'][ell], b['C_tau_by_ell'][ell], rtol=1e-12)
+        assert np.allclose(a['C_tau_by_ell'][ell], b['C_tau_by_ell'][ell], rtol=1e-10, atol=1e-12)
 
 
 # ── 2c. the analyzer's parameter point ───────────────────────────────────────────────────────

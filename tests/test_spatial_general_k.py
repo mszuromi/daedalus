@@ -499,6 +499,7 @@ def test_k3_spectral_uniform_mass_identity(recs3):
 
 
 @pytest.mark.slow
+@pytest.mark.bigmem          # > 12 GB footprint: own job in .github/workflows/slow-tests.yml
 def test_k3_coupled_decoupled_limit():
     """H2 anchor: compute_coupled_kpoint on a DECOUPLED 2-species model
     (m_a=1, m_b=1.7, nonlinearity g*a^2 in species a only, externals all

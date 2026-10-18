@@ -86,13 +86,13 @@ def test_decoupled_matches_free_two_point():
     for it, tau in enumerate(taus):
         for ix, x in enumerate(xs):
             ref = free_two_point(_MUA, _D, _TA, float(x), float(tau)).real
-            assert abs(C_aa[it, ix].real - ref) < 5e-3, \
+            assert abs(C_aa[it, ix].real - ref) < 1e-12, \
                 f'(τ={tau},x={x}): driver {C_aa[it,ix].real:.5f} vs free {ref:.5f}'
     # diagonal extraction (order-robust)
     assert sorted(np.round(np.diag(info['M']), 6)) == sorted([_MUA, _MUB])
     assert sorted(np.round(np.diag(info['N']), 6)) == sorted([2 * _TA, 2 * _TB])
-    assert info['D0'] == pytest.approx(_D)
-    assert np.allclose(info['Dhat'], 0.0)                       # scalar diffusion
+    assert info['D0'] == pytest.approx(_D, rel=1e-12)
+    assert np.allclose(info['Dhat'], 0.0, rtol=0, atol=1e-12)                       # scalar diffusion
 
 
 def test_coupled_extraction_and_cross_correlation():
@@ -110,7 +110,7 @@ def test_coupled_extraction_and_cross_correlation():
     assert offs == sorted([round(g, 6), round(h, 6)])           # off-diagonal reaction
     assert np.max(np.abs(C_ab.real)) > 1e-3                     # genuine cross-correlation
     for it in range(len(taus)):                                 # even in x
-        assert C_ab[it, 0].real == pytest.approx(C_ab[it, 2].real, abs=2e-3)
+        assert C_ab[it, 0].real == pytest.approx(C_ab[it, 2].real, abs=1e-12)
 
 
 def test_coupled_routes_through_compute_cumulants():
@@ -130,7 +130,7 @@ def test_coupled_routes_through_compute_cumulants():
         ft, model, prop, _fund(g, h), [('da', 1), ('da', 1)],
         np.asarray(th['tau_grid']), sg)
     assert info['coupled'] is True
-    assert np.allclose(C, Cd.real, atol=1e-6)               # routed to the driver
+    assert np.allclose(C, Cd.real, rtol=1e-12, atol=1e-12)               # routed to the driver
     i0 = int(np.argmin(np.abs(np.asarray(th['tau_grid']))))
     assert C[i0, 0] > 0                                     # C_aa(0,0) is a variance
 
@@ -156,10 +156,10 @@ def test_public_api_noise_only_coupling_cross_correlator():
         ft, model, prop, _fund(0.0, 0.0, 0.5), [('da', 1), ('db', 1)],
         np.asarray(th['tau_grid']), sg)
     assert info['coupled'] is True
-    assert np.allclose(Cab, Cd.real, atol=1e-6)           # routed to the driver
+    assert np.allclose(Cab, Cd.real, rtol=1e-12, atol=1e-12)           # routed to the driver
     i0 = int(np.argmin(np.abs(np.asarray(th['tau_grid']))))
     assert abs(Cab[i0, ix0]) > 1e-3                        # cross-correlation ≠ 0
-    assert np.allclose(Cab[i0], Cab[i0][::-1], atol=1e-6)  # even in x
+    assert np.allclose(Cab[i0], Cab[i0][::-1], rtol=1e-12, atol=1e-12)  # even in x
     # (ii) Tab=0 ⇒ the cross-correlator of an uncoupled model is 0 (the cross
     # legs still route to the coupled driver, not the auto-correlation per-mode
     # path that would wrongly reconstruct ⟨a a⟩ and fail certification).
@@ -168,7 +168,7 @@ def test_public_api_noise_only_coupling_cross_correlator():
         model=model0, k=2, max_ell=0, fundamental=_fund(0.0, 0.0, 0.0),
         external_fields=[('a', 1), ('b', 1)], tau_max=1.0, tau_step=0.5,
         spatial_grid=sg, parallel=False, verbose=False, use_cache=False)
-    assert np.max(np.abs(np.asarray(th0['C_tau_x']).real)) < 1e-6
+    assert np.max(np.abs(np.asarray(th0['C_tau_x']).real)) < 1e-12
 
 
 def _equal_mass_cross(dim, rho):
@@ -208,7 +208,7 @@ def test_coupled_tree_dge2_radial(d):
         ft, model, prop, fund, [('a', 1), ('b', 1)], taus, xs)
     assert info['spatial_dim'] == d
     assert np.all(np.isfinite(Caa)) and np.all(np.isfinite(Cab))
-    assert np.allclose(Cab.real / Caa.real, rho, atol=1e-9)        # exact ρ
+    assert np.allclose(Cab.real / Caa.real, rho, rtol=1e-12, atol=1e-12)        # exact ρ
     assert Caa.real[0, 0] > Caa.real[0, -1] > 0                    # positive, decaying
 
 
@@ -264,5 +264,5 @@ def test_noise_matrix_diagonal_and_cross():
     assert sorted(np.round(np.diag(N), 6)) == sorted([2 * _TA, 2 * _TB])
     # cross noise: action −Tab·ã b̃ ⇒ N_ij = −coeff = +Tab
     off = [N[0, 1], N[1, 0]]
-    assert off[0] == pytest.approx(off[1])                      # symmetric
-    assert abs(off[0]) == pytest.approx(0.5, abs=1e-6)
+    assert off[0] == pytest.approx(off[1], rel=1e-12)                      # symmetric
+    assert abs(off[0]) == pytest.approx(0.5, abs=1e-12)

@@ -803,7 +803,7 @@ def test_compute_cumulants_agrees_through_the_real_wiring(tmp_path,
         for x, y in zip(a[ell], b[ell]):
             assert x == pytest.approx(y, rel=1e-13, abs=1e-15), (ell, a, b)
     # Tree cumulant of the OU process: C(tau) = (D/mu) * exp(-mu*tau), D=mu=1.
-    assert a[0][1] == pytest.approx(0.36787944117144233, rel=1e-9)
+    assert a[0][1] == pytest.approx(0.36787944117144233, rel=1e-12)
     assert a[1][0] != 0.0, 'the 1-loop correction must not be identically zero'
 
 

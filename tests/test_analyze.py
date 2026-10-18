@@ -347,7 +347,7 @@ def test_two_stable_saddles_confirmed():
     f = [f for f in r.findings if f.code == 'G2_MULTISTABLE'][0]
     assert f.level == 'info' and r.ok
     assert r.traits.n_saddles == 3 and r.traits.n_stable_saddles == 2 and r.traits.saddle_index == 1
-    assert dict(r.traits.saddle)['xstar'][0] == pytest.approx(10 ** 0.5, rel=1e-8)
+    assert dict(r.traits.saddle)['xstar'][0] == pytest.approx(10 ** 0.5, rel=1e-12)
     r = analyze(model, question=dict(q, fixed_point_index=2))
     assert 'G2_FIXED_POINT_INDEX' in r.codes
 
@@ -396,6 +396,17 @@ def test_fast_and_leaves_model_unchanged(name):
     wall = time.perf_counter() - t0
     _same(model, before)
     assert wall < BUDGET_S, f'{name}: {wall:.2f}s'
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('name', sorted(HEAVY))
+def test_heavy_models_unchanged_cold(name):
+    """The cold-cache counterpart of the HEAVY skips above (CI's cache is always cold, so those
+    skip there): the analyzer leaves the model unchanged with a fresh expansion (no wall budget)."""
+    model, q = _build(name)
+    before = copy.deepcopy(model)
+    analyze(model, question=q, use_cache=False)
+    _same(model, before)
 
 
 def test_analyze_never_writes_the_cache(tmp_path, monkeypatch):

@@ -39,7 +39,7 @@ def test_meta_k_max(_linear_sim):
     """k_max = π/dx = πN/L is reported (the physical UV cutoff)."""
     _snaps, _x, meta = _linear_sim
     assert abs(meta['k_max'] - math.pi / meta['dx']) <= 1e-12
-    assert abs(meta['k_max'] - math.pi * meta['N'] / meta['L']) <= 1e-9
+    assert abs(meta['k_max'] - math.pi * meta['N'] / meta['L']) <= 1e-12
 
 
 def test_structure_factor_matches_lattice_linear(_linear_sim):

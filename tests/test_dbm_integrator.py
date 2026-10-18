@@ -360,7 +360,7 @@ def test_large_log_scale_seed_is_safe():
     res = DBM.integrate_exp_sum(rows, 1, [(1.0, 650.0, (-4.0,))], 200.0)
     ref = (math.exp(650 - 4 * 165) - math.exp(650 - 4 * 166)) / 4.0
     assert res.status == DBM.STATUS_OK
-    assert res.value.real == pytest.approx(ref, rel=1e-12)
+    assert res.value.real == pytest.approx(ref, rel=1e-12, abs=0)
 
 
 def test_astronomical_integral_is_an_overflow_not_inf(monkeypatch):
@@ -470,7 +470,7 @@ def test_cancelled_wrapper_subset_is_declined_not_zero():
         assert FI._pop_bail_reason() == 'dbm_ill_conditioned'
         assert FI._RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] == 1
     else:
-        assert abs(v - 3.7804272274669133) <= 1e-9 * 3.78, v
+        assert abs(v - 3.7804272274669133) <= 1e-12 * 3.78, v
 
 
 def test_thin_region_is_declined_to_the_fallback(monkeypatch):

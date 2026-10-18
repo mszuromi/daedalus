@@ -240,7 +240,7 @@ def test_mean_field_and_stability_match_hand_written(model_file):
             sh, sg = linear_stability(hand, par, root), linear_stability(gen, par, root)
             assert sh['stable'] == sg['stable']
             assert np.allclose(np.sort_complex(sh['eigenvalues_finite']),
-                               np.sort_complex(sg['eigenvalues_finite']))
+                               np.sort_complex(sg['eigenvalues_finite']), rtol=1e-12, atol=1e-12)
 
 
 # ── B: physics oracles through the full pipeline ────────────────────────────────────────────
@@ -264,9 +264,9 @@ def test_ou_quartic_from_sde_boltzmann_coefficients(max_ell):
     """<x x> at equal time = sum_ell c_ell eps^ell with c = 1, -3, 24 (mu = D = 1)."""
     eps = 0.02
     got, _ = _cov_by_ell(sde_ou_quartic().build(), max_ell, {'mu': 1.0, 'eps': eps, 'D': 1.0})
-    assert got[0] == pytest.approx(1.0, rel=1e-6, abs=0.0)              # Ito tau = 0 nudge
+    assert got[0] == pytest.approx(1.0, rel=1e-12, abs=0.0)
     for ell, c in [(1, -3.0), (2, 24.0)][:max_ell]:
-        assert got[ell] / eps ** ell == pytest.approx(c, rel=1e-9, abs=0.0)
+        assert got[ell] / eps ** ell == pytest.approx(c, rel=1e-12, abs=0.0)
 
 
 def _poisson_ou(exposed):
@@ -288,7 +288,7 @@ def test_poisson_driven_ou_cumulants(exposed):
     par = {'mu': 1.0, 'lam': 3.0, 'a': 0.7}
     model = _poisson_ou(exposed)
     for k, ref in ((2, 0.735), (3, 0.343), (4, 0.180075)):
-        tol = 1e-6 if k == 2 else 1e-9                                   # k = 2 carries the Ito tau = 0 nudge
+        tol = 1e-12
         assert _equal_time(model, k, par) == pytest.approx(ref, rel=tol, abs=0.0)
 
 
@@ -305,9 +305,9 @@ def test_multiplicative_linear_variance_closes(max_ell):
     par = {'mu': 1.0, 'm': 2.0, 's0': 0.5, 's1': 0.3}
     got, res = _cov_by_ell(_mult(), max_ell, par)
     assert res['mf_values']['xstar'][0] == pytest.approx(2.0, abs=1e-12)
-    assert got[0] == pytest.approx((0.5 + 0.3 * 2.0) / 2.0, rel=1e-6, abs=0.0)
+    assert got[0] == pytest.approx((0.5 + 0.3 * 2.0) / 2.0, rel=1e-12, abs=0.0)
     for ell in range(1, max_ell + 1):
-        assert abs(got[ell]) < 1e-10
+        assert abs(got[ell]) < 1e-12
 
 
 def test_multiplicative_third_cumulant_against_moment_hierarchy():
@@ -323,8 +323,8 @@ def test_multiplicative_third_cumulant_against_moment_hierarchy():
     third = sum(out[(x3, (t,))][0] for t in range(3))
     assert abs(mean) < 1e-12                                            # moments about the saddle = cumulants
     got = _equal_time(_mult(), 3, {'mu': mu, 'm': m, 's0': s0, 's1': s1})
-    assert got == pytest.approx(third, rel=1e-8, abs=0.0)
-    assert got == pytest.approx(s1 * (s0 + s1 * m) / (2 * mu ** 2), rel=1e-8)
+    assert got == pytest.approx(third, rel=1e-11, abs=0.0)
+    assert got == pytest.approx(s1 * (s0 + s1 * m) / (2 * mu ** 2), rel=1e-12)
 
 
 def _strat_mult(stratonovich=True):
@@ -385,10 +385,8 @@ def test_stratonovich_multiplicative_against_moment_hierarchy():
     xx = im.unit(1, 0, 0)
     out = im.solve(sde, [(xx, (0,)), (xx, (1,)), (xx, (2,))], [T_STATIONARY])
     assert abs(out[(xx, (1,))][0]) < 1e-14
-    assert got[0] == pytest.approx(out[(xx, (0,))][0], rel=2e-6, abs=0.0)
-    # rel 2e-6 at both orders: the Ito tau = 0 nudge (tau = -1e-6) moves C by ~ (mu - s1^2/2) * 1e-6 relative,
-    # as in tests/test_phase_j_moment_oracle.py.
-    assert got[1] == pytest.approx(out[(xx, (2,))][0], rel=2e-6, abs=0.0)
+    assert got[0] == pytest.approx(out[(xx, (0,))][0], rel=1e-11, abs=0.0)
+    assert got[1] == pytest.approx(out[(xx, (2,))][0], rel=1e-11, abs=0.0)
 
 
 HAWKES_PAR = {'Em': -1.5, 'tau': 2.0, 'taug': 1.0, 'a': 1.0, 'w': 0.4}
@@ -401,7 +399,7 @@ def test_exposed_exponential_hawkes(max_ell, raw_rate):
     got, res = _cov_by_ell(sde_exp_hawkes(raw_rate).build(), max_ell, HAWKES_PAR, ext=('dv', 1))
     assert res['mf_values']['vstar'][0] == pytest.approx(-1.401510052, abs=1e-9)
     assert res['mf_values']['nstar'][0] == pytest.approx(0.246224871, abs=1e-9)
-    assert got[0] == pytest.approx(HAWKES_REF[0], rel=1e-6, abs=0.0)
+    assert got[0] == pytest.approx(HAWKES_REF[0], rel=1e-8, abs=0.0)
     assert got[1] == pytest.approx(HAWKES_REF[1], rel=1e-8, abs=0.0)
     if max_ell >= 2:
         assert got[2] == pytest.approx(HAWKES_REF[2], rel=1e-7, abs=0.0)
@@ -423,8 +421,8 @@ def test_linear_hawkes_matches_hand_written_and_loops_vanish(monkeypatch):
     hand = AC.compute_cumulants(mod.build(), k=2, max_ell=0, external_fields=ext, parameters=par,
                                 tau_grid=np.array([0.0, 2.0]), use_cache=False, parallel=False, verbose=False)
     for f in ('nstar', 'vstar'):
-        assert np.allclose(gen['mf_values'][f], hand['mf_values'][f], rtol=1e-10, atol=0.0)
-    assert np.allclose(gen['C_tau_by_ell'][0], hand['C_tau_by_ell'][0], rtol=1e-9, atol=0.0)
+        assert np.allclose(gen['mf_values'][f], hand['mf_values'][f], rtol=1e-12, atol=0.0)
+    assert np.allclose(gen['C_tau_by_ell'][0], hand['C_tau_by_ell'][0], rtol=1e-12, atol=0.0)
     assert np.max(np.abs(gen['C_tau_by_ell'][1])) < 1e-12
 
 
@@ -454,13 +452,13 @@ def test_population_model_with_indexed_parameters():
     with np.errstate(over='ignore', invalid='ignore'):
         mf = solve_mean_field_dae(s.build(), par, verbose=False)
     v, n = np.asarray(mf['mf_values']['vstar']), np.asarray(mf['mf_values']['nstar'])
-    assert np.allclose(n, np.exp(v), atol=1e-10)
-    assert np.allclose(v, np.array([-1.5, -1.4]) + np.array([[0.1, 0.2], [0.15, 0.1]]) @ n, atol=1e-10)
+    assert np.allclose(n, np.exp(v), rtol=1e-12, atol=1e-12)
+    assert np.allclose(v, np.array([-1.5, -1.4]) + np.array([[0.1, 0.2], [0.15, 0.1]]) @ n, rtol=1e-12, atol=1e-12)
     with np.errstate(over='ignore', invalid='ignore'):
         res = AC.compute_cumulants(s.build(), k=2, max_ell=0, external_fields=[('dv', 1), ('dv', 2)],
                                    parameters=par, tau_grid=np.array([0.0, 1.0]), use_cache=False,
                                    parallel=False, verbose=False)
-    assert np.allclose(res['mf_values']['vstar'], v, atol=1e-10)
+    assert np.allclose(res['mf_values']['vstar'], v, rtol=1e-12, atol=1e-12)
     assert np.all(np.isfinite(np.asarray(res['C_tau_by_ell'][0])))
 
 

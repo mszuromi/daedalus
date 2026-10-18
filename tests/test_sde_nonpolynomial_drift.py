@@ -206,8 +206,8 @@ def test_one_loop_moves_the_variance_toward_the_exact_value(case, eps, logp):
     tree = complex(res['C_tau_by_ell'][0][0]).real
     loop = complex(res['C_tau_by_ell'][1][0]).real
     exact = _exact_variance(logp(eps))
-    assert tree == pytest.approx(1.0, rel=2e-6)                                   # the linear-noise value (Ito tau = 0)
-    assert loop == pytest.approx(3 * eps, rel=1e-6)                               # first-order coefficient
+    assert tree == pytest.approx(1.0, rel=1e-12)                                   # the linear-noise value (Ito tau = 0)
+    assert loop == pytest.approx(3 * eps, rel=1e-12)                               # first-order coefficient
     assert abs(exact - (tree + loop)) < 0.2 * abs(exact - tree)                   # one loop closes > 80 % of the gap
 
 

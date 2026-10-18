@@ -80,7 +80,7 @@ def test_dge2_tree_is_exact(d, mu, D, T):
         ref0 = cf(x, mu, D, T, d)
         assert C[0, ix] == pytest.approx(ref0, rel=1e-11, abs=1e-300)
         ref1 = _radial_ref(d, mu, D, T, x, 0.4)
-        assert C[1, ix] == pytest.approx(ref1, rel=1e-8, abs=1e-14)
+        assert C[1, ix] == pytest.approx(ref1, rel=1e-12, abs=1e-14)
 
 
 def test_dge2_equal_point_refuses():
@@ -165,7 +165,7 @@ def test_coupled_tree_d2_exact():
         ref = quad(lambda q: q * j0(q * 0.5) * _lyap_q(q * q, tau)[0, 1]
                    / (2 * math.pi), 0, np.inf, limit=800, epsabs=1e-14,
                    epsrel=1e-11)[0]
-        assert C[it, 0] == pytest.approx(ref, rel=1e-8)
+        assert C[it, 0] == pytest.approx(ref, rel=1e-9)
 
 
 def test_coupled_tree_large_ring_d1():
@@ -185,7 +185,7 @@ def test_coupled_tree_large_ring_d1():
     caa = np.array([_lyap_q(kk * kk, tau)[0, 0] for kk in k])
     for ix, x in enumerate(xs):
         ref = float(np.sum(np.cos(k * x) * caa)) / L
-        assert C[ix] == pytest.approx(ref, rel=1e-9)
+        assert C[ix] == pytest.approx(ref, rel=1e-12)
 
 
 def test_d1_one_loop_unequal_times_exact():

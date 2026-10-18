@@ -297,7 +297,7 @@ def test_diagram_form_factor_ell2_momentum():
             expo = expo + w[e] * ke * ke
         brute = float(np.sum(ff(ell, q) * np.exp(-D * expo)) * dl * dl
                       / (2 * np.pi) ** 2)
-        assert abs(gh - brute) <= 1e-6 * (abs(brute) + 1e-30), \
+        assert abs(gh - brute) <= 1e-11 * (abs(brute) + 1e-30), \
             f"L=2 form-factor momentum integral: {gh} vs {brute}"
 
 
@@ -363,7 +363,7 @@ def test_perleg_and_complex_form_factor():
         gh = complex(mf[0] * _formfactor_average(ff, M, N, [q], D, ok,
                                                  gh_order=12)[0])
         br = brute(ff, w)
-        assert abs(gh - br) <= 1e-6 * (abs(br) + 1e-30), \
+        assert abs(gh - br) <= 1e-9 * (abs(br) + 1e-30), \
             f"per-leg/complex form factor: {gh} vs {br}"
 
 

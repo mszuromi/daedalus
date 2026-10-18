@@ -299,13 +299,13 @@ def test_failed_route_reaches_the_analyzer(monkeypatch):
     assert any(issubclass(w.category, PR.PoleResidueWarning) for w in r['_warnings'])
     assert r['analysis'].has('G3_RESIDUES_NUMERICAL_TIER')
     ref = _ou_oracle([0.5, 1.0], *_erlang_NM(2, TS), ou_rate=0.7, ou_D=0.05)
-    assert np.allclose(_tree(r), ref, rtol=1e-8, atol=0)
+    assert np.allclose(_tree(r), ref, rtol=1e-12, atol=0)
 
 
 # ── the numerical tier's siblings ──────────────────────────────────────
 
 @pytest.mark.parametrize('path', ['legacy', 'rich'])
-@pytest.mark.parametrize('kind,n,rtol', [('erlang', 16, 1e-5), ('allpass', 16, 1e-9)])
+@pytest.mark.parametrize('kind,n,rtol', [('erlang', 16, 1e-9), ('allpass', 16, 1e-9)])
 def test_numerical_tier_keeps_every_pole(monkeypatch, kind, n, rtol, path):
     """Forced numerical tier (both of its paths: with the symbolic inverse,
     'legacy', and without, 'rich'): the leading-coefficient trim of
