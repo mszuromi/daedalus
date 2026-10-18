@@ -95,13 +95,31 @@ def simulate_2d(L=20.0, N=64, mu=1.0, D=1.0, T=1.0, g=0.0, lam=0.0,
     return snaps, meta
 
 
+#: snapshots transformed at once by the equal-time estimators (their fft2 is
+#: complex: transforming all of them at once took 2-3x the snapshots' own
+#: memory, 4.2 GB on a large run; audit MEM-10)
+SNAPSHOT_CHUNK = 64
+
+
+def _snapshot_mean(snaps, per_mode):
+    """``mean_t per_mode(fft2(snaps[t]))`` over the snapshots, ``SNAPSHOT_CHUNK``
+    at a time."""
+    snaps = np.asarray(snaps)
+    n = snaps.shape[0]
+    acc = None
+    for i0 in range(0, n, SNAPSHOT_CHUNK):
+        part = per_mode(np.fft.fft2(snaps[i0:i0 + SNAPSHOT_CHUNK],
+                                    axes=(1, 2))).sum(axis=0)
+        acc = part if acc is None else acc + part
+    return acc / n
+
+
 def structure_factor_2d(snaps, meta):
     """Per-mode equal-time structure factor ``S(k) = ⟨|φ̂_k|²⟩·(L²/N⁴)`` on the
     full fft2 grid (so the continuum tree gives ``S → T/(μ+D|k|²)``).  Returns
     ``(kx, ky, S)`` with ``kx, ky`` the fftfreq momentum axes (length N)."""
     L, N = meta['L'], int(meta['N'])
-    F = np.fft.fft2(snaps, axes=(1, 2))           # (n_rec, N, N)
-    S = np.mean(np.abs(F) ** 2, axis=0) * (L ** 2 / N ** 4)
+    S = _snapshot_mean(snaps, lambda F: np.abs(F) ** 2) * (L ** 2 / N ** 4)
     k = 2.0 * np.pi * np.fft.fftfreq(N, d=L / N)
     return k, k, S
 
@@ -129,8 +147,8 @@ def radial_correlator_2d(snaps, meta, n_bins=40, r_max=None):
     — directly comparable to ``compute_cumulants``' d=2 ``C(r,0)``."""
     L, N = meta['L'], int(meta['N'])
     dx = L / N
-    F = np.fft.fft2(snaps, axes=(1, 2))
-    C2d = np.mean(np.fft.ifft2(np.abs(F) ** 2, axes=(1, 2)).real, axis=0) / N ** 2
+    C2d = _snapshot_mean(snaps, lambda F: np.fft.ifft2(
+        np.abs(F) ** 2, axes=(1, 2)).real) / N ** 2
     # separation grid wrapped to (−L/2, L/2]
     s = (np.arange(N) - N * (np.arange(N) > N // 2)) * dx
     SX, SY = np.meshgrid(s, s, indexing='ij')

@@ -259,3 +259,21 @@ def test_shipped_xz_cell_copied_compressed(tmp_path, monkeypatch):
     assert os.path.getsize(local) == os.path.getsize(src)
     recs2, how2 = pc.load_prediagrams(str(tmp_path), 3, 3, use_cache=True)
     assert how2 == 'v2' and sorted(recs2) == sorted(recs)
+
+
+# ── MEM-10: simulator buffers and the 2-D equal-time estimators ───────────
+
+def test_simulators_bounded():
+    import numpy as np
+    from simulations import spatial_field_2d_sim as S2
+    from simulations.coupled_rd_1d_sim import simulate_coupled_rd_1d
+    rng = np.random.default_rng(3)
+    snaps = rng.standard_normal((150, 8, 8))           # > one chunk
+    meta = {'L': 4.0, 'N': 8, 'k_max': 3.0}
+    F = np.fft.fft2(snaps, axes=(1, 2))
+    S_ref = np.mean(np.abs(F) ** 2, axis=0) * (16.0 / 8 ** 4)
+    _k, _k2, S = S2.structure_factor_2d(snaps, meta)
+    assert np.allclose(S, S_ref, rtol=1e-13, atol=0)
+    with pytest.raises(MemoryError, match='max_bytes'):
+        simulate_coupled_rd_1d(np.eye(2), [1.0, 1.0], np.eye(2), t_run=1e5,
+                               max_bytes=1e8)
