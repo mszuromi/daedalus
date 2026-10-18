@@ -56,3 +56,75 @@ def test_prediagram_guard_counts_and_estimates(monkeypatch):
     # the counted check after the certs are in hand is exact
     with pytest.raises(fi.PhaseJResourceError, match='counted'):
         pc._load_guard(9, 9, 100_000)
+
+
+# ── MEM-11 / MEM-02: the real-growth guard ─────────────────────────────────
+
+def test_growth_guard_refuses_growth_over_budget(monkeypatch):
+    fp = [1.0e9]
+    monkeypatch.setattr(fi, 'process_footprint_bytes', lambda: fp[0])
+    with fi.run_growth_scope(what='test run', budget=0.5e9, rule='set'):
+        fi.growth_guard('start')                 # no growth
+        fp[0] = 1.4e9
+        fi.growth_guard('a bit later')           # 0.4 GB <= 0.5 GB
+        fp[0] = 1.6e9
+        with pytest.raises(fi.PhaseJResourceError) as ei:
+            fi.growth_guard('diagram #7 of 9')
+        assert ei.value.estimate['growth_bytes'] == pytest.approx(0.6e9)
+        assert 'diagram #7 of 9' in str(ei.value)
+        assert 'test run' in str(ei.value)
+    fi.growth_guard('outside any scope')         # no scope: no check
+
+
+def test_growth_guard_nested_scopes_share_the_baseline(monkeypatch):
+    fp = [2.0e9]
+    monkeypatch.setattr(fi, 'process_footprint_bytes', lambda: fp[0])
+    with fi.run_growth_scope(budget=1e9, rule='set'):
+        fp[0] = 2.6e9
+        with fi.run_growth_scope(budget=1e9, rule='set'):   # inner: no reset
+            fp[0] = 3.2e9
+            with pytest.raises(fi.PhaseJResourceError):
+                fi.growth_guard('inner')
+    with fi.run_growth_scope(budget=None, rule='off'):     # no limit
+        fp[0] = 100e9
+        fi.growth_guard('no limit')
+
+
+def test_growth_guard_stops_compute_cumulants_in_typing(monkeypatch):
+    """A run whose footprint grows past the budget is stopped with a
+    refusal, here at the first typing checkpoint (fake footprint)."""
+    import numpy as np
+    from api.compute import compute_cumulants
+    from api.model import TemporalTheoryBuilder
+    model = (TemporalTheoryBuilder('growth guard ou').population('pop', size=1)
+             .physical_field('x', population='pop')
+             .parameter('eps', default=0.1)
+             .set_action_text('sum(xt[i]*(Dt*x[i] + x[i] + eps*x[i]^3) '
+                              '- xt[i]^2/2 for i in pop)')
+             .set_mf_equation('xstar', '0').build())
+    calls = [0]
+
+    def fake_fp():
+        calls[0] += 1
+        return 1e9 if calls[0] == 1 else 1e12   # the baseline, then +999 GB
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1')   # no default rule read
+    monkeypatch.setattr(fi, 'process_footprint_bytes', fake_fp)
+    with pytest.raises(fi.PhaseJResourceError, match='grown by'):
+        compute_cumulants(model, k=2, max_ell=1,
+                          external_fields=[('dx', 1), ('dx', 1)],
+                          tau_grid=np.array([0.0]), parallel=False,
+                          verbose=False, use_cache=False)
+
+
+# ── item 57 Q4: forked workers share the remaining budget ────────────────
+
+def test_forked_workers_get_a_share_of_the_budget():
+    from engine.integration.time_domain import pipeline as pl
+    assert pl._worker_share(4) == {}             # no scope: no initializer
+    with fi.phase_j_memory_scope(budget=1000, rule='set', use_env=False):
+        with fi._PLAN_MEM_LOCK:
+            fi._PLAN_MEM['used'] = 200
+        kw = pl._worker_share(4)
+        assert kw['initargs'] == (200,)          # (1000 - 200) / 4
+        kw['initializer'](*kw['initargs'])       # what each child runs
+        assert fi._PLAN_MEM['budget'] == 400     # its own 200 + share

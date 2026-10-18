@@ -821,7 +821,12 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
         # with any downstream code that relies on yield ordering.
         results = []
         mask = _zero_mask(G_ft)
-        for pd in prediagrams:
+        from engine.integration.time_domain.final_integral import (
+            growth_guard)
+        for i_pd, pd in enumerate(prediagrams):
+            if i_pd % 64 == 0:
+                growth_guard(f'type assignment (prediagram {i_pd}, '
+                             f'{len(results):,} typed diagrams so far)')
             for td in enumerate_typed_diagrams(
                 pd, external_fields, vertex_types, source_types,
                 G_ft, resp_index, phys_index, g_zero_mask=mask,

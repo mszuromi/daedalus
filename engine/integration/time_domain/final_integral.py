@@ -965,6 +965,7 @@ def _plan_guard(n_tuples, n_full, where=None):
             _PLAN_MEM['used'] += nbytes
             _PLAN_MEM['tuples'] += n_tuples
             _PLAN_MEM['plans'] += 1
+    growth_guard(where or 'a modesum plan')
 
 
 def _plan_refund(n_tuples):
@@ -975,6 +976,84 @@ def _plan_refund(n_tuples):
             _PLAN_MEM['used'] -= n_tuples * PLAN_BYTES_PER_TUPLE
             _PLAN_MEM['tuples'] -= n_tuples
             _PLAN_MEM['plans'] -= 1
+
+
+# ── the real-growth guard (audit MEM-11 / MEM-02) ─────────────────────────
+# The charges above cover the modesum plans and the stationary states only:
+# typing, per-diagram setup objects, Sage expressions and caches grew a run
+# by 0.1-1.7 GB uncharged on the zoo (3-30 GB on stress cases, with no
+# refusal).  ``run_growth_scope`` (``compute_cumulants`` holds one) records
+# the process footprint when the run starts; ``growth_guard`` raises
+# ``PhaseJResourceError`` once the footprint has grown by more than the
+# run's budget since then.  Checked at every plan charge, before every
+# diagram's Phase J integration and every 64 prediagrams of the typing loop
+# (one ``proc_pid_rusage`` call, ~1 us).
+_RUN_GROWTH = {'active': 0, 'fp0': None, 'budget': None, 'rule': None,
+               'what': ''}
+
+
+class run_growth_scope:
+    """The run's footprint baseline and budget for :func:`growth_guard`
+    (``budget``/``rule``: as ``mem_budget`` returns them; default: read from
+    ``PHASE_J_MEM_BUDGET_GB``).  Nested scopes share the outer one."""
+
+    def __init__(self, what='', budget=None, rule=None):
+        if budget is None and rule is None:
+            budget, rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
+        self.budget, self.rule, self.what = budget, rule, what
+        self._outer = False
+
+    def __enter__(self):
+        with _PLAN_MEM_LOCK:
+            if _RUN_GROWTH['active'] == 0:
+                _RUN_GROWTH.update(fp0=process_footprint_bytes(),
+                                   budget=self.budget, rule=self.rule,
+                                   what=self.what)
+                self._outer = True
+            _RUN_GROWTH['active'] += 1
+        return self
+
+    def __exit__(self, *exc):
+        with _PLAN_MEM_LOCK:
+            _RUN_GROWTH['active'] -= 1
+            if _RUN_GROWTH['active'] == 0:
+                _RUN_GROWTH.update(fp0=None, budget=None, rule=None, what='')
+        return False
+
+
+def growth_scoped(fn):
+    """Decorator: run ``fn`` inside a :class:`run_growth_scope`."""
+    @_functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with run_growth_scope(what=getattr(fn, '__name__', '')):
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+def growth_guard(where=''):
+    """Raise ``PhaseJResourceError`` when the process footprint has grown
+    by more than the run's budget since its :class:`run_growth_scope`
+    began (outside a scope, or with no limit or no footprint reading: a
+    no-op)."""
+    with _PLAN_MEM_LOCK:
+        if _RUN_GROWTH['active'] <= 0:
+            return
+        fp0, budget = _RUN_GROWTH['fp0'], _RUN_GROWTH['budget']
+        rule, what = _RUN_GROWTH['rule'], _RUN_GROWTH['what']
+    if fp0 is None or budget is None:
+        return
+    fp = process_footprint_bytes()
+    if fp is None or fp - fp0 <= budget:
+        return
+    est = {'footprint_bytes': fp, 'footprint_at_start_bytes': fp0,
+           'growth_bytes': fp - fp0, 'budget_bytes': budget,
+           'where': where}
+    raise PhaseJResourceError(
+        f'memory budget exceeded{" in " + what if what else ""}: the process '
+        f'has grown by {_fmt_gb(fp - fp0)} since the run started '
+        f'({_fmt_gb(fp0)} -> {_fmt_gb(fp)} footprint), over the budget of '
+        f'{_fmt_budget(budget, rule)}, at {where or "a checkpoint"}.  The run '
+        f'was stopped there.  Options: {_BUDGET_HOW}.', est)
 
 #: Relative gap below which a kernel rate counts as equal to a propagator
 #: pole (the dressed line would need a ``Δt e^{λΔt}`` term): leg-time path,

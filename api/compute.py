@@ -205,7 +205,7 @@ class PhaseJIncompleteWarning(UserWarning):
 
 
 from engine.integration.time_domain.final_integral import (  # noqa: E402
-    PhaseJResourceError)
+    PhaseJResourceError, growth_scoped as _growth_scoped)
 
 
 class SpatialAccuracyWarning(UserWarning):
@@ -1200,6 +1200,7 @@ def _switch_on_check(result, failures, model_name):
                 f'subsets); their switch-on weights are not implemented')
 
 
+@_growth_scoped
 def compute_cumulants(
     model: dict,
     k: int,
