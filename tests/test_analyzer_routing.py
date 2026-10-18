@@ -869,3 +869,28 @@ def test_g6_names_an_ill_conditioned_realization():
     assert hit and hit[0].level == 'warning' and '2 subset(s)' in hit[0].message
     led = [e for e in ctx.ledger if e.name == 'realization_conditioning']
     assert led and led[0].satisfied is False
+
+
+def test_spatial_accuracy_findings():
+    """G6 names a spatial result the integrator cannot certify (result
+    status 'approximate'): G6_SPATIAL_DERIVATIVE_LOOP for a derivative-vertex
+    loop, G6_SPATIAL_EQUAL_TIME for a coupled loop at tau = 0 (product grid)."""
+    import warnings
+    import numpy as np
+    from api import compute_cumulants
+    kpz = (SpatialModelBuilder('kpz g6', n_populations=0).physical_field('p', spatial_dim=1)
+           .parameter('mu', default=1.0, domain='positive').parameter('D', default=0.7, domain='positive')
+           .parameter('c', default=0.3, domain='real').parameter('T', default=1.0, domain='positive')
+           .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='0')
+           .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)-(c/2)*Dx(p,0)^2)-T*pt^2')
+           .operator_ir().boundary('infinite').initial('stationary').build())
+    crd, _mod = _load('coupled_rd_2species_1d')
+    kw = dict(k=2, max_ell=1, tau_grid=np.array([0.0]), spatial_grid=np.array([0.5]),
+              use_cache=False, parallel=False, spatial_parallel=False, verbose=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r1 = compute_cumulants(kpz, external_fields=[('p', 1)] * 2, **kw)
+        r2 = compute_cumulants(crd, external_fields=[('a', 1)] * 2, **kw)
+    assert 'G6_SPATIAL_DERIVATIVE_LOOP' in {f.code for f in r1['analysis'].findings}
+    assert 'G6_SPATIAL_EQUAL_TIME' in {f.code for f in r2['analysis'].findings}
+    assert r1['status'] == r2['status'] == 'approximate'

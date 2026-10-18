@@ -389,7 +389,8 @@ def test_operator_ir_signed_cache_round_trips(combined_model, isolated_cache):
 
 
 def test_combined_operator_ir_cached_matches_uncached(combined_model,
-                                                      isolated_cache):
+                                                      isolated_cache,
+                                                      monkeypatch):
     """Headline regression: ``compute_cumulants`` for the combined
     Model-B⊕KPZ operator-IR model at ``max_ell=1`` agrees whether the
     expand cache is used or bypassed — and the cached run keeps the
@@ -403,6 +404,12 @@ def test_combined_operator_ir_cached_matches_uncached(combined_model,
         return np.asarray(res['C_tau']), si.get('vertex_mode')
 
     kw = _combined_kwargs()
+    # Cache plumbing only.  Physically this model's one-loop C is UV-divergent
+    # in d = 1 (the KPZ (dphi)^2 self-loop <(dphi)^2> = int dk k^2 C(k) feeding
+    # the Allen-Cahn vertex) and compute_cumulants refuses it; the comparison
+    # cached vs uncached does not need a finite answer.
+    from engine.integration.spatial import full_integrator as _FI
+    monkeypatch.setattr(_FI, '_refuse_uv_divergent', lambda *a, **k: None)
 
     # Reference: cache fully bypassed.
     C_nc, m_nc = _c00_mode(

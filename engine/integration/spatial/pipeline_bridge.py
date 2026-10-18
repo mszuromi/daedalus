@@ -327,6 +327,29 @@ def _boosted_k2(fn, ft, model, prop, num_params, external_fields, tau_grid,
         vals = [inf.get(key) for inf in infos if inf.get(key) is not None]
         if vals:
             info[key] = max(vals)
+    # the accuracy records of every τ (the τ = 0 run holds the equal-time one)
+    eqs = [inf['equal_time'] for inf in infos if inf.get('equal_time')]
+    if eqs:
+        m_ = {'calls': sum(e.get('calls', 0) for e in eqs),
+              'grid_calls': sum(e.get('grid_calls', 0) for e in eqs)}
+        sx = [e for e in eqs if e.get('calls')]
+        if sx:
+            m_['max_rel_change'] = max(e['max_rel_change'] for e in sx)
+            m_['unconverged'] = sum(e['unconverged'] for e in sx)
+            m_['max_order'] = max(e['max_order'] for e in sx)
+        gn = [e for e in eqs if e.get('grid_calls')]
+        if gn:
+            m_['grid_note'] = gn[0]['grid_note']
+            m_['grid_sizes'] = sorted({g for e in gn for g in e['grid_sizes']})
+        info['equal_time'] = m_
+    das = [inf['derivative_accuracy'] for inf in infos
+           if inf.get('derivative_accuracy')]
+    if das:
+        d_ = dict(das[0])
+        sp = [x.get('coarse_spread') for x in das]
+        d_['coarse_spread'] = (None if any(v is None for v in sp)
+                               else max(sp))
+        info['derivative_accuracy'] = d_
     if 'C_by_order' in info:
         info['C_by_order'] = {
             el: np.array([np.asarray(inf['C_by_order'][el])[0]
@@ -1220,8 +1243,14 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         ff.moment_bessel = lambda a, S, Bcal, xs: (
             np.array([0.0]),
             np.zeros((1, a.shape[0], np.asarray(xs).shape[0]), dtype=complex))
+        ff.identically_zero = True
         return ff
 
+    if Rcal == 1:
+        # every node of this diagram is a plain vertex (a mixed model): it is
+        # a plain diagram (radial-simplex rule, plain sigma grid, no
+        # derivative-accuracy mark)
+        return None
     if d == 1:
         if Rcal == 0:
             return _zero_ff_with_moments(-1)
@@ -1263,6 +1292,7 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         # Q ~ N((i/2)·Binv·X, Binv/2)).
         # over ALL k-1 external momenta q0..q_{k-2} (a form factor that uses
         # only some of them still needs the full Gaussian vector)
+        ff.rcal = Rcal                     # for the UV power count
         ff.moment_x_multi = None
         n_ext = len(td.external_legs) - 1
         if n_ext >= 2:
@@ -1293,6 +1323,7 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     # note): the d≥2 grid is gh_order^{L·d}, so this is a large saving.
     loopsyms = [s for (s, kind, _i, _a) in parsed if kind == 'l']
     ff.gh_order_needed = _min_gh_order(Rcal, loopsyms)
+    ff.rcal = Rcal                         # for the UV power count
     return ff
 
 
@@ -1805,6 +1836,9 @@ def compute_spatial_correlator_generic(
         per_tau_kw=lambda i: {} if i == 0 else {'verbose': False})
     if _bst is not None:
         return _bst
+    from engine.integration.spatial.full_integrator import (
+        eqtime_ledger_reset, eqtime_ledger_collect)
+    eqtime_ledger_reset()
     if verbose:
         print('[5/7] (spatial) Certify tree modes (mu,D,kap) vs the shared-pipeline '
               'C(q,τ) at sample momenta (mode-structure check)...')
@@ -2052,12 +2086,17 @@ def compute_spatial_correlator_generic(
     from engine.integration.spatial.full_integrator import (
         time_grid_split_factor, external_times_2pt, chamber_peak_bytes)
     _tau_m = float(np.max(np.abs(taus))) if len(taus) else 0.0
+    from engine.integration.spatial.full_integrator import eqtime_eligible
     for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
+        if (_tau_m == 0.0 and _use_x_path
+                and eqtime_eligible(_dd, _ff, _integrator)):
+            continue                 # equal times: the radial-simplex rule
         _nV = len(_dd.internal_vertices)
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
         # the time grid splits at the external times inside each vertex's
         # leaf bounds (worst lag sign of the largest |tau|)
-        _nshort = min(_nt, int(_osg.environ.get('SPATIAL_SEGMENT_NODES', 8)))
+        _nshort = (_nt if _ff is not None else
+                   min(_nt, int(_osg.environ.get('SPATIAL_SEGMENT_NODES', 8))))
         _split = max(time_grid_split_factor(_dd, external_times_2pt(_dd, t_),
                                             _nt, _nshort)
                      for t_ in ((0.0,) if _tau_m == 0.0 else (_tau_m, -_tau_m)))
@@ -2186,6 +2225,58 @@ def compute_spatial_correlator_generic(
         for el in ells:
             dCx_by_ell[el] = _ft_to_x(dC_by_ell[el])
 
+    # Derivative-vertex loops: the form factor makes the loop-shrink corner an
+    # integrable rho^(-1/2) singularity (UV power count with the form factor,
+    # full_integrator.uv_divergent_subgraphs), which the product grid
+    # resolves only algebraically (~n^-2; percent level at the default grid,
+    # at every tau).  Measure it: the derivative records again at a 0.7x
+    # coarser grid; the spread goes to info['derivative_accuracy'] and the
+    # result is marked approximate (api.compute).
+    deriv_acc = None
+    _ff_recs = [rec for rec in live_g if rec[2] is not None
+                and not getattr(rec[2], 'identically_zero', False)]
+    if _ff_recs:
+        def _cg(n_):
+            return max(6, int(round(0.7 * n_)))
+
+        def _ff_part(coarse):
+            out_ = np.zeros((len(taus), len(xg)), dtype=complex)
+            if _use_analytic:
+                for dd, pv, ff, el, nt, ns, cp in _ff_recs:
+                    ntu, nsu = (_cg(nt), _cg(ns)) if coarse else (nt, ns)
+                    for it, tau in enumerate(taus):
+                        out_[it, :] += diagram_correlator_x(
+                            dd, pv, xg, float(tau), mu0, D0, spatial_dim=d,
+                            comp=cp, n_t=ntu, n_s=nsu, formfactor=ff)
+                return out_
+            dq = np.zeros((len(qg), len(taus)), dtype=complex)
+            for iq, q in enumerate(qg):
+                for it, tau in enumerate(taus):
+                    for dd, pv, ff, el, nt, ns, cp in _ff_recs:
+                        ntu, nsu = (_cg(nt), _cg(ns)) if coarse else (nt, ns)
+                        dq[iq, it] += diagram_correlator(
+                            dd, pv, float(q), float(tau), mu0, D0,
+                            spatial_dim=d, comp=cp, n_t=ntu, n_s=nsu,
+                            formfactor=ff)
+            return _ft_to_x(dq)
+        deriv_acc = {
+            'note': ('derivative-vertex loop: integrable loop-shrink '
+                     'singularity, the product grid converges ~n^-2 '
+                     '(not certified)'),
+            'n_derivative_diagrams': len(_ff_recs),
+            'grid': sorted({(rec[4], rec[5]) for rec in _ff_recs}),
+            'coarse_grid': sorted({(_cg(rec[4]), _cg(rec[5]))
+                                   for rec in _ff_recs})}
+        if _integrator == 'grid':
+            _fine, _crs = _ff_part(False), _ff_part(True)
+            _tot = np.real(np.array(C0, dtype=np.complex128)) + sum(
+                np.real(v) for v in dCx_by_ell.values())
+            deriv_acc['coarse_spread'] = float(
+                np.max(np.abs(np.real(_fine - _crs)))
+                / max(float(np.max(np.abs(_tot))), 1e-300))
+        else:
+            deriv_acc['coarse_spread'] = None
+
     # cumulative correlator at each order: {0: tree, 1: tree+1-loop, …, L: total}
     C_by_order = {0: np.array(C0, dtype=np.complex128)}
     running = np.array(C0, dtype=np.complex128)
@@ -2216,6 +2307,12 @@ def compute_spatial_correlator_generic(
                  # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …}
                  # — the whole progression from ONE call (no per-ℓ re-runs).
                  'C_by_order': C_by_order})
+    _eq = eqtime_ledger_collect()
+    if _eq is not None:
+        info['equal_time'] = _eq
+    if deriv_acc is not None:
+        info['derivative_accuracy'] = deriv_acc
+    info['integrator'] = _integrator
     return C1, info
 
 
@@ -2342,8 +2439,13 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             return 0.0
     _vterms = [{'weight': _num_w(t['weight']), 'n_phys': t['n_phys'],
                 'chain': t['chain'], 'mode': t['mode']} for t in _vt_sym]
+    from engine.integration.spatial.full_integrator import (
+        eqtime_ledger_reset, eqtime_ledger_collect)
+    eqtime_ledger_reset()
     per_ell = {}
     total = _np.zeros(n_pts)
+    _dspread = _np.zeros(n_pts)
+    _n_deriv = 0
     # group evaluation points by tau-configuration (slot 0 at tau=0)
     tau_groups = {}
     for ip in range(n_pts):
@@ -2373,6 +2475,8 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             if _vterms:
                 kw['formfactor'] = _formfactor_callable(td, _vterms,
                                                         d=spatial_dim)
+            _deriv = (kw.get('formfactor') is not None and not getattr(
+                kw['formfactor'], 'identically_zero', False))
             for tkey, idxs in tau_groups.items():
                 x_pts = _np.zeros((len(idxs), k))
                 for col, j in enumerate(range(1, k)):
@@ -2383,6 +2487,17 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
                     spatial_dim=spatial_dim, mappings=maps, comp=comp,
                     **kw)
                 acc[idxs] += v
+                if _deriv:
+                    # the derivative loop's grid accuracy (api.compute marks
+                    # the result approximate): the same diagram 0.7x coarser
+                    kwc = dict(kw)
+                    kwc['n_t'] = max(6, int(round(0.7 * kw.get('n_t', 22))))
+                    kwc['n_s'] = max(6, int(round(0.7 * kw.get('n_s', 24))))
+                    _dspread[idxs] += v - diagram_correlator_pts(
+                        d, pv, x_pts, t_pts, mu0, D0,
+                        spatial_dim=spatial_dim, mappings=maps, comp=comp,
+                        **kwc)
+                    _n_deriv += 1
         per_ell[ell] = acc
         total = total + acc
         if verbose:
@@ -2391,6 +2506,17 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
 
     info = {'per_ell': per_ell, 'mu': mu0, 'D': D0,
             'spatial_dim': spatial_dim, 'k': k, 'max_ell': max_ell}
+    _eq = eqtime_ledger_collect()
+    if _eq is not None:
+        info['equal_time'] = _eq
+    if _n_deriv:
+        info['derivative_accuracy'] = {
+            'note': ('derivative-vertex diagram: the product grid converges '
+                     'algebraically (not certified)'),
+            'n_derivative_evaluations': _n_deriv,
+            'coarse_spread': float(_np.max(_np.abs(_dspread))
+                                   / max(float(_np.max(_np.abs(total))),
+                                         1e-300))}
     if _v_drift:
         info['drift_velocity'] = _v_drift
     return total, info
@@ -2662,7 +2788,7 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
         if verbose:
             print(f'[coupled k={k}] ell={el}: summed')
 
-    info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k,
+    info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k, 'coupled': True,
             'max_ell': max_ell, 'n_modes': nf,
             'max_abs_imag': float(np.max(np.abs(np.imag(total))))}
     if _v_drift:
