@@ -469,7 +469,10 @@ def test_k3_spectral_uniform_mass_identity(recs3):
     kinematic, I_spec = 2^{-n_C} * I_single, on BOTH the q-path and the
     analytic-IFT xs-path.  Pins the matrix-B branches added to
     diagram_kinematic_spectral (H2 core).  Residual is sigma-quadrature
-    only (4e-2 -> 1e-5 at n_s = 8 -> 24); n_s=24 here."""
+    only (4e-2 -> 1e-5 at n_s = 8 -> 24); n_s=24 here.  n_t = 4 (both
+    routes share the time rule; 4.8e-7 measured): since the chamber time
+    grid splits at the kinks (#44) n_t = 8 needs ~11 GB per chamber, over
+    a CI runner's budget."""
     from engine.integration.spatial.full_integrator import (
         diagram_kinematic, diagram_kinematic_spectral, spectral_rows)
     mu = 1.0
@@ -479,7 +482,7 @@ def test_k3_spectral_uniform_mass_identity(recs3):
         mt = np.full((len(spectral_rows(d)), 1), mu, dtype=complex)
         legs = list(d.external_legs)
         et = {legs[j]: t for j, t in enumerate((0.0, 0.3, -0.2))}
-        kw = {'n_t': 8, 'n_s': 24}
+        kw = {'n_t': 4, 'n_s': 24}
         ks = diagram_kinematic_spectral(d, [0.4, -0.7], et, mt, 1.0,
                                         spatial_dim=1, **kw)
         k1 = diagram_kinematic(d, [0.4, -0.7], et, mu, 1.0,
@@ -630,7 +633,10 @@ def test_k3_coupled_cross_complex_modes():
     cancellation) at tree (3 external-field configs) AND 1-loop, with a
     sensible cross-cumulant hierarchy (nonlinearity in species a only).
     1-loop runs at the memory-safe grid: the (grid x assignments) amp
-    array is the cost driver (17 GB at n_t=8/n_s=16 -> use 6/8)."""
+    array is the cost driver (since the kink-split time grid of #44:
+    10.9 GB per chamber at n_t=6/n_s=8, 2.7 GB at 5/6).  Realness is exact
+    at any grid; the one-loop VALUE is not converged there (-2.4e-3 at 5/6,
+    -4.8e-3 at 4/6), hence only the loose size bound."""
     from api.model import ModelBuilder
     from api.compute import FieldTheory
     from api._propagator import build_propagator
@@ -680,7 +686,7 @@ def test_k3_coupled_cross_complex_modes():
     pts1 = np.array([[[0.0, 0.0], [0.0, 0.0]]])
     v1, i1 = compute_coupled_kpoint(ft2, b2, prop2, np2, ext, pts1,
                                     tree_info, max_ell=1, verbose=False,
-                                    n_t_loop=6, n_s_loop=8)
+                                    n_t_loop=5, n_s_loop=6)
     assert i1['max_abs_imag'] < 1e-12
     d1 = i1['per_ell'][1][0]
     assert 0 < abs(d1) < 0.5 * abs(i1['per_ell'][0][0]), (d1, i1['per_ell'])
