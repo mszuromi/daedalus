@@ -285,6 +285,36 @@ def test_numerical_tier_scale_ignores_spurious_roots(no_exact_tier, S):
     assert complex(prop['C_mats'][0][0, 0]) == pytest.approx(c00, rel=1e-12)
 
 
+@pytest.mark.parametrize('S', [1e-6, 1e-8])
+def test_trim_restore_does_not_double_an_ill_conditioned_pole(S):
+    """K = i w S + A with a slow mode 1e-11 of the fastest (A below): the
+    leading coefficient S^3 falls under the trim, the restore finds the
+    dropped poles, and the slow root -- Newton noise ~3e-7 relative -- came
+    back twice (from the trimmed and from the untrimmed polynomial), its
+    residue counted twice (second review).  One candidate per root now: the
+    exact tier's three poles and residues."""
+    A = [[1.0, 0.3, 0.0], [0.2, 0.06 + 1e-11, 0.1], [0.0, 0.0, 3.0]]
+    om = var('omega')
+    K = matrix(SR, 3, 3, lambda i, j: (I * om * S if i == j else 0) + SR(A[i][j]))
+    exact = {'K_ft': K, 'adj_ft': None, 'G_ft': None, 'nf': 3, 'omega': om}
+    PR.compute_poles_and_residues(exact, {}, verbose=False)
+    num = {'K_ft': K, 'adj_ft': None, 'G_ft': None, 'nf': 3, 'omega': om}
+    orig = PR._compute_residues_via_polynomial_fracfield
+    try:
+        PR._compute_residues_via_polynomial_fracfield = lambda *a, **k: (None, None, None)
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            PR.compute_poles_and_residues(num, {}, verbose=False)
+    finally:
+        PR._compute_residues_via_polynomial_fracfield = orig
+    assert len(num['pole_vals']) == len(exact['pole_vals']) == 3
+    for p, q in zip(num['pole_vals'], exact['pole_vals']):
+        assert abs(complex(p) - complex(q)) <= 1e-6 * abs(complex(q))   # the slow root is ill-conditioned
+    for C, E in zip(num['C_mats'], exact['C_mats']):
+        assert abs(complex(C[0, 0]) - complex(E[0, 0])) <= 1e-10 * max(abs(complex(E[0, 0])), 1e-300) or (
+            complex(E[0, 0]) == 0 and complex(C[0, 0]) == 0)
+
+
 def test_structural_zeros_are_exact():
     # K upper triangular in (x, z): G_zx is a structural zero, G_xz is not
     nz = [[True, True], [False, True]]

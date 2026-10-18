@@ -554,7 +554,9 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                     # (with the cluster route on, its own analysis reports
                     # the unresolved cluster: G3_POLE_CLUSTER_UNRESOLVED)
                     _note_tier1_fallback(analysis_out, 'Q(omega) has a '
-                                         'repeated root')
+                                         'repeated root, which has no simple '
+                                         'residue: the values there are not '
+                                         'reliable')
                 return None, None, None
         except (AttributeError, TypeError):
             # ``is_squarefree`` may not be implemented on the field;
@@ -1612,14 +1614,18 @@ def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
     candidates have nothing within 1e-7 (relative); a noise coefficient's
     roots are not zeros of det K, so a true noise trim is unchanged.  The
     retarded test and the steps are relative to the frequency scale of the
-    untrimmed roots (audit W4b)."""
+    verified roots (audit W4b).  Returns ``(extra, full)``: the restored
+    poles and the untrimmed polynomial's roots (the caller's candidates when
+    ``extra`` is not empty: one per root, so an ill-conditioned root does
+    not come back twice, from the trimmed and the untrimmed polynomial,
+    with Newton noise wider than the dedup)."""
     import numpy as np
     from sage.all import PolynomialRing, CDF
     try:
         full = [complex(r) for r, _ in
                 PolynomialRing(CDF, 'w_full')(coeffs_full).roots(CDF)]
     except Exception:
-        return []
+        return [], []
 
     def det_at(om):
         return complex(np.linalg.det(K_at(om)))
@@ -1633,7 +1639,7 @@ def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
     if verbose and extra:
         print(f'      the leading-coefficient trim dropped {len(extra)} '
               f'genuine pole(s); restored')
-    return extra
+    return extra, full
 
 
 def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
@@ -2074,8 +2080,13 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
 
     # a leading-coefficient trim may have dropped genuine poles
     if trimmed_full is not None:
-        roots_all = list(roots_all) + _restore_trimmed_roots(
-            trimmed_full, roots_all, _K_at, verbose)
+        extra, full = _restore_trimmed_roots(trimmed_full, roots_all, _K_at,
+                                             verbose)
+        if extra:
+            # the trimmed coefficients were genuine: the untrimmed
+            # polynomial's roots are the candidates (its noise roots, if
+            # any, are not zeros of det K and are rejected below)
+            roots_all = list(full)
 
     # Retarded convention: Im(ω) > 0 in this codebase's FT
     # (fourier_transform uses e^{-iωt} → poles in upper half plane
