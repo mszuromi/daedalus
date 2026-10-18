@@ -5,6 +5,8 @@ against the shipped cache element by element, so a refactor that silently drops
 or invents a prediagram fails here rather than in a downstream cumulant.
 """
 import os
+import sys
+
 import pytest
 
 pytest.importorskip("sage.all")
@@ -40,6 +42,9 @@ def test_pack_unpack_roundtrip(k, ell):
         assert L.pack_cert(L.unpack_cert(blob)) == blob
 
 
+@pytest.mark.skipif(sys.platform == 'darwin',
+                    reason='macOS never forks (engine.fork_safety); Linux CI '
+                           'covers the fork path')
 @pytest.mark.parametrize('k,ell', [(2, 1), (3, 1)])
 def test_parallel_matches_serial(k, ell):
     assert (L.stream_prediagram_certs(k, ell, n_procs=1)
@@ -61,3 +66,24 @@ def test_packed_cert_is_far_smaller_than_the_tuple():
 @pytest.mark.parametrize('k,ell', [(3, 2), (4, 2)])
 def test_streamed_certs_match_cache_large_cells(k, ell):
     assert L.stream_prediagram_certs(k, ell, n_procs=4) == _cached_certs(k, ell)
+
+
+def test_parallel_kill_switch_never_starts_a_pool(monkeypatch):
+    """``DAEDALUS_PARALLEL=0``: the streamed enumeration asks for 2 workers but
+    runs serially, on any platform, and finds the same certificates."""
+    import concurrent.futures
+
+    def boom(*a, **k):
+        raise AssertionError('a process pool was started')
+    want = L.stream_prediagram_certs(2, 1, n_procs=1)
+    monkeypatch.setenv('DAEDALUS_PARALLEL', '0')
+    monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', boom)
+    assert L.stream_prediagram_certs(2, 1, n_procs=2) == want
+
+
+def test_legacy_enumerator_threads_honour_the_kill_switch(monkeypatch):
+    """The eager enumerator's ``n_threads`` pool is a pool too."""
+    monkeypatch.setenv('DAEDALUS_PARALLEL', '0')
+    assert L._threads_allowed(4) == 1
+    monkeypatch.delenv('DAEDALUS_PARALLEL')
+    assert L._threads_allowed(4) == 4

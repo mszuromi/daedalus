@@ -733,7 +733,8 @@ def _joint_backtrack(prediagram, edges, ext_assignment, order, candidates,
 # is pickled, and ``TypedDiagram`` has explicit ``__getstate__`` /
 # ``__setstate__`` via ``__slots__`` for that purpose.
 #
-# Windows support deferred — same constraints as
+# Linux only: macOS never forks (``engine.fork_safety.fork_unsafe``; the
+# call runs serially there) and Windows has no fork -- same constraints as
 # ``engine/integration/time_domain/pipeline.py``'s ``total_C_batch``.
 
 _ENUM_WORKER_STATE = {}
@@ -785,7 +786,9 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     start_method : {'fork'}, default 'fork'
         Multiprocessing start method.  Only ``'fork'`` is supported:
         ``'spawn'`` would require pickling Sage graph / matrix inputs
-        across workers, which is not guaranteed to work cleanly.
+        across workers, which is not guaranteed to work cleanly.  On
+        macOS the call runs serially (one warning per process);
+        ``DAEDALUS_PARALLEL=0`` makes it serial everywhere.
 
     Returns
     -------
@@ -801,13 +804,15 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     ``test_enumerate_all_parallel_matches_serial`` in
     ``tests/test_type_assignment.py``.
     """
-    # Fork-safety guard: forking after Cocoa/BLAS init inside a macOS Jupyter
-    # kernel can hard-crash the kernel AND the OS.  Degrade to serial there
-    # (mirrors the temporal Phase-J path); fork stays available in scripts,
-    # pytest, Linux, and terminal IPython.
-    from engine.fork_safety import fork_unsafe_in_notebook, warn_fork_fallback_once
+    # Kill switch (DAEDALUS_PARALLEL=0), then the fork guard: macOS never
+    # forks (a fork there has hard-crashed a Jupyter kernel and the OS), so
+    # the enumeration runs serially with one warning per process.
+    from engine.fork_safety import (fork_unsafe, parallel_disabled,
+                                    warn_fork_fallback_once)
+    if parallel and parallel_disabled():
+        parallel = False
     if (parallel and len(prediagrams) > 1
-            and fork_unsafe_in_notebook(start_method)):
+            and fork_unsafe(start_method)):
         warn_fork_fallback_once('diagram type-assignment enumeration')
         parallel = False
 
@@ -826,12 +831,6 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
 
     import multiprocessing as mp
     import os
-    # Needed for fork to proceed at all on macOS (objc otherwise aborts).  Only
-    # reached for a LEGITIMATE fork — the notebook case fell back to serial
-    # above, so this never runs in the lethal darwin+Jupyter context.
-    os.environ.setdefault(
-        'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
-    )
 
     # Populate _ENUM_WORKER_STATE BEFORE forking so children inherit it.
     # Not thread-safe — ``enumerate_all`` should not be called from two

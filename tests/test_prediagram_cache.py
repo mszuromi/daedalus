@@ -241,20 +241,21 @@ def test_cache_off_source_rejects_an_unknown_value(tmp_path, monkeypatch,
 def test_use_cache_false_never_forks_inside_a_notebook_kernel(
         tmp_path, monkeypatch, no_eager_knob):
     """With ``DAEDALUS_PREDIAGRAM_PROCS`` > 1 the streamed path asks for
-    workers; inside a macOS Jupyter kernel the existing fork guard must turn
-    that into a warning and a serial run (forking there has crashed the
-    machine).  The kernel is simulated; any process pool is a failure."""
+    workers; on macOS (which never forks: forking a Jupyter kernel there has
+    crashed the machine) the fork guard must turn that into a warning and a
+    serial run.  The guard is simulated; any process pool is a failure."""
     import concurrent.futures
 
     import engine.fork_safety as fs
 
     def _no_pool(*a, **kw):
         raise AssertionError('a process pool was started in a notebook kernel')
-    monkeypatch.setattr(fs, 'fork_unsafe_in_notebook', lambda *a, **kw: True)
+    monkeypatch.setattr(fs, 'fork_unsafe', lambda *a, **kw: True)
+    monkeypatch.setattr(fs, '_WARNED', set())
     monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', _no_pool)
     monkeypatch.setenv(pdc._PROCS_ENV, '4')
     monkeypatch.setattr(pdc, '_STREAMED_MEMO', {})      # force a real stream
-    with pytest.warns(UserWarning, match='fork'):
+    with pytest.warns(RuntimeWarning, match='fork'):
         records, source = pdc.load_prediagrams(str(tmp_path), 2, 1,
                                                use_cache=False)
     assert source == 'streamed' and len(records) == 9

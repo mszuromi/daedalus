@@ -9,6 +9,9 @@ Run with:
 """
 
 import os, sys
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph, matrix
@@ -388,6 +391,9 @@ def test_enumerate_typed_duplicate_leg_vertex_no_redundant_generation():
     )
 
 
+@pytest.mark.skipif(sys.platform == 'darwin',
+                    reason='macOS never forks (engine.fork_safety); Linux CI '
+                           'covers the fork path')
 def test_enumerate_all_parallel_matches_serial():
     """Parallel (fork-ProcessPool) per-prediagram enumeration must
     produce bit-identical output to the serial path.  Per-prediagram
@@ -398,13 +404,14 @@ def test_enumerate_all_parallel_matches_serial():
     Test fixture: multiple distinct prediagrams + vertex types with
     both response and physical legs, so each prediagram's
     enumerate_typed_diagrams emits a non-trivial list.  The parallel
-    path uses ``start_method='fork'`` which is required on macOS +
-    Sage (see type_assignment.py docstring).
+    path uses ``start_method='fork'`` (Linux only; macOS never forks).
+    The fork must not touch ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY`` (the
+    package never sets it).
     """
     from engine.diagrams.type_assignment import enumerate_all
     from engine.diagrams.symmetry import diagram_signature
     import os
-    os.environ.setdefault('OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES')
+    objc_before = os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY')
 
     # Build a small but non-trivial fixture: 3 distinct prediagrams.
     pd1 = _make_pd([(0, 1)], leaves=[0, 1])
@@ -431,6 +438,7 @@ def test_enumerate_all_parallel_matches_serial():
         G_ft, resp_idx, phys_idx,
         parallel=True, n_workers=3,
     )
+    assert os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY') == objc_before
 
     assert len(serial) == len(parallel), (
         f'Serial produced {len(serial)} diagrams; parallel produced '
@@ -449,9 +457,9 @@ def test_enumerate_all_parallel_matches_serial():
 
 
 def test_enumerate_all_guard_falls_back_to_serial(monkeypatch):
-    """Fork-safety: when ``fork_unsafe_in_notebook`` reports True (macOS
-    Jupyter), ``enumerate_all(parallel=True)`` must degrade to SERIAL — never
-    fork — and still return the serial result.  Pins the fix for the
+    """Fork-safety: when ``fork_unsafe`` reports True (macOS, any process),
+    ``enumerate_all(parallel=True)`` must degrade to SERIAL — never fork —
+    and still return the serial result.  Pins the fix for the
     previously-unguarded type-assignment fork."""
     from engine.diagrams.type_assignment import enumerate_all
     import engine.fork_safety as fs
@@ -474,7 +482,7 @@ def test_enumerate_all_guard_falls_back_to_serial(monkeypatch):
     serial = enumerate_all(*args, parallel=False)
 
     # Force "unsafe" and make ANY fork attempt explode loudly.
-    monkeypatch.setattr(fs, 'fork_unsafe_in_notebook', lambda *a, **k: True)
+    monkeypatch.setattr(fs, 'fork_unsafe', lambda *a, **k: True)
 
     def _boom(*a, **k):
         raise AssertionError('enumerate_all forked despite the notebook guard')
@@ -482,6 +490,17 @@ def test_enumerate_all_guard_falls_back_to_serial(monkeypatch):
 
     guarded = enumerate_all(*args, parallel=True, n_workers=3)  # would fork
     assert len(guarded) == len(serial)                          # → fell back
+
+    # DAEDALUS_PARALLEL=0: serial even where fork is allowed, no warning
+    monkeypatch.setattr(fs, 'fork_unsafe', lambda *a, **k: False)
+    monkeypatch.setenv('DAEDALUS_PARALLEL', '0')
+    monkeypatch.setattr(fs, '_WARNED', set())
+    import warnings
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter('always')
+        off = enumerate_all(*args, parallel=True, n_workers=3)
+    assert len(off) == len(serial)
+    assert not [r for r in rec if 'fork' in str(r.message)]
 
 
 def test_enumerate_typed_distinct_legs_regression():
