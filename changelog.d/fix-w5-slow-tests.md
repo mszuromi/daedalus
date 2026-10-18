@@ -24,3 +24,9 @@ Tests only; no library code changed and no public number moved. The first schedu
   `test_unequal_D_loop_dressing_ladder`): the coupled one loop at dressing order 2 / 3 needs 6.4 / 10.8 GB per chamber
   at the default grids; before the memory guard (#44) the same tests reached > 18.9 GB, so they never fitted a standard
   runner. (Their NaN in the x-space tree is a separate fix, fix/dyson-nan.)
+- **Moves from #59 (W6) documented there**: the two-population spike-reset captures of
+  `tests/test_phase_j_subset_hook.py` are refrozen (the saddle solved to round-off moved them by <= 2.9e-11 relative;
+  #59 lists spike_reset k2 l1 <= 9.0e-11), and the `linear_hawkes` baseline entry accepts its new model fingerprint
+  (#59 GEN-01: an explicit population; values moved 2.2e-16). `ou_quartic_two_dim_color_corr-k2-l1` is compared at
+  1e-12 instead of 1e-13: its ell1 differs from the macOS baseline by 4.0e-13 on CI's stack (ubuntu / openblas) and
+  has not moved at any commit since the baseline.
