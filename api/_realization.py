@@ -1386,7 +1386,9 @@ def _aposteriori_check(A, B, C, rtol=1e-2):
     dec = max(1.0, np.log10(hi / lo))
     nodes = [np.geomspace(lo, hi, int(40 * dec) + 2)]
     for z in lam:
-        if abs(z.imag) > abs(z.real) and z.imag >= 0:
+        # every underdamped eigenvalue (a complex-coefficient system has
+        # resonances at negative frequencies with no conjugate partner)
+        if abs(z.imag) > abs(z.real):
             nodes.append(abs(z.imag) + abs(z.real) * np.sinh(np.linspace(-8, 8, 81)))
     w = np.unique(np.concatenate(nodes))
     w = w[(w >= lo) & (w <= hi)]

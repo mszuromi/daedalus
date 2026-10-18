@@ -523,12 +523,16 @@ def _as_name_dict(d: Optional[dict]) -> dict:
 
 def _check_supplied_inverse(Gs, Gf, bridge, omega):
     """Raise when the supplied ``G`` (SR) is not ``K^-1`` (``Gf``, exact)
-    at a numeric point (``omega`` real, every other symbol a fixed value in
-    [0.5, 1.5]): a row / column convention mismatch differs at O(1); the
-    float round-off of a pipeline ``G`` is ~1e-16."""
+    at two numeric points (``omega`` real, every other symbol a fixed value
+    in [0.5, 1.5]): a row / column convention mismatch differs at O(1); the
+    float round-off of a pipeline ``G`` is ~1e-16.  An entry that does not
+    evaluate to a number falls back to the exact test in the field."""
     import itertools
-    free = sorted({v for e in Gs.list() for v in SR(e).variables()
-                   if v != omega}, key=str)
+    om = str(omega)
+    other = [SR(bridge.frac_to_sr(Gf[i, j]))
+             for i in range(Gf.nrows()) for j in range(Gf.ncols())]
+    free = sorted({v for e in list(Gs.list()) + other
+                   for v in SR(e).variables() if str(v) != om}, key=str)
     for w0, shift in ((0.731, 0.0), (1.913, 0.29)):
         pt = {omega: SR(w0)}
         pt.update({v: SR(0.5 + ((0.618034 * (k + 1) + shift) % 1.0))
@@ -537,14 +541,29 @@ def _check_supplied_inverse(Gs, Gf, bridge, omega):
         for i, j in itertools.product(range(Gs.nrows()), range(Gs.ncols())):
             try:
                 a = complex(SR(Gs[i, j]).subs(pt))
-                b = complex(SR(bridge.frac_to_sr(Gf[i, j])).subs(pt))
+                b = complex(other[i * Gf.ncols() + j].subs(pt))
             except (TypeError, ValueError, ZeroDivisionError):
-                continue
+                _check_supplied_inverse_exact(Gs, Gf, bridge)
+                return
             diff, scale = max(diff, abs(a - b)), max(scale, abs(a), abs(b))
         if diff > 1e-9 * max(scale, 1e-300):
             raise SymbolicOutError(
                 'K * G != identity: the supplied G is not the inverse of '
                 'K (row/column convention mismatch?)')
+
+
+def _check_supplied_inverse_exact(Gs, Gf, bridge):
+    try:
+        Gg = matrix(bridge.F, [[bridge.to_field(Gs[i, j])
+                                for j in range(Gs.ncols())]
+                               for i in range(Gs.nrows())])
+    except (NonRationalPropagatorError, ArithmeticError) as exc:
+        raise SymbolicOutError(
+            f'the supplied G cannot be checked against K^-1: {exc}') from exc
+    if Gg != Gf:
+        raise SymbolicOutError(
+            'K * G != identity: the supplied G is not the inverse of '
+            'K (row/column convention mismatch?)')
 
 
 def tree_covariance_from_matrices(G, D, omega, *, K=None,
