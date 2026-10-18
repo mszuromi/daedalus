@@ -2524,6 +2524,7 @@ class SubsetSS:
         fixed segments), from ``seg_from``'s stacked space to ``seg_to``'s:
         one run per basis vector (``me_chain``)."""
         n_ev = sum(1 for k_, _d in prog[:i_from + 1] if k_ == 'event')
+        _check_dense_map(seg_to.D, seg_from.D)
         M = np.zeros((seg_to.D, seg_from.D), dtype=complex)
         for qb in range(seg_from.D):
             e = np.zeros(seg_from.D, dtype=dt)
@@ -2975,6 +2976,27 @@ def _check_transient(sub, acts):
             f'{FI._fmt_budget(budget, rule)}.  '
             f'Nothing was allocated for it.  Options: {FI._BUDGET_HOW}.',
             {'bytes': nbytes, 'states': D, 'budget_bytes': budget})
+
+
+def _check_dense_map(d_to, d_from):
+    """Refuse (``PhaseJResourceError``) a dense ``d_to x d_from`` complex map
+    of a C0 chain output (``_between``) larger than the budget,
+    before it is allocated (uncharged above ``OP_DENSE_MAX`` states: 6.4 GB
+    at D = 2e4; audit MEM-07)."""
+    FI = _FI()
+    with FI._PLAN_MEM_LOCK:
+        _scoped, budget, rule, _used = FI._budget_now()
+    nbytes = 16 * int(d_to) * int(d_from)
+    if budget is None or nbytes <= budget:
+        return
+    raise FI.PhaseJResourceError(
+        f'Phase J memory budget exceeded: the dense map between two moving '
+        f'segments of a chain output ({int(d_to):,} x {int(d_from):,} '
+        f'states) needs {FI._fmt_gb(nbytes)}, over the budget of '
+        f'{FI._fmt_budget(budget, rule)}.  Nothing was allocated for it.  '
+        f'Options: {FI._BUDGET_HOW}.',
+        {'bytes': nbytes, 'states': (int(d_to), int(d_from)),
+         'budget_bytes': budget})
 
 
 def _charge(sub):

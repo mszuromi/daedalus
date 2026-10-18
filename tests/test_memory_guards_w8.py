@@ -210,3 +210,13 @@ def test_me_form_cache_is_capped_and_released(monkeypatch):
     assert me._FORM_CACHE['bytes'] == base            # released with the owner
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', 'off')
     assert me._form_cache_admit(Owner(), form)        # no limit
+
+
+# ── MEM-07: the dense map between moving segments of a chain output ───────
+
+def test_chain_dense_map_refused_before_allocation(monkeypatch):
+    from engine.integration.time_domain import statespace as SS
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1')
+    SS._check_dense_map(2000, 2000)                  # 64 MB: fine
+    with pytest.raises(fi.PhaseJResourceError, match='6.40 GB'):
+        SS._check_dense_map(20000, 20000)            # was charged 1.9 MB
