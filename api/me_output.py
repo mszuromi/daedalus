@@ -84,6 +84,37 @@ CACHE_MAX = 512
 MAX_DENSE_TOTAL = 20000
 
 
+#: the dense forms cached on blocks may hold at most this fraction of the
+#: memory budget (``PHASE_J_MEM_BUDGET_GB``, default ``default_mem_budget``)
+#: in all; beyond it a form is rebuilt on demand (one frequency of
+#: ``spectrum_smooth`` on a 3-field one-loop result cached 5 GB of them under
+#: a 4 GB budget, audit MEM-03)
+FORM_CACHE_BUDGET_FRACTION = 0.5
+_FORM_CACHE = {'bytes': 0}
+_FORM_CACHE_LOCK = __import__('threading').Lock()
+
+
+def _form_cache_release(nbytes):
+    with _FORM_CACHE_LOCK:
+        _FORM_CACHE['bytes'] -= nbytes
+
+
+def _form_cache_admit(owner, form):
+    """Whether ``form`` (a tuple of arrays) may be cached on ``owner``: its
+    bytes are charged to the cache total until ``owner`` is collected."""
+    import weakref
+    from engine.integration.time_domain.final_integral import mem_budget
+    nbytes = int(sum(getattr(a, 'nbytes', 0) for a in form))
+    budget = mem_budget('PHASE_J_MEM_BUDGET_GB')[0]
+    with _FORM_CACHE_LOCK:
+        if (budget is not None and _FORM_CACHE['bytes'] + nbytes
+                > FORM_CACHE_BUDGET_FRACTION * budget):
+            return False
+        _FORM_CACHE['bytes'] += nbytes
+    weakref.finalize(owner, _form_cache_release, nbytes)
+    return True
+
+
 class MEUnavailable(ValueError):
     """The matrix-exponential triple of this result is not available (the
     message lists the reasons)."""
@@ -115,7 +146,7 @@ class MEBlock:
 
     __slots__ = ('weight', 'seg', 'beta', 'x0', 'c', 'rows', 'dtype',
                  'diagram_index', 'subset_index', 'perm_index', '_tri',
-                 '_triple')
+                 '_triple', '__weakref__')
 
     def __init__(self, ray, weight, dtype, diagram_index, subset_index,
                  perm_index):
@@ -198,7 +229,7 @@ class MEBlock:
                 x = np.kron(x, _row_start(ent, r0, 'orig'))
                 c = np.kron(c, ent.c)
             trip = (G, np.asarray(x), self.weight * np.asarray(c))
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, trip):
                 return trip
             self._triple = trip
         return self._triple
@@ -234,7 +265,7 @@ class MEBlock:
                 xt = np.kron(xt, _row_start(ent, r0, 'tri'))
                 ct = np.kron(ct, ent.ct)
             tri = (np.asarray(T, dtype=complex), xt, self.weight * ct)
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, tri):
                 return tri              # large: rebuilt on demand
             self._tri = tri
         return self._tri
@@ -301,7 +332,7 @@ class MEChainBlock:
 
     __slots__ = ('weight', 'chain', 'rows', 'dtype', 'u_max',
                  'diagram_index', 'subset_index', 'perm_index', '_tri',
-                 '_triple')
+                 '_triple', '__weakref__')
 
     def __init__(self, ray, weight, dtype, diagram_index, subset_index,
                  perm_index, u_max):
@@ -436,7 +467,7 @@ class MEChainBlock:
         expm(G s) @ x0`` for ``0 <= s <= u_max``."""
         if self._triple is None:
             trip = self._forms('orig')
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, trip):
                 return trip
             self._triple = trip
         return self._triple
@@ -446,7 +477,7 @@ class MEChainBlock:
             T, x, c = self._forms('tri')
             tri = (np.asarray(T, dtype=complex), x.astype(complex),
                    c.astype(complex))
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, tri):
                 return tri
             self._tri = tri
         return self._tri

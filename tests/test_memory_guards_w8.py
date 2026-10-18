@@ -167,3 +167,46 @@ def test_prepass_cheap_branch_counts_only_subsets_built():
         SS._EST_CACHE.clear()
     # still an upper bound of the enumerated estimate, no longer 4x it
     assert enum[0] <= cheap[0] <= 1.01 * enum[0], (cheap, enum)
+
+
+# ── MEM-06: an edge whose residues are all exactly zero ───────────────────
+
+def test_all_zero_residue_edge_builds_no_plan(monkeypatch):
+    from engine.integration.time_domain.final_integral import EdgeModeSum
+    lams = [complex(-(j + 1), 0.3 * j) for j in range(6)]
+    zero = EdgeModeSum(0, 0, 0j, tuple((0j, lam) for lam in lams))
+    full = EdgeModeSum(0, 0, 0j, tuple((complex(0.5 + j, 0.1), lam)
+                                       for j, lam in enumerate(lams)))
+    rows = [([1.0], [0.0], 0.0)] * 3
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1e-4')   # 100 kB < 216 tuples
+    plan = fi._build_modesum_plan([zero, full, full], rows, 1, 1)
+    assert len(plan['pole_tuples']) == 0 and plan['n_tuples_full'] == 0
+    # the unpruned plan of the same edges: 216 tuples, every coefficient 0
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', 'off')
+    ref = fi._build_modesum_plan([zero, full, full], rows, 1, 1, prune=False)
+    assert len(ref['pole_tuples']) == 216
+    assert all(C == 0 for (C, _lams) in ref['pole_tuples'])
+
+
+# ── MEM-03: the dense forms cached on matrix-exponential blocks ───────────
+
+def test_me_form_cache_is_capped_and_released(monkeypatch):
+    import gc
+    import numpy as np
+    from api import me_output as me
+
+    class Owner:
+        pass
+    form = (np.zeros((100, 100), dtype=complex), np.zeros(100, dtype=complex))
+    nb = sum(a.nbytes for a in form)                  # 161,600 bytes
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', str(3 * nb / 1e9))
+    base = me._FORM_CACHE['bytes']
+    owners = [Owner() for _ in range(3)]
+    admitted = [me._form_cache_admit(o, form) for o in owners]
+    assert admitted == [True, False, False]           # cap = 1.5 forms
+    assert me._FORM_CACHE['bytes'] == base + nb
+    del owners
+    gc.collect()
+    assert me._FORM_CACHE['bytes'] == base            # released with the owner
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', 'off')
+    assert me._form_cache_admit(Owner(), form)        # no limit

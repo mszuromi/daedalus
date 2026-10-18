@@ -3305,10 +3305,10 @@ class _KeptModes:
 def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
                                m, n_ext, where=None):
     r"""The modesum plan of ``smooth_edge_modes`` over the pole tuples whose
-    residues are all nonzero (item 35, F1), or ``None`` when no edge has an
-    exact-zero mode, when an edge has no nonzero mode at all (the whole
-    product is zero; the unpruned plan keeps the old behaviour), or when the
-    group order cannot be replayed (the caller then builds the unpruned plan).
+    residues are all nonzero (item 35, F1); the empty plan (no tuples) when
+    an edge has no nonzero mode at all (the whole product is zero); ``None``
+    when no edge has an exact-zero mode, or when the group order cannot be
+    replayed (the caller then builds the unpruned plan).
 
     Why it is exact: a tuple's coefficient is ``∏_e C_e``, so a tuple that
     takes an exact-zero residue has coefficient exactly 0, and every consumer
@@ -3341,7 +3341,17 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
     for ems in smooth_edge_modes:
         k = tuple((C, lam) for (C, lam) in ems.modes if not _mode_is_zero(C))
         if not k:
-            return None
+            # every residue of this edge is exactly 0: so is every tuple's
+            # coefficient, which every consumer skips -- the plan of an edge
+            # without modes (no tuples), not the full product built and
+            # charged for nothing (audit MEM-06)
+            _RUNTIME_COUNTERS['zero_mode_edge_plans'] = (
+                _RUNTIME_COUNTERS.get('zero_mode_edge_plans', 0) + 1)
+            plan = _plan_from_tuples((), len(smooth_edge_modes),
+                                     subset_constraint_data, m, n_ext)
+            plan['n_tuples_full'] = 0
+            plan['n_groups_full'] = 0
+            return plan
         if len(k) < len(ems.modes):
             dropped = True
         kept.append(_KeptModes(k))
