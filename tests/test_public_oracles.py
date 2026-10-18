@@ -13,7 +13,8 @@ Every model is built inline (or is a tracked model file), every reference comes 
     with a Cauchy contour in sqrt(D)), including the equal-time Boltzmann series 1, -3, 24, -297;
   * the delayed OU process (exact BVP, method of steps); Erlang kernels (chain embedding);
   * the switch-on transient from t_min (Van Loan), Gaussian and Levy;
-  * colored (OU) noise through its Markov embedding, one loop = the exact O(eps) mass shift.
+  * colored (OU) noise through its Markov embedding, one loop = the exact O(eps) mass shift;
+  * the 1-D Allen-Cahn tree (erfc closed form) and one loop (tadpole mass shift), tau = 0 and 1.
 
 Default engine (state space) everywhere; a few cells repeat on the pole engine
 (``DAEDALUS_PHASE_J_ENGINE=poles``).  k = 2 at tau = 0 is the exact Ito left limit (the default).
@@ -478,10 +479,10 @@ def test_allen_cahn_d1_one_loop_is_the_tadpole_mass_shift(allen_cahn_one_loop):
            rtol=1e-10)
 
 
-@pytest.mark.xfail(strict=True, reason='spatial d=1 equal-time one loop is 2e-6..7e-6 off the exact tadpole '
-                                       'mass shift (tau = 1 agrees to 3e-12); audit W5 finding')
 def test_allen_cahn_d1_one_loop_at_equal_times(allen_cahn_one_loop):
+    """The same mass shift at tau = 0 (2e-6..7e-6 off before the exact equal-time loop rule; 3.7e-13 now,
+    so 1e-11 leaves a platform margin)."""
     tg, by = allen_cahn_one_loop
     ref = _ac_ref(0.0)
     _check(by[1][tg.index(0.0)], [b for _, b in ref], max(abs(complex(b)) for _, b in ref), 'one loop tau=0',
-           rtol=1e-10)
+           rtol=1e-11)

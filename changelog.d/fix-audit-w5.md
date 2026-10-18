@@ -8,8 +8,8 @@ Tests, CI and the environment only; no library code changed and no public number
   functions (Markov embedding), 1-D polynomial drifts loop by loop at unequal times (backward generator; the Boltzmann
   series 1, -3, 24, -297), the delayed OU process (exact BVP), Erlang kernels, the switch-on transient (Van Loan),
   colored noise (exact one-loop mass shift) and the 1-D Allen-Cahn tree and one loop. Tolerance 1e-12 relative to the
-  cell's scale on both the state-space and the pole engine. One cell is a strict xfail: the spatial d = 1 equal-time
-  one loop is 2e-6..7e-6 off the exact tadpole mass shift (tau = 1 agrees to 3e-12).
+  cell's scale on both the state-space and the pole engine. The equal-time
+  one loop (2e-6..7e-6 off before the exact equal-time loop rule) agrees to 3.7e-13.
 - **Mutation-killing tests** (`tests/test_audit_w5_mutation_kills.py`) for the audit's surviving mutants: Laurent
   residues at double and triple poles, the pole-cluster cancellation factor, the Taylor degree selection of the
   state-space exponential, and the exact delayed tree (rational K0, dynamic delayed K1, against a spectral integral; the
