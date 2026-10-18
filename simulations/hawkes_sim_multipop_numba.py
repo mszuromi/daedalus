@@ -1414,18 +1414,19 @@ def build_sim_arrays(model, fundamental, mf_values):
     # other names got +1).  A coupled pair with no time-constant parameter
     # (``taug<post><pre>`` / ``taug``) gets NaN, not a silent 1.0 (the
     # delta-kernel simulators ignore tau_g; the filtered ones then fail
-    # loudly).
+    # loudly).  Spellings: ``taug<post><pre>``, ``tau_g<post><pre>``,
+    # ``taug``, ``tau_g`` (a scalar applies to every pair).
     W[:, :] = _coupling_from_model(model, fundamental, mf_values, pops,
                                    pop_offsets)
     for post in pops:
         for pre in pops:
-            tgname_pop = f'taug{post["name"]}{pre["name"]}'
-            if tgname_pop in fundamental:
-                tgs = fundamental[tgname_pop]
-            elif 'taug' in fundamental:
-                tgs = fundamental['taug']
-            else:
-                tgs = None
+            pq = f'{post["name"]}{pre["name"]}'
+            tgs = next((fundamental[k] for k in (f'taug{pq}', f'tau_g{pq}',
+                                                 'taug', 'tau_g')
+                        if k in fundamental), None)
+            if tgs is not None and np.ndim(tgs) == 0:
+                tgs = np.full((pop_offsets[post['name']][1],
+                               pop_offsets[pre['name']][1]), float(tgs))
             post_start, post_size = pop_offsets[post['name']]
             pre_start, pre_size = pop_offsets[pre['name']]
             for i in range(post_size):
