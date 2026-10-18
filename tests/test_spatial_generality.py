@@ -327,8 +327,9 @@ def _peak_and_estimate(dd, ff, d, xs, n_t, n_s, q=0.8):
     n_C = sum(1 for e in dd.edges if e.kind == 'C')
     a = np.array([e.a for e in dd.edges], dtype=float).reshape(len(dd.edges),
                                                                -1)
+    # derivative vertices refine their kink segments with n_t nodes
     P_bound = (n_t ** n_V) * (n_s ** n_C) * FI.time_grid_split_factor(
-        dd, et, n_t, min(n_t, 8))
+        dd, et, n_t, n_t if ff is not None else min(n_t, 8))
     est = FI.chamber_peak_bytes(
         P_bound, n_V=n_V, n_leaf=len(et), n_C=n_C, E=len(dd.edges),
         L=a.shape[1], n_ext=1, n_x=0 if xs is None else len(xs),
