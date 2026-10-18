@@ -526,10 +526,12 @@ def _ladder_seeds(state_vars, slices, model, fundamental, seed_box, rng):
 
 #: At most this many root scales get their own second-pass seed box.
 _MAX_RESCALE_BOXES = 8
+#: Rounds of the second pass (a round boxes the root scales found so far).
+_RESCALE_ROUNDS = 3
 
 
 def _rescale_seeds(roots, state_vars, slices, model, fundamental, seed_box,
-                   n_starts, rng):
+                   n_starts, rng, used=None):
     """Second-pass guesses: ``n_starts`` on the default box shape scaled to
     each root found whose size (per variable, its largest component) lies
     below a fifth of the default box (or above it); one box per decade of
@@ -540,7 +542,7 @@ def _rescale_seeds(roots, state_vars, slices, model, fundamental, seed_box,
     if seed_box:
         default.update(seed_box)
     unit = _seed_box_default(state_vars, model, {})
-    keys, boxes = set(), []
+    keys, boxes = (set() if used is None else used), []
     for r in roots:
         box, key, off = {}, [], False
         for var, _, _ in state_vars:
@@ -583,24 +585,30 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
 
 
 def _negative_roots(R, mirror_points, roots, root_errs, state_vars, slices,
-                    names, rtol, atol):
+                    names, rtol, atol, stray=(), stray_errs=()):
     """Roots the default search cannot reach.  A field with no declared
     domain is seeded on the non-negative half line only (widening that box
     moved existing models' roots, see ``_seed_box_default``), so a root with
     a negative value there (``x - x^3`` at ``x = -1``) is out of reach of
     ``fixed_point_index``.  The same seeds with those components negated
     (``mirror_points``: where they converged) find them; warn, naming the
-    roots found and the remedy.  Returns the new roots."""
+    roots found and the remedy.  ``stray``: such roots the default seeds
+    happened to reach (never selectable either: whether a seed overshoots
+    to the negative side depends on the field's units, audit W6).  Returns
+    the new roots."""
     cols = np.concatenate([np.arange(*slices[v]) for v in names])
     cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
-    new = []
+    cand, cand_e = list(stray) + list(cand), list(stray_errs) + list(cand_e)
+    new, new_e = [], []
     for r, e in zip(cand, cand_e):
         # negative beyond its own error estimate (a root at 0 snaps to 0)
         if not np.any(r[cols] < -10.0 * e[cols]):
             continue
-        if len(_dedup_roots(list(roots) + [r], rtol=rtol, atol=atol,
-                            errs=list(root_errs) + [e])[0]) > len(roots):
+        known = list(roots) + new
+        if len(_dedup_roots(known + [r], rtol=rtol, atol=atol,
+                            errs=list(root_errs) + new_e + [e])[0]) > len(known):
             new.append(r)
+            new_e.append(e)
     if new:
         new.sort(key=lambda r: float(r[cols[0]]))
         shown = '; '.join(
@@ -1265,23 +1273,48 @@ def solve_mean_field_dae(
     # second pass: a box at the scale of every root found off the default
     # box's scale (the decade ladder has few seeds per decade, so a narrow
     # basin, e.g. the middle root of a cubic, can be missed there)
-    extra = _rescale_seeds(deduped, state_vars, slices, model, fundamental,
-                           seed_box, n_starts, rng)
+    # ... repeated for the root scales a pass discovers (a box at one
+    # root's scale can reach a root of another scale whose basin the first
+    # boxes miss; audit W6: an exactly rescaled cubic lost its largest root),
+    # each scale boxed once, at most _RESCALE_ROUNDS rounds
     n_mirror = len(seeds)
-    if len(extra):
+    used = set()
+    for _ in range(_RESCALE_ROUNDS):
+        extra = _rescale_seeds(deduped, state_vars, slices, model,
+                               fundamental, seed_box, n_starts, rng, used)
+        if not len(extra):
+            break
+        n_before = len(deduped)
         run(extra, points)
         deduped, root_errs = _roots_from_points(R, points, rtol, atol)
         seeds = np.vstack([seeds, extra])
+        if len(deduped) == n_before:
+            break
     n_converged = len(points)
     unsearched = []
+    stray, stray_errs = [], []
     if mirror_cols is not None:
+        # a root negative (beyond its error) in a field the search covers on
+        # the non-negative half line only is not selectable, however it was
+        # reached: a seed overshoots to it in some units and not in others,
+        # so the selectable set (and fixed_point_index) depended on the
+        # field's units (audit W6: an exactly rescaled cubic lost a root)
+        keep, keep_e = [], []
+        for x, e in zip(deduped, root_errs):
+            if np.any(x[mirror_cols] < -10.0 * e[mirror_cols]):
+                stray.append(x)
+                stray_errs.append(e)
+            else:
+                keep.append(x)
+                keep_e.append(e)
+        deduped, root_errs = keep, keep_e
         # the default seeds (and the ladder, when it ran) mirrored, as before;
         # not the second-pass boxes (their roots are reached from seeds that
         # are mirrored already)
         run(mirrored(seeds[:n_mirror]), mirror_points)
         unsearched = _negative_roots(
             R, mirror_points, deduped, root_errs, state_vars, slices,
-            undeclared, rtol, atol)
+            undeclared, rtol, atol, stray, stray_errs)
 
     # Sort ascending by first declared physical field's first index.
     first_var = state_vars[0][0]
@@ -1819,6 +1852,56 @@ def linear_stability(
         'B':                     B_mat,
         'unstable_eigenvalues':  unstable,
     }
+
+
+class UnstableSaddleError(ValueError):
+    """The selected mean-field saddle is linearly unstable: there is no
+    stationary state around it to expand about."""
+
+
+def refuse_unstable_saddle(model, fundamental, mf):
+    """Raise :class:`UnstableSaddleError` when the selected root of a model
+    with ``.equation`` rows (stability analysis off) has a linearization
+    eigenvalue with ``Re sigma > 0`` beyond round-off (relative to the
+    model's fastest rate, as ``linear_stability`` judges it).  Without it an
+    unstable selection surfaced as a ``PoleFreePropagatorError`` (the growing
+    mode is not a retarded pole) when the analyzer is off.  Skipped where the
+    linearization does not decide stability: no ``Dt`` rows, kernels (their
+    images are collapsed to the integral), spatial models (q > 0 modes)."""
+    if (not model.get('equations') or model.get('stability_analysis')
+            or model.get('kernels') or model.get('spatial')):
+        return
+    roots = [r['values'] for r in (mf.get('mf_all_roots') or [])]
+    sel = mf.get('mf_values')
+    try:
+        st = linear_stability(model, fundamental, sel)
+    except Exception:                                    # noqa: BLE001
+        return
+    eigs = np.asarray(st['eigenvalues_finite'], dtype=complex)
+    if not eigs.size:
+        return
+    tol = _EIG_RTOL * _rate_scale(st['A'], st['B'], eigs)
+    grow = [complex(z) for z in eigs if z.real > tol]
+    if not grow:
+        return
+    stable = []
+    for i, r in enumerate(roots):
+        try:
+            if linear_stability(model, fundamental, r)['stable']:
+                stable.append(i)
+        except Exception:                                # noqa: BLE001
+            pass
+    shown = ', '.join(f'{z.real:.4g}{z.imag:+.4g}i' for z in grow)
+    hint = (f'fixed_point_index={stable[0]}' + (f' (stable roots: '
+            f'{stable})' if len(stable) > 1 else '')) if stable else (
+            'no root found is stable: change the parameters')
+    raise UnstableSaddleError(
+        f'the selected mean-field saddle {sel} (fixed_point_index='
+        f'{mf.get("mf_index_used")} of {len(roots)} root(s)) is linearly '
+        f'unstable: eigenvalue(s) {shown} have Re > 0, so perturbations grow '
+        f'and there is no stationary state around it.  Select a stable root '
+        f'({hint}), or turn on stability_analysis(True) so that only stable '
+        f'roots are selectable.')
 
 
 # ── Compatibility wrapper for compute_cumulants ───────────────────────
