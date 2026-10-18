@@ -725,8 +725,9 @@ def test_mean_field_symbols_follow_the_model_declarations():
             SR.var('mu'): 1.0}
     assert _mf_symbols_only(model, npar) == {'msad1': 0.25}
     assert not _is_saddle_symbol('msadx', model)
-    # models without declarations: the '<base>star' naming rule
-    assert _is_saddle_symbol('xstar1', None)
+    # no declarations, no saddle: the '<base>star' naming rule is retired
+    # (audit W6 / GEN-03: a real parameter 'tstar' was taken for a saddle)
+    assert not _is_saddle_symbol('xstar1', None)
     assert not _is_saddle_symbol('kstar_gain', None)
     # 'solve' substitutes exactly the declared saddles (here nstar1, vstar1)
     m = _hawkes_1pop()

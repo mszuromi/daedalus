@@ -40,12 +40,30 @@ _PENALTY = 1e100
 # Math functions that may appear in user equation text (LHS / RHS of
 # .equation(...), or inside .define_function(...) expressions).
 # Drawn from numpy so they work on both scalars and numpy arrays.
+def _factorial(x):
+    """``x! = Gamma(x + 1)`` for real ``x`` (Sage prints ``gamma(1 - y)`` of
+    a symbolic ``y`` as ``factorial(-y)``)."""
+    from scipy.special import gamma
+    return gamma(np.asarray(x, dtype=float) + 1.0)
+
+
+def _gamma(x):
+    from scipy.special import gamma
+    return gamma(np.asarray(x, dtype=float))
+
+
 _MATH_NS = {
     'tanh': np.tanh, 'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
     'exp':  np.exp,  'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
     'sinh': np.sinh, 'cosh': np.cosh,
     'pi':   float(np.pi),
 }
+
+# The mean of a library noise (CGMY, tempered stable, ...) with a symbolic
+# exponent carries Gamma functions (audit LOUD-02: NameError 'factorial' in
+# the saddle solve).  Placed BEFORE the model's names in every namespace: a
+# parameter called ``gamma`` keeps its value.
+_SPECIAL_NS = {'gamma': _gamma, 'factorial': _factorial}
 
 
 def _sage_to_python(text: str) -> str:
@@ -193,7 +211,7 @@ def _make_phi_callables(model: dict, params: dict) -> dict[str, '_PhiCallableLis
         for i in range(pop_size_val):
             def phi_i(x_val, _expr=expr_py, _arg=arg_name,
                       _i=i, _params=params):
-                ns = {**_params, **_MATH_NS,
+                ns = {**_SPECIAL_NS, **_params, **_MATH_NS,
                       _arg: x_val, 'i': _i,
                       'sum': sum, '__builtins__': {}}
                 return eval(_expr, ns)
@@ -336,6 +354,7 @@ def _build_residual(model: dict, params_np: dict,
         # blows up with NameError on the free names inside the
         # genexpr.
         ns = {
+            **_SPECIAL_NS,
             **params_np,
             **state,
             **phi_callables,
@@ -885,6 +904,226 @@ def _dedup_roots(roots: list, rtol=1e-6, atol=0.0, errs=None) -> list:
 # ── Top-level solver ─────────────────────────────────────────────────
 
 
+def _saddle_keys(model, state_vars) -> dict:
+    """``{state variable: saddle parameter name}`` for the ``.equation``
+    form (its state variables are the physical fields): the field's
+    declared saddle (``api.naming.saddle_for_field``), else
+    ``<field>star``, the name ``physical_field`` gives it."""
+    from api.naming import saddle_for_field
+    return {var: (saddle_for_field(model, var) or f'{var}star')
+            for var, _, _ in state_vars}
+
+
+def _param_subs(model, fundamental, pop_size_map) -> dict:
+    """``{parameter SR symbol: value}`` in the namespace convention (a
+    vector parameter ``p`` -> ``p1, p2, ...``, a matrix -> ``p11, ...``)."""
+    from sage.all import SR
+    out: dict = {}
+    for pspec in model.get('parameters', []):
+        pname = pspec['name']
+        if pname not in fundamental:
+            continue
+        val = fundamental[pname]
+        ib = pspec.get('indexed_by')
+        if ib and len(ib) == 2:
+            for i in range(pop_size_map.get(ib[0], 1)):
+                for j in range(pop_size_map.get(ib[1], 1)):
+                    out[SR.var(f'{pname}{i+1}{j+1}')] = float(val[i][j])
+        elif ib and len(ib) == 1:
+            for i in range(pop_size_map.get(ib[0], 1)):
+                out[SR.var(f'{pname}{i+1}')] = float(val[i])
+        elif isinstance(val, (list, tuple)):
+            for i, v in enumerate(val):
+                out[SR.var(f'{pname}{i+1}')] = float(v)
+        else:
+            out[SR.var(pname)] = float(val)
+    return out
+
+
+def _pop_sizes(model, ns=None) -> dict:
+    sizes = dict(getattr(ns, '_pop_size', None) or {})
+    if not sizes:
+        sizes = {p['name']: int(p.get('size', 1))
+                 for p in model.get('populations') or []}
+    return sizes
+
+
+def _saddle_arrays(model, ns) -> dict:
+    """``{saddle name: [SR symbol per population index]}`` for the declared
+    saddles (``mean_field=True``) the namespace carries."""
+    from api.naming import saddle_names
+    out = {}
+    for name in saddle_names(model):
+        arr = getattr(ns, name, None)
+        if arr is None:
+            continue
+        out[name] = list(arr) if isinstance(arr, (list, tuple)) else [arr]
+    return out
+
+
+def _kernel_symbols(model, ns) -> list:
+    out = []
+    for kspec in model.get('kernels', []):
+        kval = getattr(ns, kspec['name'], None)
+        if kval is None:
+            continue
+        stack = [kval]
+        while stack:
+            v = stack.pop()
+            if isinstance(v, (list, tuple)):
+                stack.extend(v)
+            else:
+                out.append(v)
+    return out
+
+
+def _compile_float(expr, syms):
+    """A float function of ``syms`` evaluating the SR ``expr``
+    (``fast_callable``; plain substitution when it cannot compile)."""
+    from sage.all import fast_callable
+    try:
+        return fast_callable(expr, vars=syms, domain=float)
+    except (TypeError, ValueError, NotImplementedError, AttributeError,
+            KeyError):
+        pass
+
+    def g(*vals, _e=expr, _s=tuple(syms)):
+        return float(_e.subs(dict(zip(_s, vals))))
+    return g
+
+
+def _saddle_system(model, fundamental, ns, reduced=False):
+    """The saddle equations ``s - rhs_s(saddles) = 0`` of a model declared
+    with ``.set_mf_equation`` (``model['mf_bg_conditions'](ns)``: one RHS
+    per saddle element, the parameters and each kernel at its integral
+    substituted).  Returns ``(state_vars, slices, R, rows, keys)`` in the
+    shape of the ``.equation`` system: one state variable per saddle with
+    an equation, labelled by its field's natural name (that is what
+    ``seed_box`` and the domain lookups use) or by its own name, physical
+    fields' saddles first in field order (the root sort key).
+
+    ``reduced=True``: the unknowns are the iteration (closure) saddles only
+    (``model['iteration_saddles']``), every other saddle substituted by its
+    equation (as the former iteration solver did); the fallback when the
+    full system has no root on the default search (a compound saddle far on
+    the negative axis, e.g. a voltage of -100, outside the seed box).
+    Returns a sixth item ``extras(x) -> {compound saddle: [values]}``
+    (``None`` for the full system), or ``None`` altogether when the model
+    cannot be reduced."""
+    from sage.all import SR
+    from sage.symbolic.operators import add_vararg
+    from api._mean_field import _kernel_saddle_subs, complete_parameters
+    from api.naming import field_for_saddle
+
+    fundamental = complete_parameters(model, fundamental,
+                                     'mean-field solve', strict=False)
+    mf_bg = model.get('mf_bg_conditions', lambda ns: {})(ns)
+    arrays = _saddle_arrays(model, ns)
+    unknown = {n: a for n, a in arrays.items() if all(s in mf_bg for s in a)}
+    if not unknown:
+        raise ValueError(
+            'mean-field solve: the model declares no mean-field equation '
+            '(no .equation(...) rows and no .set_mf_equation(...) for a '
+            'saddle parameter).')
+    compound = {}
+    if reduced:
+        iters = [n for n in (model.get('iteration_saddles') or [])
+                 if n in unknown]
+        if not iters or len(iters) == len(unknown):
+            return None
+        compound = {n: unknown.pop(n) for n in list(unknown) if n not in iters}
+    field_order = [f.get('natural_name') or f['name']
+                   for f in model.get('physical_fields') or []]
+
+    def rank(name):
+        nat = field_for_saddle(model, name)
+        return (field_order.index(nat) if nat in field_order
+                else len(field_order))
+    names = sorted(unknown, key=rank)        # stable: declaration order next
+    pspec = {p['name']: p for p in model.get('parameters', [])}
+    populations = model.get('populations') or []
+    state_vars, keys = [], {}
+    for name in names:
+        label = field_for_saddle(model, name) or name
+        ib = pspec[name].get('indexed_by') or []
+        pop = ib[0] if ib else (populations[0]['name'] if len(populations) == 1
+                                else None)
+        state_vars.append((label, pop, len(unknown[name])))
+        keys[label] = name
+    slices = _state_slices(state_vars)
+    syms = [s for name in names for s in unknown[name]]
+
+    psubs = _param_subs(model, fundamental, _pop_sizes(model, ns))
+    csyms = [c for arr in compound.values() for c in arr]
+    ksubs = _kernel_saddle_subs(ns, model, _kernel_symbols(model, ns),
+                                [mf_bg[s] for s in syms + csyms])
+    # compound saddles as functions of the unknowns (substituted until none
+    # is left; a cycle among them means the model cannot be reduced)
+    csub = {c: SR(mf_bg[c]).subs(ksubs).subs(psubs) for c in csyms}
+    for _ in range(len(csyms) + 1):
+        if not any(set(e.variables()) & set(csyms) for e in csub.values()):
+            break
+        csub = {c: e.subs(csub) for c, e in csub.items()}
+    else:
+        return None
+    rows, terms, labels = [], [], []
+    for name in names:
+        for i, s in enumerate(unknown[name]):
+            rhs = SR(mf_bg[s]).subs(ksubs).subs(psubs)
+            if csub:
+                rhs = rhs.subs(csub)
+            free = sorted(str(v) for v in set(rhs.variables()) - set(syms))
+            if free:
+                raise NameError(
+                    f'mean-field solve: the saddle equation of {name}[{i}] '
+                    f'({s} = {mf_bg[s]}) uses {", ".join(free)}, which have '
+                    f'no value.  If they are model parameters, they were not '
+                    f'in the parameters given and declare no default (pass '
+                    f'parameters={{...}} or declare default= on '
+                    f'ModelBuilder.parameter).')
+            # the additive terms of the RHS: with the saddle itself, the
+            # sizes a row's round-off is judged against
+            ops = rhs.operands() if rhs.operator() is add_vararg else [rhs]
+            rows.append(_compile_float(s - rhs, syms))
+            terms.append([_compile_float(SR(t), syms) for t in ops])
+            labels.append((name, i))
+    n = len(rows)
+
+    def R(x, mag=None):
+        vals = [float(v) for v in x]
+        out = np.empty(n, dtype=float)
+        for k in range(n):
+            try:
+                with np.errstate(all='ignore'):
+                    v = float(rows[k](*vals))
+                out[k] = v if math.isfinite(v) else _PENALTY
+            except (ValueError, ZeroDivisionError, OverflowError,
+                    FloatingPointError, ArithmeticError, TypeError):
+                out[k] = _PENALTY
+            if mag is not None:
+                # row k is the equation of unknown k: |s_k| + sum |terms|
+                try:
+                    with np.errstate(all='ignore'):
+                        mv = abs(vals[k]) + sum(abs(float(t(*vals)))
+                                                for t in terms[k])
+                    mag[k] = mv if math.isfinite(mv) else _PENALTY
+                except (ValueError, ZeroDivisionError, OverflowError,
+                        FloatingPointError, ArithmeticError, TypeError):
+                    mag[k] = _PENALTY
+        return out
+
+    extras = None
+    if compound:
+        cfun = {name: [_compile_float(csub[c], syms) for c in arr]
+                for name, arr in compound.items()}
+
+        def extras(x):
+            vals = [float(v) for v in x]
+            return {name: [float(f(*vals)) for f in fs]
+                    for name, fs in cfun.items()}
+    return state_vars, slices, R, labels, keys, extras
+
+
 def solve_mean_field_dae(
         model: dict,
         fundamental: dict,
@@ -896,9 +1135,16 @@ def solve_mean_field_dae(
         atol: float = 0.0,
         verbose: bool = False,
         rng_seed: int = 0,
+        ns=None,
+        _reduced: bool = False,
 ) -> dict:
-    """Solve the MF DAE system declared via
-    ``ModelBuilder.equation(...)`` calls.
+    """Solve the mean-field system of a model: the ``Dt -> 0`` limit of its
+    ``ModelBuilder.equation(...)`` rows, or, for a model declared with
+    ``.set_mf_equation(saddle, rhs)`` instead, the saddle equations
+    ``saddle - rhs = 0`` (read from ``model['mf_bg_conditions'](ns)``; needs
+    the FieldTheory namespace ``ns``).  Every model gets the same multi-root
+    search (audit GEN-02: the second form used a separate single-root
+    iteration from four fixed unit-scale guesses).
 
     Parameters
     ----------
@@ -936,7 +1182,8 @@ def solve_mean_field_dae(
     Returns
     -------
     dict with keys:
-        ``'mf_values'`` — selected root as ``{<var>star: [vals]}``.
+        ``'mf_values'`` — selected root as ``{<saddle>: [vals]}`` (the
+            saddle parameter of each state variable, ``api.naming``).
         ``'mf_all_roots'`` — full sorted list of distinct roots, each
             a dict shaped like ``mf_values``.
         ``'mf_index_used'`` — int, actual index used (after clamping).
@@ -945,28 +1192,30 @@ def solve_mean_field_dae(
         ``'n_seeds_converged'`` — diagnostic: how many seeds led to a
             valid root before dedup.
     """
-    if not model.get('equations'):
-        raise ValueError(
-            "solve_mean_field_dae: model has no equations declared via "
-            "ModelBuilder.equation(...).  Use the legacy iteration "
-            "solver in api._mean_field instead."
-        )
-
-    state_vars = _state_variables(model)
-    if not state_vars:
-        raise ValueError(
-            "solve_mean_field_dae: no physical fields declared — "
-            "there's nothing to solve for."
-        )
-    slices = _state_slices(state_vars)
+    if model.get('equations'):
+        state_vars = _state_variables(model)
+        if not state_vars:
+            raise ValueError(
+                "solve_mean_field_dae: no physical fields declared — "
+                "there's nothing to solve for."
+            )
+        slices = _state_slices(state_vars)
+        params_np = _numpy_params(model, fundamental)
+        phi_callables = _make_phi_callables(model, params_np)
+        idx_sets = _index_sets(model)
+        R, expanded = _build_residual(
+            model, params_np, phi_callables, idx_sets, state_vars, slices)
+        keys = _saddle_keys(model, state_vars)
+        extras = None
+    else:
+        if ns is None:
+            raise ValueError(
+                "solve_mean_field_dae: the model declares no "
+                ".equation(...) rows; its .set_mf_equation(...) saddle "
+                "equations need the FieldTheory namespace (ns=).")
+        system = _saddle_system(model, fundamental, ns, reduced=_reduced)
+        state_vars, slices, R, expanded, keys, extras = system
     total = sum(size for _, _, size in state_vars)
-
-    params_np = _numpy_params(model, fundamental)
-    phi_callables = _make_phi_callables(model, params_np)
-    idx_sets = _index_sets(model)
-
-    R, expanded = _build_residual(
-        model, params_np, phi_callables, idx_sets, state_vars, slices)
 
     # Sanity: number of residuals must match number of unknowns.
     if len(expanded) != total:
@@ -1042,6 +1291,15 @@ def solve_mean_field_dae(
     deduped = [deduped[q] for q in order]
     root_errs = [root_errs[q] for q in order]
 
+    if not deduped and not model.get('equations') and not _reduced and (
+            _saddle_system(model, fundamental, ns, reduced=True) is not None):
+        # the iteration saddles alone (compound ones substituted): their
+        # roots do not depend on where a compound saddle lies
+        return solve_mean_field_dae(
+            model, fundamental, n_starts=n_starts,
+            fixed_point_index=fixed_point_index, seed_box=seed_box,
+            rtol=rtol, atol=atol, verbose=verbose, rng_seed=rng_seed, ns=ns,
+            _reduced=True)
     if not deduped:
         raise ValueError(
             f"solve_mean_field_dae: no MF fixed point found from "
@@ -1049,9 +1307,14 @@ def solve_mean_field_dae(
             f"explicit seed_box, or checking the equations for typos."
         )
 
-    def _build_root_dict(x):
-        return {f'{var}star': x[slices[var][0]:slices[var][1]].tolist()
-                for var, _, _ in state_vars}
+    def _build_root_dict(x, err=False):
+        out = {keys[var]: x[slices[var][0]:slices[var][1]].tolist()
+               for var, _, _ in state_vars}
+        if extras is not None:
+            ex = extras(x)
+            out.update({k: [0.0] * len(v) for k, v in ex.items()} if err
+                       else ex)
+        return out
 
     # Stability classification is gated by ``model['stability_analysis']``
     # (default: False).  Models whose equations are ALL algebraic
@@ -1067,6 +1330,13 @@ def solve_mean_field_dae(
     # (and raise if NO stable root exists — the diagrammatic expansion
     # is undefined at any saddle the DAE solver picks otherwise).
     stab_on = bool(model.get('stability_analysis', False))
+    if stab_on and not model.get('equations'):
+        raise ValueError(
+            "solve_mean_field_dae: stability_analysis(True) classifies the "
+            "roots of the model's .equation(...) rows (their Dt terms); this "
+            "model declares its saddles with .set_mf_equation(...) only.  "
+            "Declare the dynamics with .equation(lhs=..., rhs=...), or turn "
+            "stability_analysis off.")
 
     all_root_records = []
     rec_errs = {}           # id(record) -> its error estimates
@@ -1096,7 +1366,7 @@ def solve_mean_field_dae(
                 'stable':              bool(stab.get('stable', False)),
                 'eigenvalues_finite':  np.asarray(stab.get('eigenvalues_finite', [])),
             })
-            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe)
+            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe, err=True)
     else:
         # Skip stability entirely.  Tag each record with ``stable=None``
         # so callers can distinguish "not classified" from "classified
@@ -1107,7 +1377,7 @@ def solve_mean_field_dae(
                 'stable':              None,
                 'eigenvalues_finite':  np.array([], dtype=complex),
             })
-            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe)
+            rec_errs[id(all_root_records[-1])] = _build_root_dict(xe, err=True)
 
     if stab_on:
         # Pre-filter to stable subset.
@@ -1149,7 +1419,7 @@ def solve_mean_field_dae(
     selected_errs = rec_errs[id(selectable_records[fixed_point_index])]
     pure = _pure_integrator_rows(model, expanded)
     if pure:
-        x_sel = np.concatenate([np.asarray(selected[f'{v}star'], dtype=float)
+        x_sel = np.concatenate([np.asarray(selected[keys[v]], dtype=float)
                                 for v, _, _ in state_vars])
         # finite-difference scale per component: the largest root value,
         # else (every root 0 there) the typical seed
@@ -1365,7 +1635,9 @@ def linear_stability(
                           cos as _sage_cos, tan as _sage_tan,
                           exp as _sage_exp, log as _sage_log,
                           sqrt as _sage_sqrt, sinh as _sage_sinh,
-                          cosh as _sage_cosh, pi as _sage_pi)
+                          cosh as _sage_cosh, pi as _sage_pi,
+                          gamma as _sage_gamma,
+                          factorial as _sage_factorial)
     import scipy.linalg
 
     if not model.get('equations'):
@@ -1376,6 +1648,7 @@ def linear_stability(
 
     state_vars = _state_variables(model)
     slices = _state_slices(state_vars)
+    keys = _saddle_keys(model, state_vars)
 
     # ── Build Sage symbols for every scalar state variable ───────
     flat_syms = []          # ordered list of Sage symbols
@@ -1387,7 +1660,7 @@ def linear_stability(
             s = SR.var(f'_mfdae_{var}_{i}')
             sym_per_var[var].append(s)
             flat_syms.append(s)
-        flat_vals_at_root.extend(root[f'{var}star'])
+        flat_vals_at_root.extend(root[keys[var]])
     M = len(flat_syms)
     Dt_sym = SR.var('_mfdae_Dt')
 
@@ -1400,6 +1673,7 @@ def linear_stability(
         'sqrt': _sage_sqrt, 'sinh': _sage_sinh, 'cosh': _sage_cosh,
         'abs':  abs,        'pi':   _sage_pi,
     }
+    sage_special_ns = {'gamma': _sage_gamma, 'factorial': _sage_factorial}
 
     params_np = _numpy_params(model, fundamental)
 
@@ -1418,7 +1692,7 @@ def linear_stability(
         for i in range(pop_size_val):
             def phi_i(x_sym, _expr=expr_py, _arg=arg_name,
                       _i=i, _params=params_np):
-                ns = {**_params, **sage_math_ns,
+                ns = {**sage_special_ns, **_params, **sage_math_ns,
                       _arg: x_sym, 'i': _i,
                       'sum': sum, '__builtins__': {}}
                 return eval(_expr, ns)
@@ -1447,6 +1721,7 @@ def linear_stability(
         rhs_py = _sage_to_python(eq['rhs_text'])
         for i in range(pop_size_val):
             ns = {
+                **sage_special_ns,
                 **params_np,
                 **sym_per_var_eval,
                 **phi_sym,
@@ -1623,23 +1898,18 @@ def solve_mean_field_dae_compat(
         rtol: float = 1e-6,
         atol: float = 0.0,
 ) -> dict:
-    """Drop-in replacement for ``api._mean_field.solve_mean_field``
-    when ``model['equations']`` is populated.
+    """The mean-field solve of every model (``api._mean_field.
+    solve_mean_field`` is its front door): :func:`solve_mean_field_dae` on
+    the model's ``.equation`` rows or its ``.set_mf_equation`` saddle
+    equations, the selected root checked against the action's mean-field
+    sector at this run's parameters.
 
-    Returns the same keys the legacy solver does (``nstar_vals``,
-    ``vstar_vals``, ``num_params``, ``param_subs``, ``phi_deriv_vals``,
-    ``saddle_values``) PLUS the DAE-specific extras (``mf_all_roots``,
-    ``mf_index_used``, ``state_var_order``, ``n_seeds_converged``).
-
-    ``num_params`` is built by mapping the Sage SR vars on ``ft._ns``
-    (parameter symbols + saddle arrays) to their concrete values, so
-    downstream code (``compute_poles_and_residues`` etc.) consumes it
-    identically to the legacy solver's output.
-
-    ``phi_deriv_vals`` is left as ``{}`` for the moment — heterogeneous
-    legacy paths also return it empty, and the propagator builds its
-    derivatives symbolically.  If a downstream consumer ends up needing
-    explicit derivatives at the saddle, we'll populate it here.
+    Returns ``num_params`` (every parameter and saddle SR symbol on
+    ``ft._ns`` mapped to its value, plus any other entry of the model's
+    ``mf_bg_conditions`` evaluated at the saddle), ``num_params_err``,
+    ``param_subs``, ``saddle_values`` / ``mf_values`` (``{saddle name:
+    [values]}``) and the root census (``mf_all_roots``, ``mf_index_used``,
+    ``state_var_order``, ``n_seeds_converged``, ...).
     """
     from sage.all import SR
 
@@ -1651,6 +1921,7 @@ def solve_mean_field_dae_compat(
         seed_box=seed_box,
         rtol=rtol, atol=atol,
         verbose=False,
+        ns=ft._ns,
     )
 
     mf_values = dae_result['mf_values']
@@ -1664,42 +1935,11 @@ def solve_mean_field_dae_compat(
             tag = ' ← selected' if i == used else ''
             print(f'    root[{i}]: {r}{tag}')
 
-    # 2. Build param_subs in the legacy Sage-symbol convention.
-    pop_size_map = getattr(ft._ns, '_pop_size', None) or {}
-    # Fall back: walk model['populations'] directly when ns doesn't
-    # carry _pop_size (single-pop legacy path).
-    if not pop_size_map and model.get('populations'):
-        pop_size_map = {p['name']: int(p.get('size', 1))
-                        for p in model['populations']}
-
-    param_subs: dict = {}
-    for pspec in model.get('parameters', []):
-        pname = pspec['name']
-        if pname not in fundamental:
-            continue
-        val = fundamental[pname]
-        ib = pspec.get('indexed_by')
-        if ib:
-            if len(ib) == 2:
-                n_rows = pop_size_map.get(ib[0], 1)
-                n_cols = pop_size_map.get(ib[1], 1)
-                for i in range(n_rows):
-                    for j in range(n_cols):
-                        sym = SR.var(f'{pname}{i+1}{j+1}')
-                        param_subs[sym] = float(val[i][j])
-            elif len(ib) == 1:
-                n = pop_size_map.get(ib[0], 1)
-                for i in range(n):
-                    sym = SR.var(f'{pname}{i+1}')
-                    param_subs[sym] = float(val[i])
-            else:
-                param_subs[SR.var(pname)] = float(val)
-        elif isinstance(val, (list, tuple)):
-            # Un-indexed but vector value (legacy single-pop).
-            for i, v in enumerate(val):
-                param_subs[SR.var(f'{pname}{i+1}')] = float(v)
-        else:
-            param_subs[SR.var(pname)] = float(val)
+    # 2. Parameter values on the namespace's SR symbols.
+    from api._mean_field import complete_parameters
+    fundamental = complete_parameters(model, fundamental,
+                                     'mean-field solve', strict=False)
+    param_subs = _param_subs(model, fundamental, _pop_sizes(model, ft._ns))
 
     # 3. Bake saddle values into num_params using ft._ns.<saddle_name>.
     num_params = dict(param_subs)
@@ -1723,14 +1963,23 @@ def solve_mean_field_dae_compat(
                          dae_result['mf_index_used'], mf_values,
                          num_params_err)
 
-    # 4. Legacy-compatible concatenated saddle vectors.
-    nstar_concat = list(mf_values.get('nstar', []))
-    vstar_concat = list(mf_values.get('vstar', []))
+    # 4. Any other entry of the saddle dict (a formal function's value at
+    # the saddle, ``phi0_i -> nstar_i``) evaluated at the solved saddle.
+    if not model.get('equations'):
+        mf_bg = model.get('mf_bg_conditions', lambda ns: {})(ft._ns)
+        from api._mean_field import _kernel_saddle_subs
+        rest = [k for k in mf_bg if k not in num_params]
+        ksubs = _kernel_saddle_subs(ft._ns, model,
+                                    _kernel_symbols(model, ft._ns),
+                                    [mf_bg[k] for k in rest])
+        for lhs in rest:
+            try:
+                num_params[lhs] = float(
+                    SR(mf_bg[lhs]).subs(ksubs).subs(num_params))
+            except (TypeError, ValueError):
+                pass              # still symbolic: left out
 
     return {
-        'nstar_vals':         nstar_concat,
-        'vstar_vals':         vstar_concat,
-        'phi_deriv_vals':     {},
         'num_params':         num_params,
         # error estimate of each saddle value in num_params (the sector
         # checks allow the residual these explain)

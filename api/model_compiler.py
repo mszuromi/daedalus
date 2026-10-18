@@ -917,12 +917,23 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     s = apply_linearity(s, flucts)
     # Homogeneous/stationary saddle (v2.0): annihilate operators acting purely
     # on the mean.  The action's field unwrapped to ``phistar + fluctuation``,
-    # so the saddle symbols are the ``*star*`` variables now present.  (For a
-    # future inhomogeneous saddle this kill becomes opt-out.)
+    # so the saddle symbols are those of the declared saddle parameters
+    # (``mf_parameters``: the builder's mean_field flag, not a spelling).
+    # (For a future inhomogeneous saddle this kill becomes opt-out.)
     # Any operator argument free of the dynamical fields and the coordinates
     # is a space/time constant (saddle values and parameters), so
     # Lap(lam*pstar^2) = 0 as lam*Lap(pstar^2) is (``keep_syms``).
-    saddles = [v for v in SR(s).variables() if 'star' in str(v)]
+    declared = set()
+    for name in (naming_convention or {}).get('mf_parameters') or []:
+        arr = getattr(ns, name, None)
+        stack = [arr] if arr is not None else []
+        while stack:
+            a = stack.pop()
+            if isinstance(a, (list, tuple)):
+                stack.extend(a)
+            else:
+                declared.add(SR(a))
+    saddles = [v for v in SR(s).variables() if v in declared]
     s = kill_means(s, saddles,
                    keep_syms=list(flucts) + [SR.var(c) for c in ('x', 'y', 'z', 't')])
     s, genmap = to_derived_generators(s, flucts)
@@ -1546,7 +1557,7 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
                                  *,
                                  field_names, param_names, kernel_names,
                                  functions, n_pop,
-                                 iteration_saddle: str = 'nstar',
+                                 iteration_saddle: str = 'AUTO',
                                  saddle_map: dict | None = None):
     """Build the **action-side** ``mf_bg_conditions`` lambda.
 
@@ -1685,7 +1696,7 @@ def make_mf_bg_solver_lambda(mf_eqs: dict[str, str],
                              *,
                              field_names, param_names, kernel_names,
                              functions, n_pop,
-                             iteration_saddle: str = 'nstar'):
+                             iteration_saddle: str = 'AUTO'):
     """Build the **solver-friendly** ``mf_bg_conditions`` lambda.
 
     Returns a dict with EVERY saddle entry (both compound and

@@ -302,9 +302,8 @@ def param_names(model: dict) -> list[str]:
     """The parameter names you can override via ``Config(parameters={...})`` —
     the declared parameters, excluding the mean-field saddle symbols.  Use this
     to get the exact spellings (a mistyped name now raises in ``dd.run``)."""
-    return [p['name'] for p in (model.get('parameters') or [])
-            if not str(p.get('name', '')).endswith('star')
-            and not p.get('mean_field')]
+    from api.naming import free_parameter_names
+    return free_parameter_names(model)
 
 
 def _fmt_default(v, maxlen: int = 52) -> str:
@@ -391,9 +390,7 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
             for p in pops))
 
     params = model.get('parameters') or []
-    def _is_saddle(p):                # saddle iff named '<base>star' OR mean_field
-        return (str(p.get('name', '')).endswith('star')
-                or bool(p.get('mean_field')))
+    from api.naming import is_saddle as _is_saddle   # the mean_field flag
     numeric = [p for p in params if not _is_saddle(p)]
     saddle = [p.get('name') for p in params if _is_saddle(p)]
     if saddle:
@@ -716,14 +713,14 @@ def fundamental_from_model(model: dict) -> dict:
     """Build a ``fundamental`` dict from the parameters' own ``default``
     values baked into the model — every non-saddle parameter with a
     declared default.  Lets a loaded model run out of the box even when
-    its ``DEFAULT_FUNDAMENTAL`` is empty.  Saddle params (``*star``,
+    its ``DEFAULT_FUNDAMENTAL`` is empty.  Saddle params (``mean_field=True``,
     solved by the mean-field step) and defaultless params are skipped."""
+    from api.naming import is_saddle
     out = {}
     for p in model.get('parameters') or []:
-        name = p.get('name') or ''
-        if name.endswith('star') or p.get('default') is None:
+        if is_saddle(p) or p.get('default') is None:
             continue
-        out[name] = p['default']
+        out[p['name']] = p['default']
     return out
 
 
@@ -894,13 +891,13 @@ def _external_mean(model: dict, res: dict, leg=None) -> float:
     The cumulant pipeline expands around the saddle, so the *fluctuation*
     field's tree-level 1-point function is 0; the physical mean is the saddle
     value plus the ℓ≥1 loop tadpole shifts (:func:`_leg_mean_by_ell`).  The
-    saddle is stored under the ``'<base>star'`` convention (``nSstar``,
-    ``xstar``, ``hstar`` …) in the temporal ``res['mf_values']`` or the
+    saddle is stored under the field's saddle parameter (``api.naming``;
+    ``nSstar``, ``xstar`` …) in the temporal ``res['mf_values']`` or the
     spatial ``res['mf']['mf_values']`` (a list of per-component dicts), one
     value per population.  ``leg`` is a ``(field, pop)`` external leg; None
     means the result's first external leg.  Returns 0.0 for a symmetric/zero
     saddle, or if none is found."""
-    # Collect every candidate saddle dict {'<base>star': [vals]} — temporal
+    # Collect every candidate saddle dict {<saddle>: [vals]} — temporal
     # exposes one at the top level; spatial nests them under res['mf'].
     dicts = []
     mv = res.get('mf_values')
@@ -924,8 +921,9 @@ def _external_mean(model: dict, res: dict, leg=None) -> float:
             names = field_names(model)
             leg = names[0] if names else ''
     fld, pop = _leg_parts(leg)
-    base = fld[1:] if fld.startswith('d') else fld
-    keys = [base + 'star', fld + 'star', base, fld]
+    from api.naming import saddle_for_field
+    sad = saddle_for_field(model, fld)       # natural or internal leg name
+    keys = [k for k in (sad, fld) if k]
     for d in dicts:
         for key in keys:
             if key in d:
@@ -1340,9 +1338,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if cfg.parameters:
         # Reject mistyped override names instead of silently inserting a
         # key the backend ignores (which would run with the DEFAULT value).
-        _valid = {p['name'] for p in (model.get('parameters') or [])
-                  if not str(p.get('name', '')).endswith('star')
-                  and not p.get('mean_field')}
+        from api.naming import free_parameter_names
+        _valid = set(free_parameter_names(model))
         _unknown = [kk for kk in cfg.parameters if kk not in _valid]
         if _valid and _unknown:
             raise ValueError(
@@ -2162,7 +2159,8 @@ def plot_temporal_mean(result, cfg, model, sim=None):
         ax.legend(fontsize=8)
     fld = _result_meta(result, 'external_fields') or [('phi', 1)]
     fb = fld[0][0] if isinstance(fld[0], (tuple, list)) else str(fld[0])
-    base = fb[1:] if fb.startswith('d') else fb        # physical field (drop 'd')
+    from api.naming import field_natural_name
+    base = field_natural_name(model, fb)                # the physical field
     ax.axhline(0, color='gray', lw=0.5)
     # Mark the mean-field tree value φ* so the loop shift off it is visible
     # (especially under show_orders='total', where the tree bar is hidden).

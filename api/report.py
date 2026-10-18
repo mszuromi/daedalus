@@ -276,14 +276,13 @@ def _draw_cover_page(pdf, model, k, max_ell, fundamental,
     ax_mf.set_title('Mean-field solution', fontsize=11, loc='left')
     mf = result['mf_values']
     mf_lines = []
-    # Classic n/v/m saddles first (their historical order), then any other
-    # saddle the model declares (e.g. ``xstar``); a model need not have
-    # ``nstar``/``vstar`` at all.
-    legacy = ('nstar', 'vstar', 'mstar')
-    names = [n for n in legacy if n in mf] + [n for n in mf if n not in legacy]
+    # the model's saddles in declaration order, labelled by their field
+    from api.naming import saddle_label, saddle_names
+    order = saddle_names(model)
+    names = [n for n in order if n in mf] + [n for n in mf if n not in order]
     for name in names:
         vals = mf.get(name)
-        label = name[:-4] + '*' if name.endswith('star') else name
+        label = saddle_label(model, name)
         if vals is None:
             continue
         for i, v in enumerate(vals, 1):

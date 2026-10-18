@@ -604,39 +604,33 @@ class _TemporalMethods:
         so the FT of g symbolically becomes 1 / (1 + iωτ_g).
 
         For DeltaKernel, no FT image is needed; instead the template
-        contributes an EXTRA specialization ``g → delta_D`` that gets
-        merged into the action template's specializations dict so the
-        kernel acts as δ(t) at cell-8 propagator-construction time.
+        contributes an EXTRA specialization ``g → delta_D`` that is merged
+        into the action template's specializations.  The templates are
+        combined whenever either is (re)applied, so the call order of
+        ``use_action_template`` / ``use_synaptic_kernel`` /
+        ``add_gtas_noise`` does not matter (audit GEN-06: the kernel's
+        specialization was lost when the kernel came first or GTaS was
+        added after it).
         """
+        self._kernel_template = template
         ft_hook = template.kernel_ft_image()
         if ft_hook is not None:
             self._kernel_ft_image = ft_hook
-
-        # Merge any kernel-side specializations into the action's
-        # specializations dict.  Capture the current specs lambda and
-        # extend it.
-        extra_specs = (template.extra_specializations()
-                       if hasattr(template, 'extra_specializations')
-                       else None)
-        if extra_specs is not None and self._specializations is not None:
-            base_specs = self._specializations
-            self._specializations = (
-                lambda ns, _base=base_specs, _extra=extra_specs: {
-                    **_base(ns), **_extra(ns),
-                }
-            )
+        self._apply_templates()
         return self
 
     def add_gtas_noise(self, template):
         """Apply a GTaSNoise template.  Adds the dm/mt fields, the
         mstar parameter, the GTaS feedforward terms in the action /
         saddle / MF equations (via the HawkesAction template's
-        ``_gtas`` hook), and the correlated_noises block."""
-        # Register the GTaS metadata so the HawkesAction template
-        # picks up the feedforward + saddle terms when its lambdas
-        # are emitted.  Do this BEFORE use_action_template() if the
-        # user calls them in the wrong order, but supporting the more
-        # convenient order (action then noise) too.
+        ``_gtas`` hook), and the correlated_noises block.
+
+        The GTaS parameters the template names (feedforward weight, mother
+        rate, participation, shift mean / variance) are declared WITHOUT a
+        value when the model has not declared them: give them with
+        ``.parameter(name, default=...)`` (before or after this call) or in
+        ``parameters=`` at run time (audit GEN-06: invented physical
+        defaults 0.25 / 1.7 / 0.6 were filled in silently)."""
         self._pending_gtas = template
 
         # Add the dm physical field + mt response field automatically.
@@ -657,7 +651,7 @@ class _TemporalMethods:
             latex=r'\delta m',
             description='GTaS external rate fluctuation (zero-mean)',
             natural_name='m',
-            auto_response=False,
+            auto_response=False, auto_saddle=False,
         )
         self.response_field(
             template.response_field, indexed=True,
@@ -665,22 +659,16 @@ class _TemporalMethods:
             description='GTaS response field conjugate to dm',
         )
 
-        # Add the GTaS parameters automatically (with sane defaults
-        # the user can override via .parameter() before .build()).
-        for pname, default, dom in [
-            (template.feedforward_weight, 0.25,  None),
-            (template.mother_rate,        1.7,   'positive'),
-            (template.participation,      0.6,   'positive'),
+        for pname, dom in [
+            (template.feedforward_weight, None),
+            (template.mother_rate,        'positive'),
+            (template.participation,      'positive'),
+            (template.mu_diff,            None),
+            (template.sigma_diff_sq,      'positive'),
         ]:
-            if not any(p.name == pname for p in self.parameters):
-                self.parameter(pname, default=default, domain=dom)
-        if template.mu_diff is not None and not any(
-                p.name == template.mu_diff for p in self.parameters):
-            self.parameter(template.mu_diff, default=0.0)
-        if template.sigma_diff_sq is not None and not any(
-                p.name == template.sigma_diff_sq for p in self.parameters):
-            self.parameter(template.sigma_diff_sq, default=1.0,
-                           domain='positive')
+            if pname is not None and not any(p.name == pname
+                                             for p in self.parameters):
+                self.parameter(pname, domain=dom)
         if template.background_param is not None and not any(
                 p.name == template.background_param for p in self.parameters):
             self.parameter(template.background_param, indexed=True,
@@ -691,32 +679,44 @@ class _TemporalMethods:
                                        f'{template.participation}')
 
         self._correlated_noises.update(template.correlated_noises_block())
-
-        # Re-emit the action with the GTaS hook now wired in.  The
-        # HawkesAction template stores ``_gtas`` so the emitted
-        # lambdas know to add feedforward terms.
-        if hasattr(self, '_action_template'):
-            self._action_template._gtas = template
-            # Rebuild the lambdas
-            self.use_action_template(self._action_template)
+        self._apply_templates()
         return self
 
     def use_action_template(self, template):
-        """Override the previous use_action_template to remember the
-        template object so add_gtas_noise() can re-emit with the GTaS
-        hook installed."""
+        """Apply an action template (``HawkesAction``): its action, saddle
+        dicts, specializations and functions, combined with any kernel or
+        GTaS template applied before or after."""
         self._action_template = template
-        # Apply any pending GTaS hook
-        if getattr(self, '_pending_gtas', None) is not None:
-            template._gtas = self._pending_gtas
-        self._action          = template.action()
-        self._phi_concrete    = template.phi_concrete()
-        self._specializations = template.specializations()
-        self._mf_bg           = template.mf_bg_conditions()
-        self._mf_equations    = template.mf_equations()
-        self._mf_substitutions = template.mf_substitutions()
-        self._functions       = list(template.functions_list())
+        self._apply_templates()
         return self
+
+    def _apply_templates(self):
+        """(Re)emit every template-driven hook from the templates applied so
+        far: the action template's lambdas (with the GTaS hook when a GTaS
+        template is present) and the kernel template's specializations
+        merged in."""
+        action = getattr(self, '_action_template', None)
+        kernel = getattr(self, '_kernel_template', None)
+        if action is not None:
+            gtas = getattr(self, '_pending_gtas', None)
+            if gtas is not None:
+                action._gtas = gtas
+            self._action          = action.action()
+            self._phi_concrete    = action.phi_concrete()
+            self._mf_bg           = action.mf_bg_conditions()
+            self._mf_bg_solver    = action.mf_bg_solver()
+            self._mf_equations    = action.mf_equations()
+            self._mf_substitutions = action.mf_substitutions()
+            self._functions       = list(action.functions_list())
+            self._specializations = action.specializations()
+        extra = (kernel.extra_specializations()
+                 if kernel is not None
+                 and hasattr(kernel, 'extra_specializations') else None)
+        if extra is not None and action is not None:
+            base_specs = self._specializations
+            self._specializations = (
+                lambda ns, _base=base_specs, _extra=extra: {
+                    **_base(ns), **_extra(ns)})
 
 
 class _BaseModelBuilder:
@@ -1357,6 +1357,13 @@ class _BaseModelBuilder:
         ]
         if not state_var_names:
             return
+        # each state variable's saddle: the declared mean_field parameter of
+        # that natural name (any spelling), else the auto-saddle name
+        sad = {}
+        for v in state_var_names:
+            sad[v] = next((p.name for p in self.parameters
+                           if p.mean_field and p.natural_name == v),
+                          f'{v}star')
 
         for eq in self._equations:
             lhs_text   = eq['lhs_text']
@@ -1416,13 +1423,13 @@ class _BaseModelBuilder:
                 ranked = []
                 for v in cands:
                     sp = self._lhs_dt0_split(lhs_text, v, scalar_form,
-                                             state_var_names)
+                                             state_var_names, sad)
                     if sp is None:
                         continue
                     c_text, _rest, c_zero, c_state = sp
                     ranked.append((
                         0 if c_zero or c_state else 1,      # usable coefficient
-                        0 if f'{v}star' in self._mf_eqs_text else 1,
+                        0 if sad[v] in self._mf_eqs_text else 1,
                         1 if c_text.strip() in ('1', '-1') else 0,
                         -cands.index(v), v))
                 if ranked:
@@ -1447,7 +1454,7 @@ class _BaseModelBuilder:
             for v in state_var_names:
                 rewritten_rhs = re.sub(
                     rf'\b{re.escape(v)}\b',
-                    f'{v}star',
+                    sad[v],
                     rewritten_rhs,
                 )
             # For scalar (no-``[i]``) LHS, the saddle RHS should also
@@ -1455,11 +1462,12 @@ class _BaseModelBuilder:
             # because the legacy MF compiler expects per-population
             # indexed access.  (The DAE solver auto-handles both.)
             if scalar_form:
-                rewritten_rhs = re.sub(
-                    r'\b(\w+)star\b(?!\s*\[)',
-                    r'\1star[i]',
-                    rewritten_rhs,
-                )
+                for sname in set(sad.values()):
+                    rewritten_rhs = re.sub(
+                        rf'\b{re.escape(sname)}\b(?!\s*\[)',
+                        f'{sname}[i]',
+                        rewritten_rhs,
+                    )
 
             # The saddle condition is LHS|_{Dt=0} = RHS, i.e.
             # c·primary + rest = RHS.  The derivation above assumed
@@ -1470,7 +1478,7 @@ class _BaseModelBuilder:
             # non-vanishing tadpole with no hint why).  Read c and rest
             # off the LHS symbolically and correct both cases.
             split = self._lhs_dt0_split(lhs_text, primary, scalar_form,
-                                        state_var_names)
+                                        state_var_names, sad)
             if pure_eq is not None and (split is None or split[2]):
                 # the constraint 0 = RHS is not linear with a constant
                 # coefficient in any field: no saddle text to derive
@@ -1492,7 +1500,7 @@ class _BaseModelBuilder:
                         f'lhs={lhs_text!r} vanishes at Dt=0 (it is a pure '
                         f'time derivative), so its saddle-point condition '
                         f'is 0 = ({rhs_text}) - ({rest_text}) and it does '
-                        f'not define {primary}star.  Put the algebraic '
+                        f'not define {sad[primary]}.  Put the algebraic '
                         f'part of the drift on the LHS (e.g. '
                         f"lhs='Dt*m + u', rhs='a' rather than "
                         f"lhs='Dt*m', rhs='a - u'), or declare "
@@ -1514,13 +1522,13 @@ class _BaseModelBuilder:
                     warnings.warn(
                         f'ModelBuilder.build(): could not read the '
                         f'coefficient of {primary!r} off lhs={lhs_text!r}; '
-                        f'deriving the saddle text as {primary}star = RHS, '
+                        f'deriving the saddle text as {sad[primary]} = RHS, '
                         f'which is only right if the LHS reduces to '
                         f'{primary} at Dt=0.  If the mean-field sanity '
                         f'check fails, declare this saddle with '
                         f'set_mf_equation(...).', stacklevel=3)
 
-            saddle_name = f'{primary}star'
+            saddle_name = sad[primary]
             self._mf_eqs_text[saddle_name] = rewritten_rhs
 
     @staticmethod
@@ -1554,7 +1562,8 @@ class _BaseModelBuilder:
             return False
 
     @staticmethod
-    def _lhs_dt0_split(lhs_text, primary, scalar_form, state_var_names):
+    def _lhs_dt0_split(lhs_text, primary, scalar_form, state_var_names,
+                       saddles=None):
         """Split ``LHS|_{Dt=0}`` as ``c * primary + rest``.
 
         Returns ``(c_text, rest_text, c_is_zero, c_depends_on_state)`` with state variables
@@ -1601,10 +1610,11 @@ class _BaseModelBuilder:
         def back(e):
             s = str(e)
             for v in state_var_names:
+                sv = (saddles or {}).get(v, f'{v}star')
                 if scalar_form:
-                    s = re.sub(rf'\b{re.escape(v)}\b', f'{v}star[i]', s)
+                    s = re.sub(rf'\b{re.escape(v)}\b', f'{sv}[i]', s)
                 else:
-                    s = re.sub(rf'\b{re.escape(v)}__i\b', f'{v}star[i]', s)
+                    s = re.sub(rf'\b{re.escape(v)}__i\b', f'{sv}[i]', s)
             s = re.sub(r'\b(\w+)__([A-Za-z]\w*)__([A-Za-z]\w*)\b', r'\1[\2,\3]', s)
             s = re.sub(r'\b(\w+)__([A-Za-z]\w*)\b', r'\1[\2]', s)
             return s
@@ -1827,7 +1837,7 @@ class _BaseModelBuilder:
             # saddle.  The ``'AUTO'`` sentinel tells _classify_mf_eqs
             # to treat every mf_eq whose RHS is a single function
             # call as a closure saddle.
-            iter_sentinel = ('AUTO' if self.populations else 'nstar')
+            iter_sentinel = 'AUTO'
             self._mf_bg = make_mf_bg_conditions_lambda(
                 self._mf_eqs_text, primary_fn_spec,
                 field_names  = field_names,
@@ -1955,6 +1965,44 @@ class _BaseModelBuilder:
             if getattr(f, 'population', None) is None:
                 f.population = 'pop'
 
+    def _inject_legacy_population(self) -> None:
+        """``n_populations=N`` (N >= 2) without ``.population(...)``: declare
+        the explicit population ``pop`` of size N and index every legacy
+        ``indexed=`` field, parameter, kernel and one-argument function by
+        it (vector -> ``['pop']``, matrix -> ``['pop', 'pop']``), and every
+        ``.equation`` row without ``population=`` by it.  The model
+        is then an ordinary population model (same symbols, same index set
+        ``pop``), solved by the population mean-field path, which reads no
+        field or parameter spelling; the former flat-population solver read
+        the names ``nstar``/``vstar``/``E``/``g`` (audit GEN-01)."""
+        name, size = 'pop', int(self.n_populations)
+        self.populations.append({
+            'name': name, 'size': size,
+            'description': f'n_populations={size} index set'})
+        self.n_populations = len(self.populations)
+        for f in list(self.physical_fields) + list(self.response_fields):
+            if f.indexed and getattr(f, 'population', None) is None:
+                f.population = name
+        for p in self.parameters:
+            if p.indexed_by is None and p.indexed:
+                p.indexed_by = [name, name] if p.matrix else [name]
+        for k in self.kernels:
+            if k.indexed_by is None and k.indexed:
+                k.indexed_by = [name, name] if k.matrix else [name]
+        for ks in self._kernel_specs:
+            if ks.get('indexed_by') is None and ks.get('indexed'):
+                ks['indexed_by'] = ([name, name] if ks['indexed'] == 'matrix'
+                                    else [name])
+        for fn in self._function_specs:
+            if fn.get('population') is None:
+                fn['population'] = name
+        # an equation without population= is one row per population index
+        # (it was solved for index 1 only, the others left at the default
+        # point: a two-population spatial model failed its MF check)
+        for eq in self._equations:
+            if eq.get('population') is None:
+                eq['population'] = name
+
     def _resolve_spatial_dim(self) -> int:
         """Resolve the model's single spatial dimension from the physical
         fields (``0`` = time-only); validate the v1 single-dimension
@@ -1995,20 +2043,16 @@ class _BaseModelBuilder:
         # truly scalar models — bare ``xt * x`` instead of
         # ``sum(xt[i]*x[i] for i in pop)``.
         #
-        # Gate on ``n_populations <= 1``: the autopop always injects a
-        # size-1 population, so firing it for a legacy
-        # ``n_populations >= 2`` model (e.g. the 2-pop Hawkes models,
-        # which declare indexed fields but never call
-        # ``.population(...)``) would clobber the requested population
-        # count down to 1 — dropping ``nt2``/``vt2``/… and zeroing
-        # every cross-population correlator.  Those models instead
-        # keep an empty ``populations`` list and fall through to the
-        # flat ``index_sets = {'pop': range(n_populations)}`` legacy
-        # path (and the matching legacy ``solve_mean_field`` branch),
-        # exactly as the hand-written ``simulations/hawkes_*`` dicts do.
+        # Gate on ``n_populations <= 1``: the autopop injects a size-1
+        # population.  A legacy ``n_populations >= 2`` model (indexed fields,
+        # no ``.population(...)``) gets the explicit population ``pop`` of
+        # that size instead (``_inject_legacy_population``), so every model
+        # reaching the solvers declares its populations.
         if (not self.populations and self.physical_fields
                 and self.n_populations <= 1):
             self._inject_autopop()
+        elif not self.populations and self.physical_fields:
+            self._inject_legacy_population()
 
         # Apply the colored-noise → Markovian-embedding preprocessor
         # BEFORE compiling text declarations: this rewrite mutates
@@ -2107,7 +2151,7 @@ class _BaseModelBuilder:
             from api.model_compiler import (
                 _classify_mf_eqs as _classify,
             )
-            iter_sentinel = ('AUTO' if self.populations else 'nstar')
+            iter_sentinel = 'AUTO'
             classification = _classify(
                 self._mf_eqs_text, iter_sentinel,
                 functions=self._function_specs,

@@ -32,10 +32,7 @@ from engine.integration.time_domain.pipeline import (
 # Pipeline-package helpers
 from api._propagator import build_propagator, compute_poles_and_residues
 from api._mean_field import solve_mean_field
-from api._mean_field_dae import (
-    solve_mean_field_dae_compat,
-    linear_stability,
-)
+from api._mean_field_dae import linear_stability
 from api._diagrams  import enumerate_unique_diagrams
 from engine.enumeration import prediagram_cache as _pd_cache
 from api.save       import _phase_j_convention, _phase_j_flags
@@ -1749,21 +1746,15 @@ def compute_cumulants(
         print('[3/7] Solve MF self-consistency...')
     _t_phase = time.perf_counter()
     try:
-        if model.get('equations'):
-            # Route to the DAE-based multi-root solver when the model
-            # declares ``.equation(lhs=..., rhs=..., population=...)``.
-            # Returns the same legacy-shape keys plus DAE-specific extras
-            # (mf_all_roots, mf_index_used, ...) that we surface on the
-            # final th dict below.
-            mf = solve_mean_field_dae_compat(
-                ft, model, fundamental,
-                fixed_point_index=fixed_point_index,
-                n_starts=mf_dae_n_starts,
-                seed_box=mf_dae_seed_box,
-                verbose=verbose,
-            )
-        else:
-            mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
+        # One multi-root solver for every model (``.equation`` rows or
+        # ``.set_mf_equation`` saddle equations; audit GEN-02); its root
+        # census (mf_all_roots, mf_index_used, ...) is surfaced below.
+        mf = solve_mean_field(
+            ft, model, fundamental, verbose=verbose,
+            fixed_point_index=fixed_point_index,
+            n_starts=mf_dae_n_starts,
+            seed_box=mf_dae_seed_box,
+        )
     except Exception as _mf_exc:
         if _pf is not None:               # name the cause when a gate can
             _pf.failed('mean_field', _mf_exc)
@@ -2594,19 +2585,8 @@ def _run_phase_j(state, grouped):
     #      pre-date the declarative API.
     npop = len(ft._ns.pop)
 
-    mf_param_names: list[str] = []
-    if naming_convention and naming_convention.get('mf_parameters'):
-        mf_param_names = list(naming_convention['mf_parameters'])
-    else:
-        # Walk model['parameters'] looking for the flag
-        for pspec in model.get('parameters', []) or []:
-            if pspec.get('mean_field'):
-                mf_param_names.append(pspec['name'])
-        # Last-resort fallback for legacy models
-        if not mf_param_names:
-            for legacy in ('nstar', 'vstar', 'mstar'):
-                if hasattr(ft._ns, legacy):
-                    mf_param_names.append(legacy)
+    from api.naming import saddle_names
+    mf_param_names: list[str] = saddle_names(model)
 
     # Map each MF param name to the range of local indices it owns.
     # Heterogeneous models declare ``indexed_by=['<pop>']`` on each
@@ -2713,8 +2693,11 @@ def _run_phase_j(state, grouped):
         # (with full eigenvalue spectrum + A/B matrices) is the
         # canonical record for downstream consumers.
         try:
-            result['mf_stability'] = linear_stability(
+            # (saddle equations without .equation rows have no Dt terms
+            # to linearize)
+            result['mf_stability'] = (linear_stability(
                 model, fundamental, mf['mf_values'], verbose=False)
+                if model.get('equations') else None)
         except Exception as e:
             if verbose:
                 print(f'  [stability] skipped: {type(e).__name__}: {e}')

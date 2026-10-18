@@ -346,13 +346,32 @@ class NoiseSourceType(SourceType):
 
 # ── Ring variable name parsing ───────────────────────────────────────────────
 
+def _needs_separator(base):
+    return bool(base) and (base[-1].isdigit() or base[-1] == '_')
+
+
+def field_symbol_name(base, idx=None):
+    """Name of a field's ring variable: ``base`` followed by its 1-based
+    population index (``dn`` + 2 -> ``dn2``).  A base ending in a digit or
+    ``_`` gets a ``_`` before the index (``dx1`` + 1 -> ``dx1_1``; ``idx``
+    ``None``, an un-indexed field: ``dx1_0``), so that
+    :func:`_parse_field_name` inverts every name: ``dx1`` + 1 and ``dx`` + 11
+    were both ``dx11`` (audit GEN-07)."""
+    if idx is None:
+        return f'{base}_0' if _needs_separator(base) else base
+    return f'{base}_{idx}' if _needs_separator(base) else f'{base}{idx}'
+
+
 def _parse_field_name(ring_var_name):
     """
     Parse a ring variable name like 'nt1', 'dn2', 'vt12' into
-    (base_name, population_index).
+    (base_name, population_index): the inverse of
+    :func:`field_symbol_name`.
 
-    Convention: the name is a string of letters followed by digits.
-    The digits are the 1-based population index.
+    The trailing digits are the 1-based population index; a ``_`` before
+    them separates a base that itself ends in a digit or ``_``
+    (``dx1_1`` -> ``('dx1', 1)``).  A name without trailing digits has
+    index 0.
     """
     # Find where digits start
     i = len(ring_var_name)
@@ -363,6 +382,8 @@ def _parse_field_name(ring_var_name):
         return ring_var_name, 0
     base = ring_var_name[:i]
     idx  = int(ring_var_name[i:])
+    if base.endswith('_') and _needs_separator(base[:-1]):
+        base = base[:-1]
     return base, idx
 
 

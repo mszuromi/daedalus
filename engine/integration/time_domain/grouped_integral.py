@@ -107,6 +107,7 @@ from engine.integration.time_domain.propagator_td import (
     G_t_delta_coeff,
 )
 from engine.integration.time_domain.final_integral import (
+    _spec_leg_keys,
     _lookup_prop_indices,
     _integrate_polytope,
     _integrate_2d_polygon_modesum,
@@ -956,10 +957,16 @@ def integrate_grouped_diagram(
                 )
                 if tau_sym_v is None:
                     continue
+                # each spec in its own leg orientation (see final_integral
+                # section 3b, audit W6)
+                ref = _spec_leg_keys(specs[0])
                 for spec in specs:
                     i_leg, j_leg = spec['legs'][0], spec['legs'][1]
+                    own = _spec_leg_keys(spec)
+                    tau_eff = (-tau_sym_v if own != ref and own == ref[::-1]
+                               else tau_sym_v)
                     kappa_subs[spec['symbol']] = SR(
-                        spec['kernel_fn'](i_leg, j_leg, tau_sym_v)
+                        spec['kernel_fn'](i_leg, j_leg, tau_eff)
                     )
             if kappa_subs:
                 cp = cp.subs(kappa_subs)

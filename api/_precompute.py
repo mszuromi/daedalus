@@ -205,17 +205,8 @@ def _build_fundamental_defaults(model: dict) -> dict:
 
 
 def _solve_mf_at_saddle(model: dict, fundamental: dict, ft) -> dict:
-    """Run the DAE solver if the model declares equations; otherwise
-    fall back to the legacy iteration solver.  Returns the saddle
-    values dict (``{<var>star: [vals]}``)."""
-    if model.get('equations'):
-        from api._mean_field_dae import solve_mean_field_dae
-        result = solve_mean_field_dae(model, fundamental, verbose=False)
-        return result.get('mf_values', {})
-
-    # Legacy iteration solver path.
+    """The saddle values ``{<saddle>: [vals]}`` of the model's mean-field
+    solve (the one multi-root solver, root 0)."""
     from api._mean_field import solve_mean_field
-    # The legacy solver takes the FieldTheory instance and the model
-    # together with the fundamental dict.
     result = solve_mean_field(ft, model, fundamental, verbose=False)
-    return result.get('num_saddles', {}) or {}
+    return result.get('mf_values', {})

@@ -319,9 +319,12 @@ _SPIKE = {'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
 # P3-affected regions of (tight quadrature - pre-M3 value), measured
 # independently (M3 brief: -3.8660e-3 to 5 digits).
 # τ: (pre-M3, M3, independent).
+# (pre-M3 value, M3 value, independent reference).  The tau = 3 pre-M3 value
+# was re-read at audit W6: the saddle is now solved to round-off (it was ~1e-12
+# off), which moves this one-loop value by 9.3e-12 relative.
 _ONE_LOOP = {
     1.0: (-6.3683627449738905e-03, -3.865960659466003e-03, -3.8660e-03),
-    3.0: (-1.2953050283558442e-03, -1.0261461422474269e-03, -1.0261e-03),
+    3.0: (-1.2953050283678446e-03, -1.0261461422474269e-03, -1.0261e-03),
 }
 
 

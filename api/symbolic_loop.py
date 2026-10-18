@@ -1324,8 +1324,13 @@ def _solve_vec(M, y, F, times=1):
 # ─── the driver ─────────────────────────────────────────────────────────────
 
 def _saddle_names(model, num_params):
-    from api.symbolic_out import _is_saddle_symbol
-    return [str(k) for k in num_params if _is_saddle_symbol(str(k), model)]
+    """The run's symbols that are not free parameters: the saddle values and
+    any value derived from them (a formal function at the saddle, a Taylor
+    coefficient ``phi{k}_i``), which move with the saddle and are never a
+    free parameter (audit GEN-17)."""
+    from api.naming import is_parameter_symbol
+    return [str(k) for k in num_params
+            if not is_parameter_symbol(str(k), model)]
 
 
 def _propagator_data(prop, model):

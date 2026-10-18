@@ -279,12 +279,33 @@ def test_bug3_dae_residual_penalizes_nan_and_overflow(monkeypatch):
     assert cap['R'](np.array([2.0]))[0] == MD._PENALTY       # 0*inf = NaN before (penalty 1e10 then)
 
 
-def test_bug3_saddle_residual_check():
-    from api._mean_field import _check_saddle_residual
-    _check_saddle_residual('t', [1e-12, -2e-12], [0.3, 1.5])
-    for bad in ([1e-3, 0.0], [float('nan'), 0.0], [1e10, 1e10]):
-        with pytest.raises(RuntimeError, match='did not converge'):
-            _check_saddle_residual('t', bad, [0.3, 1.5])
+def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
+    """The ``.set_mf_equation`` saddle system (the same multi-root solver
+    since audit W6 / GEN-02; its own fsolve residual check is retired)
+    penalizes a non-finite residual like the ``.equation`` rows do."""
+    import api._mean_field_dae as MD
+    cap = {}
+    orig = MD._saddle_system
+
+    def spy(*a, **k):
+        out = orig(*a, **k)
+        cap['R'] = out[2]
+        return out
+    from api.model import ModelBuilder
+    m = (ModelBuilder('bug60 saddle nan').physical_field('x')
+         .parameter('D', default=0.1, domain='positive')
+         .set_action_text('xt*((Dt + 1)*x - 0.5 - 1e-300*exp(800*x)) - D*xt^2')
+         .set_mf_equation('xstar', '0.5 + 1e-300*exp(800*xstar)').build())
+    import api._mean_field_dae as MD2
+    MD2._saddle_system = spy
+    try:
+        r = compute_cumulants(m, k=1, max_ell=0, external_fields=[('x', 1)],
+                              tau_grid=np.array([0.0]), **RUN)
+    finally:
+        MD2._saddle_system = orig
+    assert abs(r['mf_values']['xstar'][0] - 0.5) < 1e-12
+    assert abs(cap['R'](np.array([0.5]))[0]) < 1e-15
+    assert cap['R'](np.array([2.0]))[0] == MD._PENALTY       # exp(1600) overflows
 
 
 # ── bug 9: an invalid DAEDALUS_PHASE_J_ENGINE fails at the API entry ─────────

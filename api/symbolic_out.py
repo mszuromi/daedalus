@@ -479,15 +479,8 @@ def _model_fundamental(model: dict, parameters: Optional[dict]) -> dict:
 
 def _solve_mean_field(ft, model: dict, fundamental: dict) -> dict:
     """``num_params`` of the pipeline's MF solve ({SR symbol: float})."""
-    if model.get('equations'):
-        from api._mean_field_dae import solve_mean_field_dae_compat
-        mf = solve_mean_field_dae_compat(ft, model, fundamental,
-                                         fixed_point_index=0, n_starts=64,
-                                         seed_box=None, verbose=False)
-    else:
-        from api._mean_field import solve_mean_field
-        mf = solve_mean_field(ft, model, fundamental, verbose=False)
-    return mf['num_params']
+    from api._mean_field import solve_mean_field
+    return solve_mean_field(ft, model, fundamental, verbose=False)['num_params']
 
 
 def _clean_float(x: float, scale: float = 1.0):
@@ -743,29 +736,13 @@ def _expand_param_names(d: Optional[dict]) -> dict:
     return out
 
 
-def _saddle_bases(model: Optional[dict]) -> Optional[list]:
-    """Names of the model's mean-field (saddle) parameters, the ones
-    declared with ``mean_field=True`` (``xstar``, ``nEstar`` ...); ``None``
-    if the model declares none (then the ``<base>star`` naming rule
-    applies)."""
-    if not model:
-        return None
-    bases = [str(p.get('name')) for p in (model.get('parameters') or [])
-             if p.get('mean_field')]
-    return bases or None
-
-
 def _is_saddle_symbol(name: str, model: Optional[dict]) -> bool:
     """Whether the symbol ``name`` is a mean-field value: a declared saddle
-    parameter, plain or with a population index (``xstar`` / ``xstar1`` /
-    ``nEstar2``), or, for models that declare none, a name ending in
-    ``star`` plus an optional index -- the convention of
-    ``describe_model``."""
-    import re
-    bases = _saddle_bases(model)
-    if bases is None:
-        return re.fullmatch(r'.*star\d*', name) is not None
-    return any(re.fullmatch(re.escape(b) + r'\d*', name) for b in bases)
+    (``mean_field=True``), plain or with a population index (``xstar`` /
+    ``xstar1`` / ``nEstar2``); ``api.naming``, no spelling rule (a
+    parameter named ``tstar`` is a parameter, audit GEN-03)."""
+    from api.naming import is_saddle_symbol
+    return is_saddle_symbol(name, model)
 
 
 def _mf_symbols_only(model: Optional[dict], num_params) -> dict:
@@ -972,13 +949,14 @@ class TreeCovariance:
         if isinstance(field_, (int, np.integer)):
             return int(field_)
         if isinstance(field_, (tuple, list)) and len(field_) == 2:
+            from engine.core.vertices import field_symbol_name
             nm, pop = field_
-            cands = [f'{nm}{pop}']
+            cands = [field_symbol_name(nm, int(pop))]
             conv = (self._model or {}).get('naming_convention')
             if conv is not None:
                 from api.access import normalize_external_fields
-                cands.append('%s%d' % normalize_external_fields(
-                    [field_], naming_convention=conv)[0])
+                cands.append(field_symbol_name(*normalize_external_fields(
+                    [field_], naming_convention=conv)[0]))
             for c in cands:
                 if c in self.phys_names:
                     return self.phys_names.index(c)
