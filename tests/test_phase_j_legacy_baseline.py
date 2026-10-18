@@ -272,6 +272,14 @@ def test_legacy_fixture_values_reproduce(fx):
         err_msg=f'{fx.name}: legacy flags vs legacy/{fx.name}.npz')
 
 
+def _in_git_checkout():
+    rc, out = Z._git('rev-parse', '--is-inside-work-tree')
+    return rc == 0 and out.strip() == 'true'
+
+
+@pytest.mark.skipif(not _in_git_checkout(),
+                    reason='needs a git checkout: tracked and local-only models are told apart by '
+                           'git (outside one, every entry looks local-only)')
 def test_baseline_loads_and_is_consistent(baseline):
     meta, arrays = baseline
     assert meta['schema_version'] == Z.SCHEMA_VERSION
