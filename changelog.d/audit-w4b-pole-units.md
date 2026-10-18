@@ -23,7 +23,9 @@ by as much); analyzer codes identical except `ou_quartic_two_dim_color_corr` on 
   at its pole was set to 0. A field in small units (`x' = -x + c z` with `c = 1e-14`) lost its genuine `C_xz`
   (pole-engine value 0 instead of 1.33e-14), and `propagator['C_mats']` was wrong on every engine. Entries are now
   zero only when they are structural zeros of `K^{-1}` (exact), or rounding noise relative to the SAME entry's size
-  on a small circle around the pole. Residues now agree with the exact tier entry by entry (1e-12).
+  on a small circle around the pole (a quarter of the distance to the nearest other zero, at most half the pole's
+  modulus: a circle as wide as a far zero clipped a genuine residue, CI). Residues now agree with the exact tier
+  entry by entry (1e-12).
 - **The numerical tiers are no longer entered silently**: an exact-tier inverse that raised or ran out of time, or a
   repeated root the cluster route did not resolve, now gives a `PoleResidueWarning`. When the exact pole record
   exists, the analyzer reports `G3_RESIDUES_NUMERICAL_TIER`.

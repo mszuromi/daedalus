@@ -1458,7 +1458,7 @@ def _numeric_retarded(K_at, r, roots):
     first-order rounding error ``eps |u|^T |K| |v| / |u^H K' v|`` (``u``,
     ``v``: the singular vectors of the smallest singular value of ``K(r)``,
     ``K'`` by a central difference with a step 1e-4 of the distance to the
-    nearest other zero) -- the root-sensitivity of the nonlinear eigenvalue
+    nearest other zero or of ``|r|``, the smaller) -- the root-sensitivity of the nonlinear eigenvalue
     problem K(omega) v = 0, invariant under row / column scaling and
     non-normality (a Hadamard-type bound of det K was not: it dropped
     strongly damped poles of a non-normal system, review)."""
@@ -1480,7 +1480,8 @@ def _numeric_retarded(K_at, r, roots):
     if not sus_r:
         return True
     others = [abs(q - r) for q in rl if abs(q - r) > 1e-9 * max(abs(r), 1e-300)]
-    h = 1e-4 * (min(others) if others else max(abs(r), 1e-300))
+    # local step: also at most 1e-4 |r| (a lone far zero must not set it)
+    h = 1e-4 * min(others + [abs(r)]) if abs(r) > 0 else 1e-4 * min(others or [1.0])
     try:
         M = np.asarray(K_at(r), dtype=complex)
         U, S, Vh = np.linalg.svd(M)
@@ -1671,7 +1672,8 @@ def _numerical_residues(pole_vals, K_at, nonzero, roots, nf, scale=None):
     (``_structural_zero_entries``) is an exact 0; any other entry is noise
     when ``|C_k[i, j]|`` is at most ``NUMERIC_RESIDUE_RTOL`` of
     ``rho_k max |G_ij|`` on a circle of radius ``rho_k`` (a quarter of the
-    distance to the nearest other root) around the pole -- by Cauchy that
+    distance to the nearest other root, at most half ``|omega_k|``) around
+    the pole -- by Cauchy that
     bounds the entry's residue there, so the test is relative to the entry
     itself in any field or time unit.  It zeroes the rounding residue of an
     entry at a pole it does not have (a pure delta entry at every pole).
@@ -1709,7 +1711,12 @@ def _numerical_residues(pole_vals, K_at, nonzero, roots, nf, scale=None):
         C_np = 1j * adj / d_prime
         others = [abs(complex(r) - pk) for r in roots
                   if abs(complex(r) - pk) > 1e-7 * _local_unit(pk, scale)]
-        rho = 0.25 * min(others) if others else 0.5 * _local_unit(pk, scale)
+        # a LOCAL circle: a quarter of the distance to the nearest other zero,
+        # and at most half the pole's own modulus -- on a circle as wide as a
+        # far zero (1e16 x the pole: a cancelling mass matrix) the Cauchy
+        # bound is set by G's constant part and the far pole, and a genuine
+        # residue was clipped as noise (CI review of W4b)
+        rho = 0.25 * min(others + [2.0 * abs(pk)])
         ring = np.zeros((nf, nf))
         for k in range(8):
             try:

@@ -443,6 +443,38 @@ def test_trim_restore_does_not_double_an_ill_conditioned_pole(S):
             complex(E[0, 0]) == 0 and complex(C[0, 0]) == 0)
 
 
+@pytest.mark.parametrize('S', [1e5, 1e7])
+def test_numerical_tier_with_the_far_root_verified(no_exact_tier, monkeypatch, S):
+    """The Linux path of the 2 x 2 model above, on every platform: its far
+    root (-6.6e11 i at S = 1e5, a genuine zero of the float model) passes
+    the verification there (LAPACK rounding).  The pole must stay retarded
+    (no threshold from other roots) and its residue must not be clipped:
+    the noise circle was a quarter of the distance to that far root, on
+    which G's constant part sets the Cauchy bound (CI, Linux: C_00 = 0)."""
+    om = var('omega')
+    x, u, y, z = 0.1 * S, 0.7 * S, 0.07 * S, 1.0 * S
+    K = matrix(SR, [[I * om * x + 1, I * om * y], [I * om * z, I * om * u + 2]])
+    p = 2j / (0.9 * S)
+    cs = [complex(c) for c in SR(K.det()).numerator().coefficients(om, sparse=False)]
+    far = -cs[1] / cs[2]                  # the float model's genuine far zero (lower half plane)
+    assert far.imag < -1e10 * abs(p)
+    orig = PR._verified_roots
+
+    def with_far(cands, det_at):
+        roots, rej, sc = orig(cands, det_at)
+        if not any(abs(r - far) <= 1e-6 * abs(far) for r in roots):
+            roots = roots + [complex(far)]
+        return roots, rej, PR._median_scale(roots)
+    monkeypatch.setattr(PR, '_verified_roots', with_far)
+    prop = {'K_ft': K, 'adj_ft': None, 'G_ft': None, 'nf': 2, 'omega': om}
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        PR.compute_poles_and_residues(prop, {}, verbose=False)
+    assert [complex(q) for q in prop['pole_vals']] == pytest.approx([p], rel=1e-12)
+    ddet = 1j * (2 * x + u) + 2 * (y * z - x * u) * p
+    assert complex(prop['C_mats'][0][0, 0]) == pytest.approx(1j * (1j * p * u + 2) / ddet, rel=1e-12)
+
+
 def test_structural_zeros_are_exact():
     # K upper triangular in (x, z): G_zx is a structural zero, G_xz is not
     nz = [[True, True], [False, True]]
