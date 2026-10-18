@@ -728,6 +728,245 @@ def _refuse_uv_divergent(descr, spatial_dim):
             f'd=1, max_ell=0, or a model without this subgraph.')
 
 
+# ── equal external times: the radial-simplex rule ─────────────────────
+# When every external time coincides, every edge weight is homogeneous of
+# degree 1 in y = (the gaps between the vertex times inside a causal chamber,
+# the Schwinger sigmas).  With y = lam*s (s on the standard simplex) the
+# Symanzik polynomials scale (U -> lam^L U, B -> lam B) and the radial
+# lam-integral is the closed form
+#     int_0^inf lam^(P-1) e^(-a lam - c/lam) dlam = 2 (c/a)^(P/2) K_P(2 sqrt(a c)),
+# a = mu * sum_e w_e(s), c = |x|^2 / (4 B(s)) (k = 2) or X^T B(s)^-1 X / 4
+# (k >= 3), P = n - (L + n_ext) d / 2 (Gamma(P)/a^P at x = 0).  That radial
+# direction carries the steep heat-kernel factor e^(-x^2/4B) that a product
+# grid resolves only jointly in (t, sigma).  The remaining simplex is
+# integrated by stick-breaking (Duffy) coordinates with a tanh-sinh rule per
+# coordinate (spectral for the integrable power singularities on its faces),
+# at an adaptive order: the order grows until two successive orders agree to
+# EQTIME_RTOL.  Plain vertices; up to EQTIME_MAX_DIM simplex dimensions
+# (cost m^dim per chamber); derivative vertices keep the grid.
+EQTIME_RTOL = 1e-9
+EQTIME_MAX_DIM = 4
+EQTIME_NODE_CAP = 2e7            # simplex nodes x chambers, per call
+_EQTIME_ORDERS = {1: (32, 48, 72, 108, 160), 2: (24, 36, 54, 80, 120),
+                  3: (18, 27, 40, 60, 90), 4: (14, 21, 32, 48)}
+_EQTIME_CHUNK = 200000
+EQTIME_GRID_P_CAP = 2e7          # samples per chamber for the 2x grid bump
+EQTIME_GRID_NOTE = (
+    'equal external times above the radial-simplex dimension: product grid '
+    '(algebraic convergence at equal times; measured 1e-5 relative at the '
+    '(22, 24) grid and 1e-4 at (16, 16) on one-loop diagrams; not certified)')
+
+import threading as _threading
+_EQTIME_LEDGER = _threading.local()
+
+
+def eqtime_ledger_reset():
+    """Start collecting equal-time accuracy records (per thread)."""
+    _EQTIME_LEDGER.rows = []
+
+
+def eqtime_ledger_collect():
+    """The records since :func:`eqtime_ledger_reset`, summarized:
+    ``{'calls', 'max_rel_change', 'unconverged', 'grid_calls',
+    'grid_note'}`` (``None`` if nothing was collected)."""
+    rows = getattr(_EQTIME_LEDGER, 'rows', None)
+    if not rows:
+        return None
+    simplex = [r for r in rows if r['rule'] == 'radial-simplex']
+    grid = [r for r in rows if r['rule'] == 'grid']
+    out = {'calls': len(simplex), 'grid_calls': len(grid)}
+    if simplex:
+        out['max_rel_change'] = max(r['rel_change'] for r in simplex)
+        out['unconverged'] = sum(1 for r in simplex if not r['converged'])
+        out['max_order'] = max(r['m'] for r in simplex)
+    if grid:
+        out['grid_note'] = grid[0]['note']
+        out['grid_sizes'] = sorted({(r['n_t'], r['n_s']) for r in grid})
+    return out
+
+
+def _eqtime_record(row):
+    rows = getattr(_EQTIME_LEDGER, 'rows', None)
+    if rows is not None:
+        rows.append(row)
+
+
+def _tanh_sinh_unit(m):
+    """tanh-sinh nodes on [0, 1], their exact complements and weights; the
+    range grows with m (truncation balanced against the step)."""
+    tmax = max(2.4, 1.2 * math.log(m) - 0.7)
+    t = np.linspace(-tmax, tmax, m)
+    h = t[1] - t[0]
+    sv = 0.5 * math.pi * np.sinh(t)
+    x = 1.0 / (1.0 + np.exp(-2.0 * sv))
+    xc = 1.0 / (1.0 + np.exp(2.0 * sv))
+    w = h * math.pi * np.cosh(t) * x * xc
+    return x, xc, w
+
+
+def _simplex_chunk(n, m, start, stop):
+    """Stick-breaking nodes ``(P, n)`` on the standard simplex and weights
+    (total ``1/(n-1)!``) for the flat tensor indices ``[start, stop)``."""
+    if n == 1:
+        return np.ones((1, 1)), np.ones(1)
+    x1, c1, w1 = _tanh_sinh_unit(m)
+    flat = np.arange(start, min(stop, m ** (n - 1)))
+    ii = np.unravel_index(flat, (m,) * (n - 1))
+    S = np.zeros((flat.size, n))
+    W = np.ones(flat.size)
+    rest = np.ones(flat.size)
+    for i in range(n - 1):
+        S[:, i] = rest * x1[ii[i]]
+        W = W * w1[ii[i]] * c1[ii[i]] ** (n - 2 - i)
+        rest = rest * c1[ii[i]]
+    S[:, n - 1] = rest
+    return S, W
+
+
+def eqtime_simplex_dim(descr):
+    """The simplex dimension of the equal-time rule for ``descr``."""
+    n_C = sum(1 for e in descr.edges if e.kind == 'C')
+    return len(descr.internal_vertices) + n_C - 1
+
+
+def _eqtime_applies(descr, external_times, xs, formfactor, method):
+    import os as _os
+    if method != 'grid' or xs is None or formfactor is not None:
+        return False
+    if _os.environ.get('SPATIAL_EQTIME', '1').strip() == '0':
+        return False
+    if len({float(t) for t in external_times.values()}) != 1:
+        return False
+    if any(e.kind == 'R' and e.v in set(descr.internal_vertices)
+           and e.u not in set(descr.internal_vertices) for e in descr.edges):
+        return False                        # a leaf feeding a vertex
+    return 1 <= eqtime_simplex_dim(descr) <= EQTIME_MAX_DIM
+
+
+def _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m, a, b, internal_R):
+    """One order ``m`` of the radial-simplex rule: ``(n_x,)`` (all external
+    times equal; plain vertices)."""
+    from scipy.special import kv as _kv, gamma as _gamma
+    edges = list(descr.edges)
+    internal = list(descr.internal_vertices)
+    idx = {v: i for i, v in enumerate(internal)}
+    n_V = len(internal)
+    n_C = sum(1 for e in edges if e.kind == 'C')
+    n = n_V + n_C
+    L, n_ext, d = a.shape[1], b.shape[1], int(spatial_dim)
+    xs = np.asarray(xs, dtype=float)
+    n_x = xs.shape[0]
+    total = np.zeros(n_x)
+    Pp = n - (L + n_ext) * d / 2.0               # the radial power (P + 1)
+    n_nodes = m ** (n - 1) if n > 1 else 1
+    bb = np.einsum('ej,ek->ejk', b, b).reshape(len(edges), -1)
+    aa2 = np.einsum('el,em->elm', a, a).reshape(len(edges), -1) if L else None
+    ab = np.einsum('el,ej->elj', a, b).reshape(len(edges), -1) if L else None
+    for order in (causal_chambers(n_V, internal_R) if n_V else [()]):
+        Ug = np.zeros((n_V, n))                  # u_v from the chamber gaps
+        rank = {}
+        for k, vi in enumerate(reversed(order)):
+            Ug[vi, :k + 1] = 1.0
+            rank[vi] = k                         # larger rank = earlier
+        # edge weights are LINEAR in (gaps, sigmas) inside a chamber
+        Aw = np.zeros((len(edges), n))
+        ci = 0
+        for ei, e in enumerate(edges):
+            ru = Ug[idx[e.u]] if e.u in idx else np.zeros(n)
+            rv = Ug[idx[e.v]] if e.v in idx else np.zeros(n)
+            if e.kind == 'R':
+                Aw[ei] = ru - rv
+            else:
+                ku = rank.get(idx.get(e.u), -1) if e.u in idx else -1
+                kv_ = rank.get(idx.get(e.v), -1) if e.v in idx else -1
+                Aw[ei] = (ru - rv) if ku >= kv_ else (rv - ru)
+                Aw[ei, n_V + ci] = 1.0
+                ci += 1
+        for c0 in range(0, n_nodes, _EQTIME_CHUNK):
+            S, Ws = _simplex_chunk(n, m, c0, c0 + _EQTIME_CHUNK)
+            w = S @ Aw.T
+            P_ = S.shape[0]
+            Q = (w @ bb).reshape(P_, n_ext, n_ext)
+            if L == 0:
+                Uh = np.ones(P_)
+                Bm = D * Q
+            else:
+                Lam = (w @ aa2).reshape(P_, L, L)
+                Nn = (w @ ab).reshape(P_, L, n_ext)
+                if L == 1:
+                    Uh = Lam[:, 0, 0]
+                    LiN = Nn / np.where(Uh > 0, Uh, 1.0)[:, None, None]
+                elif L == 2:
+                    Uh = Lam[:, 0, 0] * Lam[:, 1, 1] - Lam[:, 0, 1] * Lam[:, 1, 0]
+                    inv = np.empty_like(Lam)
+                    Us = np.where(Uh > 0, Uh, 1.0)
+                    inv[:, 0, 0] = Lam[:, 1, 1] / Us
+                    inv[:, 1, 1] = Lam[:, 0, 0] / Us
+                    inv[:, 0, 1] = -Lam[:, 0, 1] / Us
+                    inv[:, 1, 0] = -Lam[:, 1, 0] / Us
+                    LiN = np.einsum('plm,pmj->plj', inv, Nn)
+                else:
+                    Uh = np.linalg.det(Lam)
+                    okU = Uh > 1e-300
+                    LiN = np.zeros_like(Nn)
+                    LiN[okU] = np.linalg.solve(Lam[okU], Nn[okU])
+                Bm = D * (Q - np.einsum('plj,plk->pjk', Nn, LiN))
+            detB = Bm[:, 0, 0] if n_ext == 1 else np.linalg.det(Bm)
+            good = (Uh > 1e-300) & (detB > 1e-300)
+            if not np.any(good):
+                continue
+            Wg, Uh, Bm, detB = Ws[good], Uh[good], Bm[good], detB[good]
+            aa = mu * w[good].sum(axis=1)
+            c_pref = Wg * ((4.0 * math.pi * D) ** (-0.5 * L * d)
+                           * Uh ** (-0.5 * d) * (4.0 * math.pi) ** (-0.5 * n_ext * d)
+                           * detB ** (-0.5 * d))
+            if n_ext == 1:
+                x2 = xs ** 2 if xs.ndim == 1 else np.sum(xs ** 2, axis=-1)
+                cc = x2[None, :] / (4.0 * Bm[:, 0, 0][:, None])
+            else:
+                Binv = np.linalg.inv(Bm)
+                cc = (0.25 * np.einsum('xj,pjk,xk->px', xs, Binv, xs)
+                      if xs.ndim == 2 else
+                      0.25 * np.einsum('xjc,pjk,xkc->px', xs, Binv, xs))
+            for ix in range(n_x):
+                c = cc[:, ix]
+                if not np.any(c > 0.0):
+                    if Pp <= 0:
+                        raise SpatialUVDivergenceError(
+                            'equal-point radial integral diverges (P <= 0).')
+                    rad = _gamma(Pp) / aa ** Pp
+                else:
+                    rad = 2.0 * (c / aa) ** (0.5 * Pp) * _kv(
+                        Pp, 2.0 * np.sqrt(aa * c))
+                total[ix] += float(np.sum(c_pref * rad))
+    return total
+
+
+def _eqtime_kinematic_adaptive(descr, xs, mu, D, spatial_dim, a, b,
+                               internal_R, n_chambers):
+    """The radial-simplex rule at growing orders until two successive orders
+    agree to :data:`EQTIME_RTOL` (relative to the largest value), or the node
+    cap.  Records the outcome in the equal-time ledger."""
+    dim = eqtime_simplex_dim(descr)
+    prev, m_used, change = None, None, float('inf')
+    for m in _EQTIME_ORDERS[dim]:
+        if prev is not None and (m ** dim) * n_chambers > EQTIME_NODE_CAP:
+            break
+        val = _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m, a, b,
+                                  internal_R)
+        if prev is not None:
+            scale = max(float(np.max(np.abs(val))), 1e-300)
+            change = float(np.max(np.abs(val - prev))) / scale
+            if change <= EQTIME_RTOL:
+                prev, m_used = val, m
+                break
+        prev, m_used = val, m
+    _eqtime_record({'rule': 'radial-simplex', 'dim': dim, 'm': m_used,
+                    'rel_change': change,
+                    'converged': change <= EQTIME_RTOL})
+    return prev
+
+
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                       W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
                       xs=None, method='grid', mc_n=1000000, mc_seed=0):
@@ -818,6 +1057,29 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             a, b, edges, internal, idx, internal_R, external_times, xs_arr,
             mu, D, spatial_dim, formfactor, int(mc_n), mc_seed)
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    if _eqtime_applies(descr, external_times, xs_arr, formfactor, method):
+        # equal external times: the exact-radial simplex rule (spectral)
+        return _eqtime_kinematic_adaptive(descr, xs_arr, mu, D, spatial_dim,
+                                          a, b, internal_R, len(chambers))
+    if (method == 'grid' and xs_arr is not None and formfactor is None
+            and len({float(t) for t in external_times.values()}) == 1
+            and eqtime_simplex_dim(descr) > EQTIME_MAX_DIM):
+        # equal times above the simplex rule's dimension: the product grid
+        # converges only algebraically there (the heat-kernel feature lies
+        # on a diagonal of (t, sigma)); refine it 2x when the chamber fits
+        # the memory budget and EQTIME_GRID_P_CAP samples, else keep it and
+        # say so (ledger -> result['spatial_info']['equal_time'])
+        n_t2, n_s2 = 2 * n_t, 2 * n_s
+        P2 = (n_t2 ** n_V) * (n_s2 ** n_C)
+        need = chamber_peak_bytes(
+            P2, n_V=n_V, n_leaf=len(external_times), n_C=n_C, E=len(edges),
+            L=a.shape[1], n_ext=b.shape[1], n_x=int(xs_arr.shape[0]),
+            spatial_dim=spatial_dim)
+        bump = P2 <= EQTIME_GRID_P_CAP and need <= 0.5 * _spatial_mem_budget()[0]
+        if bump:
+            n_t, n_s = n_t2, n_s2
+        _eqtime_record({'rule': 'grid', 'n_t': n_t, 'n_s': n_s,
+                        'note': EQTIME_GRID_NOTE})
     _ties = _leaf_ties(edges, idx, external_times, n_V)
     # the long tail segment keeps n_t nodes; the short smooth segments between
     # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)

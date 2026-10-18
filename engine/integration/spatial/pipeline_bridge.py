@@ -1794,6 +1794,9 @@ def compute_spatial_correlator_generic(
         per_tau_kw=lambda i: {} if i == 0 else {'verbose': False})
     if _bst is not None:
         return _bst
+    from engine.integration.spatial.full_integrator import (
+        eqtime_ledger_reset, eqtime_ledger_collect)
+    eqtime_ledger_reset()
     if verbose:
         print('[5/7] (spatial) Certify tree modes (mu,D,kap) vs the shared-pipeline '
               'C(q,τ) at sample momenta (mode-structure check)...')
@@ -2041,7 +2044,13 @@ def compute_spatial_correlator_generic(
     from engine.integration.spatial.full_integrator import (
         time_grid_split_factor, external_times_2pt, chamber_peak_bytes)
     _tau_m = float(np.max(np.abs(taus))) if len(taus) else 0.0
+    from engine.integration.spatial.full_integrator import (
+        eqtime_simplex_dim, EQTIME_MAX_DIM)
     for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
+        if (_tau_m == 0.0 and _ff is None and _use_x_path
+                and _integrator == 'grid'
+                and 1 <= eqtime_simplex_dim(_dd) <= EQTIME_MAX_DIM):
+            continue                 # equal times: the radial-simplex rule
         _nV = len(_dd.internal_vertices)
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
         # the time grid splits at the external times inside each vertex's
@@ -2205,6 +2214,9 @@ def compute_spatial_correlator_generic(
                  # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …}
                  # — the whole progression from ONE call (no per-ℓ re-runs).
                  'C_by_order': C_by_order})
+    _eq = eqtime_ledger_collect()
+    if _eq is not None:
+        info['equal_time'] = _eq
     return C1, info
 
 
@@ -2331,6 +2343,9 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             return 0.0
     _vterms = [{'weight': _num_w(t['weight']), 'n_phys': t['n_phys'],
                 'chain': t['chain'], 'mode': t['mode']} for t in _vt_sym]
+    from engine.integration.spatial.full_integrator import (
+        eqtime_ledger_reset, eqtime_ledger_collect)
+    eqtime_ledger_reset()
     per_ell = {}
     total = _np.zeros(n_pts)
     # group evaluation points by tau-configuration (slot 0 at tau=0)
@@ -2380,6 +2395,9 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
 
     info = {'per_ell': per_ell, 'mu': mu0, 'D': D0,
             'spatial_dim': spatial_dim, 'k': k, 'max_ell': max_ell}
+    _eq = eqtime_ledger_collect()
+    if _eq is not None:
+        info['equal_time'] = _eq
     if _v_drift:
         info['drift_velocity'] = _v_drift
     return total, info
