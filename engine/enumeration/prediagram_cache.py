@@ -574,15 +574,13 @@ _FALSE = ('0', 'false', 'no', 'off')
 
 def cache_format():
     """Resolve the on-disk format preference; see :data:`_FORMAT_ENV`."""
-    fmt = os.environ.get(_FORMAT_ENV, 'auto').strip().lower()
-    if fmt not in ('auto', 'v1', 'v2'):
-        raise ValueError(
-            f'{_FORMAT_ENV}={fmt!r}: expected one of auto, v1, v2')
-    return fmt
+    from engine import _env
+    return _env.choice(_FORMAT_ENV, ('auto', 'v1', 'v2'), 'auto')
 
 
 def _enum_procs():
-    return max(1, int(os.environ.get(_PROCS_ENV, '1')))
+    from engine import _env
+    return _env.integer(_PROCS_ENV, 1, minimum=1)
 
 
 def _cache_off_source(stream):

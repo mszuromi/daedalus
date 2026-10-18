@@ -101,10 +101,12 @@ import numpy as np
 #: external times, the external-time tie order for coincident times).
 PHASE_J_CONVENTION = 'theta0_ito_const_rows'
 
-# ``final_integral.THETA0_CONST_ROW_MODE`` -> stamp label.
+# The retired (audit W7) ``final_integral.THETA0_CONST_ROW_MODE`` -> the
+# stamp label it wrote; 'legacy_clip' files (``DAEDALUS_PHASE_J_LEGACY=1``
+# etc., before W7) still load, with a warning.
 _PHASE_J_CONVENTION_BY_MODE = {
     'ito':         PHASE_J_CONVENTION,
-    'legacy_clip': 'theta0_legacy_clip',   # DAEDALUS_PHASE_J_LEGACY=1 etc.
+    'legacy_clip': 'theta0_legacy_clip',
 }
 # Labels whose numbers follow the pre-0.2.0 rule (a load warns).
 _LEGACY_PHASE_J_CONVENTIONS = frozenset({'theta0_legacy_clip'})
@@ -113,8 +115,6 @@ _LEGACY_PHASE_J_CONVENTIONS = frozenset({'theta0_legacy_clip'})
 _STAMP_MIN_VERSION = (0, 2, 0)
 
 _FI_MODULE = 'engine.integration.time_domain.final_integral'
-
-_FALSY_ENV = ('', '0', 'false', 'no', 'off')
 
 
 from engine._warn_helpers import (                    # noqa: E402
@@ -152,45 +152,30 @@ def _daedalus_version() -> str:
     return str(v) if v else 'unknown'
 
 
-def _theta0_mode_from_env(environ=None) -> str:
-    """The Θ(0) mode the environment selects at import of ``final_integral``
-    (mirrors ``final_integral._initial_phase_j_flags``, without importing
-    it): the umbrella ``DAEDALUS_PHASE_J_LEGACY`` wins, then
-    ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``, else ``'ito'``."""
-    env = os.environ if environ is None else environ
-    if env.get('DAEDALUS_PHASE_J_LEGACY', '').strip().lower() not in _FALSY_ENV:
-        return 'legacy_clip'
-    return (env.get('DAEDALUS_PHASE_J_THETA0_CONST_ROW', '')
-            .strip().lower() or 'ito')
-
-
 def _phase_j_convention() -> str:
-    """Label of the Phase J convention in force (call time).
-
-    Reads ``final_integral.THETA0_CONST_ROW_MODE`` when that module is loaded
-    (it is whenever Phase J ran in this process, so a monkeypatched or
-    environment-selected legacy mode is stamped as such); otherwise the mode
-    the environment would select."""
-    fi = sys.modules.get(_FI_MODULE)
-    mode = getattr(fi, 'THETA0_CONST_ROW_MODE', None)
-    if mode is None:
-        mode = _theta0_mode_from_env()
-    return _PHASE_J_CONVENTION_BY_MODE.get(str(mode), f'theta0_{mode}')
+    """Label of the Phase J convention in force: ``PHASE_J_CONVENTION``, the
+    only one since the 'legacy_clip' Θ(0) mode was retired (audit W7; the
+    labels of ``_LEGACY_PHASE_J_CONVENTIONS`` remain for loading files
+    written before)."""
+    return PHASE_J_CONVENTION
 
 
 #: The ``final_integral`` switches and tolerances that can move a Phase J
 #: number, in stamp order (M7; the memo flags are pure speed switches and
 #: are not listed).
 _PHASE_J_STAMP_FLAGS = (
-    'THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
-    'USE_DBM_FALLBACK', 'USE_PHASE_J_DD_KERNELS', 'CHAIN_UPPERS_KERNEL',
-    'SEMIINF_CHAIN', 'UNBOUNDED_2D', 'PHASE_J_T_MIN', 'POLYGON_BBOX_CAP',
-    'POSET_PHYSICAL_MARGIN', 'USE_POSET_CAP_MATCH_SCIPY',
-    'USE_POSET_MPMATH_ACCUMULATION', 'USE_CHAIN_SIMPLEX_PRECISION_FIX',
-    'USE_NUMBA_CHAIN_SIMPLEX', 'USE_POLYGON_M2_INTEGRATOR',
+    'PHASE_J_T_MIN', 'POSET_PHYSICAL_MARGIN', 'USE_POSET_CAP_MATCH_SCIPY',
+    'USE_POSET_MPMATH_ACCUMULATION', 'USE_POLYGON_M2_INTEGRATOR',
     'USE_1D_INTEGRATOR', 'USE_POSET_INTEGRATOR', 'TAU_KERNEL_CAP',
     'QUAD_OPTS', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL', 'NQUAD_LIMIT',
-    'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP', 'USE_SHOTNOISE_INTEGRATED')
+    'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
+# (Audit W7 retired the switches ``THETA0_CONST_ROW_MODE``,
+# ``STRUCTURAL_ZEROS``, ``NQUAD_HARDENED``, ``USE_DBM_FALLBACK``,
+# ``USE_PHASE_J_DD_KERNELS``, ``CHAIN_UPPERS_KERNEL``, ``SEMIINF_CHAIN``,
+# ``UNBOUNDED_2D``, ``USE_SHOTNOISE_INTEGRATED`` and the boxed-route
+# constants ``POLYGON_BBOX_CAP``, ``USE_CHAIN_SIMPLEX_PRECISION_FIX``,
+# ``USE_NUMBA_CHAIN_SIMPLEX``; a file written before carries them in its
+# ``phase_j_flags``.)
 
 
 def _phase_j_flags() -> str:
@@ -711,7 +696,7 @@ def save_csv(result: dict, path: str) -> str:
         # k=2, max_ell=1, model='Quadratic Hawkes ...'
         # daedalus_version: 0.2.0
         # phase_j_convention: theta0_ito_const_rows
-        # phase_j_flags: THETA0_CONST_ROW_MODE=ito;STRUCTURAL_ZEROS=1;...
+        # phase_j_flags: PHASE_J_T_MIN=-inf;POSET_PHYSICAL_MARGIN=50.0;...
         # parameters:
         #   E: [0.78, 0.81]
         #   ...

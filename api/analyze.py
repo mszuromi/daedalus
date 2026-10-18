@@ -366,7 +366,7 @@ class ModelTraits:
     repeated_poles: Optional[bool] = None
     n_close_pole_pairs: Optional[int] = None
     # near-degenerate / repeated poles (api._pole_clusters): 'harmless',
-    # 'resolved', 'unresolved' or 'disabled'; None without close poles
+    # 'resolved' or 'unresolved'; None without close poles
     pole_cluster_status: Optional[str] = None
     pole_cluster_kappa: Optional[float] = None   # largest cancellation factor
     fast_slow_ratio: Optional[float] = None
@@ -2115,7 +2115,7 @@ def _g3_pole_findings(ctx, res):
                            'averages deformed propagators (api._pole_clusters)',
                }.get(status, 'not resolved by the pole-cluster deformation ('
                      + str((pcr or {}).get('reason', '')) + ')'
-                     if status in ('unresolved', 'disabled') else
+                     if status == 'unresolved' else
                      'residues ~ 1/gap; not analysed')
         ctx.add('G3_CLOSE_POLES',
                 f'{len(close)} pole pair(s) closer than {_CLOSE_POLE_RTOL:g} '
@@ -2124,11 +2124,11 @@ def _g3_pole_findings(ctx, res):
                 'none needed when resolved (see result["pole_clusters"]); '
                 'otherwise move the parameters off the degeneracy or '
                 'check G6 accuracy')
-    if status in ('unresolved', 'disabled'):
+    if status == 'unresolved':
         from api._pole_clusters import lost_digits, LOST_DIGITS_WARN
         ml = ctx.q.max_ell if getattr(ctx.q, 'max_ell', None) is not None else 1
         digits = lost_digits(kap if squarefree else float('inf'), ml)
-    if status in ('unresolved', 'disabled') and digits > LOST_DIGITS_WARN:
+    if status == 'unresolved' and digits > LOST_DIGITS_WARN:
         lost = ('the pole-residue form cannot represent a repeated pole'
                 if not math.isfinite(digits) else
                 f'about {digits:.0f} digits lost at max_ell={ml} '
@@ -2138,8 +2138,8 @@ def _g3_pole_findings(ctx, res):
                 f'poles needs the pole-cluster deformation, which is {status}: '
                 f'{(pcr or {}).get("reason", "")}; {lost}.' + ss_note,
                 'give the exact tier rational parameters / kernel images (it '
-                'needs an exact rational propagator), unset '
-                'DAEDALUS_POLE_CLUSTERS=0, or (a cluster too close to the '
+                'needs an exact rational propagator), or (a cluster too '
+                'close to the '
                 'stability boundary) perturb the parameters off the '
                 'degeneracy', level='info' if ss_all else None)
     rates = [p.imag for p in poles if p.imag > 0]
@@ -3590,7 +3590,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     if pc and complete:
         if pc.get('status') == 'resolved' and pc.get('accuracy_l1') is not None:
             R = (R or 0.0) + float(pc['accuracy_l1'])
-        elif pc.get('status') in ('unresolved', 'disabled'):
+        elif pc.get('status') == 'unresolved':
             lost = pc.get('lost_digits')
             if lost is not None:
                 R = max(R or 0.0, float('inf') if not math.isfinite(lost)

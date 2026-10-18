@@ -181,10 +181,7 @@ def _dict_form_to_poly(R, exp_to_coeff: dict):
     non-polynomial actions)."""
     if not exp_to_coeff:
         return R.zero()
-    from engine.core.field_theory import (
-        _expand_legacy_requested, _ring_from_nonzero_dict, _sr_nonzero)
-    if _expand_legacy_requested():
-        return R(exp_to_coeff)
+    from engine.core.field_theory import _ring_from_nonzero_dict, _sr_nonzero
     return _ring_from_nonzero_dict(
         R, {k: c for k, c in exp_to_coeff.items() if _sr_nonzero(c)})
 
@@ -593,14 +590,9 @@ def load_expand(model: dict, ft, target_order: int,
     # Rebuild S_raw from the (potentially-filtered) by_tp so it stays
     # consistent with the requested target_order rather than carrying
     # the loaded higher-order surplus.
-    from engine.core.field_theory import _expand_legacy_requested, _sum_of_polys
-    if _expand_legacy_requested():
-        S_raw = ft._R.zero()
-        for poly in ft._by_tp.values():
-            S_raw = S_raw + poly
-    else:
-        # the sectors partition the monomials (no re-test of coefficients)
-        S_raw = _sum_of_polys(ft._R, list(ft._by_tp.values()))
+    from engine.core.field_theory import _sum_of_polys
+    # the sectors partition the monomials (no re-test of coefficients)
+    S_raw = _sum_of_polys(ft._R, list(ft._by_tp.values()))
     ft._S_raw = S_raw
 
     ft._mf_sector_raw = _by_tp_from_dict_form(

@@ -17,12 +17,13 @@ A regression fixture (``spike_reset_k2_ell1``) was added on
 2026-05-28 and is exercised by
 ``tests/test_grouped_vs_perdiag.py``; both default- and
 tight-quadrature variants pass.  The historical evidence chain
-below is preserved verbatim for future reference (and because it
-documents three flag-gated dead-code paths in
-``msrjd/integration/time_domain/final_integral.py`` —
-``USE_CHAIN_SIMPLEX_PRECISION_FIX``,
-``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY`` —
-that remain in the codebase, all defaulting to False).
+below is preserved verbatim for future reference.  (It documents three
+flag-gated paths of ``final_integral.py`` -- ``USE_CHAIN_SIMPLEX_PRECISION_FIX``,
+``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY``, all
+defaulting to False.  Audit W7 retired the chain-simplex routines
+(``_exp_over_chain_simplex`` and its fast / polynomial / mpmath variants)
+with the boxed routes, and ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` with them;
+the other two remain.)
 
 **Original status (as of 2026-05-16):** Diagnosed, not yet fixed.
 Workaround available (`USE_GROUPED_PHASE_J = True`).

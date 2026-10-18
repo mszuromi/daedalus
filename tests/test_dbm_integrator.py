@@ -3,7 +3,7 @@ Phase J milestone M3) and its ``final_integral`` wrapper
 ``_integrate_subset_dbm``.
 
 * a plain chain equals the closed-form chain simplex
-  ``_exp_over_chain_simplex``;
+  (``expdd.chain_simplex``);
 * the case split: a hexagon and a 3-variable band region, where the
   eliminated variable has several non-redundant lowers and uppers;
 * shifted orderings, unequal scalar lowers, a strip between two shifted
@@ -36,14 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import engine.integration.time_domain.final_integral as FI  # noqa: E402
 from engine.integration.time_domain import dbm_integral as DBM  # noqa: E402
-
-
-@pytest.fixture(autouse=True)
-def _ito_mode(monkeypatch):
-    """The default Θ(0) mode, whatever ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``
-    says.  (Only this flag: the umbrella ``DAEDALUS_PHASE_J_LEGACY`` also
-    turns other flags off, which this fixture does not reset.)"""
-    monkeypatch.setattr(FI, 'THETA0_CONST_ROW_MODE', 'ito')
+from engine.integration.time_domain import expdd as X  # noqa: E402
 
 
 def _expsum(rows, m, alphas, cap=200.0, C=1.0, E=0.0):
@@ -79,7 +72,7 @@ ALPHAS = (0.7 - 0.3j, -0.45 + 0.2j, 0.15 + 0.4j)
 ])
 def test_plain_chain_equals_chain_simplex(alphas, L, U):
     """L < s_0 < s_1 < ... < s_{N-1} < U: the DBM equals
-    ``_exp_over_chain_simplex`` (alphas innermost first)."""
+    ``expdd.chain_simplex`` (alphas innermost first)."""
     m = len(alphas)
     rows = [(tuple(1.0 if i == 0 else 0.0 for i in range(m)), -L)]
     for v in range(1, m):
@@ -88,7 +81,7 @@ def test_plain_chain_equals_chain_simplex(alphas, L, U):
         rows.append((tuple(a), 0.0))
     rows.append((tuple(-1.0 if i == m - 1 else 0.0 for i in range(m)), U))
     res = _expsum(rows, m, alphas)
-    ref = FI._exp_over_chain_simplex(list(alphas), L, U)
+    ref = X.chain_simplex(list(alphas), L, U)
     tol = 1e-13 if m == 3 else 1e-12          # m = 4 measured 3.5e-14
     assert res.status == DBM.STATUS_OK
     assert abs(res.value - ref) <= tol * abs(ref), (res.value, ref)
@@ -160,7 +153,7 @@ def test_variable_bounded_only_by_the_cap():
         assert abs(res.value - ref) <= 1e-11 * abs(ref), (cap, res.value, ref)
     # the single-L chain simplex (every variable from 0) is a different,
     # smaller region
-    wrong = FI._exp_over_chain_simplex([al[2], al[1], al[0]], 0.0, 1.0)
+    wrong = X.chain_simplex([al[2], al[1], al[0]], 0.0, 1.0)
     assert abs(wrong - res.value) > 0.1 * abs(res.value)
 
 
@@ -366,9 +359,9 @@ def test_large_log_scale_seed_is_safe():
 def test_astronomical_integral_is_an_overflow_not_inf(monkeypatch):
     """exp(-5 s_0) on s_0 > -200 is ~exp(1000): reported as an overflow,
     and the wrapper declines (the caller goes on to the fallback).  The ±200
-    box is the boxed route's (``SEMIINF_CHAIN`` off); without a box the
-    integrand grows without bound toward the past, a divergence."""
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', False)
+    box is the pre-0.2.0 route's (an explicit ``cap=200.0``); without a box
+    (the default) the integrand grows without bound toward the past, a
+    divergence."""
     rows = [((-1.0, 1.0, 0.0), 0.0), ((0.0, -1.0, 1.0), 0.0),
             ((0.0, 0.0, -1.0), 0.0)]
     res = _expsum(rows, 3, (-5.0, 0.0, 0.0))
@@ -381,11 +374,10 @@ def test_astronomical_integral_is_an_overflow_not_inf(monkeypatch):
              ((0.0, 0.0, -1.0), (0.0,), 0.0)]
     edges = edges + _w_edges([0.0], 3)
     FI._reset_runtime_counters()
-    assert FI._integrate_subset_dbm(edges, 1.0, cdata, [0.0], 3) is None
+    assert FI._integrate_subset_dbm(edges, 1.0, cdata, [0.0], 3,
+                                    cap=200.0) is None
     assert FI._pop_bail_reason() == 'dbm_overflow'
     assert FI._RUNTIME_COUNTERS['dbm_declined_overflow'] == 1
-    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
     FI._reset_runtime_counters()
     assert FI._integrate_subset_dbm(edges, 1.0, cdata, [0.0], 3) is None
     assert FI._pop_bail_reason() == 'dbm_divergent'
@@ -478,11 +470,10 @@ def test_thin_region_is_declined_to_the_fallback(monkeypatch):
     row so the poset path bails): the closed form cancels to ~1e-8 there
     while the hardened fallback is exact, so the DBM declines it
     ('dbm_ill_conditioned') and the dispatch goes on to the fallback.  That
-    is the boxed route (``SEMIINF_CHAIN`` off, s_2 in ±200); without a box
-    the free s_2 makes the region divergent.  With the high-precision tier
-    on (the default) the subset is answered by the same elimination at
-    ``MP_DPS`` digits instead."""
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', False)
+    is the pre-0.2.0 boxed route (an explicit ``cap=200.0``: s_2 in ±200);
+    without a box (the default) the free s_2 makes the region divergent.
+    With the high-precision tier on (the default) the subset is answered by
+    the same elimination at ``MP_DPS`` digits instead."""
     rows = [((0.5, -0.5, 0.0), (0.0,), 0.0),
             ((0.0, 1.0, 0.0), (0.0,), -0.10904983793486256),
             ((-1.0, 0.0, 0.0), (0.0,), 0.1124287566679194)]
@@ -498,21 +489,20 @@ def test_thin_region_is_declined_to_the_fallback(monkeypatch):
              for md in em]
     monkeypatch.setattr(FI, 'USE_DBM_HIGH_PRECISION', False)
     FI._reset_runtime_counters()
-    assert FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3) is None
+    assert FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3,
+                                    cap=200.0) is None
     assert FI._pop_bail_reason() == 'dbm_ill_conditioned'
     assert FI._RUNTIME_COUNTERS['dbm_declined_ill_conditioned'] == 1
     # the high-precision tier (item 27, on by default): the same closed form
     # at MP_DPS digits answers it, equal to the hardened fallback's value
     monkeypatch.setattr(FI, 'USE_DBM_HIGH_PRECISION', True)
     FI._reset_runtime_counters()
-    v = FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3)
+    v = FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3, cap=200.0)
     assert FI._RUNTIME_COUNTERS['dbm_mp_answered'] == 1
     fe = FI._build_fast_subset_evaluator_from_modes(1.0, modes, rows, 3)
     ref = FI._integrate_polytope(fe, [(list(a), c0) for (a, _e, c0) in rows],
                                  [0.0], 3, raw_rows=rows)
     assert abs(v - ref) <= 1e-12 * abs(ref)
-    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
     FI._reset_runtime_counters()
     assert FI._integrate_subset_dbm(modes, 1.0, rows, [0.0], 3) is None
     assert FI._pop_bail_reason() == 'dbm_divergent'
@@ -616,11 +606,13 @@ def test_open_direction_is_closed_at_the_box():
     assert abs(res.value - ref) <= 1e-11 * abs(ref), (res.value, ref)
 
 
-def test_default_cap_is_the_nquad_outer_cap(monkeypatch):
-    """The wrapper's default box (``cap=None``) is ``_nquad_outer_cap()``,
-    read at call time: ±200, or ``POSET_PHYSICAL_MARGIN`` (50) under
-    ``USE_POSET_CAP_MATCH_SCIPY``.  The P3 shape s_2 < s_1 < s_0,
-    0 < s_0 < t with a slow mode (λ = -0.02 + 0.01i) depends on the box."""
+def test_an_explicit_cap_closes_the_open_directions(monkeypatch):
+    """With ``cap`` the open directions are closed at ±cap; the default
+    (``cap=None``) is box-free.  ``_nquad_outer_cap()`` (read at call time:
+    ±200, or ``POSET_PHYSICAL_MARGIN`` (50) under
+    ``USE_POSET_CAP_MATCH_SCIPY``) was the default box of the pre-0.2.0
+    route.  The P3 shape s_2 < s_1 < s_0, 0 < s_0 < t with a slow mode
+    (λ = -0.02 + 0.01i) depends on the box."""
     rows = [((-1.0, 0.0, 0.0), (1.0,), 0.0),       # s_0 < t
             ((1.0, 0.0, 0.0), (0.0,), 0.0),        # s_0 > 0
             ((1.0, -1.0, 0.0), (0.0,), 0.0),       # s_1 < s_0
@@ -629,18 +621,19 @@ def test_default_cap_is_the_nquad_outer_cap(monkeypatch):
 
     def wrap(cap=None):
         return FI._integrate_subset_dbm(modes, 1.0, rows, [1.0], 3, cap=cap)
-    # the ±200 box belongs to the legacy route (M9: the DD kernels widen it
-    # for slow modes, the semi-infinite chain removes it)
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', False)
-    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', False)
     monkeypatch.setattr(FI, 'USE_POSET_CAP_MATCH_SCIPY', False)
     assert FI._nquad_outer_cap() == 200.0
     v200, v50 = wrap(200.0), wrap(50.0)
     assert abs(v200 - v50) > 0.1 * abs(v200)       # the box matters here
-    assert wrap() == v200
+    v_free = wrap()
+    assert abs(v_free - v200) > 1e-3 * abs(v_free)
+    # an independent reference for the box-free value: a box far beyond the
+    # slow mode's decay length (40 / 0.02 = 2000)
+    v_far = wrap(4000.0)
+    assert abs(v_far - v_free) <= 1e-12 * abs(v_free)
     monkeypatch.setattr(FI, 'USE_POSET_CAP_MATCH_SCIPY', True)
     assert FI._nquad_outer_cap() == FI.POSET_PHYSICAL_MARGIN == 50.0
-    assert wrap() == v50
+    assert wrap() == v_free
 
 
 def test_three_term_row_is_counted_even_with_unmatched_rows():

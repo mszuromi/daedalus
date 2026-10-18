@@ -91,7 +91,6 @@ def test_multi_pole_sum_finite_interval():
         prefactor_complex=2.0 - 1.0j,
         subset_constraint_data=cdata,
         free_ext_vals=[],
-        bbox_cap=50.0,       # not used because the helper now tracks ∞
     )
     # Expected: sum over poles of pref · C · (∫_0^∞ exp(λ·s) ds)
     # = sum over poles of pref · C · (-1/λ)   (since exp(λ·∞) = 0 for Re λ < 0)

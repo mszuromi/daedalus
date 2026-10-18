@@ -15,7 +15,7 @@ the temporal pipeline's battle-tested machinery verbatim:
 ``final_integral._CausalPoset`` and ``_enumerate_linear_extensions``.
 
 **The one difference (the whole point of momentum-first).** The temporal pipeline
-integrates *products of exponentials* per chamber (``_exp_over_chain_simplex``),
+integrates *products of exponentials* per chamber (divided-difference closed forms),
 whose ``1/β`` factors are the close-pair pathology.  Here the loop momenta are
 already integrated (the C0/C1 Symanzik step), so the per-chamber integrand is
 **smooth** — we use ordinary quadrature and **close-pair cannot arise**.  (As a

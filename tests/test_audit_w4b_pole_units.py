@@ -560,9 +560,6 @@ def test_dd_accounting_is_time_unit_invariant(monkeypatch):
     line s < t: two slow modes with nearly opposite residues cancel next to
     a fast one.  Flagged with the same ratio in every time unit (the floor
     had units of the integrand, so the ratio scaled with the unit)."""
-    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
-    monkeypatch.setattr(FI, 'UNBOUNDED_2D', 'exact')
     monkeypatch.setattr(FI, 'PHASE_J_T_MIN', -math.inf)
     half_line = [((-1.0,), (1.0,), 0.0)]
     ratios = []

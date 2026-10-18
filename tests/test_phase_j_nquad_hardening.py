@@ -9,10 +9,14 @@ directions whose bounds depend on inner variables.  A narrow peak (fast
 poles) could then fall between every Gauss-Kronrod node of the first panel:
 both rules returned ~0, the error estimate was ~0, and the panel was
 accepted, losing the whole region.  An empty inner interval was still
-sampled (at s = 0, outside the region).  With ``NQUAD_HARDENED`` (default
-True; ``DAEDALUS_PHASE_J_NQUAD_HARDENED=0`` or the umbrella
-``DAEDALUS_PHASE_J_LEGACY=1`` restore the old routines bit-for-bit) the
-fallback is ``_integrate_polytope_hardened``:
+sampled (at s = 0, outside the region).  Since M2b the fallback is
+``_integrate_polytope_hardened`` (the switch that restored the old routines,
+``NQUAD_HARDENED`` / ``DAEDALUS_PHASE_J_NQUAD_HARDENED``, and the umbrella
+``DAEDALUS_PHASE_J_LEGACY`` were retired in audit W7; the old routines
+``_integrate_1d_polytope`` / ``_integrate_2d_polytope`` /
+``_integrate_nd_polytope`` survive only for a region the hardened one
+declines, a non-finite row shift, and are called directly below where a
+test pins their behaviour):
 
 * nested ``scipy.integrate.quad`` over the region's own bounds, widened by
   one ulp: the exact difference-bound-matrix (DBM) closure of its
@@ -50,18 +54,14 @@ fallback is ``_integrate_polytope_hardened``:
   ``_VertexKinks``) and geometrically towards the ends of wide panels.
 
 Everything here is model-free (hand-built constraint rows and modes) except
-section F and the slow section G child, all built in a private cwd.
-Section F uses the public ``single_population_spike_reset_test`` (its
-guard-bailed m = 2 regions, served by the fallback, against the exact fan
+section F, built in a private cwd.  Section F uses the public
+``single_population_spike_reset_test`` (its m = 2 regions, sent to the
+fallback by switching the m = 2 polygon route off, against the exact fan
 formula; the warning aggregated over the k = 2 τ-grid of
 ``compute_cumulants``; and, slow, over a call of the k = 3 tree's
 callable) and the public ``ou_quartic`` (a cheap ``compute_cumulants``
-build whose callables must open the warning scope).  The section G child
-runs ``ou_quartic``, ``linear_hawkes``,
-``single_population_linear_delta_spikes_test`` and ``multipopulation_test``
-(no fallback calls: the default engine is bit-identical to the pre-M2b
-one) and ``single_population_spike_reset_test`` (served by the fallback:
-the flag-off engine and the legacy umbrella are bit-identical to it).
+build whose callables must open the warning scope).  Section G pins the
+old default-tolerance routines against the pre-M2b engine (git).
 
 Exact references: the narrow-peak regions of sections B and B2, and the
 close-pole, oscillating, far-mass, general-row, inner-cut (G2s) and
@@ -76,14 +76,12 @@ Section F compares with the harness's 50-digit mpmath fan formula
 
 Run:  sage -python -m pytest tests/test_phase_j_nquad_hardening.py -q
 """
-import contextlib
 import math
 import os
 import random
 import re
 import subprocess
 import sys
-import textwrap
 import types
 import warnings
 
@@ -147,60 +145,25 @@ class _Counting:
 
 
 @pytest.fixture
-def hardened(monkeypatch):
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', True)
+def hardened():
+    """The hardened fallback (the only one since audit W7; kept as a marker
+    of the tests that exercise it)."""
+    yield
 
 
-@pytest.fixture
-def legacy_nquad(monkeypatch):
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', False)
+def _old_routine(f, resolved, free, m):
+    """The pre-M2b default-tolerance scipy.nquad routine for ``m`` (what
+    ``_integrate_polytope`` ran with the retired ``NQUAD_HARDENED = False``
+    on a region without constant or cycle rows)."""
+    if m == 1:
+        return FI._integrate_1d_polytope(f, resolved, free)
+    if m == 2:
+        return FI._integrate_2d_polytope(f, resolved, free)
+    return FI._integrate_nd_polytope(f, resolved, free, m)
 
 
 def _rel(v, ref):
     return abs(complex(v) - ref) / abs(ref)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# A. the flag
-# ═══════════════════════════════════════════════════════════════════════
-
-def test_flag_initialisation_from_the_environment():
-    f = FI._initial_phase_j_flags
-    assert f({})['NQUAD_HARDENED'] is True
-    for v in ('0', 'false', 'no', 'off', ' OFF '):
-        assert f({'DAEDALUS_PHASE_J_NQUAD_HARDENED': v})[
-            'NQUAD_HARDENED'] is False
-    for v in ('', '1', 'true', 'yes', 'on'):
-        assert f({'DAEDALUS_PHASE_J_NQUAD_HARDENED': v})[
-            'NQUAD_HARDENED'] is True
-    # the umbrella wins over the per-flag variable
-    assert f({'DAEDALUS_PHASE_J_LEGACY': '1',
-              'DAEDALUS_PHASE_J_NQUAD_HARDENED': '1'}) == {
-        'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False,
-        'NQUAD_HARDENED': False, 'USE_DBM_FALLBACK': False}
-    with pytest.raises(ValueError):
-        f({'DAEDALUS_PHASE_J_NQUAD_HARDENED': 'maybe'})
-    # the module default (this process sets none of the variables)
-    if not any(os.environ.get(v) for v in (
-            'DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_NQUAD_HARDENED')):
-        assert FI.NQUAD_HARDENED is True and FI._nquad_hardened_on()
-
-
-def test_flag_is_read_at_call_time(monkeypatch):
-    fe = _fast_eval(MODES_A, ROWS_A, 2)
-    args = (fe, _resolved(ROWS_A, [T_A]), [T_A], 2)
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', True)
-    FI._reset_runtime_counters()
-    on = FI._integrate_polytope(*args)
-    assert _counter('nquad_hardened_calls') == 1
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', False)
-    FI._reset_runtime_counters()
-    off = FI._integrate_polytope(*args)
-    assert _counter('nquad_hardened_calls') == 0
-    assert on != off
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', 'yes')
-    with pytest.raises(ValueError):
-        FI._integrate_polytope(*args)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -252,10 +215,10 @@ PEAKS = {'m2': (ROWS_A, MODES_A, T_A, REF_A, 2),
 
 
 @pytest.mark.parametrize('case', sorted(PEAKS))
-def test_narrow_peak_old_default_misses_the_mass(case, legacy_nquad):
+def test_narrow_peak_old_default_misses_the_mass(case):
     rows, modes, t, ref, m = PEAKS[case]
     f = _Counting(_fast_eval(modes, rows, m))
-    v = FI._integrate_polytope(f, _resolved(rows, [t]), [t], m)
+    v = _old_routine(f, _resolved(rows, [t]), [t], m)
     # every node of the first panel is outside the region: nothing found
     assert abs(v) < 1e-6 * abs(ref) and not f.calls
 
@@ -450,28 +413,17 @@ def test_empty_inner_intervals_are_not_sampled(hardened, monkeypatch):
 
 
 @_OLD_NQUAD
-def test_old_routine_samples_empty_inner_intervals(legacy_nquad):
+def test_old_routine_samples_empty_inner_intervals():
     """The pre-M2b behaviour the hardened path removes: the inner bounds
     (0, 0) are handed to quad, which evaluates the integrand there."""
     f = _Counting(lambda s0, s1: 1.0 + 0j)
     rows = [((1.0, -1.0), (), 0.0), ((-1.0, 1.0), (), 0.0),   # s0 = s1 only
             ((0.0, 1.0), (), 1.0), ((0.0, -1.0), (), 1.0)]
-    # the order rows s0 > s1 > s0 are a cycle the structural-zero test
-    # answers; with it off the region reaches quadrature
-    with _flag('STRUCTURAL_ZEROS', False):
-        v = FI._integrate_polytope(f, _resolved(rows, []), [], 2)
+    # the order rows s0 > s1 > s0 are a cycle the structural-zero test of
+    # ``_integrate_polytope`` answers; the old routine itself is called
+    v = _old_routine(f, _resolved(rows, []), [], 2)
     assert v == 0
     assert len(f.calls) > 0          # sampled although the region is empty
-
-
-@contextlib.contextmanager
-def _flag(name, value):
-    saved = getattr(FI, name)
-    setattr(FI, name, value)
-    try:
-        yield
-    finally:
-        setattr(FI, name, saved)
 
 
 @pytest.mark.parametrize('case', sorted(PEAKS))
@@ -551,22 +503,21 @@ FAST = _ems((1.0, -12.0))
 @_OLD_NQUAD
 def test_two_cycle_reaches_no_evaluation_without_structural_zeros(
         hardened, monkeypatch):
-    monkeypatch.setattr(FI, 'STRUCTURAL_ZEROS', False)
+    """Without the structural-zero test (the hardened routine called
+    directly) the DBM closure still empties the 2-cycle; the old routine
+    overflowed on it."""
     free = [0.2]
     f = _Counting(_fast_eval([FAST] * 4, TWO_CYCLE, 2))
     FI._reset_runtime_counters()
-    v = FI._integrate_polytope(f, _resolved(TWO_CYCLE, free), free, 2,
-                               raw_rows=TWO_CYCLE)
+    v = FI._integrate_polytope_hardened(f, _resolved(TWO_CYCLE, free), free,
+                                        2)
     assert v == 0 and not f.calls
     assert _counter('nquad_hardened_empty') == 1        # the DBM closure
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', False)
     with pytest.raises(OverflowError):
-        FI._integrate_polytope(f, _resolved(TWO_CYCLE, free), free, 2,
-                               raw_rows=TWO_CYCLE)
+        _old_routine(f, _resolved(TWO_CYCLE, free), free, 2)
 
 
-def test_tied_constant_edge_kept_by_the_tie_order(hardened, legacy_nquad,
-                                                 monkeypatch):
+def test_tied_constant_edge_kept_by_the_tie_order(hardened):
     """At an exact external-time tie the Θ(0) rule can keep (DROP) a
     constant edge row Δt ≡ 0 (``_const_row_verdict``); the edge then
     contributes G(0).  One free time t = t_1 − t_0 with t_0 == t_1 == 0
@@ -582,16 +533,16 @@ def test_tied_constant_edge_kept_by_the_tie_order(hardened, legacy_nquad,
     fe = _fast_eval([_ems((c0, l0)), _ems((c1, l1))], rows, 1)
     exact = c1 * c0 * (np.exp(3 * l0) - 1) / l0
     free = [0.0]
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', True)
     FI._reset_runtime_counters()
     v = FI._integrate_polytope(fe, _resolved(rows, free), free, 1,
                                raw_rows=rows, tie_ctx=ident)
     assert _counter('theta0_tie_ordered') == 1
     assert _counter('nquad_hardened_calls') == 1
     assert _rel(v, exact) < 1e-13, (v, exact)
-    monkeypatch.setattr(FI, 'NQUAD_HARDENED', False)       # old fallback
-    v_old = FI._integrate_polytope(fe, _resolved(rows, free), free, 1,
-                                   raw_rows=rows, tie_ctx=ident)
+    # the old fallback on the rows ``_integrate_polytope`` hands it (the
+    # tie row, ordered as holding, removed)
+    kept = [r for i, r in enumerate(_resolved(rows, free)) if i != 1]
+    v_old = _old_routine(fe, kept, free, 1)
     assert _rel(v_old, exact) < 1e-8
     # the bound keeps the constant edge's box range (no clip to Δt > 0)
     B = fe._nquad_modes.bound([-3.0], [0.0], free)
@@ -1914,7 +1865,9 @@ def _check_spike(taus, monkeypatch):
         n += 1
     assert n > 0                       # the fallback was exercised
     c = run['counters']
-    assert c['nquad_hardened_calls'] == c['nquad_calls'] > 0
+    # (entries answered by the constant-row / cycle tests before the
+    # hardened routine are counted in nquad_calls only)
+    assert 0 < c['nquad_hardened_calls'] <= c['nquad_calls']
     assert c['nquad_hardened_quad_flags'] == 0
     # compute_cumulants names the model in the warnings' key (model,
     # source, loop order, then the diagrams and the parameter point)
@@ -1929,12 +1882,14 @@ def _check_spike(taus, monkeypatch):
 
 
 def _legacy_routes(monkeypatch):
-    """The regions these tests check are the ones the fallback serves on the
-    legacy routes; since M9 the box-free routes (the default) serve them in
-    closed form (0 fallback regions), so the legacy routes are pinned."""
-    for flag, value in (('USE_PHASE_J_DD_KERNELS', False),
-                        ('SEMIINF_CHAIN', False), ('UNBOUNDED_2D', 'box')):
-        monkeypatch.setattr(FI, flag, value)
+    """The m = 2 regions these tests check reached the fallback on the
+    retired boxed routes (guard bails); the box-free routes (the only ones
+    since audit W7) answer them in closed form, so the m = 2 polygon route
+    is made to decline at call time ('polygon_dd_unsupported', as for a
+    shape it does not take): every m = 2 region goes to the fallback, with
+    its modes."""
+    monkeypatch.setattr(FI, '_integrate_2d_polygon_modesum',
+                        lambda *a, **k: FI._bail('polygon_dd_unsupported'))
 
 
 def test_spike_reset_fallback_regions_match_the_exact_fan(hardened,
@@ -1999,7 +1954,9 @@ def test_compute_cumulants_aggregates_its_tau_grid(hardened, private_cwd,
     assert len(msgs) == 1, msgs
     m = re.search(r'answered (\d+) integration region\(s\) of (\d+) '
                   r'diagram\(s\) of model ', msgs[0])
-    assert m and int(m.group(1)) == n and int(m.group(2)) >= 1, msgs[0]
+    # (the callables evaluate the grid more than once; the later
+    # evaluations add no warning, so the count is at most the counter's)
+    assert m and 0 < int(m.group(1)) <= n and int(m.group(2)) >= 1, msgs[0]
     assert (f"of model '{model['name']}' (per_diagram, loop order 1)"
             in msgs[0]), msgs[0]
 
@@ -2028,11 +1985,18 @@ def test_public_callables_aggregate_the_warnings(hardened, private_cwd,
     n = _counter('nquad_hardened_calls')
     assert n > 10
     assert len(msgs) == 1, msgs
-    assert f'answered {n} integration region(s)' in msgs[0], msgs[0]
+    # (a region the hardened routine answers empty from its closure is not
+    # counted in the warning)
+    m = re.search(r'answered (\d+) integration region\(s\)', msgs[0])
+    assert m and 10 < int(m.group(1)) <= n, msgs[0]
     assert (f"of model '{model['name']}' (per_diagram, loop order 0)"
             in msgs[0]), msgs[0]
+    # (the same point again, through either callable, adds none; the tie
+    # point (0, 0.7, 0.7) sends a different SET of diagrams to the fallback
+    # under this harness (the polygon route declined), so it warns once of
+    # its own -- by design, the warning is keyed by the set of diagrams)
     assert _warnings_of([lambda: res['total_C_by_ell'][0](0.0, 0.4, 1.0),
-                         lambda: res['total_C'](0.0, 0.7, 0.7)]) == []
+                         lambda: res['total_C'](0.0, 0.4, 1.0)]) == []
 
 
 @pytest.mark.slow
@@ -2043,7 +2007,8 @@ def test_spike_reset_fallback_regions_full_grid(hardened, private_cwd,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# G. the flag off is the pre-M2b engine, bit for bit (in-process)
+# G. the old default-tolerance routines are the pre-M2b engine's, bit for
+#    bit (in-process)
 # ═══════════════════════════════════════════════════════════════════════
 
 def _git_source(rel, rev):
@@ -2086,11 +2051,14 @@ def _hand_built_regions():
     return out
 
 
-def test_flag_off_is_the_pre_m2b_engine_on_hand_built_regions(pre_m2b_fi,
-                                                              legacy_nquad):
+def test_old_routines_are_the_pre_m2b_engine_on_hand_built_regions(
+        pre_m2b_fi):
+    """(Until audit W7 the comparison ran through ``_integrate_polytope``
+    with the retired ``NQUAD_HARDENED = False``; none of these regions has a
+    constant or a cycle row, so that was the old routine itself.)"""
     for (name, rows, modes, free, m) in _hand_built_regions():
-        new = FI._integrate_polytope(_fast_eval(modes, rows, m),
-                                     _resolved(rows, free), free, m)
+        new = _old_routine(_fast_eval(modes, rows, m),
+                           _resolved(rows, free), free, m)
         old = pre_m2b_fi._integrate_polytope(
             _fast_eval(modes, rows, m, module=pre_m2b_fi),
             _resolved(rows, free), free, m)
@@ -2104,182 +2072,9 @@ def test_flag_off_is_the_pre_m2b_engine_on_hand_built_regions(pre_m2b_fi,
         assert fe_new(*s, T_B) == fe_old(*s, T_B)
 
 
-_CHILD = textwrap.dedent(r'''
-    import os, sys, types, subprocess, warnings
-    import numpy as np
-    ROOT, REV, CWD = sys.argv[1], sys.argv[2], sys.argv[3]
-    sys.path.insert(0, ROOT)
-    warnings.simplefilter('ignore')
-    ENVV = ('DAEDALUS_PHASE_J_LEGACY', 'DAEDALUS_PHASE_J_THETA0_CONST_ROW',
-            'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
-            'DAEDALUS_PHASE_J_NQUAD_HARDENED')
-    for v in ENVV:
-        os.environ.pop(v, None)
-    import daedalus as dd
-    import engine.integration.time_domain as TD
-    import engine.integration.time_domain.final_integral as FI0
-    import engine.integration.time_domain.pipeline as PL
-    from api import compute_cumulants
-    from tests.tools import phase_j_zoo_baseline as Z
-    rel = 'engine/integration/time_domain/'
-    src = {n: subprocess.check_output(
-        ['git', '-C', ROOT, 'show', f'{REV}:{rel}{n}.py']).decode()
-        for n in ('final_integral',)}
-    new = {n: open(os.path.join(ROOT, rel + n + '.py')).read()
-           for n in ('final_integral',)}
-    loaded = {'final_integral': [FI0]}
-
-    def load(which, env=None):
-        for v in ENVV:
-            os.environ.pop(v, None)
-        os.environ.update(env or {})
-        mods = {}
-        for n in ('final_integral',):
-            name = f'engine.integration.time_domain.{n}'
-            m = types.ModuleType(name)
-            m.__file__ = getattr(TD, n).__file__
-            m.__package__ = 'engine.integration.time_domain'
-            sys.modules[name] = m
-            setattr(TD, n, m)
-            exec(compile((src if which == 'old' else new)[n], m.__file__,
-                         'exec'), m.__dict__)
-            mods[n] = m
-        # (M9) the old engine predates prop_td (M5, a speed-only argument)
-        # and on_divergence (M8): drop what it does not take.  The new one
-        # runs on the boxed routes the old one had (the box-free routes are
-        # the default since M9).
-        if which == 'old':
-            import inspect as _insp
-            _f = mods['final_integral'].integrate_diagram
-            _ok = set(_insp.signature(_f).parameters)
-
-            def _compat(*a, _f=_f, _ok=_ok, **k):
-                return _f(*a, **{x: y for x, y in k.items() if x in _ok})
-            # owned by the module, so the re-binding below recognises it
-            _compat.__module__ = mods['final_integral'].__name__
-            mods['final_integral'].integrate_diagram = _compat
-        else:
-            mods['final_integral'].USE_PHASE_J_DD_KERNELS = False
-            mods['final_integral'].SEMIINF_CHAIN = False
-            mods['final_integral'].UNBOUNDED_2D = 'box'
-            # and without M3's DBM route / inheritance fix, which moved the
-            # spike-reset numbers on purpose after this test was written
-            mods['final_integral'].USE_DBM_FALLBACK = False
-        for v in ENVV:
-            os.environ.pop(v, None)
-        fi = mods['final_integral']
-        for mod in list(sys.modules.values()):
-            d = getattr(mod, '__dict__', None)
-            if not isinstance(d, dict) or mod is fi:
-                continue
-            for k, v in list(d.items()):
-                for n, m in mods.items():
-                    if isinstance(v, types.ModuleType) and any(
-                            v is o for o in loaded[n]):
-                        setattr(mod, k, m)
-                    elif (isinstance(v, (types.FunctionType, type))
-                          and getattr(v, '__module__', '') == m.__name__
-                          and k in m.__dict__):
-                        setattr(mod, k, m.__dict__[k])
-        for n, m in mods.items():
-            loaded[n].append(m)
-        assert PL.integrate_diagram is fi.integrate_diagram
-        return fi
-
-    os.chdir(CWD)
-    # (name, model, kwargs, flag-on run?): the first group makes no
-    # fallback call, so the DEFAULT engine (flag on) must equal the old one;
-    # the second is served by the fallback, so the flag-OFF engine must.
-    CFGS = [
-        ('ou', 'ou_quartic', dict(k=2, max_ell=2,
-                                  external_fields=[('dx', 1)] * 2,
-                                  parameters=Z.P_OU), True),
-        ('linh', 'linear_hawkes', dict(k=2, max_ell=1,
-                                       external_fields=[('n', 1), ('n', 2)],
-                                       parameters=Z.P_LINH), True),
-        ('ld', 'single_population_linear_delta_spikes_test',
-         dict(k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
-              parameters=Z.P_LD), True),
-        ('mp', 'multipopulation_test',
-         dict(k=2, max_ell=1, external_fields=[('nE', 1), ('nE', 2)],
-              parameters=Z.P_MP), True),
-        ('spike', 'single_population_spike_reset_test',
-         dict(k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
-              parameters=Z.P_SPIKE), False),
-    ]
-    MODELS = {}
-
-    def run_all(fi, which):
-        out = {}
-        for name, mname, kw, on in CFGS:
-            if which == 'on' and not on:
-                continue
-            if which == 'off' and on:
-                continue
-            model = MODELS.setdefault(mname, dd.load_model(mname)[0])
-            fi._reset_runtime_counters()
-            res = compute_cumulants(
-                model, tau_grid=np.array([0.0, 2.5, 10.0]),
-                use_cache=True, parallel=False, verbose=False, **kw)
-            v = np.concatenate([np.asarray(a, complex) for _l, a in
-                                sorted(res['C_tau_by_ell'].items())])
-            calls = fi._RUNTIME_COUNTERS['nquad_calls']
-            out[name] = (v.view(np.uint64).copy(), calls)
-        return out
-
-    fi = load('new')
-    run_all(fi, 'on'), run_all(fi, 'off')            # warm the caches
-    fi = load('old')
-    old_on, old_off = run_all(fi, 'on'), run_all(fi, 'off')
-    bad = []
-    fi = load('new')                                 # defaults: flag on
-    assert fi.NQUAD_HARDENED is True
-    got = run_all(fi, 'on')
-    for key in old_on:
-        if got[key][1] != 0 or old_on[key][1] != 0:
-            bad.append(('made fallback calls', key, got[key][1]))
-        if not np.array_equal(old_on[key][0], got[key][0]):
-            bad.append(('on', key))
-    fi = load('new', {'DAEDALUS_PHASE_J_NQUAD_HARDENED': '0'})
-    assert fi.NQUAD_HARDENED is False
-    got = run_all(fi, 'off')
-    for key in old_off:
-        if old_off[key][1] == 0:
-            bad.append(('no fallback call to compare', key))
-        if not np.array_equal(old_off[key][0], got[key][0]):
-            bad.append(('off', key))
-    fi = load('new', {'DAEDALUS_PHASE_J_LEGACY': '1'})
-    umb = run_all(fi, 'off')
-    fi = load('old', {'DAEDALUS_PHASE_J_LEGACY': '1'})
-    old_umb = run_all(fi, 'off')
-    for key in old_umb:
-        if not np.array_equal(old_umb[key][0], umb[key][0]):
-            bad.append(('umbrella', key))
-    print('BAD', bad)
-    print('RESULT', 'OK' if not bad else 'FAIL')
-''')
-
-
-@pytest.mark.slow
-def test_bit_identical_to_the_pre_m2b_engine(tmp_path):
-    """Models without fallback calls (``ou_quartic``, ``linear_hawkes``,
-    ``single_population_linear_delta_spikes_test``,
-    ``multipopulation_test``): the default engine (flag on) equals the
-    engine of ``_PRE_M2B_REV`` bit for bit.  The spike-reset model (served
-    by the fallback): the flag-off engine equals it, and so does the legacy
-    umbrella.  Per diagram, IN ONE PROCESS (the sources are
-    exec'd into fresh module objects side by side, in a child process)."""
-    _git_source(_FI_REL, _PRE_M2B_REV)                  # skip without git
-    child = tmp_path / 'ab_child.py'
-    child.write_text(_CHILD)
-    cwd = tmp_path / 'cwd'
-    cwd.mkdir()
-    env = dict(os.environ, PYTHONHASHSEED='0')
-    r = subprocess.run([sys.executable, str(child), _REPO, _PRE_M2B_REV,
-                        str(cwd)], capture_output=True, text=True,
-                       timeout=3600, env=env)
-    assert r.returncode == 0, r.stderr[-3000:]
-    assert 'RESULT OK' in r.stdout, r.stdout[-3000:]
+# (The slow A/B of whole models against the pre-M2b engine -- the default
+# engine where no fallback ran, the retired flag-off engine and the legacy
+# umbrella where it did -- was retired with those switches in audit W7.)
 
 
 # ═══════════════════════════════════════════════════════════════════════

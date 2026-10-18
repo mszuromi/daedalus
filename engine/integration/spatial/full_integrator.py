@@ -452,11 +452,13 @@ def _chamber_breaks(order, ties):
 
 
 def _spatial_mem_budget():
-    """``(bytes, rule)``: SPATIAL_MEM_BUDGET_GB if set, else the RAM-aware
-    default of the Phase J guards."""
-    import os as _os
-    if 'SPATIAL_MEM_BUDGET_GB' in _os.environ:
-        gb = float(_os.environ['SPATIAL_MEM_BUDGET_GB'])
+    """``(bytes, rule)``: SPATIAL_MEM_BUDGET_GB if set (``engine._env.
+    budget_gb``: a positive number of GB, or ``off`` = no limit, ``inf``
+    bytes; ``0`` / negative raise), else the RAM-aware default of the Phase
+    J guards."""
+    from engine import _env
+    gb = _env.budget_gb('SPATIAL_MEM_BUDGET_GB')
+    if gb is not None:
         return gb * 1e9, f'SPATIAL_MEM_BUDGET_GB={gb:g}'
     from engine.integration.time_domain.final_integral import default_mem_budget
     return default_mem_budget()

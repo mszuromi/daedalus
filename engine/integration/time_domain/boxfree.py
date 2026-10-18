@@ -1,8 +1,9 @@
 r"""Box-free exact Phase J integrals on the divided-difference kernels (M7).
 
-``final_integral`` routes its closed forms here when the opt-in flags are on
-(``USE_PHASE_J_DD_KERNELS``, ``SEMIINF_CHAIN``, ``UNBOUNDED_2D``; all off by
-default, see the flag comments there).  Everything is evaluated in the log
+``final_integral`` routes every Phase J closed form here (the only route
+since audit W7 retired the boxed pre-0.2.0 routes and their switches
+``USE_PHASE_J_DD_KERNELS``, ``SEMIINF_CHAIN``, ``UNBOUNDED_2D``).  Everything
+is evaluated in the log
 domain through ``expdd`` and folded with the constant part γ of the exponent
 before any ``exp`` is taken, so the only failure left is a result that
 truly exceeds the double range: ``log|value| > LOG_OVERFLOW`` gives the
@@ -86,7 +87,7 @@ UNDERFLOW = 5
 LOG_OVERFLOW = expdd.LOG_OVERFLOW
 
 #: ``|α|`` below which an interval or ray exponent counts as 0 on an
-#: infinite side (divergent), as the legacy interval routines' ``1e-15``
+#: infinite side (divergent), as the pre-0.2.0 interval routines' ``1e-15``
 ALPHA_ZERO = 1e-15
 
 _INF = math.inf
@@ -367,24 +368,6 @@ def _region_2d(rows):
                     [fv(v) for v in verts], [fr(r) for r in rays], pieces)
 
 
-def region_from_polygon(polygon):
-    """The bounded ``Region2D`` of a convex vertex list (the legacy clipped
-    polygon of ``final_integral._polygon_from_2d_constraints``), fanned from
-    its first vertex as the legacy routine does, with exact Jacobians."""
-    x0 = tuple(polygon[0])
-    pieces = []
-    for i in range(1, len(polygon) - 1):
-        u = tuple(polygon[i])
-        w = tuple(polygon[i + 1])
-        det = _abs_det_exact(u[0] - x0[0], u[1] - x0[1],
-                             w[0] - x0[0], w[1] - x0[1])
-        if det > 0.0:
-            pieces.append(('tri', x0, u, w, det))
-    if not pieces:
-        return Region2D('empty', reason='measure_zero')
-    return Region2D('bounded', polygon, (), pieces)
-
-
 def region_integral(region, alpha, beta, gamma, tol=0.0):
     """``(status, ∫_region exp(alpha s0 + beta s1 + gamma))`` over a
     ``Region2D``; every ray needs ``Re(α·r) < -tol``.  The fan pieces are
@@ -467,9 +450,8 @@ def _piece_log(piece, alpha, beta, gamma):
 # ──────────────────────────────────────────────────────────────── chains
 
 def chain_log(alphas, L, upper_per_position, U, tol=0.0):
-    """``(status, log_scale, mant)`` of the chain integral of
-    ``final_integral._chain_with_intermediate_uppers`` (same argument
-    conventions: keys outside ``0..m-1`` and ``None`` uppers are absent, an
+    """``(status, log_scale, mant)`` of the chain integral (the conventions
+    of the pre-0.2.0 ``final_integral._chain_with_intermediate_uppers``: keys outside ``0..m-1`` and ``None`` uppers are absent, an
     effective upper at or below ``L`` gives 0, an empty chain is 1); ``L``
     may be ``-inf``, ``U`` may be ``+inf``.  With an open top the chain may
     carry no finite upper below the top (``UNSUPPORTED``); an upper on the

@@ -70,10 +70,9 @@ What it does
    code SHOULD return.  Every constant row is also given production's
    ``final_integral._const_row_decision``; a different verdict is recorded
    in ``RULE_DIVERGENCES`` / ``ref_meta['rule_divergences']`` and reported
-   (the references keep the harness's own verdict).  Under
-   ``THETA0_CONST_ROW_MODE = 'legacy_clip'`` the production m=2 polygon
-   keeps zero-valued rows (Θ(0) = 1, plan P1), so disagreements on m=2
-   subsets with a constant row are EXPECTED in that mode.
+   (the references keep the harness's own verdict).  (Under the
+   'legacy_clip' Θ(0) mode, retired in audit W7, the production m=2
+   polygon kept zero-valued rows, Θ(0) = 1, plan P1.)
 4. **Disagreement table**: |value - ref| > max(1e-8·|ref|, 1e-14), grouped by
    (reference, m, bail reason / answering path, row kind), plus the
    ``_RUNTIME_COUNTERS`` snapshot (``nquad_calls`` = entries into the
@@ -96,9 +95,10 @@ What it does
    ``quadrature`` keeps the real entry -- its constant-row verdicts and the
             M2a structural-zero test (``polytope_empty_cycle``) run and are
             counted -- and replaces only the quadrature routines it
-            dispatches to (``_integrate_1d_polytope``, ``_integrate_2d_polytope``,
-            ``_integrate_nd_polytope`` and, with ``NQUAD_HARDENED`` on,
-            ``_integrate_polytope_hardened``).  ``stub_calls`` (by m) then counts
+            dispatches to (``_integrate_polytope_hardened`` and the
+            default-tolerance ``_integrate_1d_polytope``,
+            ``_integrate_2d_polytope``, ``_integrate_nd_polytope`` it falls
+            back to).  ``stub_calls`` (by m) then counts
             the entries that would have reached scipy quadrature (some of them
             still return early inside those routines, e.g. on crossed scalar
             bounds), and ``nquad_calls`` counts every m>=1 entry as usual.
@@ -106,8 +106,9 @@ What it does
    Phase J fixtures (``tests/phase_j_refactor_fixtures``) between the
    current code and both the frozen ``.npz`` and the ``legacy/`` copies
    (absent until the M0.3 step creates them; reported as missing), per
-   probe too.  ``mode='legacy'`` (CLI ``--fixture-mode legacy|both``)
-   evaluates under the legacy umbrella's flags, set in-process.
+   probe too.  (The ``mode='legacy'`` that evaluated under the legacy
+   umbrella's flags went with the umbrella in audit W7: the ``legacy/``
+   copies are frozen history.)
 
 Provenance: ``run()`` records in ``config['diagram_sources']`` where every
 (k, ell) diagram list came from -- the typed-diagram cache
@@ -143,8 +144,7 @@ CLI examples (repo root)::
         --k 4 --max-ell 1 --points '0,0.3,0.6,0.9;0,0.5,0.5,0.5' \\
         --fields dx:1,dx:1,dx:1,dx:1 \\
         --params '{"mu": 1.0, "D": 1.0, "eps": 0.02}'
-    sage -python -m tests.tools.phase_j_subset_diff --fixture-report \\
-        --fixture-mode both          # current defaults AND legacy umbrella
+    sage -python -m tests.tools.phase_j_subset_diff --fixture-report
 
 ``--model-file path/to/file.py:builder`` loads a model from any file instead
 of ``--model``.
@@ -341,7 +341,7 @@ def installed_hook(hook):
 
 STUB_LEVELS = ('entry', 'quadrature')
 # final_integral's quadrature routines behind ``_integrate_polytope`` (m >= 1):
-# the pre-M2b ones and, with ``NQUAD_HARDENED`` (M2b), the hardened one.
+# the hardened one (M2b) and the pre-M2b ones it falls back to.
 _QUADRATURE_ROUTINES = {'_integrate_1d_polytope': 1,
                         '_integrate_2d_polytope': 2,
                         '_integrate_nd_polytope': None,
@@ -1252,29 +1252,17 @@ def save(run_, out_prefix):
 
 @contextlib.contextmanager
 def phase_j_flags(mode='default'):
-    """Set the Phase J flags in-process for the duration of the block.
-
-    ``'default'`` leaves the module attributes as they are; ``'legacy'``
-    applies what ``DAEDALUS_PHASE_J_LEGACY=1`` selects -- every flag the
-    umbrella sets, the box-free switches included since they became the
-    default (``final_integral._legacy_umbrella_flags``).  The flags are read
-    at call time, so this takes effect at once; restored on exit.
-    """
+    """The Phase J flags for a block: ``'default'`` leaves the module as it
+    is.  (``'legacy'``, the flags of ``DAEDALUS_PHASE_J_LEGACY=1``, was
+    retired with the umbrella in audit W7 and raises.)"""
     if mode == 'default':
         yield {}
         return
-    if mode != 'legacy':
-        raise ValueError(f"mode must be 'default' or 'legacy', got {mode!r}")
-    FI = _fi()
-    flags = FI._legacy_umbrella_flags()
-    saved = {k: getattr(FI, k) for k in flags}
-    try:
-        for k, v in flags.items():
-            setattr(FI, k, v)
-        yield flags
-    finally:
-        for k, v in saved.items():
-            setattr(FI, k, v)
+    if mode == 'legacy':
+        raise ValueError("mode='legacy' is retired (audit W7): the "
+                         'pre-0.2.0 routes are gone; the legacy/ fixture '
+                         'copies are frozen history')
+    raise ValueError(f"mode must be 'default', got {mode!r}")
 
 
 def fixture_delta_report(names=None, *, verbose=True, mode='default'):
@@ -1282,10 +1270,8 @@ def fixture_delta_report(names=None, *, verbose=True, mode='default'):
     the frozen ``.npz`` and vs ``legacy/<name>.npz`` (reported 'missing'
     when that copy does not exist yet).
 
-    ``mode='legacy'`` evaluates under the legacy umbrella's flags (set
-    in-process, see ``phase_j_flags``): the pre-change numbers, which must
-    reproduce the ``legacy/`` copies.  With ``verbose`` the per-probe values
-    are printed as well."""
+    ``mode``: see ``phase_j_flags`` ('default' only since audit W7).  With
+    ``verbose`` the per-probe values are printed as well."""
     from tests.phase_j_refactor_fixtures._configs import FIXTURES
     from tests.phase_j_refactor_fixtures._runner import evaluate, fixture_path
     names = tuple(names or FIXTURE_NAMES)
@@ -1375,18 +1361,11 @@ def main(argv=None):
     ap.add_argument('--out', default=None, help='output prefix (no ext)')
     ap.add_argument('--fixture-report', action='store_true')
     ap.add_argument('--fixtures', default=None, help='comma list of names')
-    ap.add_argument('--fixture-mode', default='default',
-                    choices=['default', 'legacy', 'both'],
-                    help="flags for --fixture-report: the current defaults, "
-                         "the legacy umbrella's (in-process), or both")
     args = ap.parse_args(argv)
 
     if args.fixture_report:
-        modes = (('default', 'legacy') if args.fixture_mode == 'both'
-                 else (args.fixture_mode,))
-        for mode in modes:
-            fixture_delta_report(args.fixtures.split(',') if args.fixtures
-                                 else None, mode=mode)
+        fixture_delta_report(args.fixtures.split(',') if args.fixtures
+                             else None)
         return 0
     if not (args.model or args.model_file) or not args.fields:
         ap.error('--model or --model-file, and --fields, are required')

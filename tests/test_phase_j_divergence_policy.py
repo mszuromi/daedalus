@@ -9,14 +9,13 @@
   policy decides: 'fallback' warns once and takes the boxed fallback, 'warn'
   names every subset, 'raise' raises ``PhaseJDivergenceError``.
 * The spatial certification passes 'fallback' whatever the temporal default.
-* The flag initialisers reject garbage, also under the legacy umbrella.
 """
 import math
 import warnings
 
 import pytest
 
-from tests.test_phase_j_box_free import (_CHAIN_ROWS, _ROUTES, _WEDGE_ROWS,
+from tests.test_phase_j_box_free import (_CHAIN_ROWS, _WEDGE_ROWS,
                                          _ems, _set_flags)
 
 
@@ -58,7 +57,7 @@ def _interval(fi, modes, plan):
 
 @pytest.mark.parametrize('plan', [False, True])
 def test_interval_zero_rate_modes(FI, monkeypatch, plan):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     base = [[(1.0, -0.8 + 0.3j)]]
     v0, r0, c0 = _call(FI, _interval, base, plan)
     assert r0 is None and c0 == {'divergent_subsets': 0,
@@ -94,7 +93,7 @@ _W0, _W2 = [(1.0, -1.3 + 0.4j)], [(1.0, -0.6 + 1j)]
 
 @pytest.mark.parametrize('plan', [False, True])
 def test_polygon_zero_rate_direction(FI, monkeypatch, plan):
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     base = [(0.8 - 0.2j, -0.9)]
     v0, r0, c0 = _call(FI, _polygon, [_W0, base, _W2], plan)
     assert r0 is None and c0['divergent_subsets'] == 0
@@ -126,7 +125,7 @@ def _poset(fi, modes, plan):
 def test_chain_zero_rate_modes(FI, monkeypatch, plan):
     """The chain fold merges each α-group before evaluating its chain, so
     an exactly cancelling group never reaches the certificate."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     base = [[(1.0, -2.0 + 1j)], [(0.8, -1.5)], [(1.0, -3.0)]]
     v0, r0, _c = _call(FI, _poset, base, plan)
     assert r0 is None
@@ -171,10 +170,6 @@ def test_policy_flag_and_keyword_validation(FI, monkeypatch):
             {'DAEDALUS_PHASE_J_ON_DIVERGENCE': v}) == v.strip().lower()
     with pytest.raises(ValueError):
         FI._initial_on_divergence({'DAEDALUS_PHASE_J_ON_DIVERGENCE': 'drop'})
-    # the umbrella does not touch it (it moves no number)
-    assert FI._initial_on_divergence(
-        {'DAEDALUS_PHASE_J_LEGACY': '1',
-         'DAEDALUS_PHASE_J_ON_DIVERGENCE': 'raise'}) == 'raise'
     assert FI.PHASE_J_ON_DIVERGENCE == 'fallback'          # the default
     monkeypatch.setattr(FI, 'PHASE_J_ON_DIVERGENCE', 'warn')
     assert FI._divergence_policy(None) == 'warn'
@@ -235,7 +230,7 @@ def test_policy_end_to_end(FI, monkeypatch):
     """The dispatch consults the policy before the boxed fallback, on the
     per-diagram path: 'raise' raises, 'fallback' gives the
     fallback's value with the counter and the category."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     _diverge_every_interval(FI, monkeypatch)
     monkeypatch.setattr(FI, 'PHASE_J_ON_DIVERGENCE', 'raise')
     with pytest.raises(FI.PhaseJDivergenceError, match='interval_divergent'):
@@ -277,31 +272,13 @@ def test_spatial_certification_keeps_fallback(FI, monkeypatch):
     assert seen == ['fallback']
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Flag hygiene
-# ═══════════════════════════════════════════════════════════════════════
-
-@pytest.mark.parametrize('var', ['DAEDALUS_PHASE_J_THETA0_CONST_ROW',
-                                 'DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
-                                 'DAEDALUS_PHASE_J_NQUAD_HARDENED',
-                                 'DAEDALUS_PHASE_J_DBM'])
-def test_garbage_flag_values_raise_under_the_umbrella(FI, var):
-    env = {'DAEDALUS_PHASE_J_LEGACY': '1', var: 'garbage'}
-    with pytest.raises(ValueError, match=var):
-        FI._initial_phase_j_flags(env)
-    env[var] = ''
-    assert FI._initial_phase_j_flags(env) == {
-        'THETA0_CONST_ROW_MODE': 'legacy_clip', 'STRUCTURAL_ZEROS': False,
-        'NQUAD_HARDENED': False, 'USE_DBM_FALLBACK': False}
-
-
 @pytest.mark.parametrize('plan', [False, True])
 def test_duplicated_alphas_that_do_not_cancel_are_kept(FI, monkeypatch, plan):
     """Adversarial for the cancellation rule: repeated poles (the same α in
     several tuples) whose merged coefficient is NOT zero are integrated, on
     every route; two such groups interleaved in tuple order with a
     cancelling one."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     split = [(0.5, -1.1), (0.3, -1.1), (0.25, 0.0), (-0.25, 0.0)]
     merged = [(0.8, -1.1)]
     v1, r1, c1 = _call(FI, _poset, [[(1.0, -2.0 + 1j), (0.4, -1.7)] + [],
@@ -321,7 +298,7 @@ def test_a_divergence_found_by_the_dbm_reaches_the_policy(FI, monkeypatch):
     """The chain route can bail for another reason (here: rows it cannot
     order) and leave the divergence verdict to the exact DBM route; that
     verdict goes through the policy too."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     monkeypatch.setattr(FI, '_integrate_nd_polytope_poset_modesum',
                         lambda *a, **k: FI._bail('poset_extract_none'))
     monkeypatch.setattr(FI, '_integrate_subset_dbm',
@@ -331,20 +308,20 @@ def test_a_divergence_found_by_the_dbm_reaches_the_policy(FI, monkeypatch):
         _ou_k2(FI)
 
 
-def test_the_legacy_interval_divergences_reach_the_policy(FI, monkeypatch):
-    """With the boxed routes (DAEDALUS_PHASE_J_DD_KERNELS=0) the legacy
-    interval route reports its own divergence reasons; they are divergence
-    verdicts for the policy too, while their fallback category stays the
-    pre-0.2.0 'other' (review finding)."""
-    _set_flags(monkeypatch, FI)                       # every route legacy
+def test_the_divergence_verdicts(FI, monkeypatch):
+    """The interval route reports a non-decaying open side as
+    'interval_divergent', a divergence verdict for the policy.  (The retired
+    boxed routes had their own reasons, 'interval_divergent_flat' / ...;
+    they went with those routes in audit W7.)"""
+    _set_flags(monkeypatch, FI)
     v, r, _c = _call(FI, _interval, [[(1.0, 0.0)]], False)
-    assert v is None and r.startswith('interval_divergent_')
+    assert v is None and r == 'interval_divergent'
     assert FI._is_divergence_verdict(r)
-    assert FI._bail_category(r) == 'other'
-    for reason in ('grouped_m1_divergent_flat', 'polygon_divergent',
-                   'dbm_divergent'):
+    for reason in ('polygon_divergent', 'poset_divergent', 'dbm_divergent'):
         assert FI._is_divergence_verdict(reason)
-    assert not FI._is_divergence_verdict('polygon_triangle_guard')
+    for reason in ('polygon_triangle_guard', 'interval_divergent_flat',
+                   'poset_extract_none'):
+        assert not FI._is_divergence_verdict(reason)
 
 
 # |s0 - s1| < 1: a strip, i.e. a region containing a line
@@ -359,7 +336,7 @@ def _strip(fi, modes):
 def test_a_region_with_a_line_cancels_or_diverges(FI, monkeypatch):
     """Every exponent diverges along a line: the integral is 0 when every
     pole-tuple group cancels exactly, otherwise a divergence (review)."""
-    _set_flags(monkeypatch, FI, **_ROUTES['box_free'])
+    _set_flags(monkeypatch, FI)
     v, r, c = _call(FI, _strip, [[(0.5, -1.0), (-0.5, -1.0)],
                                  [(1.0, -2.0)]])
     assert v == 0 and r is None

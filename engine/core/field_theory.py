@@ -246,12 +246,13 @@ _EXPAND_LEGACY_ENV = 'DAEDALUS_EXPAND_LEGACY'
 
 
 def _expand_legacy_requested() -> bool:
-    """``DAEDALUS_EXPAND_LEGACY=1`` restores the 0.2.1 expansion: one
-    multivariate ``taylor()`` of the whole action and Sage's own zero test
-    on every polynomial-ring coefficient (kept for A/B checks)."""
-    import os
-    v = os.environ.get(_EXPAND_LEGACY_ENV, '').strip().lower()
-    return v not in ('', '0', 'false', 'no', 'off')
+    """Always ``False``: ``DAEDALUS_EXPAND_LEGACY`` (the 0.2.1 expansion, one
+    multivariate ``taylor()`` of the whole action, which dropped degree-3
+    terms) is retired (audit W7); setting it only warns."""
+    from engine import _env
+    _env.retired(_EXPAND_LEGACY_ENV,
+                 'the per-atom truncated Taylor expansion is the only route')
+    return False
 
 
 class DerivativeAtomTaylorError(Exception):
@@ -406,11 +407,11 @@ def _taylor_action(S_sr, field_vars, order: int):
     """Truncated multivariate Taylor of the action in ``field_vars`` around
     0 (total degree <= ``order``), as an SR expression.
 
-    Uses :func:`_truncated_taylor` unless ``DAEDALUS_EXPAND_LEGACY`` is set
-    or an atom has no polynomial expansion at 0; then one ``taylor()`` of the
-    whole action (the legacy route, which then succeeds or fails as before).
+    Uses :func:`_truncated_taylor` unless an atom has no polynomial
+    expansion at 0; then one ``taylor()`` of the whole action (which then
+    succeeds or fails as before).
     """
-    if not _expand_legacy_requested():
+    if not _expand_legacy_requested():         # (warns on the retired switch)
         try:
             poly = _truncated_taylor(S_sr, field_vars, order)
         except (_TruncatedTaylorUnsupported, ArithmeticError, ValueError,
@@ -429,8 +430,8 @@ def _taylor_action(S_sr, field_vars, order: int):
         raise DerivativeAtomTaylorError(
             'the action contains a derivative of an abstract function '
             '(D[...](f)(...)) and the expansion would take the multivariate '
-            'taylor() route (DAEDALUS_EXPAND_LEGACY, or an atom without a '
-            'polynomial expansion), which truncates such atoms early; give '
+            'taylor() route (an atom without a polynomial expansion), which '
+            'truncates such atoms early; give '
             'the function an expression')
     return taylor(S_sr, *[(v, 0) for v in field_vars], order)
 
@@ -794,10 +795,7 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
     result = R.zero()
 
     expanded = SR(sr_expr).expand()
-    if _expand_legacy_requested():
-        if expanded.is_zero():
-            return result
-    elif expanded.is_trivial_zero():
+    if expanded.is_trivial_zero():
         # The whole-action zero test is not needed: the ring monomials are
         # independent, so the action is zero exactly when every coefficient
         # is, and each coefficient is tested below.  (Testing the whole
@@ -837,8 +835,6 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
         acc[key] = (acc[key] + SR(coeff)) if key in acc else SR(coeff)
     if not acc:
         return result
-    if _expand_legacy_requested():
-        return R(acc)
     # Same zero decisions as ``R(acc)``, one (fast-path) test per coefficient.
     return _ring_from_nonzero_dict(
         R, {k: c for k, c in acc.items() if _sr_nonzero(c)})
@@ -1173,14 +1169,6 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
     """
     R = poly.parent()
     sectors: dict = {}
-    if _expand_legacy_requested():
-        for exp_vec, coeff in poly.dict().items():
-            n_t = int(sum(exp_vec[:n_tilde]))
-            n_p = int(sum(exp_vec[n_tilde:]))
-            key = (n_t, n_p)
-            sectors[key] = (sectors.get(key, R.zero())
-                            + SR(coeff) * R.monomial(*exp_vec))
-        return sectors
     # The coefficients of a ring element are nonzero already: split the
     # dict and build each sector once (the incremental ``+`` re-tested every
     # coefficient of the growing sector at each step).
@@ -1342,8 +1330,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 k_subs = dc_gains.subs_dict(c_subbed)
                 if k_subs:
                     c_subbed = c_subbed.subs(k_subs)
-            if _expand_legacy_requested() or not _proved_nonzero(
-                    c_subbed, floats_ok=True):
+            if not _proved_nonzero(c_subbed, floats_ok=True):
                 try:
                     c_simpl = c_subbed.simplify_full()
                     if c_simpl == 0:
@@ -1718,14 +1705,9 @@ class FieldTheory:
         # Rebuild S_poly from by_tp (MF sector now zeroed) so
         # downstream consumers that read self._S_raw see a consistent
         # action whose (≤1, ≤1) sectors are exactly zero.
-        if _expand_legacy_requested():
-            S_raw = R.zero()
-            for poly in by_tp.values():
-                S_raw = S_raw + poly
-        else:
-            # The sectors partition the monomials (the running ``+``
-            # re-tested every coefficient at each step).
-            S_raw = _sum_of_polys(R, list(by_tp.values()))
+        # The sectors partition the monomials (the running ``+`` re-tested
+        # every coefficient at each step).
+        S_raw = _sum_of_polys(R, list(by_tp.values()))
 
         self._S_raw = S_raw
         self._by_tp = by_tp
@@ -1755,8 +1737,7 @@ class FieldTheory:
         # same monomials as per-variable order N).
         #
         # ``_taylor_action`` builds that polynomial atom by atom with
-        # truncation at every product (see ``_truncated_taylor``);
-        # ``DAEDALUS_EXPAND_LEGACY=1`` restores the single ``taylor()``.
+        # truncation at every product (see ``_truncated_taylor``).
         if ns._all_field_sr_vars:
             S_sr = _taylor_action(
                 S_sr, ns._all_field_sr_vars, self.taylor_order)
