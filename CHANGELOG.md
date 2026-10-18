@@ -63,6 +63,11 @@ model's own scale; `tests/test_unit_invariance.py` checks twins rescaled by up t
   half-width), and `epsabs=None` (new default) is 1e-12 of the integrand's own size. Before: tau = 0 was 100 % off
   for rates >= 1e6 or <= 1e-6, and 3e307 came back at 1e-9.
 
+- **k = 2 tau grid** (`compute_cumulants`): a grid value is the equal-time point when it is 0 to round-off of the
+  grid's own scale, and `total_C(t0, t1)` ties times within 1e-12 relative. Before, an absolute 1e-12: a model in
+  fast time units (rates 1e12, lags ~1e-13) returned C(0) at every lag below 1e-12 with status 'ok' (a
+  two-field damped rotation: 30-85 % off).
+
 Numbers that move: only models that hit one of the cases above. Zoo A/B: ZOO_RESULT.
 
 #### Front end: CGF rows, Markovian embedding, kernels, model files, delay controller (audit wave W3b)

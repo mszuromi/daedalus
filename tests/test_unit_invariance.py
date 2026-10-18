@@ -208,17 +208,48 @@ def _ou_linear(a, s):
             .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
 
 
-@pytest.mark.parametrize('a, s', [(1.0, 1.0), (1e-8, 1.0), (1e9, 1.0), (1.0, 1e-9), (1.0, 1e9),
-                                  (1e-6, 1e6), (1e6, 1e-6)])
+@pytest.mark.parametrize('a, s', [(1.0, 1.0), (1e-8, 1.0), (1e9, 1.0), (1e12, 1.0), (1.0, 1e-9),
+                                  (1.0, 1e9), (1e-6, 1e6), (1e6, 1e-6)])
 def test_linear_ou_exact_in_any_units(a, s):
     """Against the closed form (not a twin): saddle 0.7 s, C(tau) = (D/mu)
-    e^{-mu |tau|} = s^2 e^{-a |tau|}, no loop correction."""
+    e^{-mu |tau|} = s^2 e^{-a |tau|}, no loop correction.  (Rates 1e12: every
+    lag below 1e-12 was taken for the equal-time point, absolute.)"""
     taus = np.array([0.0, 0.4, 1.3]) / a
     r = _cc(_ou_linear(a, s), ell=1, taus=taus)
     assert r['mf_values']['xstar'][0] == pytest.approx(0.7 * s, rel=1e-15)
     assert np.asarray(r['C_tau_by_ell'][0]).real == pytest.approx(s * s * np.exp(-a * taus),
                                                                   rel=1e-13)
     assert np.max(np.abs(r['C_tau_by_ell'][1])) <= 1e-13 * s * s
+
+
+def _rotation(T):
+    """Two fields, a damped rotation plus a cubic, every rate divided by
+    ``T`` (time measured in units 1/T)."""
+    r = lambda c: repr(c / T)
+    return (SDE('w4a_rot').field('x').field('y')
+            .drift('x', f'-{r(0.6)}*x + {r(1.7)}*y - {r(0.08)}*x**3')
+            .drift('y', f'-{r(1.7)}*x - {r(0.6)}*y')
+            .noise('xi', Gaussian(var=r(0.5)), couples={'x': 1})
+            .noise('eta', Gaussian(var=r(0.3)), couples={'y': 1}).build())
+
+
+@pytest.fixture(scope='module')
+def rotation():
+    taus = np.array([0.0, 0.3, 1.1, 2.9])
+    return {ext: _cc(_rotation(1.0), ell=1, ext=ext, taus=taus)
+            for ext in ((('x', 1), ('x', 1)), (('y', 1), ('x', 1)))}, taus
+
+
+@pytest.mark.parametrize('T', (1e-12, 1e-9, 1e9, 1e10, 1e12))
+def test_rotation_time_twin(rotation, T):
+    """Rates 1e12 returned C(0) at every lag below 1e-12 (absolute tau = 0
+    tie, status ok); rates 1e-10 and 1e-12 stopped at the analyzer (floor
+    1.0) and then lost their poles (absolute 1e-9 retarded filter)."""
+    base, taus = rotation
+    for ext, b in base.items():
+        twin = _cc(_rotation(T), ell=1, ext=ext, taus=taus * T)
+        assert _codes(twin) == _codes(b)
+        _assert_twin(b, twin, 1.0, 1e-13)
 
 
 def _spiking(s):
