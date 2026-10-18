@@ -1233,6 +1233,13 @@ def _coupling_from_model(model, fundamental, mf_values, pops, pop_offsets):
     mf = model['mf_bg_conditions'](ns)
     N = sum(int(p['size']) for p in pops)
     out = np.zeros((N, N))
+    filtered = np.zeros((N, N), dtype=bool)
+    omega = SR.var('_bsa_omega')
+    try:
+        images = dict(model['kernel_ft_image'](ns, omega)
+                      if model.get('kernel_ft_image') else {})
+    except Exception:                                    # noqa: BLE001
+        images = {}
     kernels = []
     for k in model.get('kernels', []):
         kv = getattr(ns, k['name'], None)
@@ -1285,7 +1292,14 @@ def _coupling_from_model(model, fundamental, mf_values, pops, pop_offsets):
                     if w_syms is None:
                         raise KeyError(f'build_sim_arrays: the model has no '
                                        f'parameter {wname!r}.')
-                    d = rhs.diff(w_syms[i][j]).subs(ksub)
+                    d0 = rhs.diff(w_syms[i][j])
+                    # a kernel of this pair with a frequency-dependent image
+                    # is a filter (needs a time constant); none or a
+                    # constant image is instantaneous
+                    filtered[ps + i, qs + j] = any(
+                        SR(images[k]).has(omega) for k in d0.variables()
+                        if k in images)
+                    d = d0.subs(ksub)
                     dv = float(d.subs(point))
                     if dv == 0.0:          # n*_j = 0 at the saddle
                         dv = float(d.subs({k: SR(1) for k in d.variables()}))
@@ -1294,7 +1308,7 @@ def _coupling_from_model(model, fundamental, mf_values, pops, pop_offsets):
                             f'build_sim_arrays: {wname}[{i},{j}] does not enter '
                             f'the v-saddle equation of population {P!r}.')
                     out[ps + i, qs + j] = math.copysign(1.0, dv) * w_ij
-    return out
+    return out, filtered
 
 
 def build_sim_arrays(model, fundamental, mf_values):
@@ -1407,17 +1421,19 @@ def build_sim_arrays(model, fundamental, mf_values):
             v_init[start + i]  = float(v_mf_arr[i])
 
     # ── Per-pair coupling W and filter τ_g ────────────────────────
-    # W[i, j] is the model's own coupling of n_j into v_i: the derivative
-    # of the v-saddle equation by the n saddle (the kernel at its
-    # integral), so its sign is whatever the action says (audit GEN-16: the
+    # W[i, j] is the weight w_ij with the sign it enters the model's own
+    # v-saddle equation (d v*_i / d w_ij at the saddle; audit GEN-16: the
     # sign was taken from the literal population names 'E' / 'I' and any
-    # other names got +1).  A coupled pair with no time-constant parameter
-    # (``taug<post><pre>`` / ``taug``) gets NaN, not a silent 1.0 (the
-    # delta-kernel simulators ignore tau_g; the filtered ones then fail
-    # loudly).  Spellings: ``taug<post><pre>``, ``tau_g<post><pre>``,
-    # ``taug``, ``tau_g`` (a scalar applies to every pair).
-    W[:, :] = _coupling_from_model(model, fundamental, mf_values, pops,
-                                   pop_offsets)
+    # other names got +1).  The time constant: ``taug<post><pre>``,
+    # ``tau_g<post><pre>``, ``taug`` or ``tau_g`` (a scalar applies to every
+    # pair).  A pair whose kernel filters (an omega-dependent image) and has
+    # none raises (it was a silent 1.0); an instantaneous (delta) kernel
+    # keeps the unused 1.0.  Limit: the sign is read at the saddle, so a
+    # shunting form ``Em / (1 - w n)`` or a reversal-potential factor gives
+    # the sign of the whole term there.
+    Wm, filtered = _coupling_from_model(model, fundamental, mf_values, pops,
+                                        pop_offsets)
+    W[:, :] = Wm
     for post in pops:
         for pre in pops:
             pq = f'{post["name"]}{pre["name"]}'
@@ -1434,8 +1450,13 @@ def build_sim_arrays(model, fundamental, mf_values):
                     ii, jj = post_start + i, pre_start + j
                     if tgs is not None:
                         tau_g[ii, jj] = float(tgs[i][j])
-                    elif W[ii, jj] != 0.0:
-                        tau_g[ii, jj] = np.nan
+                    elif W[ii, jj] != 0.0 and filtered[ii, jj]:
+                        raise KeyError(
+                            f'build_sim_arrays: the coupling {post["name"]} <- '
+                            f'{pre["name"]} has a filtering kernel but no time '
+                            f'constant parameter (taug{pq}, tau_g{pq}, taug or '
+                            f'tau_g); the simulator would otherwise use an '
+                            f'invented one.')
 
     return {
         'N':           N,

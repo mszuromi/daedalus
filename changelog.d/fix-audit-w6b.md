@@ -22,6 +22,6 @@
   sign of `W` came from the literal population names (`E` +, `I` -; any other name +): an A/B-named copy of an E/I
   model simulated an all-excitatory network. The sign is now that of `d v* / d w_ij` in the model's own saddle
   equation (at the saddle), so the A/B copy gives the E/I `W`. The time constant is read from `taug<P><Q>`,
-  `tau_g<P><Q>`, `taug` or `tau_g` (a scalar applies to every pair); a coupled pair with none gets `tau_g = NaN`
-  instead of a silent 1.0. Tracked models: `W` and `tau_g` unchanged, except the delta-kernel
-  `single_population_spike_reset_test`, whose (unused: the delta-kernel simulators ignore it) `tau_g` is now NaN.
+  `tau_g<P><Q>`, `taug` or `tau_g` (a scalar applies to every pair); a pair whose kernel filters (an
+  omega-dependent image) and has none now raises instead of a silent 1.0 (an instantaneous kernel keeps the unused
+  1.0). Tracked models: `W` and `tau_g` unchanged.

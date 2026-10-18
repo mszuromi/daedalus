@@ -545,6 +545,9 @@ def _check_supplied_inverse(Gs, Gf, bridge, omega):
             except (TypeError, ValueError, ZeroDivisionError):
                 _check_supplied_inverse_exact(Gs, Gf, bridge)
                 return
+            if not (math.isfinite(abs(a)) and math.isfinite(abs(b))):
+                _check_supplied_inverse_exact(Gs, Gf, bridge)
+                return
             diff, scale = max(diff, abs(a - b)), max(scale, abs(a), abs(b))
         if diff > 1e-9 * max(scale, 1e-300):
             raise SymbolicOutError(

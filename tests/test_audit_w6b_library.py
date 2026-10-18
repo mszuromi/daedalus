@@ -203,6 +203,18 @@ def test_gen16_coupling_signs_come_from_the_model():
     assert np.array_equal(a_ab['tau_g'], a_ei['tau_g'])
 
 
-def test_gen16_missing_time_constant_is_nan_not_one():
-    a = _arrays(_ei('E', 'I', with_taug=False), 'E')
-    assert np.all(np.isnan(a['tau_g'][a['W'] != 0.0]))
+def test_gen16_missing_time_constant_of_a_filter_raises():
+    with pytest.raises(KeyError, match='time constant'):
+        _arrays(_ei('E', 'I', with_taug=False), 'E')
+
+
+def test_gen16_delta_kernel_needs_no_time_constant():
+    import daedalus as dd
+    from simulations.hawkes_sim_multipop_numba import build_sim_arrays
+    m, mod = dd.load_model('single_population_spike_reset_test')
+    f = {**dd.fundamental_from_model(m), **(getattr(mod, 'DEFAULT_FUNDAMENTAL', {}) or {})}
+    r = compute_cumulants(m, k=1, max_ell=0, external_fields=[('n', 1)],
+                          tau_grid=np.array([0.0]), parameters=f, **RUN)
+    a = build_sim_arrays(m, f, r['mf_values'])
+    assert np.array_equal(a['W'], np.asarray(f['w'], dtype=float))
+    assert np.all(a['tau_g'] == 1.0)
