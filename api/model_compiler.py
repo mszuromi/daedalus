@@ -1867,6 +1867,40 @@ def _delta_term_image(term, facs, deltas, t):
     return img
 
 
+def _decays(rate, positive):
+    """The term ``e^{-rate t}`` of a causal kernel decays: ``rate`` positive
+    (by declaration, or Sage's sign with ``positive=None``) or, for a
+    complex rate, its REAL part positive -- the convergence condition of the
+    transform at real omega.  A damped oscillation written as complex
+    exponentials, ``e^{(-r + i r) t}``, has rate ``(1 - i) r``: refused
+    before (audit W4b CI review: on a stack where Sage's own integral of it
+    fails, the kernel then had no image, and the mean-field check took it
+    as normalised).  The real part treats the declared-positive symbols as
+    real; any other symbol in a complex rate leaves it undecided."""
+    def ok(x):
+        return (x.is_positive() if positive is None
+                else _positive_by_declaration(x, positive))
+    if ok(rate):
+        return True
+    syms = rate.variables()
+    if not syms:
+        try:
+            return complex(rate).real > 0
+        except (TypeError, ValueError):
+            return False
+    pos = set(positive or ())
+    if any(str(v) not in pos for v in syms):
+        return False
+    try:
+        conj = rate.conjugate().subs({v.conjugate(): v for v in syms})
+        re_rate = ((rate + conj) / 2).expand()
+    except Exception:
+        return False
+    if 'conjugate' in str(re_rate):
+        return False
+    return bool(ok(re_rate))
+
+
 def causal_exponential_ft(f, t, omega, positive=None):
     r"""Fourier image ``\int_0^\infty f(t) e^{-i\omega t} dt`` of a causal
     sum of exponentials, by the closed form term by term:
@@ -1925,8 +1959,7 @@ def causal_exponential_ft(f, t, omega, positive=None):
         if causal != 1:
             raise ValueError(f'term {term} does not carry heaviside({t}) '
                              f'exactly once')
-        if not (rate.is_positive() if positive is None
-                else _positive_by_declaration(rate, positive)):
+        if not _decays(rate, positive):
             raise ValueError(f'decay rate {rate} of term {term} is not '
                              f'known to be positive')
         out += coeff * factorial(n) / (rate + I * omega) ** (n + 1)

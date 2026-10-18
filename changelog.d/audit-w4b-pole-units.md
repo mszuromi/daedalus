@@ -30,16 +30,26 @@ by as much); analyzer codes identical except `ou_quartic_two_dim_color_corr` on 
 - **Poles from the numerical tiers**: the retarded floor (`Im ω > 1e-9`), the pre-Newton dedup radius (1e-5), the
   Newton exits and steps (`|det| < 1e-13`, `1e-7 (1 + |ω|)`) and the probe frequencies were absolute. In slow units
   (`a = 1e-4`, `b = 1.05e-4`) two poles were merged, and `C_xx` came out 236 times too large with no warning. Every
-  root of `det K(ω)` is now Newton-refined with relative steps and kept only if `det K` vanishes there. The retarded
-  test, the dedup and the residue circles use the frequency scale of those verified zeros (one Newton routine; the
-  three drifted copies are gone). The review also caught a spurious root from a rounding-noise coefficient, about
-  1e16 times the true pole, which set the scale and emptied the pole list in slow units; this is now a test. After a
+  root of `det K(ω)` is now Newton-refined with relative steps and kept only if `det K` vanishes there; a zero is a
+  retarded pole when `Im ω` exceeds 1e3 times its OWN rounding error (ε · Hadamard bound of `K(ω)` / `|det' K(ω)|`),
+  never a threshold set by other roots (one Newton routine; the three drifted copies are gone). After a
   leading-coefficient trim drops genuine poles, the untrimmed polynomial's roots are the candidates (one per root;
   restored and trimmed copies of an ill-conditioned slow pole could otherwise both be kept).
 - **Retarded poles of the exact tier and of the cluster analysis** (`api._pole_clusters`): a decay rate below the
   absolute 1e-9 was dropped silently. Example: `y' = -b y` with `b = 5e-10` next to a unit-rate field, after
-  downgrading `G2_MARGINAL_MODE`, gave `C_yy = 0` instead of 0.2. Its 1000-times-faster twin kept the pole. A root
-  is now retarded when its rate is above 1e-12 of the largest `|root|` (`api._propagator.RETARDED_RTOL`).
+  downgrading `G2_MARGINAL_MODE`, gave `C_yy = 0` instead of 0.2. Its 1000-times-faster twin kept the pole. The
+  decision is now made per root: a root clearly off the real axis keeps its sign; a root within 1e-6 of the axis
+  (relative), or 1e6 times smaller than the largest, is decided on the exact `Q(ω)` (an exact zero root via
+  `Q(0) = 0`, otherwise a 60-digit Newton refinement); the cluster analysis decides at its 50 digits per root. A
+  first version of this fix used a floor relative to the LARGEST root, which dropped the pole of a model whose
+  float parameters leave a genuine far root (a cancelling mass matrix: root ~1e16 times the pole) -- on the exact
+  tier on every platform, and on the numerical tier where that far root verifies (CI, Linux); both are tests now.
+- **Kernels written as complex exponentials** (`e^{(-r ± i r) t}` with `r` positive): the structural transform
+  refused the complex rate `(1 ∓ i) r` as "not known to be positive"; the REAL part is what must be positive (the
+  convergence condition), and is now checked. Where Sage's own integral of such a kernel fails (seen on the Linux
+  conda stack), the kernel had no image and the mean-field check took it as normalised (gain 1 against the
+  solver's 1/2), refusing a valid model with "saddle does not satisfy its own equations". Growing or undamped
+  terms are still refused.
 - **Poset chain simplex** (k ≥ 3, m ≥ 3 regions): scalar lower bounds within an absolute 1e-9 were treated as one. In
   units 1e9 times finer, the lowers 0 and 5e-10 of a region with upper 2e-9 were merged, and the subset came out
   36.6 % low (its unit twin went to the exact route). The tolerance is now 1e-12 of the poset's largest bound

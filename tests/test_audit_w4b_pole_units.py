@@ -34,7 +34,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from sage.all import SR, I, cos, exp, matrix, var                  # noqa: E402
+from sage.all import SR, I, cos, exp, heaviside, matrix, var       # noqa: E402
 
 import engine.integration.time_domain.final_integral as FI         # noqa: E402
 from engine.integration.time_domain import dbm_integral as DBM      # noqa: E402
@@ -159,6 +159,43 @@ def test_damped_cos_kernel_one_loop_twins_agree_with_state_space(engine):
             assert np.allclose(got, ref, rtol=1e-11, atol=0), (S, form, got, ref)
 
 
+def test_complex_exponential_kernel_image_without_sage_integral():
+    """A damped oscillation written as complex exponentials, e^{(-r +- i r) t}:
+    the structural transform used to refuse its complex rate (1 -+ i) r as
+    'not known to be positive' (it is the REAL part that must be), so on a
+    stack where Sage's own integral fails (CI: Linux conda Sage) the kernel
+    had no image, and the mean-field check took it as normalised (gain 1
+    against the solver's 1/2: 'saddle does not satisfy its own
+    equations').  Growing and undamped terms are still refused."""
+    from api.model_compiler import causal_exponential_ft
+    t, w, r = SR.var('t'), SR.var('w'), SR.var('r')
+    f = (r / 2) * (exp((-r + I * r) * t) + exp((-r - I * r) * t)) * heaviside(t)
+    g = causal_exponential_ft(f, t, w, positive={'r'})
+    assert (g.subs({w: 0}) - SR(1) / 2).simplify_full() == 0
+    assert abs(complex(g.subs({r: 2, w: 0.7})) - complex(
+        (1 / ((2 - 2j) + 0.7j) + 1 / ((2 + 2j) + 0.7j)))) <= 1e-15
+    for bad in ((r / 2) * exp((r + I * r) * t) * heaviside(t), exp(I * r * t) * heaviside(t)):
+        with pytest.raises(ValueError, match='not known to be positive'):
+            causal_exponential_ft(bad, t, w, positive={'r'})
+
+
+def test_exp_form_kernel_model_without_sage_integral(engine, monkeypatch):
+    """End to end on the CI stack's behaviour: Sage's integral of the
+    complex-exponential kernel fails (monkeypatched), the structural transform
+    builds the image, and the pole engine's one loop is the state-space
+    value of the cos-written kernel."""
+    import engine.core.field_theory as FT
+
+    def no_integral(*a, **k):
+        raise ValueError('Maxima requested additional constraints (simulated)')
+    engine(None)
+    ref, _ = _one_loop(_cos_kernel_model(1.0, 'cos'), 1.0)
+    monkeypatch.setattr(FT, 'fourier_transform', no_integral)
+    engine('poles')
+    got, r = _one_loop(_cos_kernel_model(1.0, 'exp'), 1.0)
+    assert np.allclose(got, ref, rtol=1e-11, atol=0)
+
+
 # ── ACC-61 / ACC-62: the numerical tiers ─────────────────────────────────────
 
 def _two_field(a, b, c, D, Dz, name='w4b two field'):
@@ -254,11 +291,53 @@ def test_newton_and_singularity_tests_are_scale_free(scale):
         assert abs(r - r0) <= 1e-13 * abs(r0)
         assert PR._singular_at(det, r, scale)
     assert not PR._singular_at(det, scale * (1 + 1j), scale)
+    K_at = lambda w: np.diag([(w - q) / scale for q in roots])
     kept, zeros, w_scale = PR._refine_retarded_poles(
-        [r * (1 + 1e-7) for r in roots] + [roots[0], -scale * 1e3j], det)
+        [r * (1 + 1e-7) for r in roots] + [roots[0], -scale * 1e3j], K_at)
     assert len(kept) == 3 and len(zeros) == 3        # the duplicate merged, the non-root dropped
     assert sorted(abs(k - q) / abs(q) < 1e-12 for k in kept for q in roots).count(True) == 3
-    assert w_scale == pytest.approx(abs(roots[1]), rel=1e-12)
+    assert w_scale == pytest.approx(abs(roots[2]), rel=1e-12)   # the median |zero|, a step unit
+
+
+@pytest.mark.parametrize('ratio', [1e-6, 1e-12, 1e-17])
+def test_a_far_root_never_hides_a_slow_pole(ratio):
+    """Retardedness is decided per root (its own rounding error), never
+    against the largest root: a far zero of det K (here a genuine one, in
+    the lower half plane) next to a slow pole 1e-17 times smaller keeps the
+    slow pole, in the numerical tier and in the exact tier.  (CI review: on
+    Linux the far root of the cancelling 2 x 2 model below passed the
+    verification, and the floor 1e-12 x its modulus dropped the pole.)"""
+    slow, far = ratio * 1j, -1j
+    K_at = lambda w: np.diag([w - slow, (w - far)])
+    kept, zeros, _ = PR._refine_retarded_poles([slow, far], K_at)
+    assert len(zeros) == 2 and kept == pytest.approx([slow], rel=1e-12)
+    om = var('omega')
+    K = matrix(SR, [[I * om + SR(ratio), 0], [0, I * om - 1]])   # zeros i ratio and -i
+    pv, _C, _ = PR._compute_residues_via_polynomial_fracfield(K, om, {}, 2)
+    assert [complex(p) for p in pv] == pytest.approx([slow], rel=1e-12)
+
+
+@pytest.mark.parametrize('S', [1e5, 1e6, 1e7])
+def test_exact_tier_keeps_the_pole_next_to_a_far_root(S):
+    """The 2 x 2 model below on the EXACT tier: its float parameters leave
+    x u - y z at rounding size, so num(det K) has a genuine far root (-6.6e11 i
+    at S = 1e5) next to the pole 2 / (0.9 S) i.  A floor relative to the
+    largest root dropped the pole on every engine's propagator."""
+    om = var('omega')
+    x, u, y, z = 0.1 * S, 0.7 * S, 0.07 * S, 1.0 * S
+    K = matrix(SR, [[I * om * x + 1, I * om * y], [I * om * z, I * om * u + 2]])
+    pv, _C, _ = PR._compute_residues_via_polynomial_fracfield(K, om, {}, 2)
+    assert [complex(p) for p in pv] == pytest.approx([2j / (0.9 * S)], rel=1e-12)
+
+
+def test_exact_tier_marginal_roots_stay_marginal():
+    """Near-axis roots are decided on the exact polynomial: an exact zero
+    root and an undamped oscillation (+-2 on the real axis) are not poles,
+    the damped root is, whatever their double-precision imaginary noise."""
+    om = var('omega')
+    K = matrix(SR, [[om, 0, 0], [0, om ** 2 - 4, 0], [0, 0, om - 3 * I]])
+    pv, _C, _ = PR._compute_residues_via_polynomial_fracfield(K, om, {}, 3)
+    assert [complex(p) for p in pv] == pytest.approx([3j], rel=1e-14)
 
 
 @pytest.mark.parametrize('S', [1e5, 1e6, 1e7])

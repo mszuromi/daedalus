@@ -578,11 +578,12 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                 if res is not None:
                     return res
         all_roots = [complex(r) for r, _ in roots]
-        # (pole, index into all_roots), retarded (relative to the roots'
-        # own frequency scale, ``_is_retarded``), in the (Im, Re) order
-        w_scale = _omega_scale(all_roots)
+        # (pole, index into all_roots), retarded (decided per root, in
+        # high precision on the exact Q when near the axis:
+        # ``_exact_retarded_flags``), in the (Im, Re) order
+        ret_flags = _exact_retarded_flags(Q_poly, all_roots)
         pole_idx = sorted(((p, r) for r, p in enumerate(all_roots)
-                           if _is_retarded(p, w_scale)),
+                           if ret_flags[r]),
                           key=lambda t: (t[0].imag, t[0].real))
         pole_vals = [p for p, _ in pole_idx]
 
@@ -1352,29 +1353,127 @@ def _warn_zero_residue(pk):
         PoleResidueWarning, stacklevel=3)
 
 
-#: A root of det K(omega) is a retarded pole when Im omega exceeds this
-#: fraction of the system's frequency scale (its largest |root|,
-#: ``_omega_scale``): a rounding-level margin in ANY time unit.  Audit W4b
-#: (ACC-62/65): the absolute floor Im omega > 1e-9 silently dropped a stable
-#: mode slower than 1e-9 (every pole of the same model written in slow
-#: units), while its fast-unit twin kept it.  A root whose rate is below
-#: this fraction of the fastest one is not resolved by double-precision root
-#: finding anyway (the analyzer's G2 gate refuses such marginal modes).
-RETARDED_RTOL = 1e-12
+#: Retarded-pole decisions are made per root, from that root's OWN accuracy
+#: (audit W4b): an absolute floor (``Im omega > 1e-9``, the old rule) drops a
+#: stable slow mode in slow units, and a floor relative to the LARGEST |root|
+#: drops it next to a far root (CI review of W4b: the float model of a
+#: cancelling mass matrix has a far root ~1e16 times its pole, which emptied
+#: the pole list on the exact tier).  A root clearly off the real axis keeps
+#: its double-precision sign; a root within ``NEAR_AXIS_RTOL`` of the axis (or
+#: much smaller than the others) is decided in high precision on the exact
+#: polynomial (``_exact_retarded_flags``), or, on the numerical tiers, against
+#: its own rounding error (``_numeric_retarded``).
+NEAR_AXIS_RTOL = 1e-6
+#: Numerical tiers: ``Im omega`` must exceed this many times the root's own
+#: rounding error estimate to count as retarded.
+RETARDED_NOISE_FACTOR = 1e3
 
 
 def _omega_scale(roots):
-    """The frequency scale of a root set: its largest ``|root|`` (1.0 for no
-    or only zero roots, where nothing depends on it)."""
+    """The largest finite ``|root|`` (1.0 for no or only zero roots): used
+    only to flag a root much smaller than the others for a closer look,
+    never as a threshold on its own."""
     s = max((a for a in (abs(complex(r)) for r in roots)
              if math.isfinite(a)), default=0.0)
     return s if s > 0 else 1.0
 
 
-def _is_retarded(r, scale):
-    """``Im r > RETARDED_RTOL * scale`` (``scale``: ``_omega_scale`` of the
-    roots ``r`` belongs to)."""
-    return complex(r).imag > RETARDED_RTOL * scale
+def _median_scale(roots):
+    """The median ``|root|`` of the nonzero finite roots (1.0 for none): a
+    step-size unit that one far root cannot set."""
+    a = sorted(x for x in (abs(complex(r)) for r in roots)
+               if math.isfinite(x) and x > 0)
+    return a[len(a) // 2] if a else 1.0
+
+
+def _exact_retarded_flags(Q_poly, roots, dps=60):
+    """``[bool]``: which double-precision roots of the exact polynomial
+    ``Q_poly`` (over ``QQ[i]``) are retarded (Im omega > 0).  A root clearly
+    off the axis (``|Im| > NEAR_AXIS_RTOL |r|``) and not much smaller than
+    the largest keeps its sign.  Any other root is decided exactly: the root
+    nearest 0 of a ``Q`` with a zero constant term IS 0 (marginal); else it
+    is Newton-refined on the exact ``Q`` at ``dps`` digits and is retarded
+    when ``Im > 1e-40 |r|`` (a real-axis root comes out ~1e-58 there).  If
+    the refinement fails, the double sign with a 1e-12 relative margin."""
+    import mpmath as _mp
+    from api._pole_clusters import _mpc
+    roots = [complex(r) for r in roots]
+    big = _omega_scale(roots)
+    out = [r.imag > 0 for r in roots]
+    sus = [k for k, r in enumerate(roots)
+           if abs(r.imag) <= NEAR_AXIS_RTOL * abs(r)
+           or abs(r) <= NEAR_AXIS_RTOL * big]
+    if not sus:
+        return out
+    zero_root = None
+    try:
+        if Q_poly.constant_coefficient() == 0:
+            zero_root = min(range(len(roots)), key=lambda k: abs(roots[k]))
+    except Exception:
+        pass
+    ctx = _mp.MPContext()
+    ctx.dps = dps
+    try:
+        cs = [ctx.mpc(_mpc(c)) for c in Q_poly.list()]
+    except Exception:
+        cs = None
+    dcs = None if cs is None else [k * cs[k] for k in range(1, len(cs))]
+
+    def horner(c, x):
+        v = ctx.mpc(0)
+        for a in reversed(c):
+            v = v * x + a
+        return v
+    for k in sus:
+        r = roots[k]
+        if k == zero_root:
+            out[k] = False
+            continue
+        if cs is None:
+            out[k] = r.imag > 1e-12 * abs(r)
+            continue
+        x = ctx.mpc(r.real, r.imag)
+        ok = False
+        for _ in range(80):
+            d = horner(dcs, x)
+            if d == 0:
+                break
+            step = horner(cs, x) / d
+            x -= step
+            if abs(step) <= ctx.mpf(10) ** (-(dps - 8)) * max(abs(x), ctx.mpf(10) ** (-300)):
+                ok = True
+                break
+        if ok and abs(x - ctx.mpc(r.real, r.imag)) <= 1e-6 * max(abs(r), 1e-300):
+            out[k] = bool(x.imag > ctx.mpf(10) ** (-40) * abs(x))
+        else:
+            out[k] = r.imag > 1e-12 * abs(r)
+    return out
+
+
+def _numeric_retarded(K_at, r, roots):
+    """Numerical tiers: ``Im r`` above ``RETARDED_NOISE_FACTOR`` times the
+    root's own rounding error, ``eps * H(K(r)) / |det' K(r)|`` (``H``: the
+    Hadamard bound, the product of the row norms, which bounds the rounding
+    of det K at r); ``det'`` by a central difference with a step 1e-4 of the
+    distance to the nearest other zero (``roots``)."""
+    import numpy as np
+    r = complex(r)
+    if not r.imag > 0:
+        return False
+    others = [abs(complex(q) - r) for q in roots
+              if abs(complex(q) - r) > 1e-9 * max(abs(r), 1e-300)]
+    h = 1e-4 * (min(others) if others else max(abs(r), 1e-300))
+    try:
+        M = K_at(r)
+        had = float(np.prod(np.linalg.norm(M, axis=1)))
+        dp = (complex(np.linalg.det(K_at(r + h)))
+              - complex(np.linalg.det(K_at(r - h)))) / (2 * h)
+    except Exception:
+        return r.imag > 1e-12 * abs(r)
+    if not (np.isfinite(had) and np.isfinite(dp)) or dp == 0:
+        return r.imag > 1e-12 * abs(r)
+    err = np.finfo(float).eps * had / abs(dp)
+    return r.imag > RETARDED_NOISE_FACTOR * err
 
 
 def _local_unit(om, scale=None):
@@ -1458,7 +1557,7 @@ def _verified_roots(candidates, det_at):
     each root (``scale=None``); a root much smaller than the others, whose
     relative step drowns in the evaluation noise, is retried with the scale
     of the roots the first pass verified.  Returns ``(roots, rejected,
-    scale)``."""
+    scale)`` (``scale``: the median |zero|, a step unit only)."""
     def one(r0, scale):
         try:
             r = _newton_det(det_at, r0, scale=scale)
@@ -1468,7 +1567,7 @@ def _verified_roots(candidates, det_at):
             pass
         return None
     first = [one(complex(r0), None) for r0 in candidates]
-    scale0 = _omega_scale([r for r in first if r is not None])
+    scale0 = _median_scale([r for r in first if r is not None])
     roots, rejected = [], []
     for r0, r in zip(candidates, first):
         if r is None:
@@ -1479,22 +1578,27 @@ def _verified_roots(candidates, det_at):
         if any(abs(r - q) <= 1e-7 * max(abs(r), abs(q)) for q in roots):
             continue
         roots.append(r)
-    return roots, rejected, _omega_scale(roots)
+    return roots, rejected, _median_scale(roots)
 
 
-def _refine_retarded_poles(candidates, det_at, verbose=False):
+def _refine_retarded_poles(candidates, K_at, verbose=False):
     """The numerical tiers' one pole rule (RED-08 merged the drifted copies
     of the rich and legacy paths): the verified zeros of det K
-    (``_verified_roots``) that are retarded relative to their own frequency
-    scale (``_is_retarded``), sorted by (Im, Re).  Returns ``(poles,
-    roots, scale)`` (``roots``: every verified zero)."""
+    (``_verified_roots``) that are retarded beyond their own rounding error
+    (``_numeric_retarded``), sorted by (Im, Re).  Returns ``(poles, roots,
+    scale)`` (``roots``: every verified zero; ``scale``: their median
+    modulus, a step unit)."""
+    import numpy as np
+
+    def det_at(om):
+        return complex(np.linalg.det(K_at(om)))
     roots, rejected, scale = _verified_roots(candidates, det_at)
-    poles = sorted((r for r in roots if _is_retarded(r, scale)),
+    poles = sorted((r for r in roots if _numeric_retarded(K_at, r, roots)),
                    key=lambda r: (r.imag, r.real))
     if verbose:
         print(f'      Newton-refined: {len(roots)} zeros of det K '
               f'({len(poles)} retarded), {len(rejected)} candidate(s) '
-              f'rejected; omega scale = {scale:.3e}')
+              f'rejected')
         for r0 in rejected:
             print(f'        omega = {r0.real:+.6g}{r0.imag:+.6g}i: '
                   f'not a zero of det K')
@@ -1551,13 +1655,12 @@ def _numerical_residues(pole_vals, K_at, nonzero, roots, nf, scale=None):
     itself in any field or time unit.  It zeroes the rounding residue of an
     entry at a pole it does not have (a pure delta entry at every pole).
     ``roots``: the verified zeros of det K (``_verified_roots``; an
-    unrefined copy of a pole would shrink the circle to nothing), ``scale``
-    their frequency scale."""
+    unrefined copy of a pole would shrink the circle to nothing)."""
     import numpy as np
     from sage.all import CDF, matrix as _matrix
     Z = _structural_zero_entries(nonzero)
-    if scale is None:
-        scale = _omega_scale(roots)
+    # steps and circles are relative to each pole (``scale`` only floors a
+    # pole at the origin, which is never retarded): no far root sets them
 
     def det_at(om):
         return complex(np.linalg.det(K_at(om)))
@@ -1629,7 +1732,7 @@ def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
 
     def det_at(om):
         return complex(np.linalg.det(K_at(om)))
-    poles, _roots, _scale = _refine_retarded_poles(full, det_at)
+    poles, _roots, _scale = _refine_retarded_poles(full, K_at)
     extra = []
     for r in poles:
         if any(abs(r - q) <= 1e-7 * max(abs(r), abs(q))
@@ -1948,7 +2051,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
             except Exception:
                 candidate_roots = []
 
-            refined = _refine_retarded_poles(candidate_roots, _det_at)[0]
+            refined = _refine_retarded_poles(candidate_roots, _K_at)[0]
             roots_all = refined
             if verbose:
                 print(f'      numerical fallback: '
@@ -2097,17 +2200,16 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     # shared by both paths).  Audit W4b (ACC-62): an absolute 1e-9 retarded
     # floor, a 1e-5 pre-Newton dedup and probe frequencies max(1, Im omega)
     # lost a pole of the same model written in slow units.
-    def _det_K(om):
-        return complex(np.linalg.det(_K_at(om)))
     try:
         pole_vals, zeros_all, w_scale = _refine_retarded_poles(
-            roots_all, _det_K, verbose)
+            roots_all, _K_at, verbose)
     except Exception as exc:
         if verbose:
             print(f'      Newton refinement skipped ({exc!r})')
-        w_scale = _omega_scale(roots_all)
         zeros_all = _dedup_roots(list(roots_all), 1e-5)
-        pole_vals = sorted((r for r in zeros_all if _is_retarded(r, w_scale)),
+        w_scale = _median_scale(zeros_all)
+        pole_vals = sorted((r for r in zeros_all
+                            if _numeric_retarded(_K_at, r, zeros_all)),
                            key=lambda r: (r.imag, r.real))
 
     # ── Residues ────────────────────────────────────────────────
@@ -2122,8 +2224,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     # ``C_k = i·ε·G(ω_k+ε)`` leaks O(ε) from nearby poles.)
     nonzero = [[bool(any(c != 0 for c in K_num_coeffs[i][j]))
                 for j in range(nf)] for i in range(nf)]
-    C_mats = _numerical_residues(pole_vals, _K_at, nonzero, zeros_all, nf,
-                                 w_scale)
+    C_mats = _numerical_residues(pole_vals, _K_at, nonzero, zeros_all, nf)
 
     prop['pole_vals'] = pole_vals
     prop['C_mats']    = C_mats

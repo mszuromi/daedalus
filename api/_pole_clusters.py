@@ -323,13 +323,16 @@ def analyze(G_ft_F, Q_poly, nf, tau_max=None):
         n = len(roots)
         if sum(mult_Q) != Qh.degree():
             raise ArithmeticError('coprime base does not account for Q')
-        # retarded: decaying relative to the roots' own frequency scale, the
-        # same rule as the double-precision tiers (audit W4b, ACC-65: an
-        # absolute -1e-9 dropped a stable mode slower than 1e-9 silently,
-        # which in faster time units was kept)
-        from api._propagator import RETARDED_RTOL
+        # retarded: decaying beyond the 50-digit roots' own accuracy, per
+        # root (audit W4b, ACC-65: an absolute -1e-9 dropped a stable mode
+        # slower than 1e-9; a floor relative to the largest root would drop
+        # it next to a far root); the root of an exact factor lambda, 0 to
+        # working precision, is marginal
         lam_scale = max((abs(r) for r in roots), default=mp.mpf(0)) or 1
-        retarded = [mp.re(r) < -RETARDED_RTOL * lam_scale for r in roots]
+        tiny = mp.mpf(10) ** (-40)
+        retarded = [abs(r) > tiny * lam_scale
+                    and mp.re(r) < -mp.mpf(10) ** (-30) * abs(r)
+                    for r in roots]
         # entries: numerator, leading coefficient, per-root multiplicity
         entries = []
         for (i, j), D in dens.items():
