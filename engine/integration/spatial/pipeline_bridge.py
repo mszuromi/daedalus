@@ -787,9 +787,20 @@ def compute_coupled_tree_correlator(
         def _Cq(q, tau):
             return coupled_two_point(ref, N, q * q, tau)[j, i]
 
-    _numerical = (dyson_order is not None
-                  or os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1')
-    if _numerical and d >= 2:
+    # SPATIAL_FORCE_NUMERICAL_FT=1: the fixed q-grid / mode-sum cross-check
+    # (q_cut, n_q, n_modes); every default path below is exact in q
+    _numerical = os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1'
+    if dyson_order is not None and not _numerical:
+        # dressed (unequal-𝒟) tree: the exact Laguerre–Gaussian q→x transform
+        # of every Dyson term + an adaptive, error-checked s-integral (no
+        # q-grid, no q_cut, no fixed mode count; dyson_dressing)
+        from engine.integration.spatial.dyson_dressing import dressed_tree_C_x
+        _Lb = float(L) if (bc_mode == 'periodic' and L) else None
+        for it, tau in enumerate(taus):
+            C[it, :] = dressed_tree_C_x(xs, tau, M, ref.Dhat, ref.D0, N,
+                                        dyson_order, (i, j), spatial_dim=d,
+                                        L=_Lb)
+    elif _numerical and d >= 2:
         # d≥2: q→x transform of the ISOTROPIC coupled C_ij(q,τ).  ``_Cq`` is
         # dimension-agnostic (depends on |k|²=q²), so this covers the scalar-𝒟
         # case, the Dyson-dressed case, and any external (i,j).  Infinite domain
@@ -811,8 +822,8 @@ def compute_coupled_tree_correlator(
             for ix, x in enumerate(xs):
                 C[it, ix] = (1.0 / Lf) * np.sum(np.exp(1j * qs * x) * Cq)
     elif _numerical:
-        # dressed (unequal-𝒟) path, or the cross-check escape hatch: brute
-        # cosine-FT on a finite q-grid (q_cut truncation ~ N_ij/(π·D₀·q_cut))
+        # the cross-check escape hatch: brute cosine-FT on a finite q-grid
+        # (q_cut truncation ~ N_ij/(π·D₀·q_cut))
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)               # cosine FT
         dq = qg[1] - qg[0]
         for it, tau in enumerate(taus):
@@ -1993,6 +2004,10 @@ def compute_spatial_correlator_generic(
     # kernel array alone is tens of GB → an OOM that crashes the kernel AND the OS.
     # Refuse up-front (vs silently thrashing/crashing) with the numbers + the knobs.
     _nx = max(1, len(np.asarray(spatial_grid, dtype=float)))
+    # the analytic x-path (plain vertices, or d = 1) holds (P, n_x) arrays;
+    # the q-path holds the form-factor Gauss–Hermite grid instead
+    _use_x_path = ((all(rec[2] is None for rec in live_g) or d == 1)
+                   and _osg.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') != '1')
     # unset: the RAM-aware default of the Phase J guard (at most 6 GB, less
     # on a small machine: final_integral.default_mem_budget); an explicit
     # value is used as given
@@ -2006,7 +2021,7 @@ def compute_spatial_correlator_generic(
         _budget_gb = _b / 1e9
     _peak_gb, _worst = 0.0, None
     from engine.integration.spatial.full_integrator import (
-        time_grid_split_factor, external_times_2pt)
+        time_grid_split_factor, external_times_2pt, chamber_peak_bytes)
     _tau_m = float(np.max(np.abs(taus))) if len(taus) else 0.0
     for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
         _nV = len(_dd.internal_vertices)
@@ -2018,9 +2033,16 @@ def compute_spatial_correlator_generic(
                                             _nt, _nshort)
                      for t_ in ((0.0,) if _tau_m == 0.0 else (_tau_m, -_tau_m)))
         _P = (_nt ** _nV) * (_ns ** _nC) * _split
-        # one (P, n_x) complex array, ×2.5 for the measured chamber peak
-        # (heat kernel + amplitude + temporaries; audit E-spatial-12)
-        _gb = 2.5 * _P * _nx * 16.0 / 1e9
+        # the calibrated per-chamber peak (full_integrator.chamber_peak_bytes:
+        # sample arrays + Symanzik blocks + the heat kernel / form factor),
+        # the same estimate diagram_kinematic enforces per chamber
+        _a = np.array([e.a for e in _dd.edges], dtype=float).reshape(
+            len(_dd.edges), -1)
+        _gb = chamber_peak_bytes(
+            _P, n_V=_nV, n_leaf=len(_dd.external_legs), n_C=_nC,
+            E=len(_dd.edges), L=_a.shape[1], n_ext=1,
+            n_x=(_nx if _use_x_path else 0), spatial_dim=d,
+            formfactor=_ff) / 1e9
         if _gb > _peak_gb:
             _peak_gb, _worst = _gb, (_el, _nV, _nC, _nt, _ns, _P)
     if _integrator not in ('mc', 'bessel') and _peak_gb > _budget_gb:

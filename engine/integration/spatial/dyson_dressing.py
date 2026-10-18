@@ -122,3 +122,162 @@ def dressed_tree_C_q_grid(qs, taus, M, Dhat, D0, N, order, n_s=48):
         for it, tau in enumerate(taus):
             out[it, iq] = dressed_tree_C(q, tau, M, Dhat, D0, N, order, n_s=n_s)
     return out
+
+
+# ── exact q→x transform of the dressed tree (no q-grid) ───────────────
+# ``G_R^{(N)}(t,q) = e^{−D₀q²t} Σ_n (−q²)^n 𝓗_n(t)`` with q-INDEPENDENT 𝓗_n,
+# so every term of ``C^{(N)}(q,τ) = ∫_0^∞ G(|τ|+s) N G(s)ᵀ ds`` is a matrix
+# function of s times ``|q|^{2p} e^{−a q²}``, ``a = D₀(|τ|+2s)``, ``p = n+m``.
+# Its inverse FT is the Laguerre–Gaussian closed form
+#     ∫dᵈq/(2π)ᵈ e^{iq·x} |q|^{2p} e^{−a q²} = K_a(x) · p! · a^{−p} · L_p^{(d/2−1)}(|x|²/4a),
+# ``K_a = (4πa)^{−d/2} e^{−|x|²/4a}`` (``(−Δ)^p`` of the heat kernel), so
+#     C^{(N)}(x,τ) = ∫_0^∞ ds Σ_{n,m≤N} (−1)^{n+m} F_{n+m}(x; a(s)) [𝓗_n(|τ|+s) N 𝓗_m(s)ᵀ],
+# one smooth s-integral by adaptive quadrature with a checked error estimate.
+# A periodic box sums images of F (or, for a wide Gaussian, the dual mode
+# sum) to convergence; nothing is truncated at a fixed q_cut / mode count.
+def _laguerre_gauss(p, r2, a, d):
+    """``F_p`` on the infinite domain for squared distances ``r2`` (array)."""
+    from math import factorial
+    from scipy.special import eval_genlaguerre
+    u = r2 / (4.0 * a)
+    return ((4.0 * np.pi * a) ** (-0.5 * d) * np.exp(-u) * factorial(p)
+            * a ** (-p) * eval_genlaguerre(p, 0.5 * d - 1.0, u))
+
+
+def _periodic_1d(p, x, a, L, rtol=1e-16):
+    """1-d periodic ``F_p``: image sum of :func:`_laguerre_gauss` (narrow
+    Gaussian) or the dual mode sum ``(1/L) Σ_k q_k^{2p} e^{−a q_k²} cos(q_k x)``
+    (wide one), each summed until the terms are below ``rtol`` of the total
+    past the peak of the polynomial factor."""
+    x = np.asarray(x, dtype=float)
+    if a <= L * L / (4.0 * np.pi):
+        tot = _laguerre_gauss(p, x * x, a, 1)
+        n = 1
+        n_min = int(np.ceil((np.max(np.abs(x)) + np.sqrt(8.0 * p * a)) / L)) + 1
+        while True:
+            add = (_laguerre_gauss(p, (x + n * L) ** 2, a, 1)
+                   + _laguerre_gauss(p, (x - n * L) ** 2, a, 1))
+            tot = tot + add
+            if n >= n_min and np.max(np.abs(add)) <= rtol * max(
+                    np.max(np.abs(tot)), 1e-300):
+                return tot
+            n += 1
+            if n > 100000:
+                raise RuntimeError('periodic image sum did not converge.')
+    tot = np.full(x.shape, (1.0 / L) * (1.0 if p == 0 else 0.0))
+    k = 1
+    k_min = int(np.ceil(np.sqrt(p / a) * L / (2.0 * np.pi))) + 1
+    while True:
+        q = 2.0 * np.pi * k / L
+        add = (2.0 / L) * q ** (2 * p) * np.exp(-a * q * q) * np.cos(q * x)
+        tot = tot + add
+        if k >= k_min and np.max(np.abs(add)) <= rtol * max(
+                np.max(np.abs(tot)), 1e-300):
+            return tot
+        k += 1
+        if k > 100000:
+            raise RuntimeError('periodic mode sum did not converge.')
+
+
+def _F_p(p, xs, a, d, L=None):
+    """``F_p(x; a)`` at distances ``xs`` (x along axis 0 on a periodic box)."""
+    xs = np.asarray(xs, dtype=float)
+    if L is None:
+        return _laguerre_gauss(p, xs * xs, a, d)
+    if d == 1:
+        return _periodic_1d(p, xs, a, L)
+    # |q|^{2p} = Σ_{p_0+…+p_{d−1}=p} p!/∏p_c! ∏_c q_c^{2p_c}: a product of
+    # 1-d periodic factors (x on axis 0, the other components at 0)
+    from math import factorial
+    out = np.zeros(xs.shape)
+    for parts in itertools.product(range(p + 1), repeat=d):
+        if sum(parts) != p:
+            continue
+        coef = factorial(p)
+        for pc in parts:
+            coef //= factorial(pc)
+        term = coef * _periodic_1d(parts[0], xs, a, L)
+        for pc in parts[1:]:
+            term = term * _periodic_1d(pc, np.zeros(1), a, L)[0]
+        out = out + term
+    return out
+
+
+def dressed_tree_C_x(xs, tau, M, Dhat, D0, N, order, legs, spatial_dim=1,
+                     L=None, epsrel=1e-11):
+    """EXACT real-space dressed tree ``C^{(N)}_{ij}(x, τ)`` (package convention
+    ``⟨φ_i(0,0) φ_j(x,τ)⟩``) at the distances ``xs`` (along axis 0 for a
+    periodic box of side ``L``): the closed-form inverse FT of
+    :func:`dressed_tree_C` (see the block comment above) — no q-grid, no
+    ``q_cut``, no mode cap.  ``legs = (i, j)``.  The remaining s-integral is
+    adaptive (``scipy.integrate.quad_vec``); its error estimate is checked and
+    a failure raises instead of returning a number.  ``d ≥ 2`` refuses the
+    UV-divergent equal point ``x = τ = 0``."""
+    from scipy.integrate import quad_vec
+    xs = np.asarray(xs, dtype=float)
+    d = int(spatial_dim)
+    M = np.asarray(M, dtype=float)
+    Dhat = np.asarray(Dhat, dtype=float)
+    Nm = np.asarray(N, dtype=float)
+    D0 = float(D0)
+    i, j = legs
+    at = abs(float(tau))
+    ii, jj = (j, i) if tau >= 0 else (i, j)
+    if d >= 2 and at == 0.0 and np.any(xs == 0.0) and L is None:
+        from engine.integration.spatial.heat_kernel import (
+            SpatialPropagatorError)
+        raise SpatialPropagatorError(
+            f'equal-point (x=0, tau=0) dressed tree correlator is '
+            f'UV-divergent at d={d}.')
+    eig, proj = spectral_projectors(M)
+    mu_min = float(np.min(eig.real))
+    if not mu_min > 0.0:
+        raise ValueError(f'dressed_tree_C_x: min Re eig(M) = {mu_min} <= 0.')
+    # the n-th order strings P_{α0}𝒟̂P_{α1}⋯ once (shared by every s)
+    strings = []
+    for n in range(order + 1):
+        sn = []
+        for st in itertools.product(range(len(eig)), repeat=n + 1):
+            mat = proj[st[0]]
+            for a_i in st[1:]:
+                mat = mat @ Dhat @ proj[a_i]
+            if np.any(np.abs(mat) > 1e-300):
+                sn.append((mat, eig[st[0]], [eig[a_i] - eig[st[0]]
+                                             for a_i in st[1:]]))
+        strings.append(sn)
+
+    def _H(n, t):
+        out = np.zeros(M.shape, dtype=complex)
+        for mat, m0, nus in strings[n]:
+            out += mat * (np.exp(-m0 * t) * phi_n_batch(np.array([t]), nus)[0])
+        return out
+
+    S = 1.0 / mu_min
+
+    def _f(v):
+        s = S * v * v
+        a = D0 * (at + 2.0 * s)
+        Hl = [_H(n, at + s) for n in range(order + 1)]
+        He = [_H(m, s) for m in range(order + 1)]
+        acc = np.zeros(xs.shape, dtype=complex)
+        Fc = {}
+        for n in range(order + 1):
+            HlN = Hl[n] @ Nm
+            for m in range(order + 1):
+                w = (HlN @ He[m].T)[ii, jj]
+                if w == 0:
+                    continue
+                p = n + m
+                if p not in Fc:
+                    Fc[p] = _F_p(p, xs, a, d, L)
+                acc = acc + ((-1) ** p) * w * Fc[p]
+        return acc * (2.0 * S * v)
+
+    val, err = quad_vec(_f, 0.0, np.inf, epsabs=0.0, epsrel=epsrel,
+                        norm='max', limit=4000)
+    scale = float(np.max(np.abs(val))) or 1.0
+    if not np.all(np.isfinite(val)) or err > 1e3 * epsrel * scale:
+        raise RuntimeError(
+            f'dressed_tree_C_x: the s-integral did not converge (error '
+            f'estimate {err:.2e} against {scale:.2e}); no value returned.')
+    return val

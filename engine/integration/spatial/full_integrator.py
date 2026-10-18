@@ -466,6 +466,51 @@ class SpatialMemoryBudgetError(MemoryError):
     """A spatial chamber evaluation would exceed the memory budget."""
 
 
+def chamber_peak_bytes(P, *, n_V, n_leaf, n_C, E, L, n_ext, n_x=0,
+                       spatial_dim=1, formfactor=None, gh_order=6):
+    """Peak bytes of ONE causal chamber of :func:`diagram_kinematic` with
+    ``P`` quadrature samples (grid or MC), counted from its arrays and
+    calibrated against tracemalloc peaks (audit MEM-04: plain and derivative
+    vertices, k = 2 and 3, d = 1-3, one and two loops; every measured peak
+    sits at 0.4-0.9 of this estimate):
+
+    * per sample: the vertex / leaf / σ times, the edge weights, amplitude and
+      temporaries, and the Symanzik blocks (``Lam``, ``N``, ``Q``, their
+      masked copies and solves);
+    * the analytic IFT (``n_x`` output points): the ``(P, n_x)`` heat kernel
+      and its temporaries; a derivative form factor adds its ``(P, n_x)``
+      complex moments (``moment_x`` / ``moment_x_multi``);
+    * the q-path form-factor average: the ``(P, G, L, d)`` loop-momentum
+      Gauss–Hermite grid, ``G = gh^{L·d}``, and its ``(P, G)`` complex
+      evaluations."""
+    f8 = (2.0 * (n_V + n_leaf + n_C + E) + 4.0 * L * L + 3.0 * L * n_ext
+          + 4.0 * n_ext * n_ext + 10.0)
+    ff = formfactor is not None
+    if n_x:
+        if n_ext == 1:
+            f8 += 2.5 * n_x + ((30.0 + 10.0 * n_x) if ff else 0.0)
+        else:
+            f8 += (2.0 * n_ext * n_ext + 4.0 * n_x
+                   + ((40.0 + 12.0 * n_x) if ff else 0.0))
+    elif ff and L > 0:
+        gh = int(getattr(formfactor, 'gh_order_needed', None) or gh_order)
+        G = float(gh) ** (L * int(spatial_dim))
+        f8 += G * (2.0 * L * int(spatial_dim) + 2.0)
+    return 8.0 * float(P) * f8
+
+
+def _refuse_chamber_memory(need, P, what):
+    bud, rule = _spatial_mem_budget()
+    if need > bud:
+        raise SpatialMemoryBudgetError(
+            f'spatial {what}: one causal chamber needs ~{need / 1e9:.2f} GB '
+            f'(P = {P:.3g} quadrature samples) over the budget '
+            f'{bud / 1e9:.2f} GB ({rule}).  Lower max_ell or the number of '
+            f'output points, coarsen SPATIAL_GRID_NT / SPATIAL_GRID_NS (or '
+            f'SPATIAL_MC_N), or raise SPATIAL_MEM_BUDGET_GB if the RAM is '
+            f'there.')
+
+
 def time_grid_split_factor(descr, external_times, n_t=None, n_short=8):
     """How many times larger the causal-chamber time grid is because each
     vertex interval splits at the external times inside its static leaf
@@ -778,6 +823,13 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
     n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
     _use_mc = method == 'mc' and (n_V + n_C) > 0
+
+    def _chamber_bytes(P_):
+        return chamber_peak_bytes(
+            P_, n_V=n_V, n_leaf=len(external_times), n_C=n_C, E=len(edges),
+            L=a.shape[1], n_ext=b.shape[1],
+            n_x=(0 if xs_arr is None else int(xs_arr.shape[0])),
+            spatial_dim=spatial_dim, formfactor=formfactor, gh_order=gh_order)
     _rng = np.random.default_rng(mc_seed) if _use_mc else None
     for order in chambers:
         if _use_mc:
@@ -788,6 +840,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             #    e^{−μσ} is consumed by its proposal.  (Validated for PLAIN vertices;
             #    derivative-vertex form factors are biased — det Lam→0 singularity.)
             P = int(mc_n)
+            _refuse_chamber_memory(_chamber_bytes(P), P, 'Monte-Carlo chamber')
             placed = {}
             later = None
             Sgap = np.zeros(P)
@@ -830,6 +883,9 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 later = placed[vi]
             Pt = wt.size
             P = Pt * Ps
+            # memory guard, every caller (k=2, k-point, q-path): the exact
+            # sample count of THIS chamber, before its arrays exist
+            _refuse_chamber_memory(_chamber_bytes(P), P, 'chamber quadrature')
             tvals = {leaf: np.full(P, tt) for leaf, tt in external_times.items()}
             for i, v in enumerate(internal):
                 tvals[v] = np.repeat(placed[idx[v]], Ps)

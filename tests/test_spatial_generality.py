@@ -272,3 +272,113 @@ def test_drift_velocity_rules_are_unit_invariant():
     assert _drift_velocity(1e-14j * np.eye(1), np.eye(1), np.eye(1)) == 0.0
     assert _drift_velocity(1e-14j * np.eye(1), 1e-20 * np.eye(1),
                            1e-20 * np.eye(1)) != 0.0
+
+
+# ── MEM-04: one calibrated memory guard inside every chamber ──────────
+def _records(action, d, ell, rhs='0'):
+    from sage.all import SR as _SR
+    from engine.core.field_theory import FieldTheory
+    from api._propagator import build_propagator
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from engine.integration.spatial.pipeline_bridge import (
+        build_pipeline_records, _formfactor_callable)
+    m = (ModelBuilder('mem', n_populations=0).physical_field('p', spatial_dim=d)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('c', default=0.3, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs=rhs)
+         .set_action_text(action).operator_ir().boundary('infinite')
+         .initial('stationary').build())
+    ft = FieldTheory(m, taylor_order=4)
+    ft.expand()
+    prop = build_propagator(ft, m, use_cache=False, verbose=False)
+    _, pidx = build_field_index_map(list(ft._ns._ring_var_names), ft._n_tilde)
+    ext = _legs_to_phys_idx([('p', 1), ('p', 1)], pidx)
+    base = {_SR.var(n): v for n, v in (('mu', 1.0), ('D', 1.0), ('c', 0.3),
+                                       ('T', 1.0), ('pstar', 0.0),
+                                       ('pstar1', 0.0))}
+    vt = [{'weight': float(_SR(t['weight']).subs(base)), 'n_phys': t['n_phys'],
+           'chain': t['chain'], 'mode': t['mode']}
+          for t in (getattr(ft._ns, '_operator_ir_vertex_terms', None) or [])]
+    out = []
+    for td, _pv in build_pipeline_records(ft, m, prop, ext, max_ell=ell,
+                                          verbose=False).get(ell, []):
+        out.append((diagram_to_cstack(td),
+                    _formfactor_callable(td, vt, d=d) if vt else None))
+    return out
+
+
+def _peak_and_estimate(dd, ff, d, xs, n_t, n_s, q=0.8):
+    import tracemalloc
+    from engine.integration.spatial import full_integrator as FI
+    et = FI.external_times_2pt(dd, 0.5)
+    n_V = len(dd.internal_vertices)
+    n_C = sum(1 for e in dd.edges if e.kind == 'C')
+    a = np.array([e.a for e in dd.edges], dtype=float).reshape(len(dd.edges),
+                                                               -1)
+    P_bound = (n_t ** n_V) * (n_s ** n_C) * FI.time_grid_split_factor(
+        dd, et, n_t, min(n_t, 8))
+    est = FI.chamber_peak_bytes(
+        P_bound, n_V=n_V, n_leaf=len(et), n_C=n_C, E=len(dd.edges),
+        L=a.shape[1], n_ext=1, n_x=0 if xs is None else len(xs),
+        spatial_dim=d, formfactor=ff)
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        b0 = tracemalloc.get_traced_memory()[0]
+        FI.diagram_kinematic(dd, [q], et, 1.0, 1.0, spatial_dim=d, n_t=n_t,
+                             n_s=n_s, formfactor=ff, xs=xs)
+        peak = tracemalloc.get_traced_memory()[1] - b0
+    finally:
+        tracemalloc.stop()
+    return peak, est
+
+
+def test_chamber_estimate_covers_the_measured_peak():
+    """Plain x-path (n_x = 30) and the d = 2 form-factor q-path (its
+    Gauss–Hermite grid): the per-chamber estimate is above the tracemalloc
+    peak and not wildly above it."""
+    from engine.integration.spatial.full_integrator import (
+        uv_divergent_subgraphs)
+    dd, ff = _records('pt*(Dt(p)+mu*p-D*Lap(p)+c*p^3)-T*pt^2', 1, 1,
+                      rhs='-c*p^3')[0]
+    peak, est = _peak_and_estimate(dd, ff, 1, np.linspace(0, 2, 30), 22, 24)
+    assert 0.3 * est <= peak <= est, (peak, est)
+    recs = [r for r in _records('pt*(Dt(p)+mu*p-D*Lap(p)-c*Lap(p^2))-T*pt^2',
+                                2, 1, rhs='c*Laplacian*p^2')
+            if r[1] is not None and not uv_divergent_subgraphs(r[0], 2)]
+    dd, ff = max(recs, key=lambda r: getattr(r[1], 'gh_order_needed', 1))
+    peak, est = _peak_and_estimate(dd, ff, 2, None, 22, 24)
+    assert 0.3 * est <= peak <= est, (peak, est)
+
+
+def test_kpoint_and_gh_paths_are_guarded(monkeypatch):
+    """The k-point driver and the d >= 2 form-factor q-path used to run with
+    no guard (> 5 GB measured at k = 3, one loop, two points)."""
+    from engine.integration.spatial import full_integrator as FI
+    from engine.integration.spatial.full_integrator import (
+        SpatialMemoryBudgetError, uv_divergent_subgraphs)
+    monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', '0.01')
+    m = (ModelBuilder('k3 guard', n_populations=0)
+         .physical_field('p', spatial_dim=1)
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('c', default=0.3, domain='real')
+         .parameter('T', default=1.0, domain='positive')
+         .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='-c*p^2')
+         .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)+c*p^2)-T*pt^2')
+         .operator_ir().boundary('infinite').initial('stationary').build())
+    pts = np.array([[[0.0, 0.0], [0.5, 0.4]], [[1.0, 0.0], [-0.5, 0.4]]])
+    with pytest.raises(SpatialMemoryBudgetError, match='chamber'):
+        compute_cumulants(m, k=3, max_ell=1, spatial_points=pts,
+                          use_cache=False, parallel=False, verbose=False,
+                          external_fields=[('p', 1)] * 3)
+    recs = [r for r in _records('pt*(Dt(p)+mu*p-D*Lap(p)-c*Lap(p^2))-T*pt^2',
+                                2, 1, rhs='c*Laplacian*p^2')
+            if r[1] is not None and not uv_divergent_subgraphs(r[0], 2)]
+    dd, ff = recs[0]
+    with pytest.raises(SpatialMemoryBudgetError, match='chamber'):
+        FI.diagram_kinematic(dd, [0.8], FI.external_times_2pt(dd, 0.5), 1.0,
+                             1.0, spatial_dim=2, formfactor=ff)
