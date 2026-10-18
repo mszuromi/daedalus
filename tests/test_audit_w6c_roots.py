@@ -103,3 +103,26 @@ def test_unstable_selection_is_refused_by_name(s):
         with pytest.raises(AnalyzerError, match='G2_UNSTABLE_SADDLE'):
             compute_cumulants(_cubic(s), k=2, max_ell=0, external_fields=[('x', 1)] * 2,
                               tau_grid=np.array([0.0]), fixed_point_index=2, **RUN)
+
+
+def test_voltage_and_spike_only_forms_select_the_same_stable_saddle():
+    """One two-neuron exponential Hawkes model written with its voltage
+    (``vstar`` a compound saddle, negative at the stable root) and without it:
+    both select the stable low-rate saddle by default (the voltage form took
+    the unstable upper root once the voltage was searched as an unknown on
+    its non-negative box; the iteration saddles are the unknowns again)."""
+    import tests.test_conv_leg_operator_hawkes as H
+    rates = []
+    for mk in (H.voltage_form, H.spike_only_form):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            r = compute_cumulants(mk(2, H.SYM), k=1, max_ell=0, external_fields=[('n', 1)],
+                                  tau_grid=np.array([0.0]), preflight=False, **RUN)
+        rates.append(r['mf_values']['nstar'])
+        if 'vstar' in r['mf_values']:
+            # v* = Em + 2 w n*  and  n* = a exp(v*)  (SYM: Em -1.5, w 0.4, a 1)
+            v = r['mf_values']['vstar'][0]
+            assert v == pytest.approx(-1.5 + 0.8 * rates[-1][0], rel=1e-14)
+            assert rates[-1][0] == pytest.approx(np.exp(v), rel=1e-14)
+    assert rates[0] == pytest.approx(rates[1], rel=1e-14)
+    assert rates[0][0] == pytest.approx(0.278907892527, rel=1e-11)

@@ -1101,7 +1101,7 @@ def solve_mean_field_dae(
         verbose: bool = False,
         rng_seed: int = 0,
         ns=None,
-        _reduced: bool = False,
+        _reduced: Optional[bool] = None,
 ) -> dict:
     """Solve the mean-field system of a model: the ``Dt -> 0`` limit of its
     ``ModelBuilder.equation(...)`` rows, or, for a model declared with
@@ -1178,7 +1178,18 @@ def solve_mean_field_dae(
                 "solve_mean_field_dae: the model declares no "
                 ".equation(...) rows; its .set_mf_equation(...) saddle "
                 "equations need the FieldTheory namespace (ns=).")
-        system = _saddle_system(model, fundamental, ns, reduced=_reduced)
+        # The iteration (closure) saddles are the unknowns when the others
+        # can be substituted -- the former iteration solver's system: a
+        # compound saddle (a voltage, often negative, with no declared
+        # domain) then neither enters the seed box nor the root order, and a
+        # model written with or without its voltage selects the same root
+        # (audit W6).  The full system otherwise, or when this finds none.
+        system = None
+        if _reduced is not False:
+            system = _saddle_system(model, fundamental, ns, reduced=True)
+        used_reduced = system is not None
+        if system is None:
+            system = _saddle_system(model, fundamental, ns, reduced=False)
         state_vars, slices, R, expanded, keys, extras = system
     total = sum(size for _, _, size in state_vars)
 
@@ -1283,15 +1294,13 @@ def solve_mean_field_dae(
     deduped = deduped + [mirror_only[q] for q in mo]
     root_errs = list(root_errs) + [mirror_only_e[q] for q in mo]
 
-    if not deduped and not model.get('equations') and not _reduced and (
-            _saddle_system(model, fundamental, ns, reduced=True) is not None):
-        # the iteration saddles alone (compound ones substituted): their
-        # roots do not depend on where a compound saddle lies
+    if not deduped and not model.get('equations') and used_reduced:
+        # nothing for the iteration saddles alone: the full system
         return solve_mean_field_dae(
             model, fundamental, n_starts=n_starts,
             fixed_point_index=fixed_point_index, seed_box=seed_box,
             rtol=rtol, atol=atol, verbose=verbose, rng_seed=rng_seed, ns=ns,
-            _reduced=True)
+            _reduced=False)
     if not deduped:
         raise ValueError(
             f"solve_mean_field_dae: no MF fixed point found from "

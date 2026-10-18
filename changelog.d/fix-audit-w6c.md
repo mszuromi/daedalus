@@ -16,6 +16,13 @@
   model selects the same root as before and the zoo is unchanged (bit-identical; dendritic_quad_soma_sigmoid
   1.5e-16, run-to-run scatter); `reaction_diffusion_2d` and `reaction_diffusion_quadratic_1d` list their unstable
   negative root second (2 saddles instead of 1). Tests that selected by the ascending order were updated.
+- **`.set_mf_equation` models: the iteration saddles are the unknowns again** (the compound ones substituted),
+  the full system only when that finds no root. Since the W6 single solver the full system was searched first, so
+  a compound saddle with no declared domain (a voltage, negative at the stable root) was seeded on its
+  non-negative box: a two-neuron exponential Hawkes model written with its voltage selected the unstable upper
+  rate (n* 3.407 vs the stable 0.2789) while its spike-only twin selected the stable one. Both select 0.2789
+  again (the pre-W6 root). Tracked `.set_mf_equation` models: same roots, saddles still at round-off (50-digit
+  check), C(tau) within 1.5e-16 of main.
 - **An unstable selected root is refused by name** with the analyzer off (`preflight=False`):
   `UnstableSaddleError` names the stable indices (it surfaced as `PoleFreePropagatorError`). With the analyzer on,
   `G2_UNSTABLE_SADDLE` refuses it as before.
