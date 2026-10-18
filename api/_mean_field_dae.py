@@ -1332,6 +1332,13 @@ def solve_mean_field_dae(
 
     all_root_records = []
     rec_errs = {}           # id(record) -> its error estimates
+    if stab_on and mirror_only:
+        # the stable subset is ordered ascending over every root, whichever
+        # search reached it (the order does not depend on the units)
+        asc = sorted(range(len(deduped)),
+                     key=lambda q: float(deduped[q][first_start]))
+        deduped = [deduped[q] for q in asc]
+        root_errs = [root_errs[q] for q in asc]
     if stab_on:
         for x, xe in zip(deduped, root_errs):
             rd = _build_root_dict(x)
@@ -1364,7 +1371,7 @@ def solve_mean_field_dae(
         # callers can distinguish "not classified" from "classified
         # unstable".  Where the linearization decides (``.equation`` rows
         # with Dt terms, no kernels), the linearly stable roots come first
-        # (each group ascending): the default fixed_point_index = 0 is then a
+        # (each group nearest to 0 first): the default fixed_point_index = 0 is then a
         # stable root whenever one exists, whatever the roots' order on the
         # axis (audit W6: the units decided which root was found, and so
         # which one index 0 was).
@@ -1380,8 +1387,18 @@ def solve_mean_field_dae(
                 except Exception:                        # noqa: BLE001
                     pass
         if stable_first:
-            asc = sorted(range(len(deduped)),
-                         key=lambda q: float(deduped[q][first_start]))
+            # each group nearest to 0 first (ties ascending): invariant under
+            # a change of the field's units, and the root the old search
+            # (seeded on x >= 0 from 0) reached first stays first
+            import functools
+
+            def _cmp(p, q):
+                a = float(deduped[p][first_start])
+                b = float(deduped[q][first_start])
+                if abs(abs(a) - abs(b)) > 1e-9 * max(abs(a), abs(b)):
+                    return -1 if abs(a) < abs(b) else 1
+                return (a > b) - (a < b)        # a tie (+-c): ascending
+            asc = sorted(range(len(deduped)), key=functools.cmp_to_key(_cmp))
             order = ([q for q in asc if q in stable_first]
                      + [q for q in asc if q not in stable_first])
         else:

@@ -44,13 +44,13 @@ SCALES = (1e-8, 1e-5, 1.0, 1e5, 1e8)
 LAM = (1.7 - 0.3) * (1.7 + 1.1)        # rate at both stable roots: 3.92
 
 
-def _cubic(s, domain=None):
-    sde = SDE(f'w6c cubic {s:g} {domain}')
+def _cubic(s, domain=None, stability=False):
+    sde = SDE(f'w6c cubic {s:g} {domain} {stability}')
     sde = sde.field('x', domain=domain) if domain else sde.field('x')
-    return (sde.drift('x', '-(x - %r)*(x + %r)*(x - %r)/%r'
-                      % (0.3 * s, 1.1 * s, 1.7 * s, s * s))
-            .noise('xi', Gaussian(var=repr(0.01 * s * s)), couples={'x': 1})
-            .build())
+    sde = (sde.drift('x', '-(x - %r)*(x + %r)*(x - %r)/%r'
+                     % (0.3 * s, 1.1 * s, 1.7 * s, s * s))
+           .noise('xi', Gaussian(var=repr(0.01 * s * s)), couples={'x': 1}))
+    return (sde.stability_analysis(True) if stability else sde).build()
 
 
 def _roots(model):
@@ -67,6 +67,15 @@ def test_roots_and_their_order_scale_exactly(s, domain):
     sel, unsearched = _roots(_cubic(s, domain))
     assert np.allclose(np.array(sel) / s, [-1.1, 1.7, 0.3], rtol=1e-13, atol=0)
     assert unsearched == []
+
+
+@pytest.mark.parametrize('s', SCALES)
+def test_stability_on_orders_the_stable_roots_ascending_at_every_scale(s):
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = solve_mean_field_dae(_cubic(s, stability=True), {})
+    stable = [x['xstar'][0] / s for x in r['mf_stable_roots']]
+    assert np.allclose(stable, [-1.1, 1.7], rtol=1e-13, atol=0)
 
 
 @pytest.mark.parametrize('s', (1e-5, 1.0, 1e5))

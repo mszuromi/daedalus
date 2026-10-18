@@ -8,8 +8,8 @@
   `domain='real'` the root 1.7 s was lost at s >= 1e5: the second-pass seed boxes are now repeated (up to 3
   rounds) for the root scales they discover. The roots, their order and the selection are now identical up to
   the factor s for s = 1e-8 .. 1e8.
-- **`fixed_point_index` with stability analysis off: the linearly stable roots come first** (each group
-  ascending by the first field), wherever the linearization decides (`.equation` rows with `Dt` terms, no
+- **`fixed_point_index` with stability analysis off: the linearly stable roots come first** (each group ordered
+  by the first field's distance from 0, ties ascending; a change of units keeps the order), wherever the linearization decides (`.equation` rows with `Dt` terms, no
   kernels): the default index 0 is a stable root whenever one exists. Before, roots were ascending on the axis, so
   index 0 could be an unstable root. Where the linearization does not decide (kernels, `.set_mf_equation`
   models), the order is unchanged and the roots only the mirrored seeds reach follow the others. Every tracked
