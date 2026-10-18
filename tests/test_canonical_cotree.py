@@ -101,10 +101,10 @@ def test_cotree_filter_rejects_exactly_the_improvable_exchange():
 
 @pytest.mark.parametrize('k,ell', [(3, 1), (2, 2)])
 def test_levelwise_experiment_still_agrees(k, ell):
-    """The (slower) level-wise generator kept in engine/enumeration/orderly.py
+    """The (slower) level-wise generator kept in tests/oracles/orderly.py
     must keep producing the same topologies, so its recorded comparison stays
     meaningful."""
-    from engine.enumeration import orderly as O
+    from tests.oracles import orderly as O
     lw = {L._iso_cert(G) for G, _, _ in O.enumerate_topologies_levelwise(k, ell)}
     ref, _ = _topology_certs(k, ell, 'canonical')
     assert lw == ref

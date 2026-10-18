@@ -37,7 +37,7 @@ from sage.all import (
 
 from engine.diagrams.type_assignment import TypedDiagram
 from engine.core.vertices import VertexType, SourceType
-from engine.integration.symbolic import (
+from tests.oracles.symbolic import (
     build_integrand_stationary,
     group_diagrams_by_kernel,
     integrate_to_time_domain,
@@ -48,8 +48,17 @@ from engine.integration.time_domain import (
     identify_loop_subgraphs,
     integrate_tree_diagram,
     compute_correction_td,
-    eval_delta_contributions_on_tau_grid,
 )
+
+
+def _direct(kernel_groups):
+    """``compute_correction_td`` arguments from ``group_diagrams_by_kernel``
+    output: each diagram with its OWN prefactor (the retired
+    ``kernel_groups=`` input used the group's summed prefactor)."""
+    return dict(
+        typed_diagrams=[td for g in kernel_groups for td in g['diagrams']],
+        prefactors=[pf for g in kernel_groups
+                    for pf in g['individual_prefactors']])
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -450,7 +459,7 @@ def test_phase_J_nondiagonal_2x2_does_not_overflow():
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     assert len(kernel_groups) == 1
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -661,7 +670,7 @@ def test_phase_J_delta_component_asymmetric_cross_correlator():
     assert len(kernel_groups) == 1
 
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -725,8 +734,8 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     produces a pure δ(t₁ - t₂) shot-noise spike at τ = 0. The
     continuous Phase J callable cannot represent this; instead, the
     spike is returned as a structured `delta_contributions` entry
-    that the caller can insert into a discrete τ grid via
-    `eval_delta_contributions_on_tau_grid`.
+    that the caller can insert into a discrete τ grid (``api.cumulant``
+    does so for ``compute_cumulants`` results).
 
     This test:
       1. Runs Phase J on the 2×2 instantaneous fixture, autocorrelator edges.
@@ -764,7 +773,7 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     assert len(kernel_groups) == 1
 
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -799,24 +808,21 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     )
     assert abs(coeff_val.imag) < 1e-12
 
-    # Discretize onto a τ grid and check the spike integrates correctly
+    # Discretize onto a τ grid in the user-facing bin convention
+    # (``api.cumulant``; the old eval_delta_contributions_on_tau_grid
+    # helper is retired) and check the spike integrates correctly
+    from api.cumulant import _bin_deposits
     tau_grid = np.linspace(-5.0, 5.0, 501)
-    spikes = eval_delta_contributions_on_tau_grid(
-        delta_contribs, tau_grid, free_ext_dim=1,
+    deposits = _bin_deposits(tau_grid, float(tau_fire))
+    assert len(deposits) == 1, (
+        f'Expected spike in exactly one bin, got {deposits}'
+    )
+    idx, inv_width = deposits[0]
+    assert abs(tau_grid[idx]) < 1e-10, (
+        f'Spike should be at τ=0, got τ={tau_grid[idx]}'
     )
     dtau = float(tau_grid[1] - tau_grid[0])
-
-    # Most bins should be zero
-    nonzero_idx = np.nonzero(np.abs(spikes) > 1e-10)[0]
-    assert len(nonzero_idx) == 1, (
-        f'Expected spike in exactly one bin, got {len(nonzero_idx)}'
-    )
-    # The nonzero bin should be at τ = 0
-    assert abs(tau_grid[nonzero_idx[0]]) < 1e-10, (
-        f'Spike should be at τ=0, got τ={tau_grid[nonzero_idx[0]]}'
-    )
-    # Bin height × bin width should recover the analytic weight (-2)
-    integrated_weight = complex(spikes[nonzero_idx[0]]) * dtau
+    integrated_weight = coeff_val / abs(a0) * inv_width * dtau
     assert abs(integrated_weight.real - (-2.0)) < 1e-12, (
         f'Integrated δ weight should be -2, got {integrated_weight}'
     )
@@ -936,7 +942,7 @@ def test_phase_J_2d_polytope_decays_at_large_tau():
 
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1412,7 +1418,7 @@ def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
     # when extraction succeeds).
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result_fast = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1491,7 +1497,7 @@ def test_phase_J_total_C_batch_parallel_matches_serial():
 
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1556,7 +1562,7 @@ def test_phase_J_total_C_batch_nested_matches_serial():
 
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1602,7 +1608,7 @@ def _guard_fixture_batch():
     td = _tree_k2_cross_population()
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups, propagator_data=pd, k=2,
+        **_direct(kernel_groups), propagator_data=pd, k=2,
         num_params=None, origin_leaf_idx=1,
     )
     tau_points = [(tv, 0.0) for tv in (-3.0, -1.0, 0.3, 1.0, 3.0, 5.0, 7.0)]
@@ -1699,7 +1705,7 @@ def test_phase_J_k3_star_tree_finite_and_stationary():
     assert kernel_groups[0]['loop_number'] == 0
 
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=3,
         num_params=None,
@@ -1763,7 +1769,7 @@ def test_phase_J_vs_phase_I_linear_hawkes_tree():
 
     j_t1, j_t2 = SR.var('t1'), SR.var('t2')
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,

@@ -121,7 +121,11 @@ def test_bug5_broken_rounded_realization_reaches_g6(monkeypatch):
 
 def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
     from api.analyze import analyze, Question
-    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')        # an unresolved cluster
+    # an unresolved cluster: the exact residue tier fails (until audit W7
+    # the retired DAEDALUS_POLE_CLUSTERS=0 switched the deformation off)
+    import api._propagator as PR
+    monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield',
+                        lambda *a, **k: (None, None, None))
     s = (SDE('bug60 g3 standalone').parameter('a', default=1.0)
          .parameter('D', default=0.1, domain='positive').field('x').field('y')
          .equation('x', lhs='Dt*x + a*x', rhs='0.5*y - 0.1*x^2')
@@ -139,6 +143,10 @@ def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
                                                           external_fields=ext)).findings
              if f.code.startswith('G3')}
     assert inrun.get('G3_POLE_CLUSTER_UNRESOLVED') == 'info'
+    # the patch reaches the run's residue tier only (the standalone analyzer
+    # takes its poles from its own exact analysis, where the cluster
+    # resolves): every other G3 verdict is the same
+    del inrun['G3_POLE_CLUSTER_UNRESOLVED']
     assert alone == inrun
 
 

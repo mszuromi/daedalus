@@ -227,25 +227,13 @@ def test_derivative_atoms_per_atom_taylor_is_exact_in_one_variable():
 
 
 def test_derivative_atom_of_several_field_variables_is_refused_by_name():
-    """A derivative atom the univariate form cannot take (several field variables, or the legacy
-    whole-action route) raises ``DerivativeAtomTaylorError`` instead of a truncated expansion."""
+    """A derivative atom the univariate form cannot take (several field variables, or the
+    whole-action ``taylor()`` route) raises ``DerivativeAtomTaylorError`` instead of a truncated expansion."""
     f, g = function('f39b'), function('g39b')
     x, y = var('x39b', 'y39b')
     for e in (y * f(x + y).diff(x), g(x, y).diff(x)):
         with pytest.raises(F.DerivativeAtomTaylorError):
             F._taylor_action(e, [x, y], 3)
-    import os
-    old = os.environ.get('DAEDALUS_EXPAND_LEGACY')
-    os.environ['DAEDALUS_EXPAND_LEGACY'] = '1'
-    try:
-        with pytest.raises(F.DerivativeAtomTaylorError):
-            F._taylor_action(x * f(x).diff(x), [x], 3)
-        F._taylor_action(x * f(x), [x], 3)            # no derivative atom: legacy as before
-    finally:
-        if old is None:
-            os.environ.pop('DAEDALUS_EXPAND_LEGACY')
-        else:
-            os.environ['DAEDALUS_EXPAND_LEGACY'] = old
 
 
 # ── 3. a delta inside the heaviside product of a causal kernel ───────────────────────────────

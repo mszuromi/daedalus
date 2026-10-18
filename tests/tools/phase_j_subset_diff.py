@@ -11,12 +11,11 @@ What it does
    and ``parallel=False`` (a hook set in this process never sees calls made in
    forked ``total_C_batch`` workers).  Every (diagram build, δ-subset,
    free_ext_vals, Wick permutation) evaluation of the per-diagram dispatch
-   (``integrate_diagram``) and of the grouped dispatch
-   (``integrate_grouped_diagram``) becomes one record: m, constraint rows,
+   (``integrate_diagram``) becomes one record: m, constraint rows,
    free_ext_vals, which path answered (``m0``/``m1``/``polygon``/``poset``/
    ``dbm`` (M3: the exact route after a poset bail)/``nquad``;
-   ``plan``/``noplan``/``grouped`` branch; ``per_diagram``/
-   ``grouped`` source), the fine-grained bail reason when an analytic path
+   ``plan``/``noplan`` branch; ``per_diagram`` source; the retired grouped
+   dispatch recorded ``grouped``), the fine-grained bail reason when an analytic path
    returned ``None``, the value, prefactor, pole/residue summary, and the Wick
    context (external times, perm index, compensation).
 2. **Reconstruction check.**  Σ value / compensation over the records of the
@@ -41,8 +40,8 @@ What it does
             Exact nested bounds; breakpoints at the external times (0 and
             free_ext_vals) and at every vertex projection of the slice
             polytope (this covers the chain top).  ``scale`` =
-            |prefactor| · Π_e Σ_k |C_e,k| (per-diagram) or Σ_α |B_α|
-            (grouped), i.e. the integrand bound for Δt ≥ 0; 1.0 when the
+            |prefactor| · Π_e Σ_k |C_e,k| (per-diagram; Σ_α |B_α| for merged
+            pole tuples), i.e. the integrand bound for Δt ≥ 0; 1.0 when the
             subset has no pole data (non-rational kernels).
    ``b``    the same on the ±12 box.
    ``c``    m=2 only: 50-digit mpmath fan formula (anchored at the
@@ -71,10 +70,9 @@ What it does
    code SHOULD return.  Every constant row is also given production's
    ``final_integral._const_row_decision``; a different verdict is recorded
    in ``RULE_DIVERGENCES`` / ``ref_meta['rule_divergences']`` and reported
-   (the references keep the harness's own verdict).  Under
-   ``THETA0_CONST_ROW_MODE = 'legacy_clip'`` the production m=2 polygon
-   keeps zero-valued rows (Θ(0) = 1, plan P1), so disagreements on m=2
-   subsets with a constant row are EXPECTED in that mode.
+   (the references keep the harness's own verdict).  (Under the
+   'legacy_clip' Θ(0) mode, retired in audit W7, the production m=2
+   polygon kept zero-valued rows, Θ(0) = 1, plan P1.)
 4. **Disagreement table**: |value - ref| > max(1e-8·|ref|, 1e-14), grouped by
    (reference, m, bail reason / answering path, row kind), plus the
    ``_RUNTIME_COUNTERS`` snapshot (``nquad_calls`` = entries into the
@@ -89,8 +87,7 @@ What it does
    levels (``--stub-level``, ``run(stub_level=...)``):
 
    ``entry`` (default; the level of the M0/M1 censuses) replaces
-            ``_integrate_polytope`` itself (in final_integral AND
-            grouped_integral, which imports it by name); m=0 passes through
+            ``_integrate_polytope`` itself (in final_integral); m=0 passes through
             (a direct evaluation, not quadrature).  The stubbed calls never
             reach the real entry, so ``nquad_calls`` and
             ``scipy_nquad_called_*`` stay 0; they are in ``stub_calls`` (by
@@ -98,9 +95,10 @@ What it does
    ``quadrature`` keeps the real entry -- its constant-row verdicts and the
             M2a structural-zero test (``polytope_empty_cycle``) run and are
             counted -- and replaces only the quadrature routines it
-            dispatches to (``_integrate_1d_polytope``, ``_integrate_2d_polytope``,
-            ``_integrate_nd_polytope`` and, with ``NQUAD_HARDENED`` on,
-            ``_integrate_polytope_hardened``).  ``stub_calls`` (by m) then counts
+            dispatches to (``_integrate_polytope_hardened`` and the
+            default-tolerance ``_integrate_1d_polytope``,
+            ``_integrate_2d_polytope``, ``_integrate_nd_polytope`` it falls
+            back to).  ``stub_calls`` (by m) then counts
             the entries that would have reached scipy quadrature (some of them
             still return early inside those routines, e.g. on crossed scalar
             bounds), and ``nquad_calls`` counts every m>=1 entry as usual.
@@ -108,8 +106,9 @@ What it does
    Phase J fixtures (``tests/phase_j_refactor_fixtures``) between the
    current code and both the frozen ``.npz`` and the ``legacy/`` copies
    (absent until the M0.3 step creates them; reported as missing), per
-   probe too.  ``mode='legacy'`` (CLI ``--fixture-mode legacy|both``)
-   evaluates under the legacy umbrella's flags, set in-process.
+   probe too.  (The ``mode='legacy'`` that evaluated under the legacy
+   umbrella's flags went with the umbrella in audit W7: the ``legacy/``
+   copies are frozen history.)
 
 Provenance: ``run()`` records in ``config['diagram_sources']`` where every
 (k, ell) diagram list came from -- the typed-diagram cache
@@ -145,8 +144,7 @@ CLI examples (repo root)::
         --k 4 --max-ell 1 --points '0,0.3,0.6,0.9;0,0.5,0.5,0.5' \\
         --fields dx:1,dx:1,dx:1,dx:1 \\
         --params '{"mu": 1.0, "D": 1.0, "eps": 0.02}'
-    sage -python -m tests.tools.phase_j_subset_diff --fixture-report \\
-        --fixture-mode both          # current defaults AND legacy umbrella
+    sage -python -m tests.tools.phase_j_subset_diff --fixture-report
 
 ``--model-file path/to/file.py:builder`` loads a model from any file instead
 of ``--model``.
@@ -207,11 +205,6 @@ FIXTURE_NAMES = ('spike_reset_k1_ell1', 'spike_reset_k2_ell0',
 def _fi():
     import engine.integration.time_domain.final_integral as FI
     return FI
-
-
-def _gi():
-    import engine.integration.time_domain.grouped_integral as GI
-    return GI
 
 
 def _zero_normal(a_int):
@@ -348,7 +341,7 @@ def installed_hook(hook):
 
 STUB_LEVELS = ('entry', 'quadrature')
 # final_integral's quadrature routines behind ``_integrate_polytope`` (m >= 1):
-# the pre-M2b ones and, with ``NQUAD_HARDENED`` (M2b), the hardened one.
+# the hardened one (M2b) and the pre-M2b ones it falls back to.
 _QUADRATURE_ROUTINES = {'_integrate_1d_polytope': 1,
                         '_integrate_2d_polytope': 2,
                         '_integrate_nd_polytope': None,
@@ -391,7 +384,7 @@ class NquadStub:
 
     @contextlib.contextmanager
     def installed(self):
-        FI, GI = _fi(), _gi()
+        FI = _fi()
         if self.level == 'quadrature':
             saved = {n: getattr(FI, n) for n in _QUADRATURE_ROUTINES}
             for n in _QUADRATURE_ROUTINES:
@@ -402,14 +395,12 @@ class NquadStub:
                 for n, f in saved.items():
                     setattr(FI, n, f)
             return
-        self._orig = FI._integrate_polytope
-        saved = (FI._integrate_polytope, GI._integrate_polytope)
+        self._orig = saved = FI._integrate_polytope
         FI._integrate_polytope = self
-        GI._integrate_polytope = self
         try:
             yield self
         finally:
-            FI._integrate_polytope, GI._integrate_polytope = saved
+            FI._integrate_polytope = saved
 
 
 def _grid_point(k, t, lag0):
@@ -476,7 +467,7 @@ def recorded_diagram_sources():
 
 
 def run(model, *, k, max_ell, external_fields, parameters=None,
-        tau_grid=None, points=None, use_grouped_phase_j=False,
+        tau_grid=None, points=None,
         stub_nquad=False, keep_live=True, compute_kwargs=None, label=None,
         stub_level='entry'):
     """Run ``compute_cumulants`` with the hook installed and return a run
@@ -502,8 +493,7 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
     rec = SubsetRecorder(keep_live=keep_live)
     stub = NquadStub(stub_level) if stub_nquad else None
     kw = dict(k=k, max_ell=max_ell, external_fields=list(external_fields),
-              use_cache=True, verbose=False,
-              use_grouped_phase_j=use_grouped_phase_j)
+              use_cache=True, verbose=False)
     if parameters is not None:
         kw['parameters'] = parameters
     if tau_grid is not None:
@@ -554,7 +544,6 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
             else [float(t) for t in tau_grid],
             'points': None if points is None
             else [tuple(map(float, p)) for p in points],
-            'use_grouped_phase_j': use_grouped_phase_j,
             'stub_nquad': stub_nquad,
             'stub_level': stub_level if stub_nquad else None,
             'ito_eps': _ITO_EPS,
@@ -1130,7 +1119,6 @@ def format_report(run_, *, max_worst=15):
     cfg = run_['config']
     lines.append(f"== phase_j_subset_diff: {run_.get('label') or ''}  "
                  f"k={cfg['k']} max_ell={cfg['max_ell']} "
-                 f"grouped={cfg['use_grouped_phase_j']} "
                  f"stub_nquad={cfg['stub_nquad']}  wall={run_['wall']:.1f}s  "
                  f"records={len(run_['records'])}")
     c = run_['counters']
@@ -1264,29 +1252,17 @@ def save(run_, out_prefix):
 
 @contextlib.contextmanager
 def phase_j_flags(mode='default'):
-    """Set the Phase J flags in-process for the duration of the block.
-
-    ``'default'`` leaves the module attributes as they are; ``'legacy'``
-    applies what ``DAEDALUS_PHASE_J_LEGACY=1`` selects -- every flag the
-    umbrella sets, the box-free switches included since they became the
-    default (``final_integral._legacy_umbrella_flags``).  The flags are read
-    at call time, so this takes effect at once; restored on exit.
-    """
+    """The Phase J flags for a block: ``'default'`` leaves the module as it
+    is.  (``'legacy'``, the flags of ``DAEDALUS_PHASE_J_LEGACY=1``, was
+    retired with the umbrella in audit W7 and raises.)"""
     if mode == 'default':
         yield {}
         return
-    if mode != 'legacy':
-        raise ValueError(f"mode must be 'default' or 'legacy', got {mode!r}")
-    FI = _fi()
-    flags = FI._legacy_umbrella_flags()
-    saved = {k: getattr(FI, k) for k in flags}
-    try:
-        for k, v in flags.items():
-            setattr(FI, k, v)
-        yield flags
-    finally:
-        for k, v in saved.items():
-            setattr(FI, k, v)
+    if mode == 'legacy':
+        raise ValueError("mode='legacy' is retired (audit W7): the "
+                         'pre-0.2.0 routes are gone; the legacy/ fixture '
+                         'copies are frozen history')
+    raise ValueError(f"mode must be 'default', got {mode!r}")
 
 
 def fixture_delta_report(names=None, *, verbose=True, mode='default'):
@@ -1294,10 +1270,8 @@ def fixture_delta_report(names=None, *, verbose=True, mode='default'):
     the frozen ``.npz`` and vs ``legacy/<name>.npz`` (reported 'missing'
     when that copy does not exist yet).
 
-    ``mode='legacy'`` evaluates under the legacy umbrella's flags (set
-    in-process, see ``phase_j_flags``): the pre-change numbers, which must
-    reproduce the ``legacy/`` copies.  With ``verbose`` the per-probe values
-    are printed as well."""
+    ``mode``: see ``phase_j_flags`` ('default' only since audit W7).  With
+    ``verbose`` the per-probe values are printed as well."""
     from tests.phase_j_refactor_fixtures._configs import FIXTURES
     from tests.phase_j_refactor_fixtures._runner import evaluate, fixture_path
     names = tuple(names or FIXTURE_NAMES)
@@ -1373,7 +1347,6 @@ def main(argv=None):
                          'also given')
     ap.add_argument('--fields', help="e.g. 'dx:1,dx:1'")
     ap.add_argument('--params', default=None, help='JSON dict')
-    ap.add_argument('--grouped', action='store_true')
     ap.add_argument('--stub-nquad', action='store_true')
     ap.add_argument('--stub-level', default='entry', choices=list(STUB_LEVELS),
                     help="what --stub-nquad replaces: 'entry' "
@@ -1388,18 +1361,11 @@ def main(argv=None):
     ap.add_argument('--out', default=None, help='output prefix (no ext)')
     ap.add_argument('--fixture-report', action='store_true')
     ap.add_argument('--fixtures', default=None, help='comma list of names')
-    ap.add_argument('--fixture-mode', default='default',
-                    choices=['default', 'legacy', 'both'],
-                    help="flags for --fixture-report: the current defaults, "
-                         "the legacy umbrella's (in-process), or both")
     args = ap.parse_args(argv)
 
     if args.fixture_report:
-        modes = (('default', 'legacy') if args.fixture_mode == 'both'
-                 else (args.fixture_mode,))
-        for mode in modes:
-            fixture_delta_report(args.fixtures.split(',') if args.fixtures
-                                 else None, mode=mode)
+        fixture_delta_report(args.fixtures.split(',') if args.fixtures
+                             else None)
         return 0
     if not (args.model or args.model_file) or not args.fields:
         ap.error('--model or --model-file, and --fields, are required')
@@ -1416,7 +1382,6 @@ def main(argv=None):
                external_fields=_parse_fields(args.fields),
                parameters=json.loads(args.params) if args.params else None,
                tau_grid=taus, points=points,
-               use_grouped_phase_j=args.grouped,
                stub_nquad=args.stub_nquad, label=label,
                stub_level=args.stub_level)
     kinds = tuple(x for x in args.refs.split(',') if x)
@@ -1428,7 +1393,6 @@ def main(argv=None):
     out = args.out or os.path.join(
         DEFAULT_OUT_DIR,
         f"{label}_k{args.k}_l{args.max_ell}"
-        f"{'_grouped' if args.grouped else ''}"
         f"{'_stub' if args.stub_nquad else ''}_{time.strftime('%Y%m%d-%H%M%S')}")
     paths = save(run_, out)
     print('wrote', *paths)

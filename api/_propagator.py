@@ -22,7 +22,7 @@ import math
 import re
 
 from sage.all import (
-    SR, matrix, dirac_delta, diff, oo, limit as _sage_limit,
+    SR, matrix, dirac_delta, diff, oo,
     QQ, RR, CDF, PolynomialRing, CyclotomicField,
 )
 
@@ -183,7 +183,7 @@ def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
                    f'{exc!s:.120})')
     if cluster_out is not None:
         cluster_out['analysis'] = an
-    if an.nominal is None or an.status == 'disabled' or (
+    if an.nominal is None or (
             an.status == 'unresolved' and an.jordan):
         return None
     pole_vals, C_mats = an.nominal

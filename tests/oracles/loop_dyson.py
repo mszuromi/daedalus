@@ -3,8 +3,11 @@
 (see ``docs/spatial_pipeline.md``); reached only by its own test(s).  Kept as an
 independent numerical cross-check — ``compute_cumulants`` does NOT use this module.
 
-engine.integration.spatial.loop_dyson
-====================================
+tests.oracles.loop_dyson
+========================
+Test-only reference (was ``engine.integration.spatial.loop_dyson``; moved out of
+the library in audit W7: no production module imports it).
+
 1-loop Dyson assembly for the spatial bubble (Stage C.5) — turns the
 momentum-first self-energies (``loop_parametric``) into the dressed
 correlator correction.

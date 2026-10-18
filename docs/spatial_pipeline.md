@@ -90,12 +90,12 @@ and the back half diverges into the integrator instead of the ω-domain Phase J.
 | `msrjd/integration/spatial/diagram_descriptor.py` | `diagram_to_cstack(td)` — typed diagram → C-stack (contract noise sources, classify edges). |
 | `msrjd/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator: analytic-IFT vs numerical-FT gate, the memory guard, the `SPATIAL_INTEGRATOR` backend switch), `_formfactor_callable` + `_build_wick_moment` (the joint-`(ℓ,q)` Wick form-factor moment → `ff.moment_x`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
 | `pipeline/compute.py` | `compute_cumulants` spatial branch + the `q→x` transforms. |
-| `msrjd/integration/spatial/spatial_reduce.py` | Symanzik U/F polynomials. |
 
-**Oracle-only (NOT on the production path)**, kept as independent cross-checks:
-`loop_dyson.py`, `generic_evaluator.py`, `loop_parametric.py`, `temporal_integrate.py`.
-These predate `full_integrator` and are reached only by their own tests — see their module
-headers.
+**Oracle-only (NOT on the production path)**, kept as independent cross-checks in
+`tests/oracles/` (moved out of the library in audit W7): `loop_dyson.py`,
+`generic_evaluator.py`, `loop_parametric.py`, `temporal_integrate.py`, `spatial_reduce.py`
+(Symanzik U/F polynomials). These predate `full_integrator` and are reached only by their own
+tests — see their module headers.
 
 ## Supported scope
 
@@ -284,7 +284,7 @@ tens of GB → OOM. Controls (all in `compute_cumulants`/the bridge via env or `
 
 | Backend / knob | Effect |
 |---|---|
-| **memory guard** (always on) | estimates the worst chamber's `(P, n_x)` allocation up front; raises `SpatialPropagatorError` with the `n_V/n_C/P` numbers if it exceeds `SPATIAL_MEM_BUDGET_GB` (default 6) — ℓ≥2 can **never silently OOM-crash**. |
+| **memory guard** (always on) | estimates the worst chamber's `(P, n_x)` allocation up front; raises `SpatialPropagatorError` with the `n_V/n_C/P` numbers if it exceeds `SPATIAL_MEM_BUDGET_GB` (a positive number of GB, or `off` for no limit; `0` / negative values are refused; unset: the RAM-aware default of at most 6 GB) — ℓ≥2 can **never silently OOM-crash**. |
 | `SPATIAL_INTEGRATOR=grid` (default) | deterministic causal-chamber product quadrature — the validated path; **bit-identical** regardless of the other knobs. |
 | `SPATIAL_INTEGRATOR=mc` (+ `SPATIAL_MC_N`, default 1e6) | importance-sampled Monte-Carlo (`diagram_kinematic(method='mc')`): nested `Exp(μ)` time-gaps + `Exp(μ)` σ's; bounded memory, `O(1/√N)`. **Validated <0.1% for PLAIN φⁿ vertices** (the feasible ℓ=2 path for Allen-Cahn/RD where the grid OOMs); **BIASED for derivative vertices** (the `det M→0` loop-degeneracy singularity → infinite variance). |
 | `SPATIAL_GRID_NT` / `SPATIAL_GRID_NS` | coarsen the loop grid (accuracy tradeoff — validate vs the simulator). |

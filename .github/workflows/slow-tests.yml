@@ -2,7 +2,7 @@ name: slow-tests
 
 # The tests marked `slow` (pytest.ini deselects them from the default suite and from tests.yml):
 # weekly and on demand, in three shards (test files dealt round-robin, so a shard is a fixed set
-# of whole files).  The two `bigmem` tests (> 12 GB footprint) run only when asked, in a job of
+# of whole files).  The `bigmem` test (> 12 GB footprint) runs only when asked, in a job of
 # their own (a standard runner has 16 GB). Same cached conda environment as tests.yml.
 on:
   workflow_dispatch:

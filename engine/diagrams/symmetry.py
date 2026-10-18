@@ -38,7 +38,6 @@ expansion of the action.
 Build Phase G.
 """
 
-import os as _os
 import sys as _sys
 import threading as _threading
 from collections import Counter
@@ -48,72 +47,10 @@ from operator import mul
 
 from sage.all import SR
 
+from engine import _env
+
 
 # ── Combinatorial factor ────────────────────────────────────────────────────
-
-def _vertex_combinatorial_factor(vertex, typed_diagram):
-    """
-    Count the number of response-leg permutations at *vertex* that
-    preserve the same typed diagram.
-
-    Each external leaf is treated as a UNIQUE endpoint (distinguished
-    by its position in the prediagram leaf list), because different
-    leaf positions correspond to different spacetime points.  Internal
-    (non-leaf) targets are identified by their (resp, phys) field-type
-    pairing as before.
-
-    M_v = [∏_r  n_r! / ∏_t n[r][t]!]  ×  [∏_t  m_t!]
-
-    where t ranges over unique targets (leaf positions for external
-    edges, (resp, phys) field types for internal edges).
-
-    Parameters
-    ----------
-    vertex : hashable
-        Vertex id within the typed diagram.
-    typed_diagram : TypedDiagram
-
-    Returns
-    -------
-    int
-        Per-vertex combinatorial factor (always >= 1).
-    """
-    edge_types = typed_diagram.edge_types
-
-    # Collect (resp_type, phys_type) for every outgoing edge from vertex.
-    # M counts response-leg permutations that preserve the (resp, phys)
-    # field-type pairing — i.e. within-vertex Wick contractions that
-    # give the same integrand by commutativity.
-    pairings = []
-    for edge_key, (resp_leg, phys_leg) in edge_types.items():
-        u = edge_key[0]
-        if u == vertex:
-            pairings.append((resp_leg, phys_leg))
-
-    if not pairings:
-        return 1
-
-    # n_r: total count of each response type
-    resp_counts = Counter(r for r, t in pairings)
-    # n[r][t]: count of each (resp, target) pairing
-    pair_counts = Counter(pairings)
-    # m_t: count of each target across outgoing edges
-    target_counts = Counter(t for r, t in pairings)
-
-    m = 1
-    # ∏_r [ n_r! / ∏_t n[r][t]! ]
-    for r, n_r in resp_counts.items():
-        m *= factorial(n_r)
-        for t in target_counts:
-            n_rt = pair_counts.get((r, t), 0)
-            if n_rt > 1:
-                m //= factorial(n_rt)
-    # ∏_t m_t!
-    for m_t in target_counts.values():
-        m *= factorial(m_t)
-
-    return m
-
 
 def _wick_leg_factor(typed_diagram):
     """
@@ -334,9 +271,9 @@ def vertex_role_signature(vertex, typed_diagram):
 # group is built from scratch each time.  The memo returns the value the first
 # call computed, so nothing changes: a hit is bit-identical by construction.
 #
-# ``USE_AUT_MEMO`` (bool, read at call time); environment
-# ``DAEDALUS_SETUP_AUT_MEMO`` = 1 | 0 (default 1); the umbrella
-# ``DAEDALUS_PHASE_J_LEGACY_SETUP=1`` forces it off.  Key: the diagram's
+# Always on (its switches, ``USE_AUT_MEMO`` / ``DAEDALUS_SETUP_AUT_MEMO`` and
+# the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP``, were retired in audit W7:
+# set, each warns once and is ignored).  Key: the diagram's
 # ``id`` and ``fix_external``; the VALUE holds the diagram object itself, so
 # its ``id`` cannot be reused while the entry lives (a hit also checks
 # ``entry diagram is diagram`` and a fingerprint of the diagram's containers,
@@ -351,32 +288,11 @@ _AUT_LOCK = _threading.Lock()
 _AUT_MISS = object()
 
 
-def _initial_aut_memo_flag(environ=None):
-    """The import-time value of ``USE_AUT_MEMO`` from ``environ`` (default
-    ``os.environ``).  An unknown value raises."""
-    env = _os.environ if environ is None else environ
-    v = env.get('DAEDALUS_SETUP_AUT_MEMO', '').strip().lower()
-    if v in ('', '1', 'true', 'yes', 'on'):
-        return True
-    if v in ('0', 'false', 'no', 'off'):
-        return False
-    raise ValueError(f'DAEDALUS_SETUP_AUT_MEMO={v!r}: expected 1 or 0')
-
-
-USE_AUT_MEMO = _initial_aut_memo_flag()
-
-
-def _aut_memo_on():
-    """``USE_AUT_MEMO`` (call time, validated) unless the umbrella
-    ``DAEDALUS_PHASE_J_LEGACY_SETUP`` is set."""
-    if (_os.environ.get('DAEDALUS_PHASE_J_LEGACY_SETUP', '').strip().lower()
-            not in ('', '0', 'false', 'no', 'off')):
-        return False
-    flag = USE_AUT_MEMO
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'symmetry.USE_AUT_MEMO={flag!r}: '
-                     f'expected True or False')
+_env.retired('DAEDALUS_SETUP_AUT_MEMO',
+             'the automorphism-order memo is always on (audit W7)')
+_env.retired('DAEDALUS_PHASE_J_LEGACY_SETUP',
+             'the fast setup path is the only one; it gives the same numbers '
+             '(audit W7)')
 
 
 def _aut_count(name):
@@ -408,10 +324,8 @@ def _automorphism_order(typed_diagram, fix_external=True):
     convention used by Phase J, where the external Wick permutations
     are handled separately by the per-prediagram enumeration loop).
 
-    Memoised per ``(diagram, fix_external)`` (``USE_AUT_MEMO``, see above).
+    Memoised per ``(diagram, fix_external)`` (see above).
     """
-    if not _aut_memo_on():
-        return _automorphism_order_uncached(typed_diagram, fix_external)
     try:
         key = (id(typed_diagram), bool(fix_external))
         fp = _aut_fingerprint(typed_diagram)

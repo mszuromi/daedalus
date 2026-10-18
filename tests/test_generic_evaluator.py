@@ -28,13 +28,13 @@ from sage.all import SR
 import importlib.util
 
 from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-from engine.integration.spatial.generic_evaluator import (
+from tests.oracles.generic_evaluator import (
     loop_self_energy, bubble_delta_C, tadpole_delta_C,
 )
-from engine.integration.spatial.temporal_integrate import (
+from tests.oracles.temporal_integrate import (
     sigma_parametric, bubble_edges,
 )
-from engine.integration.spatial import loop_dyson
+from tests.oracles import loop_dyson
 from engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )

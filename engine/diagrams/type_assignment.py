@@ -369,38 +369,6 @@ def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
                        dict(ext_assignment), prop_indices)
 
 
-def _try_build_diagram(prediagram, edges, ext_assignment, vert_assignment,
-                        ordered_internal, leaf_set, leaf_directions,
-                        out_edges_of, in_edges_of,
-                        G_ft, resp_index, phys_index,
-                        g_zero_mask=None):
-    """
-    Given fixed external and vertex-type assignments, enumerate all valid
-    leg matchings and check propagator consistency.
-
-    For each internal vertex, enumerate all bijections from the vertex
-    type's legs to its incident edges.  Use backtracking with early
-    propagator checks.
-    """
-    # Precompute leg matching options per internal vertex
-    per_vertex_options = []
-    for v in ordered_internal:
-        vtype = vert_assignment[v]
-        options = list(_leg_matchings(vtype, out_edges_of[v], in_edges_of[v]))
-        if not options:
-            return
-        per_vertex_options.append(options)
-
-    # Backtrack over vertices
-    yield from _backtrack(
-        prediagram, edges, ext_assignment, vert_assignment,
-        ordered_internal, leaf_set, leaf_directions,
-        per_vertex_options, G_ft, resp_index, phys_index,
-        vertex_idx=0, assigned_resp={}, assigned_phys={},
-        g_zero_mask=g_zero_mask,
-    )
-
-
 def _leg_matchings(vertex_type, out_edges, in_edges):
     """
     Enumerate all DISTINCT bijections from a vertex type's legs to edges.
