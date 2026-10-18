@@ -38,8 +38,8 @@ def test_lyapunov_residual():
     A = np.array([[1.5, 0.5], [0.3, 1.2]])
     N = np.array([[1.0, 0.2], [0.2, 0.8]])
     Sig = lyapunov_covariance(A, N)
-    assert np.allclose(A @ Sig + Sig @ A.T, N, atol=1e-10)
-    assert np.allclose(Sig, Sig.T, atol=1e-10)                  # covariance symmetric
+    assert np.allclose(A @ Sig + Sig @ A.T, N, rtol=1e-12, atol=1e-12)
+    assert np.allclose(Sig, Sig.T, rtol=1e-12, atol=1e-12)                  # covariance symmetric
 
 
 @pytest.mark.parametrize('qsq,tau', [(0.0, 0.0), (1.3, 0.4), (3.0, 1.2)])
@@ -53,7 +53,7 @@ def test_diagonal_reproduces_independent_mode_sum(qsq, tau):
     C = coupled_two_point(ref, np.diag(2 * kap), qsq, tau)
     lam = mu + D * qsq
     expected = np.diag(kap / lam * np.exp(-lam * abs(tau)))
-    assert np.allclose(C, expected, atol=1e-10)
+    assert np.allclose(C, expected, rtol=1e-12, atol=1e-12)
 
 
 def test_regression_identity_and_symmetry():
@@ -63,12 +63,12 @@ def test_regression_identity_and_symmetry():
     qsq = 1.0
     A = M + 0.7 * qsq * np.eye(2)
     Sig = lyapunov_covariance(A, N)
-    assert np.allclose(coupled_two_point(ref, N, qsq, 0.0), Sig, atol=1e-10)
+    assert np.allclose(coupled_two_point(ref, N, qsq, 0.0), Sig, rtol=1e-12, atol=1e-12)
     for tau in (0.5, 1.5):
         C = coupled_two_point(ref, N, qsq, tau)
-        assert np.allclose(C, expm(-A * tau) @ Sig, atol=1e-10)
+        assert np.allclose(C, expm(-A * tau) @ Sig, rtol=1e-12, atol=1e-12)
         # C(q,−τ) = C(q,τ)ᵀ
-        assert np.allclose(coupled_two_point(ref, N, qsq, -tau), C.T, atol=1e-10)
+        assert np.allclose(coupled_two_point(ref, N, qsq, -tau), C.T, rtol=1e-12, atol=1e-12)
     # genuinely coupled ⇒ nonzero cross-correlation
     assert abs(coupled_two_point(ref, N, qsq, 0.4)[0, 1]) > 1e-3
 

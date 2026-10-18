@@ -101,4 +101,4 @@ def test_kft_to_spectral_scalar_diffusion_matches_expm():
     ref = build_reference(Mn, Dn)
     assert ref.is_scalar_diffusion
     ksq, t = 2.0, 0.6
-    assert np.allclose(ref.G0(ksq, t), expm(-(Mn + Dn * ksq) * t), atol=1e-10)
+    assert np.allclose(ref.G0(ksq, t), expm(-(Mn + Dn * ksq) * t), rtol=1e-12, atol=1e-12)

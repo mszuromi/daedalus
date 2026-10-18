@@ -167,7 +167,7 @@ def test_save_npz_slugifies_dict_repr_directory(tmp_path):
     assert os.path.isfile(out)
     with np.load(out) as z:
         assert int(z['k'][0]) == 2
-        np.testing.assert_allclose(z['tau_grid'], [-1.0, 0.0, 1.0])
+        np.testing.assert_allclose(z['tau_grid'], [-1.0, 0.0, 1.0], rtol=1e-12, atol=1e-12)
 
 
 def test_save_csv_slugifies_dict_repr_directory(tmp_path):

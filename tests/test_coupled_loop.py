@@ -151,8 +151,8 @@ def test_tree_anchor_assignment_machinery_equals_lyapunov(legs, qv, tau):
     # Lyapunov / fluctuation-regression oracle (3a, sim-validated)
     # (the primitive is ⟨x(τ)x(0)ᵀ⟩, so the convention reads entry [j, i])
     expected = coupled_two_point(ref, N, qv * qv, tau)[ej_, ei_]
-    assert abs(total.imag) < 1e-10
-    assert total.real == pytest.approx(float(expected.real), rel=2e-5), \
+    assert abs(total.imag) < 1e-12
+    assert total.real == pytest.approx(float(expected.real), rel=1e-11), \
         f'assignment tree {total.real:.8f} vs Lyapunov {expected.real:.8f}'
 
 
@@ -204,7 +204,7 @@ def test_decoupled_limit_matches_single_field_loop(monkeypatch):
 
     assert C_c.shape == C_s.shape
     scale = np.max(np.abs(C_s))
-    assert np.max(np.abs(C_c - C_s)) < 4e-3 * scale, \
+    assert np.max(np.abs(C_c - C_s)) < 1e-5 * scale, \
         f'decoupled-limit mismatch:\ncoupled\n{C_c}\nvs single-field\n{C_s}'
 
 
@@ -285,7 +285,7 @@ def test_coupled_nonlinear_loop_e2e_smoke():
     assert info.get('coupled_loop') and info.get('n_live_diagrams', 0) > 0
     C = np.asarray(th['C_tau_x']).real
     assert np.all(np.isfinite(C))
-    assert info['imag_frac'] < 1e-6
+    assert info['imag_frac'] < 1e-12
     Cbo = info['C_by_order']
     i0 = int(np.argmin(np.abs(np.asarray(th['tau_grid']))))
     c_tree = Cbo[0][i0, 0]

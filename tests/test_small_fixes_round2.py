@@ -78,15 +78,15 @@ def test_float_literal_coupled_drift_equals_the_named_form(const):
 def test_float_literal_coupled_drift_saddle_is_the_linear_solve():
     mf = _run(_coupled(False, const=True, cubic=False), XY, ell=0)['mf_values']
     # -x + 0.8 y + 0.5 = 0 and -0.3 x - 0.6 y = 0  =>  x = 0.5/1.4, y = -x/2
-    assert mf['xstar'][0] == pytest.approx(0.5 / 1.4, rel=1e-9)
-    assert mf['ystar'][0] == pytest.approx(-0.25 / 1.4, rel=1e-9)
+    assert mf['xstar'][0] == pytest.approx(0.5 / 1.4, rel=1e-12)
+    assert mf['ystar'][0] == pytest.approx(-0.25 / 1.4, rel=1e-12)
 
 
 def test_integer_literal_coupled_drift_builds_and_has_the_right_saddle():
     mf = _run(_coupled(False, const=True, cubic=False, ints=True), XY, ell=0)['mf_values']
     # -2 x + y + 0.5 = 0 and -x - 3 y = 0  =>  x = 1.5/7, y = -x/3
-    assert mf['xstar'][0] == pytest.approx(1.5 / 7, rel=1e-9)
-    assert mf['ystar'][0] == pytest.approx(-0.5 / 7, rel=1e-9)
+    assert mf['xstar'][0] == pytest.approx(1.5 / 7, rel=1e-12)
+    assert mf['ystar'][0] == pytest.approx(-0.5 / 7, rel=1e-12)
 
 
 def test_parameter_free_model_with_an_inconsistent_mf_equation_still_fails():
@@ -168,7 +168,7 @@ def test_unused_parameter_without_a_default_does_not_stop_a_direct_solve():
     from api._mean_field_dae import solve_mean_field_dae
     m = (SDE('nd').parameter('a', default=1.0).parameter('D').field('x').drift('x', '-a*x + 0.1')
          .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
-    assert solve_mean_field_dae(m, {'a': 1.0})['mf_values']['xstar'][0] == pytest.approx(0.1)
+    assert solve_mean_field_dae(m, {'a': 1.0})['mf_values']['xstar'][0] == pytest.approx(0.1, rel=1e-12)
 
 
 def test_a_saddle_default_is_not_merged_into_explicit_parameters():
@@ -248,7 +248,7 @@ def test_a_finite_tau_grid_is_untouched():
     _run(m, XX, ell=0)
     r = _run(m, XX, ell=0, tau_grid=np.array([0.0, 0.5, 1.0]))
     # OU: C(tau) = D/a exp(-a|tau|) with var 0.4 -> 0.2 exp(-|tau|) (Ito-left at tau = 0)
-    assert np.real(np.asarray(r['C_tau']))[1] == pytest.approx(0.2 * np.exp(-0.5), rel=1e-6)
+    assert np.real(np.asarray(r['C_tau']))[1] == pytest.approx(0.2 * np.exp(-0.5), rel=1e-12)
 
 
 def test_config_rejects_non_finite_grids():
@@ -268,7 +268,7 @@ def test_k2_total_c_callable_does_not_read_nan_as_equal_time(engine):
     """The result callable used the same nudge (``abs(t1 - t0) > 1e-12`` is False for NaN), so
     ``total_C(0, nan)`` returned ``total_C(0, 0)``."""
     r = _run(_ou(), XX, ell=0, tau_grid=np.array([0.0, 0.5]))
-    assert np.real(r['total_C'](0.0, 0.0)) == pytest.approx(0.2, rel=1e-5)
+    assert np.real(r['total_C'](0.0, 0.0)) == pytest.approx(0.2, rel=1e-12)
     assert np.real(r['total_C'](0.0, 1e-13)) == np.real(r['total_C'](0.0, 0.0))   # the nudge stays
     for bad in (np.nan, np.inf):
         with pytest.raises(Exception, match='(?i)finite|bad limits|nan'):

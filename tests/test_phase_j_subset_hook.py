@@ -484,7 +484,7 @@ def test_reconstruction_reproduces_pipeline(key):
     assert rows and not orphans
     for row in rows:
         assert row['n_records'] > 0 or row['pipeline'] == 0
-        assert row['abs_diff'] <= 1e-10 * max(abs(row['pipeline']), 1e-300) \
+        assert row['abs_diff'] <= 1e-12 * max(abs(row['pipeline']), 1e-300) \
             + 1e-14, row
 
 
@@ -637,7 +637,7 @@ def test_harness_references_closed_form_m2():
     assert PSD.mp_fan_reference(terms + [], empty, (0.0,), box=150.0) == 0
     kept = cons + [((0.0, 0.0), (0.0,), 0.3)]
     assert abs(PSD.tight_quad_reference(f, kept, (0.0,), 2,
-                                        box=200.0)[0] - 1.0) < 1e-10
+                                        box=200.0)[0] - 1.0) < 1e-12
     with pytest.raises(NotImplementedError):
         PSD.dbm_reference()
     with pytest.raises(NotImplementedError):
@@ -775,7 +775,7 @@ def test_harness_references_every_tie_orientation():
     assert run_['ref_meta']['n_candidates'] == 2
     refs = {k: v['a'] for k, v in run_['refs'].items()}
     assert refs[rec.records[0]['ref_key']] == 0
-    assert abs(refs[rec.records[1]['ref_key']] - one) < 1e-10
+    assert abs(refs[rec.records[1]['ref_key']] - one) < 1e-12
     table, worst = PSD.disagreement_table(run_)
     assert sum(row['n'] for row in table.values()) == 2
     assert sum(row['n_disagree'] for row in table.values()) == 0, worst

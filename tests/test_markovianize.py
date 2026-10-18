@@ -188,10 +188,10 @@ def test_colored_ou_tree_level_matches_analytic(isolated_cache):
     c_tau = res['C_tau']
     c0 = c_tau[len(c_tau) // 2]
     analytic = 2 * D / (mu * (mu * tauc + 1))
-    assert abs(complex(c0).real - analytic) < 1e-6, (
+    assert abs(complex(c0).real - analytic) < 1e-12, (
         f'C(0)={complex(c0).real} vs analytic={analytic}')
     # Symmetric: C(τ) = C(-τ).
-    assert abs(c_tau[0] - c_tau[-1]) < 1e-9
+    assert abs(c_tau[0] - c_tau[-1]) < 1e-12
 
 
 # ── (4) Serialization round-trip of the markovianize keyword ──────────

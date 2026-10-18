@@ -98,10 +98,10 @@ def test_bridge_matches_bespoke_oracle(name, params, closed):
     assert info['pipeline_certified'], (
         f'{name}: pipeline certification failed '
         f'(max rel {info["certify_max_rel"]:.2e})')
-    assert info['certify_max_rel'] < 1e-10, (
+    assert info['certify_max_rel'] < 1e-12, (
         f'{name}: certification residual {info["certify_max_rel"]:.2e} '
         f'not at machine precision')
-    np.testing.assert_allclose(Cp, Cb, rtol=1e-9, atol=1e-12,
+    np.testing.assert_allclose(Cp, Cb, rtol=1e-12, atol=1e-12,
                                err_msg=f'{name}: bridge != bespoke oracle')
 
 
@@ -119,7 +119,7 @@ def test_bridge_equal_time_matches_closed_form(name, params, closed):
     it0 = int(np.argmin(np.abs(_TAUS)))
     closed_vals = T / (2 * math.sqrt(mu * D)) * np.exp(-_XS * math.sqrt(mu / D))
     np.testing.assert_allclose(Cp.real[it0], closed_vals,
-                               rtol=1e-9, atol=1e-12)
+                               rtol=1e-12, atol=1e-12)
 
 
 def _two_field_model():
@@ -166,10 +166,10 @@ def test_bridge_multifield_resolves_each_field(leg, fi, mu, D, T):
         ft, model, prop, nps, ext, _TAUS, _XS, verbose=False)
     assert info['field_index'] == fi
     assert info['pipeline_certified'] and info['certify_max_rel'] < 1e-10
-    np.testing.assert_allclose(Cp, Cb, rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(Cp, Cb, rtol=1e-12, atol=1e-12)
     it0 = int(np.argmin(np.abs(_TAUS)))
     closed = T / (2 * math.sqrt(mu * D)) * np.exp(-_XS * math.sqrt(mu / D))
-    np.testing.assert_allclose(Cp.real[it0], closed, rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(Cp.real[it0], closed, rtol=1e-12, atol=1e-12)
 
 
 def test_bridge_coupled_scalar_diffusion_supported():

@@ -289,15 +289,15 @@ def test_k2_tree_single_integration_analytical():
     for t1_val in (0.5, 1.0, 2.5):
         phase_j_val = complex(contribution(t1_val, 0.0))
         expected = 0.5 * float(exp(-abs(t1_val)))
-        assert abs(phase_j_val.real - expected) < 1e-8, (
+        assert abs(phase_j_val.real - expected) < 1e-12, (
             f"At t1={t1_val}: Phase J = {phase_j_val.real}, "
             f"expected = {expected}"
         )
-        assert abs(phase_j_val.imag) < 1e-10
+        assert abs(phase_j_val.imag) < 1e-12
     for t1_val in (-0.5, -2.0):
         phase_j_val = complex(contribution(t1_val, 0.0))
         expected = 0.5 * float(exp(-abs(t1_val)))
-        assert abs(phase_j_val.real - expected) < 1e-8
+        assert abs(phase_j_val.real - expected) < 1e-12
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -332,7 +332,7 @@ def test_k2_tree_translation_invariance():
     val_a = complex(contribution(1.0, 0.0))
     val_b = complex(contribution(6.0, 5.0))
 
-    assert abs(val_a.real - val_b.real) < 1e-8, (
+    assert abs(val_a.real - val_b.real) < 1e-12, (
         f"Translation invariance violated: "
         f"(t1=1,t2=0) → {val_a.real}, (t1=6,t2=5) → {val_b.real}"
     )
@@ -585,13 +585,13 @@ def test_G_t_matrix_detects_delta_component():
     d11 = complex(delta[1, 1])
 
     # G_ft[0,0] = (1+iω)/(1+iω+a) → 1 as ω→∞ → δ(t) coeff = 1
-    assert abs(d00 - 1.0) < 1e-6, (
+    assert abs(d00 - 1.0) < 1e-12, (
         f'Expected δ coeff at [0,0] to be ~1, got {d00}'
     )
     # All other entries have lim → 0 → no δ
-    assert abs(d01) < 1e-6
-    assert abs(d10) < 1e-6
-    assert abs(d11) < 1e-6
+    assert abs(d01) < 1e-12
+    assert abs(d10) < 1e-12
+    assert abs(d11) < 1e-12
 
 
 def test_phase_J_delta_component_asymmetric_cross_correlator():
@@ -686,7 +686,7 @@ def test_phase_J_delta_component_asymmetric_cross_correlator():
     for tv in tau_vals:
         exp_val = C_analytic(tv)
         pj_val = complex(total_C_J(tv, 0.0)).real
-        assert abs(exp_val - pj_val) < 1e-10, (
+        assert abs(exp_val - pj_val) < 1e-12, (
             f'Phase J does not match analytic at τ={tv}: '
             f'analytic={exp_val}, PhaseJ={pj_val}, '
             f'diff={abs(exp_val-pj_val):.2e}'
@@ -788,10 +788,10 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     #     source factor for SourceType(SR(1), [ñ,ñ], (2,0)))
     #   c_δ = G_ft[0,0](∞) = 1
     #   both-δ weight = combined_pf × c_δ × c_δ × (no smooth factors) = -2
-    assert abs(coeff_val.real - (-2.0)) < 1e-10, (
+    assert abs(coeff_val.real - (-2.0)) < 1e-12, (
         f'δ coefficient at τ=0 should be -2, got {coeff_val}'
     )
-    assert abs(coeff_val.imag) < 1e-10
+    assert abs(coeff_val.imag) < 1e-12
 
     # Discretize onto a τ grid and check the spike integrates correctly
     tau_grid = np.linspace(-5.0, 5.0, 501)
@@ -811,10 +811,10 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     )
     # Bin height × bin width should recover the analytic weight (-2)
     integrated_weight = complex(spikes[nonzero_idx[0]]) * dtau
-    assert abs(integrated_weight.real - (-2.0)) < 1e-10, (
+    assert abs(integrated_weight.real - (-2.0)) < 1e-12, (
         f'Integrated δ weight should be -2, got {integrated_weight}'
     )
-    assert abs(integrated_weight.imag) < 1e-10
+    assert abs(integrated_weight.imag) < 1e-12
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1693,7 +1693,7 @@ def test_phase_J_k3_star_tree_finite_and_stationary():
             f'Phase J returned NaN at (t_1, t_2, t_3) = ({a}, {b}, {c})'
         )
         assert abs(val.real) < 1e3
-        assert abs(val.imag) < 1e-10 * max(abs(val.real), 1.0)
+        assert abs(val.imag) < 1e-12 * max(abs(val.real), 1.0)
 
     # 2. Translation invariance
     ref = complex(total_C(1.0, 2.0, 3.0)).real
@@ -1701,7 +1701,7 @@ def test_phase_J_k3_star_tree_finite_and_stationary():
         shifted = complex(
             total_C(1.0 + shift, 2.0 + shift, 3.0 + shift)
         ).real
-        assert abs(shifted - ref) < 1e-8, (
+        assert abs(shifted - ref) < 1e-12, (
             f'Stationarity violated at shift={shift}: '
             f'ref={ref}, shifted={shifted}'
         )
@@ -1756,7 +1756,7 @@ def test_phase_J_vs_phase_I_linear_hawkes_tree():
             {phase_i_t1: t1_val, phase_i_t2: 0}
         ).real())
         pj_val = complex(total_C_fn(t1_val, 0.0)).real
-        assert abs(pi_val - pj_val) < 1e-6, (
+        assert abs(pi_val - pj_val) < 1e-12, (
             f"Phase I vs Phase J mismatch at τ={t1_val}: "
             f"PI={pi_val}, PJ={pj_val}"
         )

@@ -156,8 +156,8 @@ def test_max_ell_1_computes_tadpole_loop():
     tree = float(np.asarray(th0['C_tau_x']).real[i0, 0])
     loop = float(np.asarray(th1['C_tau_x']).real[i0, 0])
     assert th1['C_tau_x'].shape[1] == 2
-    assert abs(tree - 0.5) < 1e-9
-    assert abs(loop - 0.4625) < 1e-4          # strict 1-loop ⟨φ²⟩
+    assert abs(tree - 0.5) < 1e-12
+    assert abs(loop - 0.4625) < 1e-5          # strict 1-loop ⟨φ²⟩
     assert loop < tree                         # the loop suppresses ⟨φ²⟩
     # The GENERIC pipeline sums every enumerated ell=1 diagram (no bubble/tadpole
     # branch).  Allen-Cahn at φ*=0 has exactly ONE live diagram — the φ̃φ³ tadpole
@@ -298,7 +298,7 @@ def test_d2_tree_through_compute_cumulants():
     for i, r in enumerate(rs):
         assert abs(C[mid, i] - oracle(r, 1.0, 1.0, 1.0, 2)) <= 2e-2 * oracle(r, 1.0, 1.0, 1.0, 2)
     # total_C closure also works at d=2 (single-point query)
-    assert abs(out['total_C'](0.0, 1.0).real - oracle(1.0, 1.0, 1.0, 1.0, 2)) <= 2e-2 * oracle(1.0, 1.0, 1.0, 1.0, 2)
+    assert abs(out['total_C'](0.0, 1.0).real - oracle(1.0, 1.0, 1.0, 1.0, 2)) <= 1e-12 * oracle(1.0, 1.0, 1.0, 1.0, 2)
 
 
 def test_d2_tadpole_loop_refuses_through_compute_cumulants():

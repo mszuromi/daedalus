@@ -347,7 +347,7 @@ def test_two_stable_saddles_confirmed():
     f = [f for f in r.findings if f.code == 'G2_MULTISTABLE'][0]
     assert f.level == 'info' and r.ok
     assert r.traits.n_saddles == 3 and r.traits.n_stable_saddles == 2 and r.traits.saddle_index == 1
-    assert dict(r.traits.saddle)['xstar'][0] == pytest.approx(10 ** 0.5, rel=1e-8)
+    assert dict(r.traits.saddle)['xstar'][0] == pytest.approx(10 ** 0.5, rel=1e-12)
     r = analyze(model, question=dict(q, fixed_point_index=2))
     assert 'G2_FIXED_POINT_INDEX' in r.codes
 

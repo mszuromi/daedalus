@@ -169,7 +169,7 @@ def test_conductance_pairing_and_spectrum_exact(cond):
         S = c.spectrum([0.0, 0.7, 2.5])
     assert p.method == 'exact' and not c.me_fallbacks
     q = c.integrate_against(L2, contact='exclude', method='quad')
-    assert abs(complex(p) - complex(q)) <= 1e-8 * abs(complex(q))
+    assert abs(complex(p) - complex(q)) <= 1e-12 * abs(complex(q))
     Sq = c.spectrum([0.7], method='quad')
     assert abs(S[1] - Sq[0]) <= 1e-8 * abs(Sq[0])
 

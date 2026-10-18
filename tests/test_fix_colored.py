@@ -270,7 +270,7 @@ def test_white_noise_grouped_still_matches_perdiag():
 
     np.testing.assert_allclose(
         r_grouped['C_tau'], r_perdiag['C_tau'],
-        rtol=1e-6, atol=1e-9,
+        rtol=1e-12, atol=1e-12,
         err_msg='white-noise grouped vs per-diagram disagree — the '
                 'colored guard must not have changed the white-noise '
                 'grouped path.',

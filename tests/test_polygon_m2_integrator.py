@@ -67,7 +67,7 @@ def test_J_taylor_branch_matches_numerical_for_small_pq():
     q = -3e-7 + 1e-7j
     val = _exp_over_unit_triangle(p, q)
     ref = _J_numerical(p, q, n=200)
-    assert abs(val - ref) < 1e-9, f'val={val}, ref={ref}'
+    assert abs(val - ref) < 1e-10, f'val={val}, ref={ref}'
 
 
 def test_J_general_real_values():
@@ -146,7 +146,7 @@ def test_exp_over_triangle_translation_invariance():
         (5.0, 7.0), (6.0, 7.0), (5.0, 8.0), alpha, beta,
     )
     expected = base * cmath.exp(alpha * 5.0 + beta * 7.0)
-    assert abs(shifted - expected) < 1e-10
+    assert abs(shifted - expected) < 1e-12
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -209,7 +209,7 @@ def test_polygon_from_constraints_unit_square():
         x1, y1 = polygon[(i + 1) % n]
         area += x0 * y1 - x1 * y0
     area = abs(area) / 2
-    assert abs(area - 1.0) < 1e-10, f'polygon={polygon}, area={area}'
+    assert abs(area - 1.0) < 1e-12, f'polygon={polygon}, area={area}'
 
 
 def test_polygon_from_constraints_with_ext_time():
@@ -229,7 +229,7 @@ def test_polygon_from_constraints_with_ext_time():
         x1, y1 = polygon[(i + 1) % n]
         area += x0 * y1 - x1 * y0
     area = abs(area) / 2
-    assert abs(area - 70.0) < 1e-10
+    assert abs(area - 70.0) < 1e-12 * 70.0
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -376,7 +376,7 @@ def test_polygon_integrator_two_poles_per_edge_vs_scipy():
 
     ref, _ = nquad(integrand, [bounds_s0, (0.0, 50.0)],
                     opts={'limit': 200})
-    assert abs(poly_val - ref) < 1e-4, \
+    assert abs(poly_val - ref) < 1e-12, \
         f'poly={poly_val}, scipy={ref}, |Δ|={abs(poly_val - ref):.3e}'
 
 
@@ -423,5 +423,5 @@ def test_polygon_integrator_with_external_time_dependence():
 
     ref, _ = nquad(integrand, [bounds_s0, (t_ext, 50.0)],
                     opts={'limit': 200})
-    assert abs(poly_val - ref) < 1e-4, \
+    assert abs(poly_val - ref) < 1e-12, \
         f'poly={poly_val}, scipy={ref}, t_ext={t_ext}'

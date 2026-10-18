@@ -128,12 +128,12 @@ def test_uniform_limit_matches_single_field(mk, path):
         ref = diagram_kinematic(descr, [0.8], et, mu, D, **kw)
         new = diagram_kinematic_spectral(descr, [0.8], et, table, D, **kw)[0]
         assert new.imag == pytest.approx(0.0, abs=1e-14)
-        assert (2.0 ** n_C) * new.real == pytest.approx(ref, rel=2e-5)
+        assert (2.0 ** n_C) * new.real == pytest.approx(ref, rel=1e-6)
     else:
         xs = np.array([0.0, 1.0])
         ref = diagram_kinematic(descr, [0.0], et, mu, D, xs=xs, **kw)
         new = diagram_kinematic_spectral(descr, [0.0], et, table, D, xs=xs, **kw)[0]
-        assert np.allclose((2.0 ** n_C) * new.real, ref, rtol=2e-5)
+        assert np.allclose((2.0 ** n_C) * new.real, ref, rtol=1e-6, atol=1e-6 * np.max(np.abs(ref)))
         assert np.allclose(new.imag, 0.0, atol=1e-14)
 
 
@@ -191,7 +191,7 @@ def test_insertion_identity_vs_finite_difference():
         wm[:, r] -= h
         fd = (_momentum_factor_batch(a, b, wp, [qv], D, 1)
               - _momentum_factor_batch(a, b, wm, [qv], D, 1)) / (2 * h * D)
-        assert np.allclose(base * fac, fd, rtol=2e-6), (r, base * fac, fd)
+        assert np.allclose(base * fac, fd, rtol=1e-7, atol=1e-7 * np.max(np.abs(fd))), (r, base * fac, fd)
 
 
 def test_insertion_on_external_row_is_d2dx2():
@@ -220,7 +220,7 @@ def test_insertion_on_external_row_is_d2dx2():
     b_q = diagram_kinematic_spectral(descr, [qv], et, table, D, n_s=48)[0]
     i_q = diagram_kinematic_spectral(descr, [qv], et, table, D, n_s=48,
                                      insert_row=1)[0]
-    assert i_q == pytest.approx(-qv * qv * b_q, rel=1e-10)
+    assert i_q == pytest.approx(-qv * qv * b_q, rel=1e-12)
 
 
 def test_power_table_confluent_amplitude():
@@ -238,7 +238,7 @@ def test_power_table_confluent_amplitude():
         return ((tau + s) * np.exp(-m_u * s - m_v * (tau + s))
                 * np.exp(-D * qv * qv * (tau + 2 * s)))
     oracle = quad(f, 0, 80.0, limit=400)[0]
-    assert val.real == pytest.approx(oracle, rel=1e-7)
+    assert val.real == pytest.approx(oracle, rel=1e-12)
     assert abs(val.imag) < 1e-14
 
 

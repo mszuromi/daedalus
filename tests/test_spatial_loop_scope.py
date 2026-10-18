@@ -76,7 +76,7 @@ def test_loop_edges_of_another_field_get_their_own_mass():
             assert Cb[1][it, ix] - c0 == pytest.approx(_C * b2 * c0, rel=tol)
     # τ=0, x=0 tree: T_a/(2√(μ_a D)) (the tree itself is untouched)
     assert Cb[0][0, 0] == pytest.approx(_TA / (2 * math.sqrt(_MUA * _D)),
-                                        rel=1e-10)
+                                        rel=1e-12)
 
 
 def test_kpoint_refuses_foreign_field_edges_with_routing_message():
@@ -122,7 +122,7 @@ def test_periodic_loops_refuse():
                           use_cache=False, parallel=False)
     # ring variance: T/(2√(μD)) coth(L√(μ/D)/2)
     assert np.real(r['C_tau_x'][0, 0]) == pytest.approx(
-        0.5 / math.tanh(2.0), rel=1e-6)
+        0.5 / math.tanh(2.0), rel=1e-12)
 
 
 # ── k-point driver: leg labels and liveness ─────────────────────────────────
@@ -159,12 +159,12 @@ def test_kpoint_leg_labels_and_unit_scale():
                                    [('p', 1), ('p', 2), ('p', 3)], pts,
                                    max_ell=0)
     assert abs(v1[0]) > 1e-6
-    assert v2[0] == pytest.approx(v1[0], rel=1e-13)
+    assert v2[0] == pytest.approx(v1[0], rel=1e-12, abs=0)
     s = 1e-8
     fts, bs, props, nps = _quad_rd(s)
     vs, _ = compute_spatial_kpoint(fts, bs, props, nps, [('p', 1)] * 3, pts,
                                    max_ell=0)
-    assert vs[0] == pytest.approx(s * s * v1[0], rel=1e-10)
+    assert vs[0] == pytest.approx(s * s * v1[0], rel=1e-12, abs=0)
 
 
 def test_noise_extractors_refuse_unresolved_entries():
@@ -179,7 +179,7 @@ def test_noise_extractors_refuse_unresolved_entries():
     ft.expand()
     full = dict(_FUND, astar1=0.0, bstar1=0.0)
     N = extract_noise_matrix(ft, full)
-    assert np.allclose(N, np.diag([2 * _TA, 2 * _TB]))
+    assert np.allclose(N, np.diag([2 * _TA, 2 * _TB]), rtol=1e-12, atol=1e-12)
     for drop in ('Tb', 'bstar1'):
         part = {k_: v for k_, v in full.items() if k_ != drop}
         with pytest.raises(SpatialPropagatorError, match=drop):

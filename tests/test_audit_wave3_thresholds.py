@@ -44,7 +44,7 @@ def test_kernel_stability_finds_a_fast_unstable_root(r):
     from api._kernel_stability import count_rhp_roots
     ks = count_rhp_roots(lambda s: np.asarray(s, complex) - r)
     assert ks.status == 'unstable' and ks.n_rhp == 1
-    assert abs(ks.rightmost - r) <= 1e-9 * r
+    assert abs(ks.rightmost - r) <= 1e-12 * r
 
 
 def test_kernel_stability_of_time_rescaled_delayed_cycle():
@@ -65,11 +65,11 @@ def test_kernel_stability_of_time_rescaled_delayed_cycle():
         if ref is None:
             ref = got
             # Pade-12 reference roots (tests/test_delay_kernels.py): 0.0735 +- 0.7206i
-            assert abs(abs(got[0].imag) - 0.720581045742538) < 1e-9
-            assert abs(got[0].real - 0.07346345713013953) < 1e-9
+            assert abs(abs(got[0].imag) - 0.720581045742538) < 1e-11
+            assert abs(got[0].real - 0.07346345713013953) < 1e-11
         else:
-            assert abs(got[0].real - ref[0].real) < 1e-9
-            assert abs(abs(got[0].imag) - abs(ref[0].imag)) < 1e-9
+            assert abs(got[0].real - ref[0].real) < 1e-12
+            assert abs(abs(got[0].imag) - abs(ref[0].imag)) < 1e-12
             assert got[1] == pytest.approx(ref[1], rel=1e-12)
 
 
@@ -107,14 +107,14 @@ def test_colored_noise_source_is_unit_invariant(S):
     assert r['status'] == 'ok'
     got = np.real(np.asarray(r['C_tau_by_ell'][0]))
     ex = _colored_ou_closed(S, tau)
-    assert np.max(np.abs(got - ex) / np.abs(ex)) < 1e-8
+    assert np.max(np.abs(got - ex) / np.abs(ex)) < 1e-12
 
 
 def test_noise_kernel_box_moves_with_the_kernel():
     from sage.all import SR, exp
     t = SR.var('tt')
     w = [FI._noise_kernel_halfwidth([exp(-abs(t) / L) / L], t) for L in (1.0, 1e3)]
-    assert w[1] / w[0] == pytest.approx(1e3, rel=0.8)
+    assert w[1] / w[0] == pytest.approx(1e3, rel=1e-12)
     # beyond the box the kernel is below TAU_KERNEL_RTOL of its peak
     for L, hw in zip((1.0, 1e3), w):
         assert math.exp(-hw / L) <= FI.TAU_KERNEL_RTOL
@@ -143,7 +143,7 @@ def test_dressing_keeps_modes_with_integral_weight(modes, kmodes, tol):
     for D in (0.5, 30.0, 3e5):
         ex = _conv_exact(modes, kmodes, D)
         got = sum(complex(C) * np.exp(complex(l) * D) for (C, l) in out.modes)
-        assert abs(got - ex) <= 1e-6 * abs(ex) + 1e-300
+        assert abs(got - ex) <= 1e-8 * abs(ex) + 1e-300
 
 
 def test_dressing_counts_a_dropped_rounding_mode():

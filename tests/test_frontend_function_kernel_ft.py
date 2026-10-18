@@ -198,7 +198,7 @@ def test_formal_and_inlined_sites_of_one_function():
         np.testing.assert_allclose(ra['mf_values'][k], rb['mf_values'][k], rtol=1e-12)
     for ell in rb['C_tau_by_ell']:
         np.testing.assert_allclose(np.asarray(ra['C_tau_by_ell'][ell]),
-                                   np.asarray(rb['C_tau_by_ell'][ell]), rtol=1e-9, atol=1e-14)
+                                   np.asarray(rb['C_tau_by_ell'][ell]), rtol=1e-12, atol=1e-14)
 
 
 def _sde(variant):
@@ -233,7 +233,7 @@ def test_sde_function_of_the_field_keeps_the_formal_path():
     ra, rb = _run(_sde('field'), [('dx', 1), ('dx', 1)]), _run(_sde('explicit'), [('dx', 1), ('dx', 1)])
     for ell in ra['C_tau_by_ell']:
         np.testing.assert_allclose(np.asarray(ra['C_tau_by_ell'][ell]),
-                                   np.asarray(rb['C_tau_by_ell'][ell]), rtol=1e-10, atol=1e-14)
+                                   np.asarray(rb['C_tau_by_ell'][ell]), rtol=1e-12, atol=1e-14)
 
 
 def test_formal_call_site_rule():

@@ -44,7 +44,7 @@ def test_gaussian_momentum_integral_matches_direct():
             f = lambda l: math.exp(-D * (l * l * w1 + (q - l) ** 2 * w2))
             ref, _ = integrate.quad(f, -np.inf, np.inf, limit=200)
             ref /= 2 * np.pi
-            assert abs(closed - ref) <= 1e-9 * max(abs(ref), 1e-12)
+            assert abs(closed - ref) <= 1e-12 * max(abs(ref), 1e-12)
 
 
 def test_symanzik_UF_bubble_reduction():

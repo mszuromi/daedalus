@@ -898,7 +898,7 @@ def test_coupled_moment_oracles_with_every_route_on(FI, monkeypatch):
            'D2': 0.6, 'eps': 0.05}
     cases = [(MO._coupled_cubic_model(), par, 1e-12),
              (MO._quadratic_drift_model(0.246224870792, 0.123112435396),
-              None, 1e-7)]
+              None, 1e-12)]
     for model, p, tol_margin50 in cases:
         _set_flags(monkeypatch, FI)
         off = MO._cov_ell(model, 1, p)

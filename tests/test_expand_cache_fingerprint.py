@@ -86,7 +86,7 @@ def test_stale_bundle_is_rejected_and_reexpansion_passes():
             assert os.path.isfile(_ec.expand_cache_path(_model([]), 2))
             good = precompute(_model(ROWS), verbose=False)
             assert good['mf_check'] == 'PASS', good['mf_check']
-            assert abs(float(good['mf_values']['mstar'][0]) - 1.25) < 1e-9
+            assert abs(float(good['mf_values']['mstar'][0]) - 1.25) < 1e-12
             # and a plain load of the (now refreshed) bundle for the wrong model text is refused
             from api.compute import FieldTheory
             ft = FieldTheory(_model(ROWS[:1]), taylor_order=2)

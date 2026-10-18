@@ -91,7 +91,7 @@ def test_tiny_mode_is_discarded_within_its_bound():
     e2, info = RZ.truncate_entry(e, 1e-10)
     assert (info['n'], info['r'], e2.n_states) == (2, 1, 1)
     assert info['bound_rel'] <= 1e-10 and info['err_rel'] <= 1e-10
-    assert np.isclose(e2.a[0, 0], -1.0, rtol=1e-12)
+    assert np.isclose(e2.a[0, 0], -1.0, rtol=1e-10, atol=0)
     assert _grid_err(e, e2) <= info['bound'] * (1 + 1e-6) + 1e-16
     assert e2.a.dtype == np.float64 and e2.b.dtype == np.float64
 
@@ -242,7 +242,7 @@ def test_delay_option_validation():
     o = DL.resolve_options({})
     assert o['truncation'] == 'auto'
     assert DL._truncation_tol(o) == min(RZ.TRUNCATION_TOL_DEFAULT, 0.01 * o['tol'])
-    assert DL._truncation_tol(DL.resolve_options({'tol': 1e-12})) == pytest.approx(1e-14)
+    assert DL._truncation_tol(DL.resolve_options({'tol': 1e-12})) == pytest.approx(1e-14, rel=1e-12, abs=0)
     with RZ.truncation_scope(0):                              # 'auto' follows the exact setting
         assert DL._truncation_tol(DL.resolve_options({})) == 0.0
     with pytest.raises(ValueError, match='truncation'):
@@ -300,7 +300,7 @@ def test_order_controller_record_and_prediction():
     cb = info['cost_by_order']
     assert set(cb) == {4, 8} and cb[8]['states'] > cb[4]['states'] > 0
     assert cb[8]['proxy'] == pytest.approx(cb[8]['states'] ** 2 * (1 + cb[8]['stiffness']),
-                                           rel=1e-2)
+                                           rel=1e-3)
     assert set(info['predicted_walls_s']) == {8} and info['cost_correction'] == 1.0
     want = info['walls_s'][4] * cb[8]['proxy'] / cb[4]['proxy']
     assert info['predicted_walls_s'][8] == pytest.approx(want, rel=0.02, abs=0.2)
@@ -309,7 +309,7 @@ def test_order_controller_record_and_prediction():
     tb = info['truncation_by_order']
     assert tb[4] == 1e-12 and info['truncation_tol'] == tb[8]
     e8 = info['loop_error_pred_by_order'][8]
-    assert tb[8] == pytest.approx(max(1e-12, min(DL.TRUNCATION_MAX, DL.TRUNCATION_KAPPA * e8)))
+    assert tb[8] == pytest.approx(max(1e-12, min(DL.TRUNCATION_MAX, DL.TRUNCATION_KAPPA * e8)), rel=1e-12, abs=0)
     # what matters: the truncation moved the n = 8 observable by far less
     # than the Pade error the controller estimates (exact realizations here)
     r0 = _cc(m, 1, delay={'order': 8, 'truncation': 0})
@@ -319,10 +319,10 @@ def test_order_controller_record_and_prediction():
 
 def test_stiffness_is_the_taylor_driver():
     # a normal matrix: the spectral spread about the mean
-    assert DL._stiffness(np.diag([-1.0, -3.0])) == pytest.approx(1.0)
+    assert DL._stiffness(np.diag([-1.0, -3.0])) == pytest.approx(1.0, rel=1e-12)
     # a non-normal block: min over p of ||(a - mu)^p||^(1/p), small though
     # ||a - mu|| = 101 (here (a - mu)^2 = I)
-    assert DL._stiffness(np.array([[-2.0, 100.0], [0.0, -4.0]])) == pytest.approx(1.0)
+    assert DL._stiffness(np.array([[-2.0, 100.0], [0.0, -4.0]])) == pytest.approx(1.0, rel=1e-12)
     # a Jordan block: the nilpotent part ends the series (as in the Taylor action)
     assert DL._stiffness(np.array([[-2.0, 100.0], [0.0, -2.0]])) == 0.0
     assert DL._stiffness(np.zeros((0, 0))) == 0.0
@@ -339,14 +339,14 @@ def test_prediction_from_the_realizations_and_fallbacks():
     g, how = DL._predicted_growth(ctx, 4, 8, None, {4: 10.0}, cache, ctrl)
     t = RZ.truncation_tol()
     c4, c8 = cache[(4, t)], cache[(8, t)]
-    assert c8['states'] > c4['states'] and g == pytest.approx(c8['proxy'] / c4['proxy'])
+    assert c8['states'] > c4['states'] and g == pytest.approx(c8['proxy'] / c4['proxy'], rel=1e-12)
     assert 'states' in how and ctrl['cost_correction'] == 1.0
     # two measured orders: the proxy is corrected by its error on that step
     walls = {4: 10.0, 8: 10.0 * 1.5 * c8['proxy'] / c4['proxy']}
     g2, how2 = DL._predicted_growth(ctx, 8, 16, 4, walls, cache, ctrl)
     c16 = cache[(16, t)]
-    assert ctrl['cost_correction'] == pytest.approx(1.5, rel=1e-3)
-    assert g2 == pytest.approx(1.5 * c16['proxy'] / c8['proxy']) and 'last step' in how2
+    assert ctrl['cost_correction'] == pytest.approx(1.5, rel=1e-12)
+    assert g2 == pytest.approx(1.5 * c16['proxy'] / c8['proxy'], rel=1e-12) and 'last step' in how2
     # per-order tolerances: the next order's realization truncated as it will run
     g3, _ = DL._predicted_growth(ctx, 4, 8, None, {4: 10.0}, cache, ctrl,
                                  tols={4: t, 8: 1e-3})
@@ -405,7 +405,7 @@ def test_next_truncation_rules():
     # from the tree: 1e-2 * share 0.1 * (4/8)^3; from the estimate: 1e-3 * (2/8)^3
     t = DL._next_truncation(o, 1e-10, r, 2, 4, 8, 1e-3, 2, ctrl)   # est measures n = 2
     e = min(1e-2 * 0.1 / 8, 1e-3 / 64)
-    assert ctrl['loop_error_pred'][8] == pytest.approx(e) and t == pytest.approx(1e-2 * e)
+    assert ctrl['loop_error_pred'][8] == pytest.approx(e, rel=1e-12, abs=0) and t == pytest.approx(1e-2 * e, rel=1e-12, abs=0)
     # capped above, floored at the base, untouched when pinned or exact
     assert DL._next_truncation(o, 1e-10, dict(r, delay_tree_vs_pade=10.0), 2, 4, 8, None,
                                None, ctrl) == DL.TRUNCATION_MAX
@@ -415,7 +415,7 @@ def test_next_truncation_rules():
     # after a skipped order the estimate still measures the order it compared
     # with: order 16 after 4 (8 skipped), the estimate of 4 measuring 2
     t16 = DL._next_truncation(o, 1e-10, {'C_tau': tot}, 2, 4, 16, 1e-3, 2, ctrl)
-    assert ctrl['loop_error_pred'][16] == pytest.approx(1e-3 * (2 / 16) ** 3)
+    assert ctrl['loop_error_pred'][16] == pytest.approx(1e-3 * (2 / 16) ** 3, rel=1e-12, abs=0)
     assert DL._next_truncation(DL.resolve_options({'truncation': 1e-9}), 1e-9, r, 2, 4, 8,
                                1e-3, 2, ctrl) == 1e-9
     assert DL._next_truncation(o, 0.0, r, 2, 4, 8, 1e-3, 2, ctrl) == 0.0

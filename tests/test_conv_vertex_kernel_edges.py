@@ -103,7 +103,7 @@ def test_kernel_vertex_equals_its_markov_embedding(ext, embedded):
         a = np.asarray(res['C_tau_by_ell'][ell])
         b = np.asarray(ref['C_tau_by_ell'][ell])
         assert np.all(np.abs(b) > 0)
-        np.testing.assert_allclose(a, b, rtol=1e-10, atol=0)
+        np.testing.assert_allclose(a, b, rtol=1e-12, atol=0)
     # every subset on an exact route: no quadrature
     assert FI._RUNTIME_COUNTERS['nquad_calls'] == 0
 
@@ -169,14 +169,14 @@ def test_mixed_kernel_leg_equals_its_markov_embedding():
     for ell in (0, 1):
         np.testing.assert_allclose(res['C_tau_by_ell'][ell],
                                    ref['C_tau_by_ell'][ell],
-                                   rtol=1e-10, atol=0)
+                                   rtol=1e-12, atol=0)
 
 
 def test_exp_mode_extraction_rejects_a_sum_of_exponentials():
     from sage.all import SR, exp
     t = SR.var('t')
     assert FI._extract_exp_mode(2 * exp(-t / 3), t) == pytest.approx(
-        (2.0, -1.0 / 3.0))
+        (2.0, -1.0 / 3.0), rel=1e-12)
     assert FI._extract_exp_mode(exp(-t) + exp(-2 * t), t) is None
     assert FI._extract_exp_mode(t * exp(-t), t) is None
 

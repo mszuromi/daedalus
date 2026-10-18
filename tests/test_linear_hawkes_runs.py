@@ -37,4 +37,4 @@ def test_linear_hawkes_runs_at_defaults():
     assert vstar.shape == (2,) and np.all(np.isfinite(vstar))
     E = np.array([0.78, 0.81])
     w = np.array([[0.30, 0.25], [0.30, 0.35]])
-    assert np.allclose(vstar, E + w @ nstar, atol=1e-6)
+    assert np.allclose(vstar, E + w @ nstar, rtol=1e-12, atol=1e-12)

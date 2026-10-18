@@ -145,7 +145,7 @@ def test_chain_block_kronecker_forms_equal_the_chain():
             continue
         G, x, c = b.triple()
         T, xt, ct = b.tri()
-        assert np.allclose(np.tril(T, -1), 0)
+        assert np.allclose(np.tril(T, -1), 0, rtol=0, atol=1e-12)
         dv = np.array([c @ sl.expm(G * s) @ x for s in u])
         tv = np.array([ct @ sl.expm(T * s) @ xt for s in u])
         assert _rel(dv, v) <= 1e-11 and _rel(tv, v) <= 1e-11

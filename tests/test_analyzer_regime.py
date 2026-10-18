@@ -100,8 +100,8 @@ _TAYLOR_POLICY = {'allow_taylor_truncation': True}
 def test_pole_rate_range_and_stiff_ratio_with_remedy():
     r = analyze(_two_ou(1.0, 5000.0), question={'k': 2, 'max_ell': 0})
     t = r.traits
-    assert t.pole_rate_min == pytest.approx(1.0) and t.pole_rate_max == pytest.approx(5000.0, rel=1e-9)
-    assert t.fast_slow_ratio == pytest.approx(5000.0, rel=1e-9) and t.n_poles == 2
+    assert t.pole_rate_min == pytest.approx(1.0, rel=1e-12) and t.pole_rate_max == pytest.approx(5000.0, rel=1e-12)
+    assert t.fast_slow_ratio == pytest.approx(5000.0, rel=1e-12) and t.n_poles == 2
     f = [f for f in r.findings if f.code == 'G3_STIFF'][0]
     assert f.level == 'info' and f.remedy and 'tau grid' in f.remedy
     assert not _two_ou_codes(2.0, 5.0) & {'G3_STIFF', 'G3_CLOSE_POLES'}
@@ -291,13 +291,13 @@ def _taylor(family, D, max_ell=1):
 
 def test_taylor_estimator_against_a_known_radius_of_convergence():
     """a/(1 + x/L): singularity at x = -L, so R = x* + L; the estimate q must be s/R with s = 3 sigma.  The
-    successive-term ratio is exact for a pole (geometric series): within 10 %."""
+    successive-term ratio is exact for a pole (geometric series), so the match is to rounding."""
     r = _taylor(RATIONAL, 0.5)
     t = r.traits
     xstar = dict(t.saddle)['xstar'][0]
     R = xstar + RATIONAL[1]['L']
     expected = 3 * t.tree_std[0] / R
-    assert t.taylor_radius_ratio == pytest.approx(expected, rel=0.1)
+    assert t.taylor_radius_ratio == pytest.approx(expected, rel=1e-12)
 
 
 def test_taylor_estimate_for_a_complex_pair_is_within_a_factor_two():
@@ -358,7 +358,7 @@ def test_the_analyzer_does_not_change_the_numbers():
     assert on['analysis'].diagnostics['n_diagrams'] > 0
     # the wired and the standalone estimate agree (same definition, same inputs)
     stand = _geff(0.05).traits.loop_parameter_estimate
-    assert t.loop_parameter_estimate == pytest.approx(stand, rel=1e-6)
+    assert t.loop_parameter_estimate == pytest.approx(stand, rel=1e-12)
 
 
 # ── E: the report table ───────────────────────────────────────────────────────────────────────

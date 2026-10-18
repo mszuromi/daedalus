@@ -102,7 +102,7 @@ def test_sigma_kernels_match_direct():
         for t in (0.3, 1.0):
             fR = lambda l: math.exp(-_mq(l) * t) / 1.0 * (T / _mq(q - l)) * math.exp(-_mq(q - l) * t)
             rR, _ = integrate.quad(fR, -np.inf, np.inf, limit=120)
-            assert abs(sigma_R_time(q, t, MU, D, T) - rR / (2 * math.pi)) <= 1e-9
+            assert abs(sigma_R_time(q, t, MU, D, T) - rR / (2 * math.pi)) <= 1e-12
 
 
 def test_sigma_formfactor(q=0.9, t=0.7):
@@ -126,7 +126,7 @@ def test_bubble_delta_S_formfactor(q=0.7):
     it (and stays finite)."""
     base = bubble_delta_S(q, MU, D, T, g=1.0)
     same = bubble_delta_S(q, MU, D, T, g=1.0, formfactor=lambda l: 1.0)
-    assert abs(same - base) <= 1e-9 * abs(base) + 1e-15
+    assert abs(same - base) <= 1e-12 * abs(base) + 1e-15
     diff = bubble_delta_S(q, MU, D, T, g=1.0, formfactor=lambda l: -l ** 2)
     assert math.isfinite(diff) and abs(diff - base) > 1e-6
 
@@ -196,13 +196,13 @@ def test_golden_bubble_delta_S(q, gold):
     """FROZEN: the closed-form equal-time bubble δC(q,0).  Backend C reproduces
     these (design III.0 oracle); any drift is a real regression."""
     got = bubble_delta_S(q, _GOLD_MU, _GOLD_D, _GOLD_T, g=_GOLD_G)
-    assert abs(got - gold) <= 1e-6 * abs(gold) + 1e-12
+    assert abs(got - gold) <= 1e-8 * abs(gold) + 1e-12
 
 
 def test_golden_bubble_delta_phi2():
     """FROZEN: the momentum-integrated bubble δ⟨φ²⟩ = ∫dq/2π δC(q,0)."""
     got = bubble_delta_phi2(_GOLD_MU, _GOLD_D, _GOLD_T, g=_GOLD_G)
-    assert abs(got - _GOLD_phi2) <= 1e-6 * abs(_GOLD_phi2)
+    assert abs(got - _GOLD_phi2) <= 1e-9 * abs(_GOLD_phi2)
 
 
 def test_golden_bubble_delta_C_q_tau():

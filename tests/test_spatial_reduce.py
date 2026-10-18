@@ -61,7 +61,7 @@ def test_c0_sunset_symanzik(w):
 def test_c0_matrices_shapes():
     Lam, N, Q = symanzik_matrices(_SUNSET_A, _SUNSET_B, [0.5, 0.6, 0.7])
     assert Lam.shape == (2, 2) and N.shape == (2, 1) and Q.shape == (1, 1)
-    assert np.allclose(Lam, Lam.T)                     # Lam symmetric
+    assert np.allclose(Lam, Lam.T, rtol=1e-12, atol=1e-12)                     # Lam symmetric
 
 
 def test_c0_zero_weights_raises():
@@ -95,7 +95,7 @@ def test_c1_l2_sunset_matches_brute_force(q, w):
     ref, _ = integrate.dblquad(integrand, -np.inf, np.inf,
                                lambda _l1: -np.inf, lambda _l1: np.inf)
     ref /= (2 * np.pi) ** 2
-    assert abs(got - ref) <= 1e-6 * max(abs(ref), 1e-300)
+    assert abs(got - ref) <= 1e-9 * max(abs(ref), 1e-300)
 
 
 # ── C1 in higher dimension (the capability backend B's 1-D ∫dℓ lacks) ──
@@ -114,7 +114,7 @@ def test_c1_d2_matches_brute_force(q, w1, w2):
     ref, _ = integrate.dblquad(integrand, -np.inf, np.inf,
                                lambda _lx: -np.inf, lambda _lx: np.inf)
     ref /= (2 * np.pi) ** 2
-    assert abs(got - ref) <= 1e-6 * max(abs(ref), 1e-300)
+    assert abs(got - ref) <= 1e-11 * max(abs(ref), 1e-300)
 
 
 @pytest.mark.parametrize('d', [1, 2, 3, 4])

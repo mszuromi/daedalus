@@ -526,7 +526,7 @@ def test_g6_bound_and_verdicts_on_synthetic_counters():
                       'dd_err_abs_sum': 4e-7, 'dbm_err_abs_sum': 1e-7, 'dd_poset': 5, 'nquad_calls': 1},
                      [0.5, -0.5j])
     d = rep.diagnostics
-    assert d['accuracy_estimate'] == pytest.approx(5e-7)
+    assert d['accuracy_estimate'] == pytest.approx(5e-7, rel=1e-12, abs=0)
     assert d['accuracy_threshold'] == A._G6_DEFAULT_RTOL == 1e-10
     lv = {f.code: f.level for f in rep.findings}
     assert lv['G6_ACCURACY_LOW'] == 'warning' and lv['G6_DIVERGENT_SUBSETS'] == 'warning'
@@ -568,7 +568,7 @@ def test_g6_stiff_without_cancellation_is_quiet():
     res = _run(model, max_ell=1, parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 1e-4},
                policy={'allow_markov_embedding': True})
     rep = res['analysis']
-    assert rep.has('G3_STIFF') and rep.traits.fast_slow_ratio == pytest.approx(1e4, rel=1e-9)
+    assert rep.has('G3_STIFF') and rep.traits.fast_slow_ratio == pytest.approx(1e4, rel=1e-12)
     d = rep.diagnostics
     assert d['n_estimated_subsets'] > 0 and d['accuracy_estimate'] < 1e-12
     assert not rep.has('G6_ACCURACY_LOW')
@@ -587,7 +587,7 @@ def test_g6_flags_the_digits_lost_to_near_degenerate_poles(monkeypatch):
     kw = dict(max_ell=1, policy={'allow_markov_embedding': True}, tau_grid=np.array([0.0, 0.5, 2.0]))
     near = {'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 1 / (1 + 1e-4)}
     res = _run(model, parameters=near, **kw)
-    assert abs(complex(res['C_tau_by_ell'][1][0]).real - (-0.0900074997)) < 1e-9
+    assert abs(complex(res['C_tau_by_ell'][1][0]).real - (-0.0900074997)) < 1e-11
     rep = res['analysis']
     assert res['pole_clusters']['status'] == 'resolved' and rep.has('G3_CLOSE_POLES')
     assert not rep.has('G6_ACCURACY_LOW') and rep.diagnostics['accuracy_estimate'] < 1e-10

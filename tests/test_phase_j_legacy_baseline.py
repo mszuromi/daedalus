@@ -513,7 +513,7 @@ def test_delta_table_verdicts():
     assert rows['same']['max_abs'] == 0.0
     assert rows['jitter']['verdict'] == 'unchanged'
     assert rows['moves']['verdict'] == 'MOVES'
-    assert rows['moves']['max_rel'] == pytest.approx(0.5)
+    assert rows['moves']['max_rel'] == pytest.approx(0.5, rel=1e-12)
     assert (rows['moves']['nquad_before'], rows['moves']['nquad_after']) == (4, 0)
     # moved although the baseline saw no zero-normal row and the new run
     # decided nothing the M1 rules can change (Z.M1_VALUE_KEYS all 0)

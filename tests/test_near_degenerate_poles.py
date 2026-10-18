@@ -136,7 +136,7 @@ def colored():
 def test_colored_ou_matches_the_exact_reference(colored, gap):
     r = colored[gap]
     tree_ref, loop_ref = _colored_ref(1 / (1 + gap))
-    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=RTOL, atol=0)
+    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=1e-10, atol=0)
     np.testing.assert_allclose(_real(r['C_tau_by_ell'][1]), loop_ref, rtol=RTOL, atol=0)
     pc = r['pole_clusters']
     if gap <= 5e-2:                    # the pair is a cluster (5 % relative) with kappa > 10
@@ -182,7 +182,7 @@ def test_long_tau_grid_keeps_its_accuracy():
     taus = [0.0, 2.0, 10.0, 30.0, 50.0]
     r = _run(_load('ou_quartic_colored'), _params(1e-6), tau=taus, policy=_MARKOV)
     tree_ref, loop_ref = _colored_ref(1 / (1 + 1e-6), taus=['0'] + [str(t) for t in taus[1:]])
-    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=RTOL, atol=0)
+    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=1e-10, atol=0)
     np.testing.assert_allclose(_real(r['C_tau_by_ell'][1]), loop_ref, rtol=RTOL, atol=0)
     pc = r['pole_clusters']
     assert pc['status'] == 'resolved' and pc['clusters'][0]['h'] <= 3 / 50 + 1e-15
@@ -313,7 +313,7 @@ def test_trapezoid_combination_and_tail_estimate():
         vals = [np.array([1 / (1 - w / 4)]) for w, _, _ in nodes]
         F0 = PC.combine_values(vals, nodes)[0]
         err = PC.tail_estimate(vals, nodes, N)[0]
-        assert abs(F0 - 1) == pytest.approx(4.0 ** -N / (1 - 4.0 ** -N), rel=1e-6)
+        assert abs(F0 - 1) == pytest.approx(4.0 ** -N / (1 - 4.0 ** -N), rel=1e-12, abs=0)
         assert err >= abs(F0 - 1)
     assert len(dummy.nodes(True)) == N // 2 + 1 and len(dummy.nodes(False)) == N
 

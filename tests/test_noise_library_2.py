@@ -84,7 +84,7 @@ def test_source_cumulants_match_closed_forms(name):
     make, ref = SOURCES[name]
     src = make()
     for m in M4:
-        assert _f(src, m) == pytest.approx(ref[m], rel=1e-10, abs=1e-13), (name, m)
+        assert _f(src, m) == pytest.approx(ref[m], rel=1e-12, abs=1e-13), (name, m)
 
 
 def test_symbolic_cumulants():
@@ -198,7 +198,7 @@ def test_action_round_trip(name):
     want = xt0 * (Dt * x0 + mu * x0) - src.cgf(theta=xt0)
     for pt in ({'x_0': 0.3, 'xt_0': 0.05, 'Dt': 0.7, 'mu': 1.3}, {'x_0': -0.2, 'xt_0': -0.02, 'Dt': 0.1, 'mu': 0.6}):
         assert abs(complex(got.subs({SR.var(k): v for k, v in pt.items()}))
-                   - complex(want.subs({SR.var(k): v for k, v in pt.items()}))) < 1e-9
+                   - complex(want.subs({SR.var(k): v for k, v in pt.items()}))) < 1e-12
 
 
 def test_jump_law_action_round_trip():
@@ -209,7 +209,7 @@ def test_jump_law_action_round_trip():
     xt0 = SR.var('xt_0')
     sub = {SR.var('x_0'): 0.4, xt0: 0.3, SR.var('Dt'): 0.2, SR.var('mu'): 1.1, SR.var('lam'): 2.0}
     want = xt0 * (SR.var('Dt') * SR.var('x_0') + SR.var('mu') * SR.var('x_0')) - 2.0 * (2.0 / (2.0 - xt0) - 1)
-    assert abs(complex(got.subs(sub)) - complex(want.subs(sub))) < 1e-9
+    assert abs(complex(got.subs(sub)) - complex(want.subs(sub))) < 1e-12
 
 
 @pytest.mark.parametrize('make, match', [
@@ -354,8 +354,8 @@ def test_meixner_inversion_table_is_accurate():
         zm = 0.5 * (z[1:] + z[:-1])
         mean = (pdf_mass * zm).sum()
         var = (pdf_mass * (zm - mean) ** 2).sum()
-        assert mean == pytest.approx(d * tan(beta / 2), rel=2e-4, abs=1e-6)
-        assert var == pytest.approx(d / (2 * cos(beta / 2) ** 2), rel=2e-3)
+        assert mean == pytest.approx(d * tan(beta / 2), rel=1e-5)
+        assert var == pytest.approx(d / (2 * cos(beta / 2) ** 2), rel=1e-5)
 
 
 def test_telegraph_noise_is_a_state_dependent_poisson_source():
@@ -368,7 +368,7 @@ def test_telegraph_noise_is_a_state_dependent_poisson_source():
     assert _same(src.cgf(theta=th), SR.var('g') * ((-2 * ss * th).exp() - 1))
     count = N.Poisson(rate='g', size=1)
     rng = np.random.default_rng(5)
-    n, dt, steps = 40000, 0.05, 40
+    n, dt, steps = 40000, 0.05, 10      # tau = 0.5: the expected value 0.14 >> its 5 sigma (0.016)
     s = rng.choice([-a, a], n)
     s0 = s.copy()
     for _ in range(steps):
@@ -416,7 +416,7 @@ def test_ou_tree_k2_k3_match_exact_stationary_cumulants(name):
     model = _ou_model(src)
     for k in (2, 3):
         want = _f(src, k) / (k * MU)
-        assert _tree(model, k) == pytest.approx(want, rel=1e-5 if k == 2 else 1e-8), (name, k)
+        assert _tree(model, k) == pytest.approx(want, rel=1e-11), (name, k)
 
 
 @pytest.mark.parametrize('name', ['vg', 'nig', 'meixner', 'bilateral_gamma', 'neg_binomial_process', 'cp_phase_type'])
@@ -443,7 +443,7 @@ def test_levy_driven_ou_builder():
     assert 'mu' in s.action_text()
     model = s.stability_analysis(True).build()
     src = N.VarianceGamma(0.1, 0.3, 0.5)
-    assert _tree(model, 2) == pytest.approx(_f(src, 2) / (2 * MU), rel=1e-5)
+    assert _tree(model, 2) == pytest.approx(_f(src, 2) / (2 * MU), rel=1e-12)
 
 
 def test_sum_operator_and_flattening():
@@ -496,7 +496,7 @@ def test_truncated_series_guard_covers_sums_and_the_action():
 
 def test_k0_tolerance_is_relative_to_the_rates():
     big = N.CompoundPoisson(1e8, N.DoubleExponential(0.7, 3.3, 2.1))
-    assert _f(big, 1) == pytest.approx(1e8 * (0.7 / 3.3 - 0.3 / 2.1), rel=1e-9)
+    assert _f(big, 1) == pytest.approx(1e8 * (0.7 / 3.3 - 0.3 / 2.1), rel=1e-12)
     with pytest.raises(NoiseError, match='K\\(0\\)'):
         N.CGF('lam*exp(a*theta)')
 

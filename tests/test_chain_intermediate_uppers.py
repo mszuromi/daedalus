@@ -129,7 +129,7 @@ def test_m3_intermediate_upper_at_position_1_matches_recursive_quad():
     im_total, _ = quad(f2_im, L, U_top,
                        epsrel=1e-9, epsabs=1e-12, limit=200)
     ref = complex(re_total, im_total)
-    assert abs(val - ref) < 1e-6 * max(1.0, abs(ref)), (
+    assert abs(val - ref) < 1e-12 * max(1.0, abs(ref)), (
         f'helper={val}, scipy={ref}, |Δ|={abs(val - ref):.3e}'
     )
 
@@ -189,7 +189,7 @@ def test_m3_two_intermediate_uppers_matches_recursive_quad():
     im_total, _ = quad(outer_im, L, U_top,
                        epsrel=1e-9, epsabs=1e-12, limit=200)
     ref = complex(re_total, im_total)
-    assert abs(val - ref) < 1e-5 * max(1.0, abs(ref)), (
+    assert abs(val - ref) < 1e-6 * max(1.0, abs(ref)), (
         f'helper={val}, scipy={ref}, |Δ|={abs(val - ref):.3e}'
     )
 

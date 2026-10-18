@@ -93,7 +93,7 @@ def test_bubble_loop_kinematics_match_oracle(rd_ell1):
         for t in (0.05, 0.4, 1.2):
             got_R = loop_self_energy(sR, q, t, mu, D, T)
             ref_R = sigma_parametric(bubble_edges('R'), q, t, mu, D, T)
-            assert abs(got_R - ref_R) <= 1e-9 * (abs(ref_R) + 1e-12), \
+            assert abs(got_R - ref_R) <= 1e-12 * (abs(ref_R) + 1e-12), \
                 f"Σ_R mismatch at q={q},t={t}: {got_R} vs {ref_R}"
 
             got_K = loop_self_energy(sK, q, t, mu, D, T)
