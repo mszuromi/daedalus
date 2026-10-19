@@ -8,13 +8,19 @@ Dominicis (MSRJD) action, enumerates the Feynman diagrams and evaluates every di
 integral exactly, with no hand derivation. It is built on [SageMath](https://www.sagemath.org/).
 
 ```python
+from api.sde import SDE
+from api.noise import Gaussian
+from api import compute_cumulants
+
 m = (SDE('quartic OU')
      .parameter('mu', default=1.0).parameter('eps', default=0.02).parameter('D', default=1.0)
      .field('x')
      .drift('x', '-mu*x - eps*x^3')
      .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
-res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)])
+res = compute_cumulants(m, k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)])
 ```
+
+`compute_cumulants` and `dd.run` take the `SDE` object itself or its built model dict (`m.build()`).
 
 ## Why
 
@@ -138,7 +144,7 @@ draws exact increments for all sources except `Cumulants` / `CGF`.
 | Statistics | stationary cumulants of any order `k`; switch-on transients from a mean-field initial state | the practical size is set by the diagram count: e.g. `k = 2` up to three loops for one white-noise field, `k = 4` at two loops, `k = 6` at one loop |
 | Noise | Gaussian (white, colored, correlated), Poisson / point processes, finite-moment Lévy sources, state-dependent parameters | heavy-tailed (infinite-moment) stable noise; Stratonovich conversion for Gaussian noise only; two-state (telegraph) noise is simulable but not expandable |
 | Time structure | rational kernels, hard and distributed delays (exact tree, Padé loops) | time-independent dynamics: no explicit `t` in the equations |
-| Space | stochastic PDEs in `d = 1..3`, `k = 2`, up to two loops | derivative (transport) vertices such as KPZ or conserved Model B are outside the stationary-saddle cumulants |
+| Space | stochastic PDEs in `d = 1..3`: two-point functions (`k = 2`) up to two loops; a result whose quadrature accuracy is not certified carries `status = 'approximate'` | the API serves `k = 2` only (the integrator's `k = 3` is checked against simulation but not exposed); derivative (transport) vertices such as KPZ or conserved Model B are outside the stationary-saddle cumulants |
 | Outputs | `C(τ)` on any grid or at any lag, spectra, kernel integrals, δ components, symbolic rational results | symbolic results for state-space-representable models only (no conductance kernels, size limits) |
 
 ## Requirements
@@ -268,8 +274,9 @@ theory     [0.0172 0.0141 0.0095]
 simulation [0.0207 0.0128 0.0089] +- [0.0021 0.0014 0.0018]
 ```
 
-Check `res['status']` after a run: `'incomplete'` means some diagrams could not be evaluated and
-the result is missing those terms (the run also warns).
+Check `res['status']` after a run: `'ok'` is complete; `'incomplete'` means some diagrams could not be
+evaluated and the result is missing those terms; a spatial result whose quadrature accuracy is not
+certified is `'approximate'` (each case also warns).
 
 ## Running from a config file
 
@@ -383,8 +390,10 @@ spatial model) uses the pole engine automatically, and the result records which 
 each part (`result['phase_j_engine']`). To use the pole engine everywhere, set
 `DAEDALUS_PHASE_J_ENGINE=poles` before the run (for example `DAEDALUS_PHASE_J_ENGINE=poles python
 script.py`); this gives the numbers of the release before the change. Phase J refuses to exhaust
-memory: `PHASE_J_MEM_BUDGET_GB` (default 6, or `off`) sets the cap, and a run over it stops with
-`PhaseJResourceError` and the numbers to raise it. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+memory: `PHASE_J_MEM_BUDGET_GB` sets the cap in GB (`off` for no limit; zero or a negative value is
+refused). Unset, the cap is the smaller of 6 GB and 60 % of the machine's memory minus what the process
+already holds (at least 0.5 GB or 10 % of the memory). A run over it stops with `PhaseJResourceError` and
+the numbers to raise it. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Prediagram cache
 
@@ -455,8 +464,10 @@ sage -python -m pytest tests/ -q
 See [`CHANGELOG.md`](CHANGELOG.md). Version 0.2.0 changes the numbers of some models with
 instantaneous (δ) propagator parts, and integrates every Phase J region exactly, without an
 integration box, which moves models with slow modes (for example the one-loop of
-`single_population_quad_exp_test` by up to 6 %). `DAEDALUS_PHASE_J_DD_KERNELS=0` restores the
-boxed integration and `DAEDALUS_PHASE_J_LEGACY=1` the pre-0.2.0 numbers. Files saved with
+`single_population_quad_exp_test` by up to 6 %). The switches that once restored the earlier
+behaviour (`DAEDALUS_PHASE_J_DD_KERNELS`, `DAEDALUS_PHASE_J_LEGACY` and other rollback switches) are
+retired: setting one only warns, and the pre-0.2.0 numbers exist only as frozen baselines in the test
+suite. Files saved with
 `dd.save_npz` record the version that wrote them, and `dd.load_npz` warns when a file predates
 the change.
 

@@ -25,7 +25,7 @@ All notebooks run on the shared `daedalus` engine (imported as `dd`) — see the
 | 04 | [Delays](tutorials/04_delays.ipynb) | hard and distributed delays, Padé loops, a delay in a nonlinear term | ~1 min |
 | 05 | [Outputs](tutorials/05_outputs.ipynb) | `dd.cumulant`, spectra, kernel integrals, `k = 3`, symbolic results, transients | < 1 min |
 | 06 | [Writing the action by hand](tutorials/06_actions_by_hand.ipynb) | `TemporalModelBuilder`; model files; `dd.Config` / `dd.run` | < 1 min |
-| 07 | [Spatial models](tutorials/07_spatial.ipynb) | stochastic PDEs; pointers to the spatial examples | ~1 min |
+| 07 | [Spatial models](tutorials/07_spatial.ipynb) | stochastic PDEs; pointers to the spatial examples | < 1 min |
 
 ## The shared flow — load → run → plot
 
