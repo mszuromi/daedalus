@@ -20,8 +20,18 @@ from sage.all import SR
 
 
 def _distinct_permutations(seq):
-    """Yield each distinct permutation of *seq* exactly once."""
-    return set(permutations(seq))
+    """Each distinct permutation of *seq* exactly once, in a canonical order.
+
+    The order is by content, never by hash: the external fields are strings,
+    whose hash (and so the iteration order of a set of them) changes with
+    ``PYTHONHASHSEED``.  The deduplication downstream keeps the first diagram
+    of each class, so a hash-ordered list made the representative -- and the last
+    bits of the cumulant -- depend on the seed."""
+    perms = set(permutations(seq))
+    try:
+        return sorted(perms)
+    except TypeError:                       # fields that do not compare
+        return sorted(perms, key=repr)
 
 
 from functools import lru_cache

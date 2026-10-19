@@ -1,11 +1,12 @@
 # Phase J without an integration box: the exact unbounded routes
 
-Status: the default since 0.2.0 (M9, Oct 2026), the only route since audit W7 (which retired
-the switches back to the boxed routes, `DAEDALUS_PHASE_J_DD_KERNELS`, `..._SEMIINF_CHAIN`,
-`..._UNBOUNDED_2D`, and the umbrella `DAEDALUS_PHASE_J_LEGACY`). Code: `engine/integration/time_domain/boxfree.py`
-(kernels), `final_integral.py` (routing, certificate, divergence policy), `expdd.py` (divided
-differences), `dbm_integral.py` (the exact difference-constraint route). Local document (docs/ is
-git-ignored); the public description is CHANGELOG 0.2.0.
+Status: these are the only Phase J routes. The switches that selected the older boxed routes
+(`DAEDALUS_PHASE_J_DD_KERNELS`, `..._SEMIINF_CHAIN`, `..._UNBOUNDED_2D` and the umbrella
+`DAEDALUS_PHASE_J_LEGACY`) are retired: setting one warns and has no effect. The box-free routes were
+the default from 0.2.0. Code: `engine/integration/time_domain/boxfree.py` (kernels),
+`final_integral.py` (routing, certificate, divergence policy), `expdd.py` (divided differences),
+`dbm_integral.py` (the exact difference-constraint route). The public description is the 0.2.0 entry of
+`CHANGELOG.md`.
 
 ## 1. Setting
 
@@ -80,9 +81,9 @@ a region that would reach the `scipy` fallback with it raises (the fallback cann
   (`_const_row_verdict`).
 * A row comparing two coincident external times follows the external-time tie order
   (`_tie_order_sign`), so k ≥ 3 values at coincident times are one-sided limits.
-* `DAEDALUS_PHASE_J_LEGACY=1` restored the pre-0.2.0 rule (`'legacy_clip'`, Θ(0) = 1 in the
-  two-time polygon) together with the boxed routes until audit W7 retired it (set, it now warns
-  and is ignored); the pre-0.2.0 numbers are kept as frozen baselines
+* The pre-0.2.0 rule (`'legacy_clip'`, Θ(0) = 1 in the two-time polygon, with the boxed routes) is
+  retired together with its switch `DAEDALUS_PHASE_J_LEGACY` (set, it warns and is ignored); the
+  pre-0.2.0 numbers are kept as frozen baselines
   (`tests/fixtures/phase_j_legacy_baseline.npz`, `tests/phase_j_refactor_fixtures/legacy/`).
 
 ## 5. Post-mortem: the trap
@@ -110,4 +111,4 @@ a region that would reach the `scipy` fallback with it raises (the fallback cann
 `_decay_tol` (the certificate margin), `_divergence_verdict` (the policy), `_DD_BATCH_MIN`
 (where the batched kernels pay), `_dd_accuracy` (the subset-sum error accounting, counters
 `dd_err_ratio_max` / `dd_ill_conditioned`). (The legacy triangle with its bilateral guard and the
-`DAEDALUS_PHASE_J_LEGACY` umbrella were retired in audit W7.)
+`DAEDALUS_PHASE_J_LEGACY` umbrella are retired.)
