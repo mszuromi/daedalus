@@ -341,8 +341,13 @@ def test_mixed_field_units_keep_the_stable_saddle(power):
                 and not p.get('mean_field')}
         st = _quiet(linear_stability, m, fund, root)
         assert st['stable']
-        eig.append(np.sort_complex(np.asarray(st['eigenvalues_finite'])))
-    assert eig[1] == pytest.approx(eig[0], rel=1e-9)
+        eig.append(np.asarray(st['eigenvalues_finite'], dtype=complex))
+    # matched as a multiset (each eigenvalue to its nearest counterpart):
+    # sorting a complex-conjugate pair is decided by last-ulp differences of
+    # its real parts and can swap the pair between platforms
+    assert len(eig[1]) == len(eig[0])
+    for z in eig[1]:
+        assert np.min(np.abs(eig[0] - z)) <= 1e-9 * abs(z), (z, eig[0])
 
 
 def _tracked_twin(name, base, twin_of, ext, taus, ell, factor):
