@@ -284,6 +284,9 @@ _RUNTIME_COUNTERS = _CounterDict({
     # certificate) and the legacy ±200 cap was used:
     'nquad_hardened_uncertified': 0,
     'nquad_hardened_floor_cut': 0,
+    # the hardened fallback's QUADPACK error estimates (absolute, in the
+    # units of the subset integrals; G6 adds them to the accuracy estimate)
+    'nquad_hardened_err_abs_sum': 0.0,
     # entries without mode data (epsabs from a pre-sample of the integrand,
     # open sides at the legacy cap, no geometric breakpoints):
     'nquad_hardened_no_modes': 0,
