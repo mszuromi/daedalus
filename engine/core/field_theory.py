@@ -462,10 +462,14 @@ _NONZERO_PROBE_OPERATORS = frozenset({
 
 
 def _is_float_literal(po) -> bool:
-    """A real floating-point constant (Python ``float`` or Sage real number)."""
+    """A floating-point constant: Python ``float`` / ``complex`` or a Sage
+    real or complex number (``0.5*I`` folds into one complex float)."""
     from sage.rings.real_double import RealDoubleElement
     from sage.rings.real_mpfr import RealNumber
-    return isinstance(po, (float, RealNumber, RealDoubleElement))
+    from sage.rings.complex_double import ComplexDoubleElement
+    from sage.rings.complex_mpfr import ComplexNumber
+    return isinstance(po, (float, complex, RealNumber, RealDoubleElement,
+                           ComplexNumber, ComplexDoubleElement))
 
 
 def _interval_safe(c, floats_ok: bool = False) -> bool:
@@ -487,6 +491,30 @@ def _interval_safe(c, floats_ok: bool = False) -> bool:
     if _sr_op_name(op) not in _NONZERO_PROBE_OPERATORS:
         return False
     return all(_interval_safe(o, floats_ok) for o in c.operands())
+
+
+# Complex interval arithmetic is rigorous for these without a branch cut
+# (log, arctan and fractional powers are left to ``bool(c)``).
+_NONZERO_PROBE_OPERATORS_COMPLEX = frozenset({
+    'add_vararg', 'mul_vararg', 'pow', 'exp', 'sin', 'cos', 'tan',
+    'sinh', 'cosh', 'tanh',
+})
+
+
+def _complex_interval_safe(c) -> bool:
+    """Operators whose complex interval extension has no branch cut, and
+    integer powers only (the constants were checked by ``_interval_safe``)."""
+    op = c.operator()
+    if op is None:
+        return True
+    name = _sr_op_name(op)
+    if name not in _NONZERO_PROBE_OPERATORS_COMPLEX:
+        return False
+    if name == 'pow':
+        ex = c.operands()[1]
+        if not (ex.is_numeric() and ex.is_integer()):
+            return False
+    return all(_complex_interval_safe(o) for o in c.operands())
 
 
 def _probe_value(k: int):
@@ -545,7 +573,8 @@ _FLOAT_MARGIN = SR(1) / 10 ** 8
 _FLOAT_PATTERNS = ((1,), (-1,), (1, -1), (-1, 1))
 
 
-def _proved_nonzero(c, floats_ok: bool = False) -> bool:
+def _proved_nonzero(c, floats_ok: bool = False,
+                    above_float_dust: bool = False) -> bool:
     """True only if ``c`` is shown to be a nonzero function on its
     assumption domain: interval arithmetic (128 bits) at a probe point that
     satisfies every assumption excludes 0.  Never raises; False means "not
@@ -557,6 +586,12 @@ def _proved_nonzero(c, floats_ok: bool = False) -> bool:
     expression that cancels to float dust (``exp(-0.3*x)*exp(0.1*x) -
     exp(-0.2*x)``, floats an ulp apart) is not claimed nonzero: Sage and
     Maxima call it zero.
+
+    ``above_float_dust`` (with ``floats_ok``, when ``c`` has float
+    literals): also require ``|c| > 2^-30`` times the magnitude of its terms
+    at the point (:func:`_term_magnitude`).  A float expression whose exact
+    value is below the double-precision rounding of its own terms (an
+    ``(a+b)^2 - a^2 - 2ab - b^2`` of complex floats) is zero to ``bool``.
     """
     try:
         from sage.ext.fast_callable import fast_callable
@@ -574,16 +609,81 @@ def _proved_nonzero(c, floats_ok: bool = False) -> bool:
                 return 0
             return 1 if val.lower() > 0 else -1
 
-        sg = sign_of(c)
+        try:
+            sg = sign_of(c)
+        except (TypeError, ValueError, ArithmeticError):
+            # a complex constant (``I*omega`` of a Fourier image): the same
+            # proof in complex interval arithmetic, entire functions only
+            if not _complex_interval_safe(c):
+                return False
+            from sage.rings.complex_interval_field import (
+                ComplexIntervalField)
+            CIF128 = ComplexIntervalField(128)
+            cargs = [CIF128(val_of[repr(v)]) for v in vs]
+
+            def sign_of(expr):
+                val = fast_callable(expr, vars=vs, domain=CIF128)(*cargs)
+                re, im = val.real(), val.imag()
+                out = (0 if re.contains_zero() else (1 if re.lower() > 0
+                                                     else -1),
+                       0 if im.contains_zero() else (1 if im.lower() > 0
+                                                     else -1))
+                return 0 if out == (0, 0) else out
+
+            sg = sign_of(c)
         if sg == 0:
             return False
         if floats_ok and not _interval_safe(c, False):
             for pat in _FLOAT_PATTERNS:
                 if sign_of(_perturb_floats(c, pat, _FLOAT_MARGIN)) != sg:
                     return False
+            if above_float_dust:
+                from sage.rings.complex_interval_field import (
+                    ComplexIntervalField)
+                CIF128 = ComplexIntervalField(128)
+                cargs = [CIF128(val_of[repr(v)]) for v in vs]
+                mag = fast_callable(c, vars=vs, domain=CIF128)(*cargs).abs()
+                scale = _term_magnitude(c, vs, cargs, CIF128)
+                if not mag.lower() > _FLOAT_DUST_REL * scale.upper():
+                    return False
         return True
     except Exception:
         return False
+
+
+# A float expression is not claimed nonzero below this fraction of the
+# magnitude of its terms (double rounding is ~1e-16 of it per operation).
+_FLOAT_DUST_REL = 2.0 ** -30
+
+
+def _term_magnitude(c, vs, cargs, CIF):
+    """Upper magnitude of ``c`` with every sum replaced by the sum of the
+    magnitudes of its terms (products and integer powers of term
+    magnitudes; any other operator is the magnitude of its own value), at
+    the point ``cargs``: the scale its float rounding is relative to."""
+    from sage.ext.fast_callable import fast_callable
+    memo = {}
+
+    def mag(e):
+        key = repr(e)
+        if key in memo:
+            return memo[key]
+        op = e.operator()
+        name = _sr_op_name(op) if op is not None else None
+        if name == 'add_vararg':
+            r = sum(mag(o) for o in e.operands())
+        elif name == 'mul_vararg':
+            r = 1
+            for o in e.operands():
+                r = r * mag(o)
+        elif (name == 'pow' and e.operands()[1].is_numeric()
+              and e.operands()[1].is_integer() and e.operands()[1] >= 0):
+            r = mag(e.operands()[0]) ** int(e.operands()[1])
+        else:
+            r = fast_callable(e, vars=vs, domain=CIF)(*cargs).abs()
+        memo[key] = r
+        return r
+    return mag(SR(c))
 
 
 def _sr_nonzero(c) -> bool:
@@ -600,9 +700,38 @@ def _sr_nonzero(c) -> bool:
     c = SR(c)
     if c.is_trivial_zero():
         return False
+    # the same large coefficient is tested once per typed diagram
+    # (``classify_coefficient_factors``): the verdict is memoised on its
+    # GiNaC hash (exact float bits), a digest of its ``repr`` and the
+    # assumptions in force (never ``==`` on SR, which can itself go to
+    # Maxima)
+    import hashlib
+    from sage.symbolic.assumptions import assumptions
+    key = (hash(c), hashlib.sha1(repr(c).encode()).digest(),
+           repr(assumptions()))
+    hit = _NONZERO_MEMO.get(key)
+    if hit is not None:
+        return hit
     if _proved_nonzero(c):
-        return True
-    return bool(c)
+        out = True
+    # Float coefficients (numeric rates baked into the action): Sage's
+    # random-point test cannot certify a float expression, so ``bool(c)``
+    # always asks Maxima, seconds per large coefficient (and an ECL stack
+    # overflow on a whole multi-field action).  A proof that survives
+    # perturbing every float by 1e-8 (``floats_ok``) is one ``bool(c)``
+    # reaches too: a float expression that cancels to dust fails it.
+    elif _proved_nonzero(c, floats_ok=True, above_float_dust=True):
+        out = True
+    else:
+        out = bool(c)
+    if len(_NONZERO_MEMO) >= _NONZERO_MEMO_MAX:
+        _NONZERO_MEMO.clear()
+    _NONZERO_MEMO[key] = out
+    return out
+
+
+_NONZERO_MEMO: dict = {}
+_NONZERO_MEMO_MAX = 4096
 
 
 def _ring_from_nonzero_dict(R, d: dict):
@@ -666,9 +795,12 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
     result = R.zero()
 
     expanded = SR(sr_expr).expand()
-    if not _sr_nonzero(expanded):
-        # same verdict as ``is_zero()``; the fast path avoids one Maxima
-        # call on the whole action
+    if expanded.is_trivial_zero():
+        # The whole-action zero test is not needed: the ring monomials are
+        # independent, so the action is zero exactly when every coefficient
+        # is, and each coefficient is tested below.  (Testing the whole
+        # expanded action sent one huge expression to Maxima: an ECL
+        # BINDING-STACK overflow on a three-field jump model.)
         return result
 
     # Collect summands.  For a sum, .operands() gives the addends correctly.
