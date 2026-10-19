@@ -91,6 +91,9 @@ import numpy as np
 #   (``daedalus._kpoint_slice_times``), so those points moved too, and so
 #   did the k ≥ 3 moment outputs (``Config.output = 'moment'`` or
 #   ``'central_moment'``), now evaluated at the times of slice 1.
+#   (Since Oct 2026 those points are evaluated at the exact tie instead,
+#   ``daedalus._kpoint_slice_point``: every k ≥ 3 slice point moves by
+#   O(rate x 1e-6) once more.)
 #
 # Saved results of models with δ / instantaneous propagator parts may
 # therefore differ from a fresh computation.  Every saved file carries the

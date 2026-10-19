@@ -82,6 +82,12 @@ runs), 6.4 min of it
 multipopulation_test; the tie test of item 5 adds 35 s when it follows
 the multipopulation slice test (it reuses that build) and ~6 min alone.
 
+Both placements are checked: every test runs under DAEDALUS_TAU0=exact (the
+default since Oct 2026: the swept leg at the exact tie, listed last, so the
+engine's tie order makes the point the left limit at tau itself,
+``daedalus._kpoint_slice_point``) and under DAEDALUS_TAU0=nudge (the
+placement described above, ``daedalus._kpoint_slice_times``).
+
 Run:  sage -python -m pytest tests/test_kpoint_tau0_left_limit.py -q
       sage -python -m pytest tests/test_kpoint_tau0_left_limit.py -q -m slow
 """
@@ -168,6 +174,17 @@ def _lagrange(xs, ys, x):
                 w *= (x - xm) / (xi - xm)
         out += w * ys[i]
     return out
+
+
+@pytest.fixture(autouse=True, params=['exact', 'nudge'])
+def tau0_mode(request, monkeypatch):
+    """Every test under both k >= 3 tie placements (``DAEDALUS_TAU0``)."""
+    monkeypatch.setenv('DAEDALUS_TAU0', request.param)
+    return request.param
+
+
+def _exact():
+    return os.environ.get('DAEDALUS_TAU0', 'exact') == 'exact'
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -351,10 +368,13 @@ def _pre_change_daedalus():
 
 
 def test_k2_never_reaches_the_slice_code(private_cwd, monkeypatch):
+    if not _exact():
+        pytest.skip('k = 2 follows its own DAEDALUS_TAU0 rule (a nudge at tau = 0)')
     def _boom(*_a, **_k):
         raise AssertionError('k = 2 must not use the k>=3 slice times')
     monkeypatch.setattr(dd, '_kpoint_slice_times', _boom)
     monkeypatch.setattr(dd, '_kpoint_pinned_time', _boom)
+    monkeypatch.setattr(dd, '_kpoint_slice_point', _boom)
     model, mod = dd.load_model('ou_quartic')
     res = dd.run(model, dd.Config(k=2, max_ell=0, parameters=_P_OU,
                                   tau_grid=np.array([-1.0, 0.0, 1.0])), mod)
@@ -374,7 +394,8 @@ _RUNS = {}
 
 def _run(which, k, grid, base=None):
     """``dd.run`` of the <a b a ...> tree-level slices, cached per config."""
-    key = (which, k, tuple(grid), None if base is None else tuple(base))
+    key = (which, k, tuple(grid), None if base is None else tuple(base),
+           os.environ.get('DAEDALUS_TAU0', 'exact'))
     if key not in _RUNS:
         name, params, _legs = _MODELS[which]
         model, mod = dd.load_model(name)
@@ -420,7 +441,10 @@ def _check_left_limit(res, j, i0, rtol, jump=True):
     assert np.all(np.isfinite(vals))
     has_right = i0 + 3 < tau.size
     x0 = float(times[i0][j])                  # where the swept leg really is
-    assert x0 < float(tau[i0]), (j, x0)
+    if _exact():
+        assert x0 == float(tau[i0]), (j, x0)  # at the tie itself
+    else:
+        assert x0 < float(tau[i0]), (j, x0)
     # the samples are the plain slice: swept leg at tau, below / above the tie
     samples = list(range(i0 - 3, i0))
     if has_right:
@@ -437,9 +461,14 @@ def _check_left_limit(res, j, i0, rtol, jump=True):
     if jump:
         assert has_right and abs(right - left) > _JUMP * abs(left), (
             j, left, right)
-    # the point is the cumulant at the recorded times
+    # the point is the cumulant at the recorded times, in the recorded leg
+    # order (exact mode: the swept leg last at a tie; a run on the permuted
+    # legs when they are of different fields, not reachable from here)
     fn = res['total_C']
-    assert complex(fn(*[float(x) for x in times[i0]])).real == v
+    order = [int(o) for o in res['_kpoint_slice_orders'][j][i0]]
+    legs = res['_resolved']['external_fields'] if '_resolved' in res else None
+    if order == sorted(order) or (legs and len({tuple(x) for x in legs}) == 1):
+        assert complex(fn(*[float(times[i0][o]) for o in order])).real == v
     return v, left, right
 
 
@@ -470,12 +499,18 @@ def test_k3_linear_delta_base_lag_crossings_are_left_limits(private_cwd):
     for j, cross in ((1, 0.3), (2, 0.5)):
         i0 = tau.index(cross)
         times = res['_kpoint_slice_times'][j][i0]
-        assert list(times) == dd._kpoint_slice_times(base, j, cross, EPS)
-        assert times[j] == cross - EPS
+        if _exact():
+            assert times[j] == cross              # snapped onto the leg met
+            assert list(times) == dd._kpoint_slice_point(base, j, cross, 0.5)[0]
+        else:
+            assert list(times) == dd._kpoint_slice_times(base, j, cross, EPS)
+            assert times[j] == cross - EPS
         _check_left_limit(res, j, i0, _RTOL_ANALYTIC)
-        # tau = 0: the swept leg meets only the anchor (-_ITO_EPS, unchanged)
+        # tau = 0: the swept leg meets only the anchor
         i0 = tau.index(0.0)
-        assert list(res['_kpoint_slice_times'][j][i0]) == _old_times(base, j, 0.0)
+        if not _exact():                          # (-_ITO_EPS, unchanged)
+            assert list(res['_kpoint_slice_times'][j][i0]) == _old_times(
+                base, j, 0.0)
         _check_left_limit(res, j, i0, _RTOL_ANALYTIC, jump=False)
 
 
@@ -631,7 +666,8 @@ def test_k3_central_moment_is_slice_1_including_its_tau0_left_limit(
     tie = complex(res['total_C'](0.0, 0.0, 0.0)).real
     m0 = float(np.real(res['moment'][1]))
     assert abs(m0 - tie) > _JUMP * abs(m0), (m0, tie)
-    assert complex(res['total_C'](0.0, -2 * EPS, -EPS)).real == m0
+    if not _exact():
+        assert complex(res['total_C'](0.0, -2 * EPS, -EPS)).real == m0
 
 
 def test_k4_central_moment_kappa4_block_is_slice_1(private_cwd):
@@ -655,4 +691,8 @@ def test_k4_central_moment_kappa4_block_is_slice_1(private_cwd):
     assert np.allclose(k4, c, rtol=1e-13, atol=0), (k4, c)
     old = np.array([complex(r4['total_C'](0.0, float(t), 0.0, 0.0)).real
                     for t in (-0.5, 0.5)])
-    assert np.all(np.abs(old - c[[0, 2]]) > 1e-8 * np.abs(c[[0, 2]]))
+    if _exact():
+        # exact ties: the block times ARE (0, tau, 0, 0)
+        assert np.array_equal(old, c[[0, 2]])
+    else:
+        assert np.all(np.abs(old - c[[0, 2]]) > 1e-8 * np.abs(c[[0, 2]]))

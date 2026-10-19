@@ -325,7 +325,8 @@ def test_sde_refuses_a_parameter_declared_twice():
 def test_k3_slice_failure_marks_incomplete_and_warns(monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError('slice evaluation failed')
-    monkeypatch.setattr(dd, '_kpoint_slice_times', boom)
+    monkeypatch.setattr(dd, '_kpoint_slice_times', boom)     # DAEDALUS_TAU0=nudge
+    monkeypatch.setattr(dd, '_kpoint_slice_point', boom)     # the default, exact
     cfg = dict(k=3, max_ell=0, tau_grid=[0.0, 1.0],
                external_fields=[('x', 1)] * 3)
     with pytest.warns(PhaseJIncompleteWarning, match='slices'):
@@ -340,6 +341,7 @@ def test_k3_moment_after_a_slice_failure_is_none(monkeypatch):
     def boom(*a, **kw):
         raise RuntimeError('slice evaluation failed')
     monkeypatch.setattr(dd, '_kpoint_slice_times', boom)
+    monkeypatch.setattr(dd, '_kpoint_slice_point', boom)
     with pytest.warns(PhaseJIncompleteWarning, match='slices'):
         r = dd.run(_ou(), dd.Config(k=3, max_ell=0, tau_grid=[0.0, 1.0],
                                     external_fields=[('x', 1)] * 3,
@@ -348,6 +350,9 @@ def test_k3_moment_after_a_slice_failure_is_none(monkeypatch):
 
 
 def test_k3_full_grid_failure_keeps_the_slices(monkeypatch):
+    # the failure is injected through the nudge placement's helper (the
+    # exact full grid uses the nominal times and has no helper to patch)
+    monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
     real = dd._kpoint_pinned_time
 
     def boom(*a, **kw):                 # used by the full grid only

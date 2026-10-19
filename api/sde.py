@@ -1027,6 +1027,12 @@ class SDE:
             # the action holds these CGFs as Taylor polynomials of this order;
             # compute_cumulants refuses (k, max_ell) that would need more
             m['noise_series_order'] = {'order': self._series_order, 'sources': trunc}
+        declared = {n: s['source'].declared_order for n, s in self._sources.items()
+                    if s.get('source') is not None and hasattr(s['source'], 'declared_order')}
+        if declared:
+            # Cumulants([...]) sources: cumulants above the declared order are 0;
+            # compute_cumulants warns when (k, max_ell) can reach them
+            m['noise_declared_orders'] = declared
         return m
 
     def show(self) -> str:
