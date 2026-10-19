@@ -57,8 +57,8 @@ import subprocess                                   # noqa: E402
 import textwrap                                     # noqa: E402
 
 
-def _run_py(code, timeout=600):
-    env = dict(os.environ, PYTHONHASHSEED='0')
+def _run_py(code, timeout=600, seed='0'):
+    env = dict(os.environ, PYTHONHASHSEED=str(seed))
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     code = f"import sys; sys.path.insert(0, {root!r})\n" + textwrap.dedent(code)
     return subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE,
@@ -124,4 +124,34 @@ def test_a_loop_cumulant_is_byte_identical_across_processes():
                for l in sorted(r['C_tau_by_ell'])])
     """
     outs = _collect([_run_py(code) for _ in range(6)])
+    assert len(set(outs)) == 1, outs
+
+
+def test_the_dedup_representative_does_not_depend_on_pythonhashseed():
+    """Two fields give several external-leg permutations; the deduplication keeps the first
+    diagram of each class, and the permutations came from a set of tuples of strings, so the
+    representative (and the last bits of the cumulant) changed with PYTHONHASHSEED."""
+    code = """
+        import warnings; warnings.simplefilter('ignore')
+        import numpy as np
+        from api import compute_cumulants
+        from api.noise import Gaussian
+        from api.sde import SDE
+        m = (SDE('seedtwin').parameter('mu', default=1.0, domain='positive')
+             .parameter('nu', default=2.0, domain='positive').parameter('c', default=0.5)
+             .parameter('eps', default=0.1).parameter('D', default=1.0, domain='positive')
+             .field('x').field('q').drift('x', '-mu*x + c*q - eps*x*q')
+             .drift('q', '-nu*q + eps*x^2')
+             .noise('xi', Gaussian(var='2*D'), couples={'x': 1})
+             .noise('zeta', Gaussian(var='2*D'), couples={'q': 1}).build())
+        out = []
+        for ext in ([('x', 1), ('q', 1)],):
+            r = compute_cumulants(m, k=2, max_ell=2, external_fields=ext,
+                                  tau_grid=np.array([0.0, 0.5, 1.5]), parallel=False,
+                                  verbose=False, use_cache=False)
+            out.append([[float(np.real(z)).hex() for z in np.atleast_1d(r['C_tau_by_ell'][l])]
+                        for l in sorted(r['C_tau_by_ell'])])
+        print(out)
+    """
+    outs = _collect([_run_py(code, seed=sd) for sd in (0, 1, 2, 3, 4, 5)])
     assert len(set(outs)) == 1, outs
