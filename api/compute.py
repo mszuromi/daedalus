@@ -920,7 +920,11 @@ def _realization_check(prop, num_params):
             'err_rel': cond.get('aposteriori_err_rel'),
             'graded': bool(cond.get('graded')),
             'bad_margin': bool(cond.get('bad_margin')),
-            'truncation': _truncation_record(m.real)}
+            'truncation': _truncation_record(m.real),
+            # the run's own realization, for the census to re-read the
+            # truncation record once the dressed lines exist (popped there;
+            # never part of the result)
+            '_real': m.real}
 
 
 def _truncation_record(real):
@@ -971,15 +975,10 @@ def _engine_census(result, counters):
     # the dressed lines are truncated while the run builds them: re-read the
     # realization's record now that the run is over
     rc = rep.get('realization_check')
-    if isinstance(rc, dict) and rc.get('truncation') is not None:
-        try:
-            from engine.integration.time_domain import statespace as _ssr
-            m, _why = _ssr.realization_for(result.get('propagator'),
-                                           result.get('num_params'))
-            if m is not None:
-                rc['truncation'] = _truncation_record(m.real)
-        except Exception:
-            pass
+    if isinstance(rc, dict):
+        real = rc.pop('_real', None)
+        if real is not None:
+            rc['truncation'] = _truncation_record(real)
     pc = result.get('pole_clusters')
     if (isinstance(pc, dict) and pc.get('status') == 'bypassed'
             and rep.get('pole_deformation') != 'bypassed'
