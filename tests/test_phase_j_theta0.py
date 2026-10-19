@@ -710,9 +710,12 @@ _ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(
 # ``final_integral._const_row_verdict`` instead (or, if it is a legacy
 # branch or downstream of the helper, add it here with the reason).
 _ALLOWED_CONST_ROW_CHECKS = {
-    'final_integral.py': {
-        # the rule itself
+    # the rule itself (moved to the Sage-free module a spawned Phase J
+    # worker evaluates with; final_integral re-exports it, W8p S2)
+    '_light.py': {
         '_const_row_decision': 2,
+    },
+    'final_integral.py': {
         # (the pre-M1 'legacy_clip' branches went with that mode, audit W7)
         # the scipy.nquad fallback: downstream of the helper in
         # ``_integrate_polytope`` (which returns 0 for an EMPTY row and

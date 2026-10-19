@@ -666,8 +666,9 @@ def test_harness_row_kind_tag_flags_constant_rows():
 def test_harness_reports_a_wrong_production_tie_order(monkeypatch):
     """A production tie order flipped at exact ties is caught: the harness
     keeps its own verdict and logs the divergence."""
-    real = FI._tie_order_sign
-    monkeypatch.setattr(FI, '_tie_order_sign',
+    from engine.integration.time_domain import _light
+    real = _light._tie_order_sign            # its one definition (FI re-exports)
+    monkeypatch.setattr(_light, '_tie_order_sign',
                         lambda *a, **k: -real(*a, **k))
     start = len(PSD.RULE_DIVERGENCES)
     ctx = ((0.0, 0.7, 0.7), (1, 2), 0)

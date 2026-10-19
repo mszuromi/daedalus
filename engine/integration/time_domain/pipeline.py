@@ -86,6 +86,16 @@ from engine.errors import DaedalusError
 THREAD_BLOCK_MIN = 256
 #: Default thread count of the fan-out (``n_workers`` overrides).
 DEFAULT_THREADS = 8
+#: Automatic spawned workers (macOS / Windows, outside a Jupyter kernel):
+#: only when a timing sample of the batch predicts at least this many
+#: seconds of serial work (a worker starts in ~0.3 s; S2 measurements).
+SPAWN_MIN_SECONDS = 3.0
+#: Default spawned worker count (``n_workers`` overrides).
+DEFAULT_SPAWN_WORKERS = 4
+#: Opt-in for automatic spawned workers inside a Jupyter kernel (explicit
+#: ``start_method='spawn'`` is the other opt-in).  Off until the manual
+#: notebook checklist has passed on the user's machine.
+SPAWN_KERNEL_ENV = 'DAEDALUS_SPAWN_IN_KERNEL'
 
 #: Fork workers' view of the batch (set before the pool forks).
 _FANOUT = {}
@@ -157,16 +167,17 @@ def _switch_on_now():
 
 def _fan_out(fns, tau_list, parallel, n_workers, start_method):
     """``vals[d][p]`` (complex) of every diagram ``d`` at every point ``p``,
-    computed by a worker pool, or ``None`` when the batch should run
+    computed with a worker pool, or ``None`` when the batch should run
     serially (no parallelism asked or allowed, or nothing a pool would
     speed up).  See the module notes above for the methods."""
     n = len(fns)
     if not parallel or n == 0 or not tau_list or _parallel_off():
         return None
-    if start_method not in (None, 'fork', 'threads'):
+    if start_method not in (None, 'fork', 'threads', 'spawn'):
         raise ValueError(
-            f'start_method={start_method!r}: a Phase J batch runs on threads '
-            f"or (Linux) fork; expected None, 'threads' or 'fork'.")
+            f'start_method={start_method!r}: a Phase J batch runs on threads, '
+            f"spawned workers or (Linux) fork; expected None, 'threads', "
+            f"'spawn' or 'fork'.")
     if _switch_on_now():
         return None             # a switch-on scope is per thread: stay here
     import os
@@ -178,28 +189,213 @@ def _fan_out(fns, tau_list, parallel, n_workers, start_method):
         n_w = _workers_within_budget(want or (os.cpu_count() or 4))
         if n_w > 1 and n >= max(4, 2 * n_w):
             return _fork_fan_out(fns, tau_list, n_w)
+    vals = [None] * n
+    if _spawn_allowed(start_method, fork_ok):
+        done = _spawn_fan_out(fns, tau_list, want or DEFAULT_SPAWN_WORKERS,
+                              explicit=start_method == 'spawn', vals=vals)
+        if done:
+            return vals
+    # threads; diagrams a declined spawn sample already evaluated keep
+    # their values
     blocks = [_diagram_block(fn) for fn in fns]
-    heavy = [d for d in range(n) if blocks[d] >= THREAD_BLOCK_MIN]
+    heavy = [d for d in range(n)
+             if blocks[d] >= THREAD_BLOCK_MIN and vals[d] is None]
     n_t = min(want or DEFAULT_THREADS, os.cpu_count() or 4, len(heavy))
+    if n_t >= 2:
+        # S4: a thread's own memory is its segment work (the states are
+        # shared and already charged): a few vectors of the largest block
+        from engine import worker_budget as _wb
+        n_t, _share = _wb.workers_that_fit(
+            n_t, 2**20 + 64 * max(blocks[d] for d in heavy),
+            'parallel_workers_capped_by_budget')
     if n_t < 2:
-        return None
-    return _thread_fan_out(fns, tau_list, heavy, blocks, n_t)
+        if all(v is None for v in vals):
+            return None
+        _fill_serial(fns, tau_list, vals)
+        return vals
+    return _thread_fan_out(fns, tau_list, heavy, blocks, n_t, vals)
 
 
-def _thread_fan_out(fns, tau_list, heavy, blocks, n_t):
+def _fill_serial(fns, tau_list, vals, which=None):
+    """Evaluate here, in one prefetch context, every diagram of ``which``
+    (default: every one) whose ``vals`` entry is still ``None``."""
+    with _ss_grid(tau_list):
+        for d in (range(len(fns)) if which is None else which):
+            if vals[d] is None:
+                vals[d] = [complex(fns[d](*pt)) for pt in tau_list]
+
+
+def _spawn_allowed(start_method, fork_ok):
+    """Spawned workers: asked for explicitly, or automatically where fork
+    is not available (macOS, Windows) outside a Jupyter kernel (inside one
+    only with ``DAEDALUS_SPAWN_IN_KERNEL=1``)."""
+    if start_method == 'spawn':
+        return True
+    if start_method is not None or fork_ok:
+        return False
+    from engine import _env
+    from engine.fork_safety import in_jupyter_kernel
+    return (not in_jupyter_kernel()) or _env.flag(SPAWN_KERNEL_ENV, False)
+
+
+def _spawn_tasks(order, payloads, costs, n_w):
+    """Chunks of ``(index, payload)`` (largest first), about
+    ``1 / (8 n_w)`` of the total cost each, so small diagrams travel
+    together and the large ones balance."""
+    total = sum(costs[d] for d in order) or 1
+    target = total / (8 * n_w)
+    tasks, cur, acc = [], [], 0
+    for d in order:
+        cur.append((d, payloads[d]))
+        acc += costs[d]
+        if acc >= target or len(cur) >= 256:
+            tasks.append(cur)
+            cur, acc = [], 0
+    if cur:
+        tasks.append(cur)
+    return tasks
+
+
+def _plain_times(tau_list):
+    """Whether every external time is a plain number (a spawned worker gets
+    exactly these values; a symbolic time would make it import Sage)."""
+    import numbers
+    return all(isinstance(t, numbers.Real) and not isinstance(t, bool)
+               and type(t).__module__ in ('builtins', 'numpy')
+               for pt in tau_list for t in pt)
+
+
+def _spawn_settings():
+    """What a spawned worker takes over from this process: the running
+    Phase J budget (its segment checks then decide as here) and the module
+    settings of ``statespace`` / ``_light``."""
+    from engine import _spawn_worker as _sw
+    from engine.integration.time_domain import _light
+    from engine.integration.time_domain import statespace as _ss
+    return {'budget': tuple(_ss.budget_view()),
+            'statespace': _sw.module_settings(_ss),
+            'light': _sw.module_settings(_light)}
+
+
+def _spawn_fan_out(fns, tau_list, n_w, explicit, vals):
+    """Spawned-worker fan-out (``engine.spawn_pool``) into ``vals``: every
+    diagram whose numeric task can leave this process
+    (``statespace.diagram_payload``) goes to the pool; the rest, and any
+    diagram a worker could not evaluate, are evaluated here.  Automatic mode
+    first times a sample of diagrams here (their values are final) and
+    spawns only when the rest is predicted to take at least
+    ``SPAWN_MIN_SECONDS``.  Returns True when ``vals`` is complete; False:
+    nothing more was done (the caller goes on with threads or serially).
+    Explicit ``'spawn'`` raises when the pool cannot start; automatic mode
+    falls back."""
+    import threading
+    import time
+    from engine import spawn_pool as _sp
+    from engine import worker_budget as _wb
+    from engine.integration.time_domain import final_integral as _fi
+    from engine.integration.time_domain import statespace as _ss
+    n = len(fns)
+    if not _plain_times(tau_list):
+        return False
+    payloads = [_ss.diagram_payload(fn) for fn in fns]
+    elig = [d for d in range(n) if payloads[d] is not None]
+    n_w = min(int(n_w), len(elig))
+    if n_w < 2 or len(elig) < 2 * n_w:
+        return False
+    costs = {d: (_diagram_block(fns[d]) + 1) * len(payloads[d]['subsets'])
+             for d in elig}
+    if not explicit:
+        step = max(1, len(elig) // 8)
+        sample = elig[::step][:8]
+        t0 = time.perf_counter()
+        for d in sample:
+            vals[d] = _eval_diagram(fns[d], tau_list)
+        per = (time.perf_counter() - t0) / len(sample)
+        elig = [d for d in elig if vals[d] is None]
+        if per * len(elig) < SPAWN_MIN_SECONDS or len(elig) < 2 * n_w:
+            return False
+    order = sorted(elig, key=lambda d: (-costs[d], d))
+    tasks = _spawn_tasks(order, payloads, costs, n_w)
+    # S4: a worker holds one task's states, programs and work at a time
+    task_bytes = max(sum(sub.state_bytes() for i, pl in t
+                         for sub, _p, _e in pl['subsets']) for t in tasks)
+    n_fit, share = _wb.workers_that_fit(
+        n_w, _wb.SPAWN_WORKER_BASE + 3 * task_bytes,
+        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        return False
+    if n_fit < n_w:
+        n_w = n_fit
+        tasks = _spawn_tasks(order, payloads, costs, n_w)
+    shared = _ss.payload_shared([payloads[d] for d in elig])
+    try:
+        pool = _sp.SpawnPool(n_w, shared, _spawn_settings())
+    except Exception:
+        if explicit:
+            raise
+        _fi._RUNTIME_COUNTERS['parallel_spawn_start_failed'] = (
+            _fi._RUNTIME_COUNTERS.get('parallel_spawn_start_failed', 0) + 1)
+        return False
+    elig_set = set(elig)
+    box = {}
+    try:
+        blobs = pool.encode(tasks)
+
+        def run():
+            try:
+                box['out'] = pool.map(tasks, tau_list, blobs=blobs)
+            except BaseException as exc:            # pragma: no cover
+                box['err'] = exc
+        th = threading.Thread(target=run, daemon=True,
+                              name='daedalus-spawn-map')
+        with _wb.FootprintWatch(pool.pids, share, _wb.kill_pid):
+            th.start()
+            # the diagrams that stay here, meanwhile
+            _fill_serial(fns, tau_list, vals,
+                         [d for d in range(n) if d not in elig_set])
+            th.join()
+    finally:
+        pool.close()
+    if 'err' in box:
+        raise box['err']
+    got, states, counters, lost = box['out']
+    for d, v in got.items():
+        vals[d] = v
+    for d, st in states.items():       # keep the states built in the workers
+        subs = payloads[d]['subsets']
+        for j, stat, rho in st:
+            sub = subs[j][0]
+            with sub._lock:
+                if sub._stat is None:
+                    sub._stat = stat
+                    sub.rho = max(sub.rho, rho)
+    for delta in counters:
+        _fi.merge_counter_delta(delta)
+    if pool.sage_loaded:                            # never expected
+        _fi._RUNTIME_COUNTERS['parallel_spawn_sage_loaded'] = (
+            _fi._RUNTIME_COUNTERS.get('parallel_spawn_sage_loaded', 0) + 1)
+    if lost:
+        _fi._RUNTIME_COUNTERS['parallel_spawn_diagrams_here'] = (
+            _fi._RUNTIME_COUNTERS.get('parallel_spawn_diagrams_here', 0)
+            + len(lost))
+        _fill_serial(fns, tau_list, vals, lost)
+    _fi._RUNTIME_COUNTERS['parallel_spawn_batches'] = (
+        _fi._RUNTIME_COUNTERS.get('parallel_spawn_batches', 0) + 1)
+    return True
+
+
+def _thread_fan_out(fns, tau_list, heavy, blocks, n_t, vals):
     from concurrent.futures import ThreadPoolExecutor
     from engine.integration.time_domain import final_integral as _fi
-    vals = [None] * len(fns)
     heavy_set = set(heavy)
     ex = ThreadPoolExecutor(max_workers=n_t,
                             thread_name_prefix='daedalus-phase-j')
     try:
         futs = {d: ex.submit(_thread_task, fns[d], tau_list)
                 for d in sorted(heavy, key=lambda d: (-blocks[d], d))}
-        with _ss_grid(tau_list):            # the small diagrams, meanwhile
-            for d in range(len(fns)):
-                if d not in heavy_set:
-                    vals[d] = [complex(fns[d](*pt)) for pt in tau_list]
+        # the small diagrams, meanwhile (here)
+        _fill_serial(fns, tau_list, vals,
+                     [d for d in range(len(fns)) if d not in heavy_set])
         for d in sorted(heavy):
             vals[d], delta = futs[d].result()
             _fi.merge_counter_delta(delta)
@@ -216,13 +412,24 @@ def _fork_fan_out(fns, tau_list, n_w):
     n = len(fns)
     size = max(1, -(-n // (4 * n_w)))
     chunks = [list(range(a, min(n, a + size))) for a in range(0, n, size)]
+    from engine import worker_budget as _wb
+    n_fit, share = _wb.workers_that_fit(n_w, _wb.FORK_WORKER_FLOOR,
+                                        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        return None
+    if n_fit < n_w:
+        n_w = n_fit
+        size = max(1, -(-n // (4 * n_w)))
+        chunks = [list(range(a, min(n, a + size))) for a in range(0, n, size)]
     _FANOUT['fns'], _FANOUT['tau_list'] = fns, tau_list
     try:
         ctx = mp.get_context('fork')
         with ctx.Pool(processes=n_w, **_worker_share(n_w)) as pool:
-            parts = pool.map(_fork_task, chunks, chunksize=1)
+            parts = _wb.watched_map(pool, _fork_task, chunks, share)
     finally:
         _FANOUT.clear()
+    if parts is None:               # a worker outgrew its share: serial
+        return None
     vals = [None] * n
     for out, delta in parts:
         for d, v in out:

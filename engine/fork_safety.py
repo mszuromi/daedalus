@@ -60,8 +60,14 @@ def parallel_disabled(environ=None):
 def fork_unsafe(start_method='fork'):
     """Return True iff a ``fork`` start here is not allowed: ``start_method ==
     'fork'`` on macOS, in any process (notebook, terminal IPython, script,
-    pytest).  False for spawn/forkserver and for fork on other platforms."""
-    return start_method == 'fork' and sys.platform == 'darwin'
+    pytest), or where the platform has no fork (Windows).  False for
+    spawn/forkserver and for fork on Linux."""
+    if start_method != 'fork':
+        return False
+    if sys.platform == 'darwin':
+        return True
+    import multiprocessing as mp
+    return 'fork' not in mp.get_all_start_methods()
 
 
 def fork_unsafe_in_notebook(start_method='fork'):
@@ -114,14 +120,19 @@ def warn_fork_fallback_once(where):
     if _WARNED:
         return
     _WARNED.add(where)
-    ctx = ('inside a Jupyter kernel' if in_jupyter_kernel()
-           else 'in this process')
+    if sys.platform == 'darwin':
+        ctx = ('inside a Jupyter kernel' if in_jupyter_kernel()
+               else 'in this process')
+        why = (f"fork-based multiprocessing is disabled on macOS ({ctx}) -- "
+               "forking after Cocoa/BLAS/ECL initialisation can hard-crash "
+               "the kernel and the OS")
+    else:
+        why = 'this platform has no fork start method'
     warnings.warn(
-        f"{where}: fork-based multiprocessing is disabled on macOS ({ctx}) -- "
-        "forking after Cocoa/BLAS/ECL initialisation can hard-crash the "
-        "kernel and the OS.  Running SERIALLY; the results are the same.  "
-        "Pass parallel=False to silence this warning, or set "
-        f"{PARALLEL_ENV}=0 to turn every worker pool off.",
+        f"{where}: {why}.  Using a safe method instead (threads or "
+        "spawned workers where they help, else serial); the results are "
+        "the same.  Leave start_method unset to choose automatically, or "
+        f"set {PARALLEL_ENV}=0 to turn every worker pool off.",
         RuntimeWarning,
         stacklevel=3,
     )
