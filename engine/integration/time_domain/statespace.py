@@ -1344,32 +1344,43 @@ def _taylor_action(apply_A, mu, dnorms, x, t, min_terms=0):
 
 
 def _onenorm_powers(A, pmax=_P_MAX + 1):
-    """``d_p = ||A^p||_1^{1/p}``, p = 1..pmax: exact for a small dense ``A``,
-    1-norm estimates (scipy ``onenormest``) for larger ones."""
+    """``d_p = ||A^p||_1^{1/p}``, p = 1..pmax: ``d_1`` exact, ``d_2`` exact for
+    a small dense ``A`` (a 1-norm estimate, scipy ``onenormest``, for larger
+    ones), and ``d_p`` for p > 2 the submultiplicative upper bound
+    ``||A^p|| <= min(||A||^p, ||A^2||^(p//2) ||A||^(p%2))`` (an upper bound is
+    what ``_taylor_params`` needs; the seven further powers or estimates were
+    about half of a state-space run, audit SPD-03)."""
     d = {1: float(np.abs(A).sum(axis=0).max()) if A.size else 0.0}
     n = A.shape[0]
-    if n <= 300:
-        P = A
-        for p in range(2, pmax + 1):
-            P = P @ A
-            d[p] = float(np.abs(P).sum(axis=0).max()) ** (1.0 / p)
-        return d
-    from scipy.sparse.linalg import LinearOperator, onenormest
-    AT = A.conj().T
-    for p in range(2, pmax + 1):
-        def mv(v, p=p):
-            for _ in range(p):
-                v = A @ v
-            return v
-
-        def rmv(v, p=p):
-            for _ in range(p):
-                v = AT @ v
-            return v
-        op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
-                            matmat=mv, rmatmat=rmv, dtype=A.dtype)
-        d[p] = float(onenormest(op)) ** (1.0 / p)
+    if pmax >= 2:
+        if n <= 300:
+            d[2] = float(np.abs(A @ A).sum(axis=0).max()) ** 0.5
+        else:
+            d[2] = _onenormest_power(A, 2)
+    for p in range(3, pmax + 1):
+        n1, n2 = d[1] ** p, d[2] ** (2 * (p // 2)) * d[1] ** (p % 2)
+        d[p] = min(n1, n2) ** (1.0 / p)
     return d
+
+
+def _onenormest_power(A, p):
+    """scipy ``onenormest`` of ``A^p`` (matrix-free powers), as ``d_p``."""
+    from scipy.sparse.linalg import LinearOperator, onenormest
+    n = A.shape[0]
+    AT = A.conj().T
+
+    def mv(v):
+        for _ in range(p):
+            v = A @ v
+        return v
+
+    def rmv(v):
+        for _ in range(p):
+            v = AT @ v
+        return v
+    op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
+                        matmat=mv, rmatmat=rmv, dtype=A.dtype)
+    return float(onenormest(op)) ** (1.0 / p)
 
 
 # ─── geometry ─────────────────────────────────────────────────────────────
