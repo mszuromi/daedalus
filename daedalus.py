@@ -1284,6 +1284,46 @@ def _kpoint_incomplete(res, cfg, exc, msg):
     warnings.warn(msg, PhaseJIncompleteWarning, stacklevel=3)
 
 
+def _spatial_raw_moment_message(max_ell, mu_a=None, mu_b=None):
+    why = ('' if mu_a is None else f' (saddles {mu_a}, {mu_b})')
+    return (f"Config.output='moment' for a spatial k=2 run at "
+            f"max_ell={max_ell}: the raw moment needs the loop corrections "
+            f"of the means, which the spatial integrator does not compute"
+            f"{why}.  Use output='central_moment' (= the cumulant at k=2) "
+            f"or max_ell=0.")
+
+
+def _refuse_spatial_raw_moment(model, kw, ext, max_ell):
+    """Refuse a spatial raw k=2 moment that needs the means' loop corrections
+    BEFORE the (expensive) loop run, not after it.
+
+    The rule: with a loop budget L the raw moment needs mu_a^(la) mu_b^(lb)
+    for la + lb <= L, i.e. the means' tadpole shifts as soon as L >= 2, or
+    L >= 1 with a nonzero saddle.  L >= 2 is decided from the budget alone;
+    L = 1 needs the saddle, read from a one-event tree-level k = 1 run (the
+    same call the k = 1 path makes), per distinct external leg."""
+    from api import compute_cumulants
+    if max_ell >= 2:
+        raise NotImplementedError(
+            _spatial_raw_moment_message(max_ell))
+    base = {kk: v for kk, v in kw.items()
+            if kk not in ('spatial_grid', 'tau_max', 'tau_step', 'tau_grid',
+                          'spatial_points', 'external_fields', 'k', 'max_ell')}
+    mus = []
+    seen = {}
+    for leg in ext:
+        key = tuple(leg) if isinstance(leg, (tuple, list)) else leg
+        if key not in seen:
+            r1 = compute_cumulants(
+                **base, k=1, max_ell=0, external_fields=[leg],
+                spatial_points=np.zeros((1, 0, 2), dtype=float))
+            seen[key] = _external_mean(model, r1, leg)
+        mus.append(seen[key])
+    if any(mus):
+        raise NotImplementedError(
+            _spatial_raw_moment_message(max_ell, *mus[:2]))
+
+
 def run(model: dict, cfg: Config, module=None) -> dict:
     """Resolve the config against the model's defaults and call
     ``compute_cumulants``.  Handles temporal vs spatial, the spatial
@@ -1487,6 +1527,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if tg is not None and not (is_spatial(model) and k != 2):
         kw['tau_grid'] = tg
 
+    if (is_spatial(model) and k == 2 and max_ell >= 1
+            and (getattr(cfg, 'output', 'cumulant') or 'cumulant') == 'moment'):
+        _refuse_spatial_raw_moment(model, kw, ext, max_ell)
+
     res = compute_cumulants(**kw)
 
     # Spatial k≥3 grid: reshape the flat per-event k-point cumulant back into the
@@ -1685,14 +1729,11 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                     # loop budget L the raw moment needs μ_a⁽ℓa⁾ μ_b⁽ℓb⁾ for
                     # ℓa + ℓb ≤ L, which involves them as soon as L ≥ 1 with
                     # a nonzero saddle, or L ≥ 2.
+                    # (refused up front by _refuse_spatial_raw_moment; this
+                    # is the same rule on the finished result)
                     if max_ell >= 2 or (max_ell >= 1 and (mu_a or mu_b)):
                         raise NotImplementedError(
-                            f"Config.output='moment' for a spatial k=2 run "
-                            f"at max_ell={max_ell}: the raw moment needs the "
-                            f"loop corrections of the means, which the "
-                            f"spatial integrator does not compute (saddles "
-                            f"{mu_a}, {mu_b}).  Use output='central_moment' "
-                            f"(= the cumulant at k=2) or max_ell=0.")
+                            _spatial_raw_moment_message(max_ell, mu_a, mu_b))
                     mu_ab = mu_a * mu_b
                     res['moment_means'] = {leg_a: [mu_a], leg_b: [mu_b]}
                 res['moment'] = (np.real(np.asarray(res['C_tau_x'])) + mu_ab)
