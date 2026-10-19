@@ -26,6 +26,12 @@ def test_prediagram_load_refused_before_records(tmp_path, monkeypatch,
         pc.load_prediagrams(str(tmp_path), 4, 2, use_cache=use_cache)
     msg = str(ei.value)
     assert '65,956 classes' in msg and 'PHASE_J_MEM_BUDGET_GB' in msg
+    # the machine sentence of the Phase J pre-pass refusal
+    ram = fi._ram_bytes()
+    if ram:
+        assert f'This machine has {ram / 1e9:.1f} GB of RAM' in msg
+    assert f"the estimate is {ei.value.estimate['bytes'] / 1e9:.2f} GB" in msg
+    assert ei.value.estimate['budget_rule'] == 'PHASE_J_MEM_BUDGET_GB=0.5'
     assert ei.value.estimate['classes'] == 65956
     assert ei.value.estimate['bytes'] == 65956 * pc._LOAD_BYTES_PER_CLASS
     assert not list(tmp_path.iterdir())          # nothing read or written

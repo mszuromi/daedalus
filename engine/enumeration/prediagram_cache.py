@@ -968,13 +968,20 @@ def _load_guard(k, ell, n):
     # beyond that (the count is checked again once the certs are in hand)
     if budget is None or need <= budget * (2 if how == 'estimated' else 1):
         return
+    ram = _fi._ram_bytes()
+    # the same machine sentence as the Phase J pre-pass refusal
+    machine = (f'This machine has {ram / 1e9:.1f} GB of RAM; the estimate is '
+               f'{need / 1e9:.2f} GB ({need / ram:.0%} of it).' if ram else
+               f'The estimate is {need / 1e9:.2f} GB (this machine\'s RAM is '
+               f'unknown).')
     raise _fi.PhaseJResourceError(
         f'the prediagrams of (k={k}, ell={ell}) do not fit the memory budget: '
         f'{int(n):,} classes ({how}) need ~{_fmt_bytes(need)} as records '
         f'(~{_LOAD_BYTES_PER_CLASS:,} B per class), the budget is '
-        f'{_fi._fmt_budget(budget, rule)}; {_fi._BUDGET_HOW}.',
+        f'{_fi._fmt_budget(budget, rule)}.  {machine}  Nothing was built.  '
+        f'Options: {_fi._BUDGET_HOW}.',
         estimate={'k': k, 'ell': ell, 'classes': int(n), 'classes_how': how,
-                  'bytes': need, 'budget_bytes': budget,
+                  'bytes': need, 'budget_bytes': budget, 'budget_rule': rule,
                   'where': 'prediagram records'})
 
 
