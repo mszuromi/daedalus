@@ -1,7 +1,8 @@
-#### Analyzer: unit-free accuracy estimate on the state-space route and G5 pole rounding (final check)
+#### Unit invariance: state-space accuracy estimate, G5 pole rounding, mixed-unit saddle stability (final check)
 
-Two analyzer gaps found by time-rescaled twins (every rate divided by T, T = 1e-12 .. 1e12). The cumulant values
-were already equal to T = 1 within 1e-15 on both engines; only the analyzer's report changed with T.
+Three gaps found by exactly rescaled twins. In the first two, the cumulant values were already equal to the unscaled
+run within 1e-15 on both engines; only the analyzer's report changed with the time unit T (every rate divided by T,
+T = 1e-12 .. 1e12).
 
 - **G6 accuracy estimate, state-space engine**: the residual of the stationary resolvent solves is now measured
   componentwise against the size of the terms, `max_i |r + M y|_i / (|M| |y| + |r|)_i`. It used to be
@@ -13,5 +14,12 @@ were already equal to T = 1 within 1e-15 on both engines; only the analyzer's re
   absolute terms, so a model with rates ~1e-12 rounded every pole to 0 and the sort then divided by zero. The error
   was caught as `INTERNAL_ERROR` and the regime check was skipped silently, on both engines. Poles are now merged
   at 1e-9 of the pole scale.
+- **Saddle stability with fields in very different units** (`api._mean_field_dae.linear_stability`): the linearized
+  pencil is equilibrated before QZ (rows and columns scaled by powers of two, which leaves its eigenvalues unchanged).
+  With three fields in units 2e-6, 2.3e5 and 3.1e3, the entries spanned about 1e-11 .. 1e11. QZ is backward stable
+  only normwise, so it lost the small entries: the exactly rescaled stable saddle was refused as
+  `G2_UNSTABLE_SADDLE`, with eigenvalues `[+0.888, -2.94, -1.15]` instead of all negative. The eigenvalues now agree
+  with the unscaled model to 1e-9, and the saddle to 1e-12.
 
-Numbers that move: only the G6 accuracy estimate R of state-space runs. ZOO_RESULT
+Numbers that move: only the G6 accuracy estimate R of state-space runs, and the linearization eigenvalues at
+round-off level (equilibrated QZ). ZOO_RESULT

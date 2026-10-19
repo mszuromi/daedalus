@@ -286,6 +286,65 @@ def test_rotation_time_twin(rotation, T, engine):
         assert r0 / 10 <= r1 <= 10 * r0, (r0, r1)
 
 
+_S3 = {'xa': 2.038303160455847e-06, 'xb': 228855.9870312264, 'xc': 3092.0905409998063}
+
+
+def _three_field(s):
+    """Three coupled fields with cubic terms and two kernels (exponential,
+    alpha), each field in its own units ``s[f]`` (x_f -> s_f x_f; every
+    coefficient carries the powers of ``s`` that keep the equations)."""
+    a, b, c = s['xa'], s['xb'], s['xc']
+    co = {'qa': -1.1107957869229923, 'qb': 0.01434935644390046 * a / c,
+          'qc': -1.0120513730586853, 'qd': -0.09722767929703124 * b / a,
+          'qe': 0.12570747937789956 / a, 'qf': -0.04659749112139882 / b**2,
+          'qg': -0.0008858869288793869 / a**2, 'qo': 0.07146040587396707,
+          'qh': -1.1411680609980157, 'qi': 0.2819028399997951 * c,
+          'qj': -0.20346685537249948 * c / a, 'qk': 0.2537157325713858 * c / b,
+          'ql': -0.04204128551037317 * c / (a * b), 'qm': -0.045140071121247266 / c**2,
+          'qq': -0.17121226525756691 * c / b}
+    m = SDE('w4a_three')
+    for k, v in co.items():
+        m = m.parameter(k, default=v)
+    return (m.parameter('qn', default=0.8611984880482831).parameter('qp', default=1.3380249817818404)
+            .field('xa').field('xb').field('xc')
+            .define_kernel('g0', freq_image='1/(1 + I*omega*qn)')
+            .define_kernel('g1', freq_image='1/(1 + I*omega*qp)^2')
+            .drift('xa', 'qa*xa + qb*xc')
+            .drift('xb', 'qc*xb + qd*xa + qe*xa*xb + qf*xb^3 + qg*xb*xa^2 + qo*Conv(g0, xb)')
+            .drift('xc', 'qh*xc + qi + qj*xa + qk*xb + ql*xb*xa + qm*xc^3 + qq*Conv(g1, xb)')
+            .noise('na', Gaussian(var=repr(0.1 * a * a)), couples={'xa': 1})
+            .noise('nb', Gaussian(var=repr(0.1 * b * b)), couples={'xb': 1})
+            .noise('nc', Gaussian(var=repr(0.1 * c * c)), couples={'xc': 1}).build())
+
+
+@pytest.mark.parametrize('power', (1.0, -1.0, 0.5))
+def test_mixed_field_units_keep_the_stable_saddle(power):
+    """Fields in units 2e-6, 2.3e5 and 3.1e3 (and the inverse): the linearized
+    pencil's entries span ~1e-11 .. 1e11 and QZ on it called the stable saddle
+    unstable (an eigenvalue +0.76: G2_UNSTABLE_SADDLE); it is equilibrated
+    first now.  Same saddle (rescaled), same eigenvalues, same analyzer codes."""
+    from api._mean_field_dae import linear_stability
+    s = {f: v ** power for f, v in _S3.items()}
+    one = {f: 1.0 for f in _S3}
+    ext = (('xa', 1),)
+    base = _cc(_three_field(one), k=1, ell=0, ext=ext, taus=(0.0,))
+    twin = _cc(_three_field(s), k=1, ell=0, ext=ext, taus=(0.0,))
+    assert _codes(twin) == _codes(base)
+    for f in _S3:
+        assert twin['mf_values'][f + 'star'][0] == pytest.approx(
+            s[f] * base['mf_values'][f + 'star'][0], rel=1e-12)
+    eig = []
+    for sc, r in ((one, base), (s, twin)):
+        root = {k: list(np.atleast_1d(v)) for k, v in r['mf_values'].items()}
+        m = _three_field(sc)
+        fund = {p['name']: p['default'] for p in m['parameters'] if 'default' in p and p.get('default') is not None
+                and not p.get('mean_field')}
+        st = _quiet(linear_stability, m, fund, root)
+        assert st['stable']
+        eig.append(np.sort_complex(np.asarray(st['eigenvalues_finite'])))
+    assert eig[1] == pytest.approx(eig[0], rel=1e-9)
+
+
 def _spiking(s):
     """A field driving an exponential-rate spike train through a kernel, the
     field in units ``s`` (the saddle of the field is negative: reached from
