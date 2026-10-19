@@ -1057,16 +1057,20 @@ class run_growth_scope:
     (``budget``/``rule``: as ``mem_budget`` returns them; default: read from
     ``PHASE_J_MEM_BUDGET_GB``).  Nested scopes share the outer one."""
 
-    def __init__(self, what='', budget=None, rule=None):
+    def __init__(self, what='', budget=None, rule=None, fp0=None):
+        # ``fp0``: resume a run whose baseline is known (the callables a
+        # run returns, evaluated later: ``_ResumedRunCallable``)
         if budget is None and rule is None:
             budget, rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
         self.budget, self.rule, self.what = budget, rule, what
+        self.fp0 = fp0
         self._outer = False
 
     def __enter__(self):
         with _PLAN_MEM_LOCK:
             if _RUN_GROWTH['active'] == 0:
-                _RUN_GROWTH.update(fp0=process_footprint_bytes(),
+                _RUN_GROWTH.update(fp0=(process_footprint_bytes()
+                                        if self.fp0 is None else self.fp0),
                                    budget=self.budget, rule=self.rule,
                                    what=self.what)
                 self._outer = True
@@ -1091,13 +1095,85 @@ def run_budget():
     return mem_budget('PHASE_J_MEM_BUDGET_GB')
 
 
+class _ResumedRunCallable:
+    """A callable a run returned (``total_C``, ``total_C_by_ell[ell]``),
+    evaluated inside the run's own growth scope and budget: same footprint
+    baseline (the run's start), same budget reading, and a running Phase J
+    memory scope for the plans and states it builds at call time.  The
+    k >= 3 Phase J integrals run here, after ``compute_cumulants`` returned:
+    a single point of a cubic+quartic k = 3 three-loop result grew past
+    9.5 GB under an 8 GB budget with no refusal (audit FINAL check).
+    Attributes of the wrapped callable are forwarded."""
+
+    def __init__(self, fn, state, label):
+        self._fn = fn
+        self._state = state
+        self._label = label
+        _functools.update_wrapper(self, fn, updated=())
+
+    def __call__(self, *args, **kwargs):
+        fp0, budget, rule, what = self._state
+        pt = ', '.join(f'{a:g}' if isinstance(a, (int, float)) else repr(a)
+                       for a in args)
+        label = f'{self._label}({pt})' + (f' of {what}' if what else '')
+        with run_growth_scope(what=label, budget=budget, rule=rule, fp0=fp0), \
+                phase_j_memory_scope(budget=budget, rule=rule, use_env=False,
+                                     what=label):
+            growth_guard(f'the start of {self._label}({pt})')
+            return self._fn(*args, **kwargs)
+
+    def __getattr__(self, name):
+        fn = self.__dict__.get('_fn')
+        if fn is None:
+            raise AttributeError(name)
+        return getattr(fn, name)
+
+
+def _resume_run_callables(result, state):
+    """Wrap the result's ``total_C`` / ``total_C_by_ell`` callables
+    (:class:`_ResumedRunCallable`).  Nothing happens without a budget or a
+    footprint baseline."""
+    if not isinstance(result, dict) or state[0] is None or state[1] is None:
+        return result
+    tc = result.get('total_C')
+    if callable(tc) and not isinstance(tc, _ResumedRunCallable):
+        result['total_C'] = _ResumedRunCallable(tc, state, 'total_C')
+    by = result.get('total_C_by_ell')
+    if isinstance(by, dict):
+        for ell, fn in list(by.items()):
+            if callable(fn) and not isinstance(fn, _ResumedRunCallable):
+                by[ell] = _ResumedRunCallable(
+                    fn, state, f'total_C_by_ell[{ell}]')
+    return result
+
+
 def growth_scoped(fn):
-    """Decorator: run ``fn`` inside a :class:`run_growth_scope`."""
+    """Decorator: run ``fn`` inside a :class:`run_growth_scope`; the
+    callables it returns resume that scope when called later
+    (:func:`_resume_run_callables`)."""
     @_functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with run_growth_scope(what=getattr(fn, '__name__', '')):
-            return fn(*args, **kwargs)
+        with run_growth_scope(what=getattr(fn, '__name__', '')) as scope:
+            out = fn(*args, **kwargs)
+            if scope._outer:
+                with _PLAN_MEM_LOCK:
+                    state = (_RUN_GROWTH['fp0'], _RUN_GROWTH['budget'],
+                             _RUN_GROWTH['rule'],
+                             _model_label(args, kwargs))
+                out = _resume_run_callables(out, state)
+            return out
     return wrapper
+
+
+def _model_label(args, kwargs):
+    """``'<model name> k=.. max_ell=..'`` of a compute_cumulants call."""
+    model = kwargs.get('model', args[0] if args else None)
+    name = model.get('name', '') if isinstance(model, dict) else ''
+    k = kwargs.get('k', args[1] if len(args) > 1 else None)
+    ell = kwargs.get('max_ell', args[2] if len(args) > 2 else None)
+    return ' '.join(x for x in (name, f'k={k}' if k is not None else '',
+                                f'max_ell={ell}' if ell is not None else '')
+                    if x)
 
 
 def growth_guard(where=''):

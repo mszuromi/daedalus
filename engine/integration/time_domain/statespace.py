@@ -3080,6 +3080,9 @@ def _subset_value(sub, pref, free_vals, tie_ctx, t_min):
     (``engine._spawn_worker``)."""
     hit = _prefetched(sub, free_vals, tie_ctx, t_min)
     if hit is None:
+        # the states and programs built here at call time count against
+        # the run's budget (a k >= 3 point after compute_cumulants returned)
+        _FI().growth_guard('a state-space subset evaluation')
         val = sub.evaluate(free_vals, tie_ctx, t_min)
         err = _EST.err
     else:
