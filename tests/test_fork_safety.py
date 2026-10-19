@@ -170,6 +170,7 @@ def test_parallel_disabled_reads_the_environment_at_call_time(monkeypatch):
 
 def test_fallback_warns_once_per_process(monkeypatch):
     monkeypatch.setattr(fs, '_WARNED', set())
+    monkeypatch.setattr(sys, 'platform', 'darwin')
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
         fs.warn_fork_fallback_once('site A')
@@ -246,3 +247,10 @@ def test_spatial_threads_gate_honours_the_kill_switch(monkeypatch):
     assert _spatial_threads_gate(False, True, 4, 100) is False
     monkeypatch.setenv(fs.PARALLEL_ENV, '0')
     assert _spatial_threads_gate(True, True, 4, 100) is False
+
+
+def test_fork_unsafe_where_the_platform_has_no_fork(monkeypatch):
+    import multiprocessing as mp
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(mp, 'get_all_start_methods', lambda: ['spawn'])
+    assert fork_unsafe('fork') is True and fork_unsafe('spawn') is False

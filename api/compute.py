@@ -1313,14 +1313,20 @@ def compute_cumulants(
         platform; the numbers are the same bytes as ``parallel=False``.
         Phase J's τ grid (step [7]) fans its diagrams out: diagrams with
         large state blocks go to threads on every platform (notebooks
-        included), and on Linux a fork pool takes batches with many
-        diagrams.  Type assignment (step [5]) forks on Linux only.  macOS
-        never forks.  ``DAEDALUS_PARALLEL=0`` turns every worker pool
-        off, spatial threads included.
+        included); a batch predicted to take seconds goes to spawned,
+        Sage-free worker processes in a macOS / Windows script (in a
+        notebook only on request: ``DAEDALUS_SPAWN_IN_KERNEL=1``); on
+        Linux a fork pool takes batches with many diagrams.  Type
+        assignment (step [5]) forks on Linux only.  macOS never forks.
+        Every pool fits the memory budget (fewer workers, then serial).
+        ``DAEDALUS_PARALLEL=0`` turns every worker pool off, spatial
+        threads included.  See ``docs/parallel.md``.
     n_workers : int or None, default None
         Worker count when ``parallel=True``.  ``None`` lets each stage
-        pick its own default (Phase J threads: up to 8; fork workers:
-        ``os.cpu_count()`` within the memory budget).
+        pick its own default (Phase J threads: up to 8; spawned workers:
+        4; fork workers: ``os.cpu_count()``; all within the memory
+        budget).  Given, it also sets the process count of a streamed
+        prediagram enumeration (Linux).
     discard : bool or 'auto', default False
         Evaluate-and-discard (item 61).  ``True``: each diagram is
         evaluated on the τ grid right after it is built and then

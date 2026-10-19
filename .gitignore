@@ -73,6 +73,7 @@ docs/*
 !docs/spatial_kpz_burgers_plan.md
 !docs/spatial_loop_integral_analytic_mc.md
 !docs/spatial_pipeline.md
+!docs/parallel.md
 !docs/spatial_v2_architecture.md
 !docs/spatiotemporal_convolutions.md
 !docs/kpz_burgers_sim_validation.py
