@@ -431,6 +431,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             for i in range(size[f]):
                 lam = np.maximum(np.real(ev(rate_code[f][0], i)), 0.0)
                 lam = np.broadcast_to(lam, (n_paths,))
+                _check_runaway(f, i, lam, dt, k, nburn)
                 c[i] = rng.poisson(lam * dt) * float(np.real(ev(rate_code[f][1], i)))
                 if k >= nburn:
                     rate_sum[f][i] += lam.mean()
@@ -475,13 +476,48 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             'mean_intensity': {f: rate_sum[f] / max(nsteps, 1) for f in spikes}}
 
 
+# An intensity times dt above this is no model of anything: the rate feedback
+# has run away (numpy's own limit, 9e18, then fails with "lam value too large"
+# from deep inside the sampler).
+_RUNAWAY_MEAN = 1e12
+
+
+def _check_runaway(f, i, lam, dt, k, nburn):
+    """Refuse a diverged intensity with a message naming the cause."""
+    m = float(np.max(lam)) * dt
+    if np.isfinite(m) and m <= _RUNAWAY_MEAN:
+        return
+    when = ('during the burn-in' if k < nburn
+            else f'at step {k - nburn} of the run')
+    raise PPSimulationError(
+        f'simulate: the intensity of {f}[{i}] diverged {when} (mean spikes '
+        f'per step {m:g}): the rate feedback is unstable on this path '
+        f'(supercritical self-excitation or an exponentially growing rate '
+        f'function).  Reduce the coupling / the horizon T, or check the '
+        f'rate function; a different seed only moves WHEN a supercritical '
+        f'model diverges.')
+
+
+def _batch_se(per_unit, n_batches, what):
+    """Batch-means standard error of the mean over the axis-0 units; needs at
+    least two units (one path has no spread, and ``std(ddof=1)`` of one batch
+    is NaN).  Returns ``(mean, se)``."""
+    n = len(per_unit)
+    if n < 2:
+        raise ValueError(
+            f'{what}: a standard error needs at least 2 independent paths '
+            f'(got {n}); run simulate(..., n_paths>=2).')
+    groups = np.array_split(per_unit, max(2, min(int(n_batches), n)))
+    gm = np.array([g.mean(0) for g in groups])
+    return per_unit.mean(0), gm.std(0, ddof=1) / math.sqrt(len(gm))
+
+
 def mean_rate(rec, f, i, n_batches=20):
-    """Mean spike rate of ``f[i]`` and its batch-means standard error."""
+    """Mean spike rate of ``f[i]`` and its batch-means standard error
+    (needs at least 2 paths)."""
     c = rec['counts'][f][:, i, :]
     per_path = c.sum(0) / rec['T']
-    groups = np.array_split(per_path, min(n_batches, len(per_path)))
-    gm = np.array([g.mean() for g in groups])
-    return per_path.mean(), gm.std(ddof=1) / math.sqrt(len(gm))
+    return _batch_se(per_path, n_batches, 'mean_rate')
 
 
 def cross_covariance(rec, a, b, lags, n_batches=20):
@@ -505,6 +541,4 @@ def cross_covariance(rec, a, b, lags, n_batches=20):
                 row.append(np.dot(xa[-l:, p], xb[:nb + l, p]) / (nb + l))
         per_path.append(row)
     per_path = np.array(per_path) / rec['bin'] ** 2
-    groups = np.array_split(per_path, min(n_batches, n_paths))
-    gm = np.array([g.mean(0) for g in groups])
-    return per_path.mean(0), gm.std(0, ddof=1) / math.sqrt(len(gm))
+    return _batch_se(per_path, n_batches, 'cross_covariance')

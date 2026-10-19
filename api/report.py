@@ -27,8 +27,6 @@ import os
 from datetime import datetime
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 
 from api.compute import compute_cumulants
 
@@ -77,7 +75,14 @@ def _install_pdf_repr_sage_fallback():
     if getattr(_bp.pdfRepr, '__name__', '') != '_patched':
         _bp.pdfRepr = _patched
 
-_install_pdf_repr_sage_fallback()
+
+def _plt():
+    """``matplotlib.pyplot``, imported on first use with the PDF fallback
+    above installed (importing it with the module cost ~0.4 s of every
+    ``from api import ...``; audit SPD-06)."""
+    import matplotlib.pyplot as plt
+    _install_pdf_repr_sage_fallback()
+    return plt
 
 
 def _canonical_view(td):
@@ -231,6 +236,7 @@ def _draw_prediagram(td, ax, display_id=None):
 def _draw_cover_page(pdf, model, k, max_ell, fundamental,
                      external_fields, result):
     """Page 1: model name, parameters, MF values, total slice plot."""
+    plt = _plt()
     fig = plt.figure(figsize=(11, 8.5))
     gs = fig.add_gridspec(3, 2, height_ratios=[0.7, 1.5, 2.5])
 
@@ -254,7 +260,7 @@ def _draw_cover_page(pdf, model, k, max_ell, fundamental,
     ax_params.set_axis_off()
     ax_params.set_title('Fundamental parameters', fontsize=11, loc='left')
     params_text = []
-    for key, val in fundamental.items():
+    for key, val in (fundamental or {}).items():
         if isinstance(val, list):
             val_repr = str(val)
             if len(val_repr) > 35:
@@ -397,6 +403,7 @@ def _draw_diagram_page(pdf, idx, total, td_record, result, k, contrib=None,
     ``display_id`` maps vertices to the numbers printed on the page
     (:func:`_canonical_view`); by default the canonical numbering is
     computed here."""
+    plt = _plt()
     td = td_record['typed_diagram']
     info = td_record['classify']
     pf = td_record['combined_prefactor']
@@ -490,10 +497,13 @@ def generate_report(
     Run compute_cumulants() and produce a multi-page PDF report.
 
     If ``result`` is provided (e.g., from a prior compute_cumulants()
-    call), reuses it instead of recomputing.
+    call), reuses it instead of recomputing; the cover page is then labelled
+    from the result's own ``config`` (k, max_ell, parameters, external
+    fields), so ``parameters=`` and ``external_fields=`` are not needed.
 
     Returns the result dict so the caller can do further analysis.
     """
+    plt = _plt()
     # Accept the canonical name ``parameters`` (the dd.Config name); it wins
     # over the legacy ``fundamental`` if both are given.
     if parameters is not None:
@@ -523,6 +533,22 @@ def generate_report(
             use_cache       = use_cache,
             verbose         = verbose,
         )
+
+    else:
+        # A reused result describes itself: the cover is labelled from the
+        # result's own config, never from call arguments that may disagree
+        # with it (or be missing: ``parameters=`` is not needed).
+        cfg = result.get('config') or {}
+        if cfg.get('k') is not None:
+            k = cfg['k']
+        if cfg.get('max_ell') is not None:
+            max_ell = cfg['max_ell']
+        if fundamental is None:
+            fundamental = cfg.get('fundamental') or cfg.get('parameters')
+        external_fields = (cfg.get('external_fields_in')
+                           or cfg.get('external_fields') or external_fields)
+        if not (model or {}).get('name') and cfg.get('model_name'):
+            model = dict(model or {}, name=cfg['model_name'])
 
     # Spatial models compute C(x,τ) fine, but the multi-page PDF layout below is
     # temporal-specific (per-diagram Phase-J pages keyed on result['diagrams']).
@@ -566,6 +592,7 @@ def generate_report(
     # inline / agg backends used by the calling notebook.
     import matplotlib as _mpl
     with _mpl.rc_context({'text.usetex': False}):
+        from matplotlib.backends.backend_pdf import PdfPages
         with PdfPages(output_pdf) as pdf:
             _draw_cover_page(pdf, model, k, max_ell, fundamental,
                              external_fields, result)

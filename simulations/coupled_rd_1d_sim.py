@@ -193,6 +193,10 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
     n_f = M.shape[0]
     n_x = int(n_x)
     n_rep = int(n_rep)
+    if n_rep < 2:
+        raise ValueError(
+            f'n_rep = {n_rep}: the replica-spread error bar needs at least '
+            f'2 independent replicas.')
     seed = int(seed)
     dt = float(dt)
     Dvec = _as_dvec(D, n_f)

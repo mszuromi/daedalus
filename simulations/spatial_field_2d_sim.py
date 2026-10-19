@@ -49,6 +49,12 @@ def simulate_2d(L=20.0, N=64, mu=1.0, D=1.0, T=1.0, g=0.0, lam=0.0,
     record_every = int(record_every); seed = int(seed)
     dx = L / N
     _nl = (g != 0.0 or lam != 0.0 or g_lap != 0.0 or lam_kpz != 0.0)
+    if not np.all(_dispersion_2d(N, dx, mu, D) > 0):
+        raise ValueError(
+            f'mu = {mu}: the spectral simulator needs a positive mass term '
+            f'(every mode rate omega_k = mu + D*k^2 must be > 0; the k = 0 '
+            f'mode has omega = mu), otherwise the field has no stationary '
+            f'state.')
     if dt is None:
         dt = min(0.02 / mu, 0.05) if _nl else 0.05
     rng = np.random.default_rng(seed)

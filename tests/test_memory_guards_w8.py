@@ -283,3 +283,17 @@ def test_simulators_bounded():
     with pytest.raises(MemoryError, match='max_bytes'):
         simulate_coupled_rd_1d(np.eye(2), [1.0, 1.0], np.eye(2), t_run=1e5,
                                max_bytes=1e8)
+
+
+def test_shipped_xz_copy_is_best_effort(tmp_path, monkeypatch):
+    """An unwritable cache root does not fail a run that holds the cell
+    (the compressed copy goes through the same best-effort save)."""
+    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', 'off')
+    monkeypatch.setattr(pc, 'records_from_certs', lambda certs: list(certs))
+
+    def refuse(src, dest):
+        raise PermissionError(13, 'read-only', dest)
+    monkeypatch.setattr(pc, '_copy_file_atomic', refuse)
+    recs, how = pc.load_prediagrams(str(tmp_path), 3, 3, use_cache=True)
+    assert how == 'shipped' and len(recs) == 358983
+    assert not pc.v2_exists(str(tmp_path), 3, 3)
