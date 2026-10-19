@@ -234,24 +234,183 @@ def _rotation(T):
             .noise('eta', Gaussian(var=r(0.3)), couples={'y': 1}).build())
 
 
+_ROT_TAUS = np.array([0.0, 0.3, 1.1, 2.9])
+_ROT_EXT = ((('x', 1), ('x', 1)), (('y', 1), ('x', 1)))
+
+
+def _rotation_runs(T, engine):
+    import engine.integration.time_domain.statespace as SS
+    import os
+    old = os.environ.get(SS.ENGINE_ENV)
+    if engine is None:
+        os.environ.pop(SS.ENGINE_ENV, None)
+    else:
+        os.environ[SS.ENGINE_ENV] = engine
+    SS._clear_caches()
+    try:
+        return {ext: _cc(_rotation(T), ell=1, ext=ext, taus=_ROT_TAUS * T) for ext in _ROT_EXT}
+    finally:
+        if old is None:
+            os.environ.pop(SS.ENGINE_ENV, None)
+        else:
+            os.environ[SS.ENGINE_ENV] = old
+        SS._clear_caches()
+
+
 @pytest.fixture(scope='module')
 def rotation():
-    taus = np.array([0.0, 0.3, 1.1, 2.9])
-    return {ext: _cc(_rotation(1.0), ell=1, ext=ext, taus=taus)
-            for ext in ((('x', 1), ('x', 1)), (('y', 1), ('x', 1)))}, taus
+    return {eng: _rotation_runs(1.0, eng) for eng in (None, 'poles')}
 
 
-@pytest.mark.parametrize('T', (1e-12, 1e-9, 1e3))
-def test_rotation_time_twin(rotation, T):
-    """Rates 1e12 returned C(0) at every lag below 1e-12 (absolute tau = 0
-    tie, status ok).  (Slower twins also need the pole route's retarded
-    filter and the closed-form routes' error estimates to be relative: added
-    with those fixes.)"""
-    base, taus = rotation
+@pytest.mark.parametrize('engine', (None, 'poles'))
+@pytest.mark.parametrize('T', (1e-12, 1e-9, 1e-6, 1e3, 1e6, 1e9, 1e12))
+def test_rotation_time_twin(rotation, T, engine):
+    """Every rate divided by ``T``, on both engines: the same values, the same
+    analyzer codes (no INTERNAL_ERROR), and the run's accuracy estimate (G6
+    R) within a constant factor of T = 1's.  Before: rates 1e12 returned C(0)
+    at every lag below 1e-12 (absolute tau = 0 tie, status ok); the
+    state-space route's estimate grew with T (R = 6e-10 at T = 1e6: a false
+    G6_ACCURACY_LOW; 8e-3 at 1e12; its resolvent residual was normwise); at
+    T = 1e12 the G5 regime gate raised (absolute pole rounding, then a
+    division by zero) and was skipped as INTERNAL_ERROR."""
+    base = rotation[engine]
+    twins = _rotation_runs(T, engine)
     for ext, b in base.items():
-        twin = _cc(_rotation(T), ell=1, ext=ext, taus=taus * T)
+        twin = twins[ext]
+        assert 'INTERNAL_ERROR' not in _codes(twin)
         assert _codes(twin) == _codes(b)
         _assert_twin(b, twin, 1.0, 1e-13)
+        r0 = b['analysis'].diagnostics['accuracy_estimate']
+        r1 = twin['analysis'].diagnostics['accuracy_estimate']
+        assert r0 is not None and r1 is not None
+        assert r0 / 10 <= r1 <= 10 * r0, (r0, r1)
+
+
+_S3 = {'xa': 2.038303160455847e-06, 'xb': 228855.9870312264, 'xc': 3092.0905409998063}
+
+
+def _three_field(s):
+    """Three coupled fields with cubic terms and two kernels (exponential,
+    alpha), each field in its own units ``s[f]`` (x_f -> s_f x_f; every
+    coefficient carries the powers of ``s`` that keep the equations)."""
+    a, b, c = s['xa'], s['xb'], s['xc']
+    co = {'qa': -1.1107957869229923, 'qb': 0.01434935644390046 * a / c,
+          'qc': -1.0120513730586853, 'qd': -0.09722767929703124 * b / a,
+          'qe': 0.12570747937789956 / a, 'qf': -0.04659749112139882 / b**2,
+          'qg': -0.0008858869288793869 / a**2, 'qo': 0.07146040587396707,
+          'qh': -1.1411680609980157, 'qi': 0.2819028399997951 * c,
+          'qj': -0.20346685537249948 * c / a, 'qk': 0.2537157325713858 * c / b,
+          'ql': -0.04204128551037317 * c / (a * b), 'qm': -0.045140071121247266 / c**2,
+          'qq': -0.17121226525756691 * c / b}
+    m = SDE('w4a_three')
+    for k, v in co.items():
+        m = m.parameter(k, default=v)
+    return (m.parameter('qn', default=0.8611984880482831).parameter('qp', default=1.3380249817818404)
+            .field('xa').field('xb').field('xc')
+            .define_kernel('g0', freq_image='1/(1 + I*omega*qn)')
+            .define_kernel('g1', freq_image='1/(1 + I*omega*qp)^2')
+            .drift('xa', 'qa*xa + qb*xc')
+            .drift('xb', 'qc*xb + qd*xa + qe*xa*xb + qf*xb^3 + qg*xb*xa^2 + qo*Conv(g0, xb)')
+            .drift('xc', 'qh*xc + qi + qj*xa + qk*xb + ql*xb*xa + qm*xc^3 + qq*Conv(g1, xb)')
+            .noise('na', Gaussian(var=repr(0.1 * a * a)), couples={'xa': 1})
+            .noise('nb', Gaussian(var=repr(0.1 * b * b)), couples={'xb': 1})
+            .noise('nc', Gaussian(var=repr(0.1 * c * c)), couples={'xc': 1}).build())
+
+
+@pytest.mark.parametrize('power', (1.0, -1.0, 0.5))
+def test_mixed_field_units_keep_the_stable_saddle(power):
+    """Fields in units 2e-6, 2.3e5 and 3.1e3 (and the inverse): the linearized
+    pencil's entries span ~1e-11 .. 1e11 and QZ on it called the stable saddle
+    unstable (an eigenvalue +0.76: G2_UNSTABLE_SADDLE); it is equilibrated
+    first now.  Same saddle (rescaled), same eigenvalues, same analyzer codes."""
+    from api._mean_field_dae import linear_stability
+    s = {f: v ** power for f, v in _S3.items()}
+    one = {f: 1.0 for f in _S3}
+    ext = (('xa', 1),)
+    base = _cc(_three_field(one), k=1, ell=0, ext=ext, taus=(0.0,))
+    twin = _cc(_three_field(s), k=1, ell=0, ext=ext, taus=(0.0,))
+    assert _codes(twin) == _codes(base)
+    for f in _S3:
+        assert twin['mf_values'][f + 'star'][0] == pytest.approx(
+            s[f] * base['mf_values'][f + 'star'][0], rel=1e-12)
+    eig = []
+    for sc, r in ((one, base), (s, twin)):
+        root = {k: list(np.atleast_1d(v)) for k, v in r['mf_values'].items()}
+        m = _three_field(sc)
+        fund = {p['name']: p['default'] for p in m['parameters'] if 'default' in p and p.get('default') is not None
+                and not p.get('mean_field')}
+        st = _quiet(linear_stability, m, fund, root)
+        assert st['stable']
+        eig.append(np.asarray(st['eigenvalues_finite'], dtype=complex))
+    # matched as a multiset (each eigenvalue to its nearest counterpart):
+    # sorting a complex-conjugate pair is decided by last-ulp differences of
+    # its real parts and can swap the pair between platforms
+    assert len(eig[1]) == len(eig[0])
+    for z in eig[1]:
+        assert np.min(np.abs(eig[0] - z)) <= 1e-9 * abs(z), (z, eig[0])
+
+
+def _tracked_twin(name, base, twin_of, ext, taus, ell, factor):
+    """Base run and its exact twin of a tracked model: equal values (times
+    ``factor``), the same analyzer codes, the accuracy estimate within a
+    constant factor (in one process: the estimate is per run)."""
+    model, _ = dd.load_model(name)
+    p0, p1, t1 = base, *twin_of
+    r0 = _cc(model, p0, ell=ell, ext=ext, taus=taus)
+    r1 = _cc(model, p1, ell=ell, ext=ext, taus=t1)
+    assert _codes(r1) == _codes(r0)
+    _assert_twin(r0, r1, factor, 4e-15)
+    R0 = r0['analysis'].diagnostics['accuracy_estimate']
+    R1 = r1['analysis'].diagnostics['accuracy_estimate']
+    assert R0 and R1 and R0 / 10 <= R1 <= 10 * R0, (R0, R1)
+
+
+_2DCC = {'mu1': 1.0, 'mu2': 1.0, 'eps1': 0.02, 'eps2': 0.02, 'J1': 0.3, 'J2': 0.3,
+         'D1': 1.0, 'D2': 1.0, 'rho': 0.5, 'tauc': 2.0}
+
+
+@pytest.mark.parametrize('a', (1e-9, 1e6))
+def test_colored_two_field_tree_time_twin(a):
+    """Tracked ``ou_quartic_two_dim_color_corr``: the state-space tree lost
+    6e-13 at a = 1e-6 and 6e-11 at a = 1e-9 (the propagator entries were
+    realized and balanced in the model's time unit, which graded them)."""
+    p = {k: (v / a if k == 'tauc' else v if k == 'rho' else v * a) for k, v in _2DCC.items()}
+    taus = np.array([0.0, 1.0, 4.0])
+    _tracked_twin('ou_quartic_two_dim_color_corr', _2DCC, (p, taus / a),
+                  (('dx', 1), ('dy', 1)), taus, 0, 1.0)
+
+
+_QE = {'Em': [0.8, 0.78], 'tau': [10.0, 9.0], 'a': [0.44, 0.44],
+       'taug': [[2.0, 3.0], [1.0, 3.0]], 'w': [[0.25, 0.25], [0.2, 0.3]]}
+
+
+@pytest.mark.parametrize('a', (1e-9, 1e6))
+def test_quadratic_spiking_one_loop_time_twin(a):
+    """Tracked ``single_population_quad_exp_test``, one loop: 3.4e-8 off at
+    a = 1e-9 (1.2e-11 at 1e-6), its accuracy estimate 0 after a unit-time
+    run in the same process (a difference of process-wide sums), and a false
+    G6_ACCURACY_LOW at a = 1e9 (a graded realization)."""
+    p = dict(_QE, tau=[x / a for x in _QE['tau']], taug=[[x / a for x in r] for r in _QE['taug']],
+             a=[x * a for x in _QE['a']], w=[[x / a for x in r] for r in _QE['w']])
+    taus = np.array([0.0, 2.5, 10.0])
+    _tracked_twin('single_population_quad_exp_test', _QE, (p, taus / a),
+                  (('n', 1), ('n', 2)), taus, 1, a * a)
+
+
+_LH = {'E': [0.78, 0.81], 'tau': 10.0, 'a': 1.0, 'tau_g': 2.5,
+       'w': [[0.30, 0.25], [0.30, 0.35]]}
+
+
+@pytest.mark.parametrize('a', (1e6, 1e9))
+def test_linear_hawkes_fast_units_no_false_accuracy_warning(a):
+    """Tracked ``linear_hawkes`` in fast time units: the spike rates carry
+    the time unit and the voltages do not, so the realization looked
+    'graded' and its a posteriori check added 5e-4..8e-4 to the accuracy
+    estimate (G6_ACCURACY_LOW on an exact result)."""
+    p = dict(_LH, tau=_LH['tau'] / a, tau_g=_LH['tau_g'] / a, a=_LH['a'] * a,
+             w=[[x / a for x in r] for r in _LH['w']])
+    taus = np.array([0.0, 2.5, 10.0])
+    _tracked_twin('linear_hawkes', _LH, (p, taus / a), (('n', 1), ('n', 2)), taus, 0, a * a)
 
 
 def _spiking(s):

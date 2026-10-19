@@ -2639,9 +2639,16 @@ def _tree_sigmas(ctx, K_eval, poles):
     hi = max(abs(p) for p in poles) * 100.0
     n = max(24, int(6 * math.log10(hi / lo)) + 1)
     nodes = [np.logspace(math.log10(lo), math.log10(hi), n)]
-    res = sorted({(round(p.real, 9), round(p.imag, 9)) for p in poles
-                  if p.imag > 0 and p.real > p.imag},
-                 key=lambda t: -t[0] / t[1])[:4]
+    # underdamped poles, conjugate / repeated copies merged to 1e-9 of the
+    # pole scale (an absolute round(p, 9) collapsed every pole of a model
+    # with rates ~1e-12 to 0 + 0i, and the sort then divided by 0)
+    pscale = max(abs(p) for p in poles)
+    uniq = {}
+    for p in poles:
+        if p.imag > 0 and p.real > p.imag:
+            uniq.setdefault((round(p.real / pscale, 9), round(p.imag / pscale, 9)),
+                            (float(p.real), float(p.imag)))
+    res = sorted(uniq.values(), key=lambda t: -t[0] / t[1])[:4]
     for re_p, gam in res:
         t_lo = math.asinh((re_p - lo) / gam)
         t_hi = math.asinh((hi - re_p) / gam)

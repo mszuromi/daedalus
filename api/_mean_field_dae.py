@@ -1833,6 +1833,28 @@ def _check_equation_first_order_in_dt(resid, Dt_sym, model, eq, eq_no,
     )
 
 
+def _equilibrate_pencil(A, B, sweeps=8):
+    """``(R A C, R B C)`` with diagonal ``R``, ``C`` of powers of two that
+    bring every row and column of ``|A| + |B|`` to a largest entry near 1
+    (Ruiz iterations).  The pencil's eigenvalues are those of ``(A, B)``
+    exactly; zero rows / columns are left alone."""
+    A = np.array(A, dtype=float, copy=True)
+    B = np.array(B, dtype=float, copy=True)
+    for _ in range(sweeps):
+        W = np.abs(A) + np.abs(B)
+        if not W.size:
+            break
+        rm = W.max(axis=1)
+        cm = W.max(axis=0)
+        r = np.where(rm > 0, 2.0 ** -np.round(np.log2(np.where(rm > 0, rm, 1.0)) / 2), 1.0)
+        c = np.where(cm > 0, 2.0 ** -np.round(np.log2(np.where(cm > 0, cm, 1.0)) / 2), 1.0)
+        if np.all(r == 1.0) and np.all(c == 1.0):
+            break
+        A = r[:, None] * A * c[None, :]
+        B = r[:, None] * B * c[None, :]
+    return A, B
+
+
 def linear_stability(
         model: dict,
         fundamental: dict,
@@ -2037,7 +2059,12 @@ def linear_stability(
     # i.e. ``(-B) v = σ A v``.  scipy.linalg.eig(C, D) returns λ s.t.
     # C v = λ D v, so we call eig(-B, A) and the returned eigenvalues
     # ARE the σ values.
-    sigmas, eigvecs = scipy.linalg.eig(-B_mat, A_mat)
+    # Equilibrated first (rows and columns scaled by powers of two: the
+    # eigenvalues are unchanged, exactly): with fields in very different
+    # units the entries span ~1e-11 .. 1e11 and QZ, backward stable only
+    # normwise, lost the small ones (a stable saddle came out unstable).
+    Ae, Be = _equilibrate_pencil(A_mat, B_mat)
+    sigmas, eigvecs = scipy.linalg.eig(-Be, Ae)
 
     # Filter infinite / NaN eigenvalues (algebraic-constraint modes).
     finite_mask = np.isfinite(sigmas)
