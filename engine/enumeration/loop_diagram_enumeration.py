@@ -1435,15 +1435,51 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
     # established that forking is allowed here (not macOS), the same contract
     # the temporal pipeline runs under.
     import multiprocessing as mp
+    import threading
     from concurrent.futures import ProcessPoolExecutor
+    from engine import worker_budget as _wb
+    n_fit, share = _wb.workers_that_fit(n_procs, _wb.FORK_WORKER_FLOOR,
+                                        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        for it in items:
+            yield fn(it)
+        return
+    n_procs = n_fit
+    over = threading.Event()
+
+    def on_over(pid, fp):
+        over.set()
+        _wb.kill_pid(pid)                # stop its growth now
+    done = 0
+    broken = False
     with ProcessPoolExecutor(max_workers=n_procs,
                              mp_context=mp.get_context('fork')) as ex:
-        done = 0
-        for res in ex.map(fn, items, chunksize=max(1, len(items) // (n_procs * 8))):
-            done += 1
-            if verbose and done % 200 == 0:
-                print(f'  {label} {done}/{len(items)}...', end='\r')
-            yield res
+        procs = lambda: list(getattr(ex, '_processes', None) or ())  # noqa: E731
+        with _wb.FootprintWatch(procs, share, on_over, relative=True):
+            try:
+                for res in ex.map(fn, items,
+                                  chunksize=max(1, len(items) // (n_procs * 8))):
+                    if over.is_set():
+                        broken = True
+                        break
+                    done += 1
+                    if verbose and done % 200 == 0:
+                        print(f'  {label} {done}/{len(items)}...', end='\r')
+                    yield res
+            except Exception as exc:     # BrokenProcessPool after a kill
+                from concurrent.futures.process import BrokenProcessPool
+                if not isinstance(exc, BrokenProcessPool):
+                    raise
+                broken = True
+            if broken:
+                for pid in procs():
+                    _wb.kill_pid(pid)
+                ex.shutdown(wait=False, cancel_futures=True)
+    if broken:
+        # a worker outgrew its share: the rest in this process (in order:
+        # ``ex.map`` yields in input order, so ``items[done:]`` is the rest)
+        for it in items[done:]:
+            yield fn(it)
 
 
 def stream_topology_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):

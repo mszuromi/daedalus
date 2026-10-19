@@ -784,31 +784,50 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
         warn_fork_fallback_once('diagram type-assignment enumeration')
         parallel = False
 
-    if not parallel or len(prediagrams) <= 1:
-        # Serial path.  Keeps 'prediagrams' iteration for back-compat
-        # with any downstream code that relies on yield ordering.
-        results = []
-        mask = _zero_mask(G_ft)
-        from engine.integration.time_domain.final_integral import (
-            growth_guard)
-        for i_pd, pd in enumerate(prediagrams):
-            if i_pd % 64 == 0:
-                growth_guard(f'type assignment (prediagram {i_pd}, '
-                             f'{len(results):,} typed diagrams so far)')
-            for td in enumerate_typed_diagrams(
-                pd, external_fields, vertex_types, source_types,
-                G_ft, resp_index, phys_index, g_zero_mask=mask,
-            ):
-                results.append(td)
-        return results
+    if parallel and len(prediagrams) > 1:
+        out = _enumerate_all_forked(prediagrams, external_fields, vertex_types,
+                                    source_types, G_ft, resp_index,
+                                    phys_index, n_workers, start_method)
+        if out is not None:
+            return out
+    # Serial path (also when the workers would not fit the memory
+    # budget, or one outgrew its share).  Keeps 'prediagrams' order.
+    results = []
+    mask = _zero_mask(G_ft)
+    from engine.integration.time_domain.final_integral import (
+        growth_guard)
+    for i_pd, pd in enumerate(prediagrams):
+        if i_pd % 64 == 0:
+            growth_guard(f'type assignment (prediagram {i_pd}, '
+                         f'{len(results):,} typed diagrams so far)')
+        for td in enumerate_typed_diagrams(
+            pd, external_fields, vertex_types, source_types,
+            G_ft, resp_index, phys_index, g_zero_mask=mask,
+        ):
+            results.append(td)
+    return results
 
+
+def _enumerate_all_forked(prediagrams, external_fields, vertex_types,
+                          source_types, G_ft, resp_index, phys_index,
+                          n_workers, start_method):
+    """The fork-pool path of :func:`enumerate_all` (Linux): ``None`` when the
+    workers would not fit the run's memory budget, or when one outgrew its
+    share (``engine.worker_budget``) -- the caller then works serially."""
     import multiprocessing as mp
     import os
+    from engine import worker_budget as _wb
+
+    n_w_cap = (n_workers if n_workers is not None
+               else min(os.cpu_count() or 4, len(prediagrams)))
+    n_w_cap, share = _wb.workers_that_fit(
+        n_w_cap, _wb.FORK_WORKER_FLOOR, 'parallel_workers_capped_by_budget')
+    if n_w_cap < 2:
+        return None
 
     # Populate _ENUM_WORKER_STATE BEFORE forking so children inherit it.
-    # Not thread-safe — ``enumerate_all`` should not be called from two
-    # threads concurrently.  In the Sage Phase J workflow this is a
-    # single-threaded notebook call, so that's fine.
+    # Not thread-safe -- ``enumerate_all`` should not be called from two
+    # threads concurrently.
     _ENUM_WORKER_STATE['prediagrams'] = list(prediagrams)
     _ENUM_WORKER_STATE['external_fields'] = external_fields
     _ENUM_WORKER_STATE['vertex_types'] = vertex_types
@@ -819,14 +838,12 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     _ENUM_WORKER_STATE['g_zero_mask'] = _zero_mask(G_ft)
 
     ctx = mp.get_context(start_method)
-    n_w_cap = (n_workers if n_workers is not None
-               else min(os.cpu_count() or 4, len(prediagrams)))
-
     with ctx.Pool(processes=n_w_cap) as pool:
-        per_pd_results = pool.map(
-            _worker_enumerate_one_prediagram,
-            range(len(prediagrams)),
-        )
+        per_pd_results = _wb.watched_map(
+            pool, _worker_enumerate_one_prediagram,
+            range(len(prediagrams)), share)
+    if per_pd_results is None:
+        return None
 
     # Flatten in prediagram-index order (Pool.map preserves input
     # order in the output), so the final list matches the serial path.
