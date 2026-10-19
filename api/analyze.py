@@ -207,6 +207,12 @@ _NEVER_DOWNGRADE = frozenset({
 #: as ``final_integral.NQUAD_EPSREL`` for the quadrature fallback), applied
 #: to the cumulant.  ``Question.accuracy``, when declared, replaces it.
 _G6_DEFAULT_RTOL = 1e-10
+#: The default threshold of the quadrature fallback's share of the estimate
+#: (QUADPACK error estimates of regions accepted at NQUAD_EPSREL = 1e-10
+#: each; the estimates run 1-3 orders above the true error, measured on
+#: heavy-tailed noise kernels against mpmath).  A declared question.accuracy
+#: replaces it.
+_G6_NQUAD_DEFAULT_RTOL = 1e-8
 #: the a posteriori realization error (api._realization.
 #: _aposteriori_error) enters the G6 estimate above this value (the
 #: realization is refused outright above 1e-2)
@@ -3364,6 +3370,8 @@ G6_COUNTERS = (
     'nquad_hardened_quad_flags', 'nquad_hardened_uncertified',
     'dd_polygon', 'dd_interval', 'dd_poset', 'dd_grouped_m0', 'dbm_answered',
     'dd_err_abs_sum', 'dbm_err_abs_sum',
+    # the hardened quadrature fallback's QUADPACK error estimates
+    'nquad_hardened_calls', 'nquad_hardened_empty', 'nquad_hardened_err_abs_sum',
     # the state-space route
     'ss_evals', 'ss_estimated', 'ss_err_abs_sum', 'ss_subsets_built',
     'ss_subsets_declined', 'ss_fallback_subsets', 'ss_fallback_evals')
@@ -3538,14 +3546,17 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                 f'{n_q} subset evaluation(s) went to the quadrature fallback '
                 f'(per-subset tolerance NQUAD_EPSREL; '
                 f'{c.get("nquad_hardened_quad_flags", 0)} flagged quad '
-                'call(s)); they are not in the accuracy estimate.', '')
+                'call(s)); the hardened fallback\'s QUADPACK error '
+                f'estimates ({float(c.get("nquad_hardened_err_abs_sum", 0.0)):.3g} '
+                'summed) are in the accuracy estimate.', '')
     C = result.get('C_tau')
     # the state-space route's a-posteriori estimates (``statespace``
     # module docstring: refinement residuals + the Taylor tolerance per
     # step, on the final contraction's magnitude) join the closed-form
     # routes' sums
+    E_q = float(c.get('nquad_hardened_err_abs_sum', 0.0))
     E = (float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
-         + float(c.get('ss_err_abs_sum', 0.0)))
+         + float(c.get('ss_err_abs_sum', 0.0)) + E_q)
     # the per-subset estimates above assume the ROUNDED realization
     # represents G; a graded / not numerically Hurwitz one was checked a
     # posteriori (api._realization: refused above 1e-2) and its measured
@@ -3581,6 +3592,9 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     n_est = sum(int(c.get(k, 0)) for k in ('dd_polygon', 'dd_interval',
                                            'dd_poset', 'dbm_answered',
                                            'ss_estimated'))
+    # every region the hardened fallback integrated (an empty one is exact)
+    n_est += max(0, int(c.get('nquad_hardened_calls', 0))
+                 - int(c.get('nquad_hardened_empty', 0)))
     Ca = np.asarray(C, dtype=complex) if C is not None else np.zeros(0, complex)
     S = float(np.sum(np.abs(Ca)))
     if not complete:
@@ -3610,8 +3624,16 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                         else 10.0 ** (lost - 16))
         d['pole_cluster_accuracy'] = pc.get('accuracy')
     thr = ctx.q.accuracy if ctx.q.accuracy is not None else _G6_DEFAULT_RTOL
+    # the quadrature fallback's share (its estimates are QUADPACK's, judged
+    # against the fallback's own contract unless an accuracy is declared)
+    R_q = None
+    if E_q and complete and S > 0:
+        R_q = E_q / S
+    thr_q = (ctx.q.accuracy if ctx.q.accuracy is not None
+             else max(_G6_NQUAD_DEFAULT_RTOL, thr))
     d.update(error_estimate_sum=E, cumulant_l1=S, accuracy_estimate=R,
-             accuracy_threshold=float(thr), n_estimated_subsets=n_est)
+             accuracy_threshold=float(thr), n_estimated_subsets=n_est,
+             nquad_error_estimate=R_q, nquad_accuracy_threshold=float(thr_q))
     src = 'question.accuracy' if ctx.q.accuracy is not None else \
         'per-subset acceptance COND_RTOL'
     Rs = 'n/a' if R is None else f'{R:.3g}'
@@ -3623,16 +3645,30 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         why = '; no subset carried an estimate, nothing was checked'
     ctx.add('G6_ACCURACY',
             f'accuracy estimate R = {Rs}: summed error estimates {E:.3g} of '
-            f'{n_est} closed-form subset evaluation(s) against '
+            f'{n_est} closed-form or quadrature subset evaluation(s) against '
             f'sum_tau |C(tau)| = {S:.6g} over the tau grid'
             + (f' plus the realization\'s a posteriori relative error '
                f'{real_rel:.3g}' if real_rel else '')
             + (f' plus the balanced-truncation bound {trunc_rel:.3g}'
                if trunc_rel else '')
+            + (f'; of it {R_q:.3g} from the quadrature fallback (threshold '
+               f'{thr_q:g})' if R_q else '')
             + f' (threshold {thr:g}, {src}){why}.',
             'pass parallel=False for the accuracy estimate'
             if (R is None and not complete) else '')
-    if R is not None and R > thr:
+    low = R is not None and (
+        (R - (R_q or 0.0)) > thr or (R_q or 0.0) > thr_q
+        or not math.isfinite(R))
+    if low and (R_q or 0.0) > thr_q and not (R - R_q) > thr:
+        ctx.add('G6_ACCURACY_LOW',
+                f'the quadrature fallback\'s share of the accuracy estimate, '
+                f'{R_q:.3g} (QUADPACK error estimates of its regions), '
+                f'exceeds its threshold {thr_q:g}: the cumulant may have '
+                'fewer correct digits.',
+                'see G6_NQUAD_FALLBACK (QUADPACK flags) and G4 (a noise '
+                'kernel without exponential modes, or a slowly decaying one); '
+                'a looser question.accuracy accepts the result')
+    elif low:
         ctx.add('G6_ACCURACY_LOW',
                 f'the accuracy estimate R = {Rs} exceeds the threshold {thr:g} '
                 f'({src}): cancellation between subsets has amplified their '
@@ -3646,5 +3682,5 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                    f'grid-L1 relative error estimate R = {Rs}{complete_note} '
                    f'against threshold {thr:g}',
                    declared=ctx.q.accuracy is not None,
-                   satisfied=(R <= thr) if (complete and R is not None)
+                   satisfied=(not low) if (complete and R is not None)
                    else None)
