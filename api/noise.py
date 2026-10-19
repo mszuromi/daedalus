@@ -544,11 +544,13 @@ class Cumulants(NoiseSource):
         if int(m) <= self._order or getattr(self, '_truncation_warned', False):
             return
         self._truncation_warned = True
-        warnings.warn(
-            f'{self!r}: cumulant order {int(m)} requested{where}, but only '
-            f'cumulants up to order {self._order} are declared; the higher '
-            f'cumulants are taken as 0. Give more kappas if they are not zero.',
-            CumulantTruncationWarning, stacklevel=3)
+        from engine._warn_helpers import ensure_warning_shown
+        _msg = (f'{self!r}: cumulant order {int(m)} requested{where}, but only '
+                f'cumulants up to order {self._order} are declared; the higher '
+                f'cumulants are taken as 0. Give more kappas if they are not zero.')
+        ensure_warning_shown(CumulantTruncationWarning, 'always', message=_msg,
+                             stacklevel=3)
+        warnings.warn(_msg, CumulantTruncationWarning, stacklevel=3)
 
     def cumulant(self, m: int):
         self.warn_truncation(m)

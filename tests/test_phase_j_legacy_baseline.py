@@ -223,6 +223,15 @@ def _counter_matches(key, got, want):
     return got == want
 
 
+#: Tracked zoo entries without a frozen baseline value: their model became a
+#: tracked file after the pre-M1 freeze (the baseline is regenerated on the
+#: pre-M1 code only).  Values pinned in tests/test_final_decisions.py.
+_ADDED_AFTER_FREEZE = {
+    'ou_quartic_coupled-k2-l2-xx': 'tracked model since Oct 2026 (W2)',
+    'ou_quartic_coupled-k2-l2-xy': 'tracked model since Oct 2026 (W2)',
+}
+
+
 @pytest.fixture(scope='module')
 def baseline():
     if not os.path.exists(Z.TRACKED_NPZ):
@@ -261,8 +270,10 @@ def test_baseline_loads_and_is_consistent(baseline):
     entries = meta['entries']
     tracked_zoo = [e['name'] for e in Z.all_entries(include_local=False)
                    if Z.destination(e) == 'tracked']
-    # every tracked zoo entry is recorded (possibly as TIMEOUT/ERR)
-    missing = sorted(set(tracked_zoo) - set(entries))
+    # every tracked zoo entry is recorded (possibly as TIMEOUT/ERR), except
+    # the entries whose model became tracked after the freeze (no pre-M1
+    # value exists to record; their values are pinned elsewhere)
+    missing = sorted(set(tracked_zoo) - set(entries) - set(_ADDED_AFTER_FREEZE))
     assert not missing, f'zoo entries absent from the baseline: {missing}'
     # nothing local-only leaked into the tracked file: neither a zoo entry
     # routed to the local file nor an entry of a local extra-zoo file

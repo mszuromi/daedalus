@@ -77,14 +77,20 @@ def _levy_ou(kappas):
 
 
 def test_compute_cumulants_warns_when_a_vertex_order_is_above_the_declared_order():
+    import api.compute as C
     from api import compute_cumulants
     from api.noise import CumulantTruncationWarning
+    C._CUMULANT_TRUNCATION_WARNED.clear()
     kw = dict(k=3, max_ell=0, external_fields=[('dx', 1)] * 3,
               tau_grid=np.array([0.0]), parallel=False, verbose=False, use_cache=False)
     m = _levy_ou([1.0])
     assert m['noise_declared_orders'] == {'xi': 2}
     with pytest.warns(CumulantTruncationWarning, match="'xi'.*up to order 2"):
         compute_cumulants(m, **kw)
+    with warnings.catch_warnings(record=True) as rec:     # once per process
+        warnings.simplefilter('always')
+        compute_cumulants(m, **kw)
+    assert not [w for w in rec if issubclass(w.category, CumulantTruncationWarning)]
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
         compute_cumulants(_levy_ou([1.0, 0.4]), **kw)   # order 3 declared
@@ -141,6 +147,26 @@ def test_k3_slices_are_exact_at_ties(base, monkeypatch):
     # a tied point lists the swept leg last (the engine's tie order makes it
     # the earliest leg: the left limit)
     assert list(r['_kpoint_slice_orders'][1][1]) == [0, 2, 1]
+
+
+def test_k3_full_grid_uses_the_nominal_times(monkeypatch):
+    """The full grid evaluates every leg at its nominal time (0 is 0, not
+    -1e-6): equal to the exact third cumulant at every grid point, ties
+    included (continuous here, so any tie order gives the same value)."""
+    import daedalus as dd
+    monkeypatch.delenv('DAEDALUS_TAU0', raising=False)
+    taus = [-0.5, 0.0, 0.5]
+    cfg = dd.Config(k=3, max_ell=0, external_fields=[('x', 1)] * 3, tau_grid=taus,
+                    kpoint_full_grid=True, parallel=False, verbose=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = dd.run(_ou_quadratic(), cfg)
+    grid = np.asarray(r['C_tau_grid'])
+    assert grid.shape == (3, 3)
+    for a, t1 in enumerate(taus):
+        for b, t2 in enumerate(taus):
+            ref = _kappa3_exact([0.0, t1, t2])
+            assert abs(complex(grid[a, b]) - ref) <= 1e-13 * abs(ref), (t1, t2)
 
 
 def test_k3_nudge_mode_is_the_old_placement(monkeypatch):
@@ -205,3 +231,28 @@ def test_coupled_rd_simulator_reads_the_phase_j_budget(monkeypatch):
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '0.01')
     with pytest.raises(MemoryError, match='PHASE_J_MEM_BUDGET_GB'):
         simulate_coupled_rd_1d(np.eye(2), [1.0, 1.0], np.eye(2), t_run=1e3)
+
+
+@pytest.mark.parametrize('pair', ['xx', 'xy'])
+def test_two_field_ou_quartic_zoo_entries_reproduce_their_values(pair):
+    """The zoo entries ``ou_quartic_coupled-k2-l2-*`` have no frozen pre-M1
+    baseline (their model was a local file then; ``_ADDED_AFTER_FREEZE`` in
+    test_phase_j_legacy_baseline.py).  Their values (bit-identical to the
+    local model's at main 3053a45, zoo A/B of the final decisions) are pinned
+    here."""
+    from tests.tools import phase_j_zoo_baseline as ZB
+    from api import compute_cumulants
+    ref = np.load(os.path.join(HERE, 'fixtures', 'zoo_ou_quartic_coupled.npz'))
+    e = ZB.entry_by_name(f'ou_quartic_coupled-k2-l2-{pair}')
+    model, module, _ = ZB._load_model(e)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = compute_cumulants(model, k=2, max_ell=2, external_fields=[tuple(x) for x in e['ext']],
+                              parameters=ZB.resolve_params(e, model, module),
+                              tau_grid=np.asarray(e['tau_grid'], float), parallel=False,
+                              verbose=False, use_cache=False)
+    assert np.array_equal(np.asarray(r['tau_grid'], float), ref[f'{pair}::tau_grid'])
+    for ell in (0, 1, 2):
+        got = np.asarray(r['C_tau_by_ell'][ell], dtype=complex)
+        want = ref[f'{pair}::ell{ell}']
+        assert np.max(np.abs(got - want)) <= 1e-12 * np.max(np.abs(want)), ell

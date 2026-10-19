@@ -1893,7 +1893,7 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
         # (the inverted comparison below sent a NaN to the left limit;
         # audit G2-outputs 3)
         raise ValueError(f'base lags must be finite, got {base}')
-    pinned = {leg: (-eps if abs(b) <= 1e-12 else b)
+    pinned = {leg: ((-eps if eps else 0.0) if abs(b) <= 1e-12 else b)
               for leg, b in zip(range(1, k), base) if leg != j}
     T0 = [0.0] * k
     for leg, t in pinned.items():

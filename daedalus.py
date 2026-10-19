@@ -1037,7 +1037,8 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     # ── 2-leg blocks: one k = 2 run per ordered pair of legs (key) over the
     # lags it needs, read as C(τ) = ⟨φ_first(0) φ_second(τ)⟩.  A block with
     # the swept leg 1 is keyed (other leg, leg 1) at lag τ: at τ = 0 leg 1
-    # sits just BEFORE every other leg on the slice (``_kpoint_slice_times``),
+    # is the EARLIEST leg of the tie on the slice (``_kpoint_slice_point``;
+    # 1e-6 below the others under DAEDALUS_TAU0=nudge),
     # and the k = 2 grid's τ = 0 point is the same side (the second leg
     # earlier).  A block of two legs at 0 is keyed in leg order at lag 0 (the
     # anchor is the latest leg; tied pinned legs: the later-listed one counts
@@ -1112,9 +1113,10 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     # ``_kpoint_slice_times``.  A block of 3 or more legs is evaluated at its
     # legs' entries, so at τ = 0 (where leg 1 meets the other legs) it is the
     # left limit of the slice, as ``C_tau`` is, and the k = 3 central moment
-    # is evaluated at the same times as slice 1 of κ₃.  The pinned legs sit
-    # at 0⁻ = −_ITO_EPS, so they do not coincide with the anchor; for k ≥ 4
-    # they coincide with each other, as on the slices.  A block of 2 legs
+    # is evaluated at the same times as slice 1 of κ₃: at a tie with leg 1
+    # listed last (the exact rule, ``_kpoint_slice_point``), or with the pinned
+    # legs at 0⁻ = −_ITO_EPS under DAEDALUS_TAU0=nudge.  For k ≥ 4 the pinned
+    # legs coincide with each other, as on the slices.  A block of 2 legs
     # reads the k = 2 grid at τ or 0 (``_pair_key``), whose τ = 0 point is
     # the k = 2 equal-time value on the slice's side of the tie.
     slice_times = None
@@ -1708,7 +1710,12 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 kwp['external_fields'] = list(pf)
                 rp = compute_cumulants(**kwp)
                 if isinstance(rp, dict) and rp.get('status') == 'incomplete':
+                    # an extra run that left diagrams out makes the slices
+                    # incomplete too (as the moment's extra runs do)
                     res['status'] = 'incomplete'
+                    res.setdefault('phase_j_incomplete_perm_runs', []).append(
+                        {'external_fields': list(pf),
+                         'phase_j_incomplete': rp.get('phase_j_incomplete')})
                 _perm_runs[key] = (rp.get('total_C_by_ell') or {},
                                    rp.get('total_C'))
             return _perm_runs[key]
@@ -1759,6 +1766,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             else:
                 slices = {j: _slice(lambda o: _perm_fns(o)[1], j)
                           for j in range(1, k)}
+            _perm_runs.clear()          # free the permuted runs' plans
             res['C_tau_slices'] = slices
             res['C_tau_slices_by_ell'] = slices_by_ell
             res['C_tau'] = slices[1]                    # canonical single slice

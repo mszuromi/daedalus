@@ -92,6 +92,10 @@ GOLDEN = {
     'toy_quartic_double_well': (1, True, _W, True, 'rational', 1, True, 'poles', True, 1, False,
                                 frozenset({'G5_LOOP_PARAMETER'})),
     # its defaults (mu = 0.1, eps = 0.1, D = 1) are far from perturbative: sigma ~ 4, g_eff ~ 10
+    # two coupled fields: poles i*0.5, i*1.5 (eigenvalues -0.5, -1.5 at the defaults); the slow mode puts the
+    # loop parameter eps*D/rate^2 at ~0.2: the D3 advisory
+    'ou_quartic_coupled':      (2, True, _W, True, 'rational', 2, True, _LIN, True, 1, False,
+                                frozenset({'G5_LOOP_PARAMETER'})),
     'ou_quartic_colored':      (2, True, _CM, True, 'rational', 2, True, _LIN, True, 1, False,
                                 frozenset({'G4_MARKOV_CONSENT_MISSING', 'G5_LOOP_PARAMETER'})),
     'ou_quartic_two_dim_color_corr': (4, True, _CM, True, 'rational', 3, True, _LIN, True, 1, False,
