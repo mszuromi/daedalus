@@ -199,7 +199,7 @@ class PhaseJIncompleteWarning(UserWarning):
 
 
 from engine.integration.time_domain.final_integral import (  # noqa: E402
-    PhaseJResourceError)
+    PhaseJResourceError, growth_scoped as _growth_scoped)
 
 
 class SpatialAccuracyWarning(UserWarning):
@@ -1190,6 +1190,7 @@ def _switch_on_check(result, failures, model_name):
                 f'subsets); their switch-on weights are not implemented')
 
 
+@_growth_scoped
 def compute_cumulants(
     model: dict,
     k: int,
@@ -2292,7 +2293,8 @@ def _run_phase_j(state):
     # budget is read ONCE for the run (item 53: its default depends on what
     # the process holds), so the pre-pass and the running guard agree.
     from engine.integration.time_domain import final_integral as _fi_b
-    _run_budget = (_fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    _run_budget = (_fi_b.run_budget() if hasattr(_fi_b, 'run_budget')
+                   else _fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
     # Item 61: evaluate-and-discard needs fixed evaluation points (k <= 2
     # on the τ grid) and a single pass

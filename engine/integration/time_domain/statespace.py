@@ -2592,6 +2592,7 @@ class SubsetSS:
         fixed segments), from ``seg_from``'s stacked space to ``seg_to``'s:
         one run per basis vector (``me_chain``)."""
         n_ev = sum(1 for k_, _d in prog[:i_from + 1] if k_ == 'event')
+        _check_dense_map(seg_to.D, seg_from.D)
         M = np.zeros((seg_to.D, seg_from.D), dtype=complex)
         for qb in range(seg_from.D):
             e = np.zeros(seg_from.D, dtype=dt)
@@ -3034,6 +3035,27 @@ def _check_transient(sub, acts):
             {'bytes': nbytes, 'states': D, 'budget_bytes': budget})
 
 
+def _check_dense_map(d_to, d_from):
+    """Refuse (``PhaseJResourceError``) a dense ``d_to x d_from`` complex map
+    of a C0 chain output (``_between``) larger than the budget,
+    before it is allocated (uncharged above ``OP_DENSE_MAX`` states: 6.4 GB
+    at D = 2e4; audit MEM-07)."""
+    FI = _FI()
+    with FI._PLAN_MEM_LOCK:
+        _scoped, budget, rule, _used = FI._budget_now()
+    nbytes = 16 * int(d_to) * int(d_from)
+    if budget is None or nbytes <= budget:
+        return
+    raise FI.PhaseJResourceError(
+        f'Phase J memory budget exceeded: the dense map between two moving '
+        f'segments of a chain output ({int(d_to):,} x {int(d_from):,} '
+        f'states) needs {FI._fmt_gb(nbytes)}, over the budget of '
+        f'{FI._fmt_budget(budget, rule)}.  Nothing was allocated for it.  '
+        f'Options: {FI._BUDGET_HOW}.',
+        {'bytes': nbytes, 'states': (int(d_to), int(d_from)),
+         'budget_bytes': budget})
+
+
 def _charge(sub):
     """Charge the subset's stationary-state bytes against item 35's running
     budget (``PHASE_J_MEM_BUDGET_GB``) before anything is allocated."""
@@ -3411,6 +3433,10 @@ def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
     for (_u, _v, n, _dl) in edges:
         prod_n *= max(n, 1)
     n_sub = 2 ** len(didx)
+    # a stateless delta line (n == 0) is never kept smooth (``_contract``:
+    # that subset is never built), so only the delta lines with states
+    # double the subsets built (audit MEM-05: 2^k over-estimate since #38)
+    n_sub_built = 2 ** sum(1 for i in didx if edges[i][2] > 0)
     cheap_stat = (2 ** n_int) * prod_n
     if (cheap_stat * item <= PREPASS_CHEAP_BYTES
             or len(didx) > PREPASS_MAX_DELTA_EDGES):
@@ -3421,7 +3447,7 @@ def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
                 nv, leaf_mask, [(u, v, max(n, 1)) for (u, v, n, _d) in edges])
         D = full_sum
         Dd = min(D, OP_DENSE_MAX)
-        out = (n_sub * (stat_sum * item + prefetch),
+        out = (n_sub_built * (stat_sum * item + prefetch),
                6 * D * item + 2 * Dd * Dd * item)
     else:
         stat = 0
