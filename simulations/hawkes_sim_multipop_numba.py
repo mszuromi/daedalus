@@ -173,7 +173,7 @@ def sim_hawkes_multipop_quad_reset_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **quadratic-rate hard-spike-reset**
     variant of the heterogeneous-population Hawkes process.  Matches
-    ``models/multipopulation_spike_reset_test.model.py``:
+    the matching model file:
 
       dF_{ij}/dt   = (1/tau_g[i,j]) * (n_j(t) - F_{ij})
       tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] F_{ij}
@@ -367,7 +367,7 @@ def sim_hawkes_multipop_cubic_alpha_numba(n_steps, dt_sim,
       lambda_i(t)    = max(a_i · v_i^3, 0)                       # CUBIC rate
       n_i(t)         ~ Poisson(lambda_i(t) dt)
 
-    Matches ``models/single_population_cubic_alpha_test.model.py``:
+    Matches the corresponding model file:
     no spike reset, cubic φ, alpha synaptic kernel
     α(t) = (t / τ_g²) · exp(-t / τ_g) · H(t).
 
@@ -637,7 +637,7 @@ def sim_hawkes_multipop_linear_conductance_numba(
     """
     Euler-step simulator for the **linear-rate CONDUCTANCE-synapse**
     variant of the heterogeneous-population Hawkes process.  Matches
-    ``models/single_population_conductance_synapse_test.model.py``:
+    the matching model file:
 
       dF_{ij}/dt   = (1/tau_g) * (n_j(t) - F_{ij})         # exp synapse filter
       tau_v_i · dv_i/dt = -v_i + E_drive_i
@@ -831,7 +831,7 @@ def sim_hawkes_multipop_quad_reset_delta_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **quadratic-rate + hard-spike-reset +
     delta synapse** Hawkes process.  Matches
-    ``models/single_population_quad_spike_reset_test.model.py``:
+    the matching model file:
 
       tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] · n_j(t)
                          - tau_v_i · v_i · n_i(t)                # hard reset
@@ -925,7 +925,7 @@ def sim_hawkes_multipop_quad_softreset_delta_numba(
     """
     Euler-step simulator for **quadratic-rate + SOFT spike-reset +
     delta-synapse** Hawkes.  Matches
-    ``models/single_population_quad_spike_reset_test.model.py``
+    the matching model file
     after its 2026-05-18 update (reset term changed from full
     ``tau[i]*v[i]*n[i]`` to the parameter-free ``reset_coeff*v[i]*n[i]``
     with ``reset_coeff = 0.5``).
@@ -1132,7 +1132,7 @@ def sim_hawkes_multipop_linear_conductance_delta_numba(
     """
     Euler-step simulator for **linear-rate + CONDUCTANCE-synapse +
     delta-kernel** Hawkes.  Matches
-    ``models/single_population_conductance_synapse_test.model.py``
+    the matching model file
     after switching its synapse kernel from
     ``(1/τ_g)·exp(-t/τ_g)·θ(t)`` to ``dirac_delta(t)``.
 

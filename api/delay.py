@@ -28,7 +28,7 @@ realization cannot take it as it is.  This module
 * runs ``compute_cumulants`` on the approximated model at increasing orders
   ``n = n_start, 2 n_start, ...`` (``compute_delayed``) until the estimated
   relative error of the observable, ``max_tau |C_n - C_2n| / max_tau |C_2n|``
-  (conservative: item 29 measured it 3-5x above the true error of ``C_n``,
+  (conservative: it was measured 3-5x above the true error of ``C_n``,
   and the reported value is ``C_2n``), meets the target (default ``1e-8``),
   or until ``n_max`` or the predicted wall time of the next order exceeds the
   cap (then a warning says the target was missed).  The prediction is the
@@ -60,7 +60,7 @@ conductance kernel when its approximated image is strictly proper (a delayed
 filter, ``Kernel.delay(d) * Kernel.exponential(tau)``).  A bare hard delay
 there has the all-pass (n, n) image ``(-1)^n + (strictly proper)``: Phase J
 folds its direct term into the line it sits on (a dressed line, ``c G +
-g_smooth * G``, on both routes; item 56), so the (n, n) approximant runs as
+g_smooth * G``, on both routes), so the (n, n) approximant runs as
 it is.  Only a line that cannot be dressed (a kernel rate equal to a pole of
 the line) is skipped; ``compute_delayed`` then reruns the orders with the
 strictly proper ``[n-1/n]`` approximant of every delay factor
@@ -594,7 +594,7 @@ def _next_truncation(opts, t_base, r, k, n, m, est, est_ref, ctrl):
     kept.  Otherwise ``max(t_base, min(TRUNCATION_MAX, TRUNCATION_KAPPA *
     e_m))`` with ``e_m`` the smaller of two predictions of the relative loop
     error of order ``m`` (in units of ``max |C|``, as the order estimate),
-    each carried to order ``m`` by the loops' ``n^-3`` decay (item 29): the
+    each carried to order ``m`` by the loops' ``n^-3`` decay: the
     exact-vs-Pade tree of order ``n`` times the loops' share of ``max |C|``,
     and the doubling estimate (``est * (est_ref / m)^3``).  They are
     predictions, not bounds, and on the benchmarks they OVERestimate (the
@@ -752,7 +752,7 @@ def bare_delay_kernels(model: dict, ns) -> list:
 
 
 def bare_delays_on_delta_lines(ctx, bare, orders=(1, 2), ns=None):
-    """D10 (item 56): the bare delay kernels among ``bare`` (names,
+    """D10: the bare delay kernels among ``bare`` (names,
     ``bare_delay_kernels``) that delay a field whose propagator has a delta
     part (a point-process field) inside a vertex with a second delta-carrying
     physical leg (a spike train inside a nonlinearity, e.g. ``exp(w n(t -
@@ -912,7 +912,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     _an_first = (runs.get(n_used) or {}).get('analysis') if n_used is not None else None
     offenders = []
     if incomplete and bare:
-        # D10 (item 56): per line, not per model -- only a bare delay of a
+        # D10: per line, not per model -- only a bare delay of a
         # field with a delta part into a vertex with a second such leg
         try:
             offenders = bare_delays_on_delta_lines(ctx, bare, ns=ns)
@@ -934,7 +934,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     elif incomplete and bare:
         # Phase J skipped diagrams with a bare delay at a vertex leg: its
         # (n, n) image is all-pass, (-1)^n + strictly proper; Phase J dresses
-        # the line with it (item 56), but a line it cannot dress (a kernel
+        # the line with it, but a line it cannot dress (a kernel
         # rate equal to a pole of the line) is skipped.  Run the strictly
         # proper [n-1/n] approximant instead (it also converges to
         # exp(-s d), the tree stays exact); the first attempt's warnings are
@@ -1126,7 +1126,7 @@ def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None, r_last=N
     error on the step before when there is one (measured wall ratio of
     ``prev -> n`` over its proxy ratio, clamped to [0.5, 4]).  The proxy
     describes the state-space route's sweep of the linear operator's
-    realization; it is not used (the rule before item 45 is: the larger of
+    realization; it is not used (the earlier rule was: the larger of
     ``(nxt / n)^4`` and the measured growth of the last pair) when there is
     no realization of the next order, when the last run (``r_last``) did
     not take the state-space route for every subset, or when the proxy does
@@ -1203,7 +1203,7 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'stability': ctx.t.get('kernel_stability_detail'),
         'wall_s': round(time.perf_counter() - t_all, 3),
         'options': opts,
-        # item 45: the per-entry balanced truncation of every order's
+        # the per-entry balanced truncation of every order's
         # realization and the order controller's record
         'truncation_tol': ctrl['truncation_by_order'].get(n_used),
         'truncation_by_order': ctrl['truncation_by_order'],
@@ -1262,8 +1262,8 @@ def _install_exact_tree(r, exact, call):
     r['C_tau'] = sum(np.asarray(v) for v in by.values() if v is not None)
     fby = r.get('total_C_by_ell') or {}
     f0 = exact.callable()
-    # the exact tree itself, for its exact pairing and spectrum (item 54,
-    # api.me_output.ExactDelayTreeSide)
+    # the exact tree itself, for its exact pairing and spectrum
+    # (api.me_output.ExactDelayTreeSide)
     f0.exact_tree = exact
     fby[0] = f0
     r['total_C_by_ell'] = fby

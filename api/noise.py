@@ -773,7 +773,7 @@ class CompoundPoisson(NoiseSource):
         return f'CompoundPoisson(rate={expr_to_text(self.params["rate"])!r}, jump={self.jump!r})'
 
 
-# ═══ Round 2 (item 48): finite-moment Levy sources, jump laws, composites ═══
+# ═══ Round 2: finite-moment Levy sources, jump laws, composites ═══
 #
 # Every class below is a per-unit-time CGF like the rest of the module and
 # has an exact (or documented-approximate) sampler in api.noise_samplers.

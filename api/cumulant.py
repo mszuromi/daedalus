@@ -47,7 +47,7 @@ same subsets, prefactors and Wick permutations as ``C_tau``::
 
 One mode term is a :class:`ModeTerm` ``(coeff, rate, power, side)``:
 ``coeff · τ**power · exp(rate · τ)`` on ``side`` ('+' for τ > 0, '-' for
-τ < 0).  The tree-level symbolic output of item 23 (``ModeSum``) uses the
+τ < 0).  The tree-level symbolic output (``ModeSum``) uses the
 same field names (its sides are spelled 'positive' / 'negative').  Where the
 triples are not available ``c.me_reasons`` says why (``c.me`` is ``None`` for
 a loaded file or k ≠ 2, and lists per-loop-order ``reasons`` when, e.g., a
@@ -86,7 +86,7 @@ class ModeTerm(NamedTuple):
     sum, valid on ``side`` ('+': τ > 0, '-': τ < 0, or an ordering label of
     the external times for k >= 3).  ``rate`` is complex (λ, Re λ < 0 for a
     decaying term on its side).  Filled by item C0; the layout is shared with
-    the tree-level symbolic output (item 23)."""
+    the tree-level symbolic output."""
     coeff: complex
     rate: complex
     power: int
@@ -825,7 +825,7 @@ class Cumulant:
         ``'quad'``: adaptive quadrature of the Phase J callables;
         ``'auto'`` (default): exact when the triples cover ``ell``, else quad
         with an :class:`api.me_output.MEFallbackWarning`.  ``contact``: the
-        δ(τ) term at τ = 0 as decided in item 23 (``None`` includes ``w L(0)``
+        δ(τ) term at τ = 0 as decided for the tree-level output (``None`` includes ``w L(0)``
         when the kernel is continuous at 0 and refuses otherwise;
         ``'exclude'`` / ``'positive'`` / ``'negative'`` / ``'mid'``); spikes
         off τ = 0 add ``w L(location)``.  Returns an

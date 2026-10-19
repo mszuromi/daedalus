@@ -1,27 +1,28 @@
 """
 engine.integration.time_domain.pipeline
 ======================================
-Time-domain tree-level correlator evaluation.
+Time-domain correlator evaluation (tree and loop diagrams).
 
-Evaluates each typed diagram directly in the time domain via explicit
-numerical quadrature of vertex-time integrals.  No frequency-domain
-integral construction or loop-kernel grouping is needed — the pipeline
-works directly from:
+Evaluates each typed diagram directly in the time domain, vertex time
+integrals done in closed form (state-space route or pole-residue modesum;
+numerical quadrature only as a fallback).  No frequency-domain integral
+construction or loop-kernel grouping is needed — the pipeline works
+directly from:
 
   1. A list of typed diagrams (from the enumeration pipeline)
   2. Their scalar prefactors (from ``classify_coefficient_factors``)
   3. The retarded propagator in pole-residue form (``pole_vals``,
      ``C_mats``, ``D_delta``)
 
-For tree-level diagrams (loop_number == 0), each diagram is evaluated
-independently via ``integrate_tree_diagram``.  Loop diagrams
-(loop_number > 0) are marked as skipped — loop-kernel reduction is
-deferred to a future extension.
+Every diagram, tree (loop_number == 0) or loop (loop_number > 0), is
+evaluated independently by ``integrate_diagram`` and the contributions are
+summed per loop order; a diagram that cannot be evaluated is reported in the
+result (``status = 'incomplete'``), never dropped silently.
 
 Convention
 ----------
-``total_C(t_1, t_2, ..., t_k)`` returns the sum of all tree-level
-diagram contributions.  Position i is ALWAYS the time of
+``total_C(t_1, t_2, ..., t_k)`` returns the sum of all diagram
+contributions.  Position i is ALWAYS the time of
 ``external_fields[i]``:
 
   - ``external_fields[0]`` → ``t_1`` (base time, pinned to 0)
@@ -29,7 +30,7 @@ diagram contributions.  Position i is ALWAYS the time of
   - ``external_fields[2]`` → ``t_3``, ``τ_2 = t_3 - t_1``
 
 This is enforced by the canonical time remapping in
-``integrate_tree_diagram``.
+``integrate_diagram``.
 """
 
 from sage.all import SR
@@ -156,7 +157,7 @@ def _ss_grid(points):
 
 def _workers_within_budget(n_w):
     """The worker count a forked τ batch may use within the running Phase J
-    memory budget (item 61): a worker builds its own copy of the lazily
+    memory budget: a worker builds its own copy of the lazily
     built stationary states and dirties the plans it reads, so a run that
     has charged ``used`` bytes holds up to ``(1 + n_w) x used`` with ``n_w``
     workers.  Outside a ``phase_j_memory_scope``, without a budget or with
@@ -180,7 +181,7 @@ def _workers_within_budget(n_w):
 
 
 class DiscardedDiagramsError(RuntimeError):
-    """A callable of a Phase J run made with ``discard=True`` (item 61) was
+    """A callable of a Phase J run made with ``discard=True`` was
     asked for a point it was not evaluated on, or for a diagram it
     released."""
 
@@ -207,7 +208,7 @@ def _mem_mark():
 def _mem_release(mark, refund=True):
     """The bytes charged since ``mark`` (one diagram's plans and stationary
     states); with ``refund`` they are taken back from the running total
-    (the diagram's closure has been dropped; item 61)."""
+    (the diagram's closure has been dropped)."""
     from engine.integration.time_domain import final_integral as _fi
     scoped, used0, tuples0, plans0 = mark
     with _fi._PLAN_MEM_LOCK:
@@ -235,7 +236,7 @@ def compute_correction_td(
     kernel_groups=None,
     # M8: divergence policy of the box-free routes (``integrate_diagram``)
     on_divergence=None,
-    # item 61: evaluate each diagram on these points right after it is
+    # evaluate each diagram on these points right after it is
     # built, keep the values, release it (``discard``)
     discard_points=None,
 ):
@@ -272,7 +273,7 @@ def compute_correction_td(
         External time symbols in canonical order.  Defaults to
         ``[t_1, ..., t_k]``.
     discard_points : list of tuple or None
-        Item 61, evaluate-and-discard: each diagram is evaluated on these
+        evaluate-and-discard: each diagram is evaluated on these
         points (``total_C``'s arguments, under the state-space τ batch)
         right after ``integrate_diagram`` builds it; the values are kept
         and the diagram's callable, plans and stationary states are

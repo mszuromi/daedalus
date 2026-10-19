@@ -23,7 +23,7 @@ S_(1,2) ∋  κ · g · vt · v' · n'
 
 The kernel SR symbol `g` ends up in the **vertex coefficient**, not just
 the (1,1) bilinear. The existing pipeline substitutes `g → ĝ(ω)` only in
-the (1,1) matrix `K_ft` ([pipeline/_propagator.py:563-566](../pipeline/_propagator.py)) —
+the (1,1) matrix `K_ft` ([api/_propagator.py:563-566](../pipeline/_propagator.py)) —
 interaction-vertex kernel factors are left as raw SR symbols and would
 either:
 
@@ -32,7 +32,7 @@ either:
 - silently get treated as a free parameter and produce wrong numbers.
 
 The existing infrastructure for non-local **source** vertices
-(`NoiseSourceType` at [msrjd/core/vertices.py:110](../msrjd/core/vertices.py)) is the right shape but
+(`NoiseSourceType` at [engine/core/vertices.py:110](../msrjd/core/vertices.py)) is the right shape but
 covers only auto-cumulant noise sources (`correlated_noises` block), not
 interaction vertices with conductance-multiplicative synapses.
 
@@ -120,7 +120,7 @@ Tests:
 
 ### Phase 2 — propagate to vertex extraction (next session)
 
-Modify `extract_vertex_types` ([msrjd/core/vertices.py:252](../msrjd/core/vertices.py)) to:
+Modify `extract_vertex_types` ([engine/core/vertices.py:252](../msrjd/core/vertices.py)) to:
 
 1. After decomposing a sector into monomials, for each monomial scan
    its coefficient for kernel symbols listed in
@@ -161,7 +161,7 @@ attachments are stored in the expand cache (`kernel_attachments`) so a warm
 run builds the same vertices as a cold one.
 
 For the equivalent frequency-domain integrator
-(`msrjd/integration/symbolic.py`), the modification is direct: insert
+(`tests/oracles/symbolic.py`), the modification is direct: insert
 the `ĝ(ω_leg)` factor at the vertex like the existing
 `NoiseSourceType` path does at lines 364-366.
 

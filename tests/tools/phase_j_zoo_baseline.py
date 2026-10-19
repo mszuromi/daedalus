@@ -1094,7 +1094,7 @@ def assemble(run_dir=WORK_DIR, *, tracked_npz=TRACKED_NPZ,
         'schema_version': SCHEMA_VERSION,
         'generated': datetime.datetime.now().isoformat(timespec='seconds'),
         'generator': 'tests/tools/phase_j_zoo_baseline.py',
-        'plan': f'docs/integration_speedup_plan.md §4.3 / {plan_label}',
+        'plan': f'the internal design notes (not distributed) §4.3 / {plan_label}',
         'tau_convention': ('k=2 grid τ=0 is evaluated at t1=-_ITO_EPS=-1e-6 '
                            '(Itô left limit); k>=3 points are raw, with the '
                            'API-nudged variant alongside'),

@@ -13,8 +13,8 @@ Ornstein-Uhlenbeck-in-time × heat-kernel-in-space propagator; the
 The action's kinetic operator uses the inert ``Laplacian`` symbol
 multiplicatively, exactly like ``Dt`` — the framework registers it
 because ``phi`` declares ``spatial_dim=1``.  See
-``docs/spatial_design_decisions_v1.md`` and
-``docs/spatial_implementation_plan.md``.
+the internal design notes (not distributed) and
+the internal design notes (not distributed).
 
 Phase 1 status: this file ``build()``s and ``FieldTheory.expand()``s.
 Propagator construction (heat kernel × exp decay) lands in Phase 2;

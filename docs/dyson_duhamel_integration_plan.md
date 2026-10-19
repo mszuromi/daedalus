@@ -12,7 +12,7 @@
 | D‑2 `𝓗_n` | **DONE** | `dyson_dressing.hcal_n` / `dressed_GR` (B26/B27; geometric convergence to `expm(−(M+𝒟q²)t)` pinned) |
 | D‑3 tree dressing | **DONE** | `dyson_dressing.dressed_tree_C` wired into `compute_coupled_tree_correlator` (policy‑gated; q‑grid cosine FT / periodic mode sum) |
 | D‑3 **loop** dressing | **GATED** (clean `NotImplementedError`) | see "remaining" below |
-| D‑4 policy | **DONE** | `SpatialTheoryBuilder.dyson/dyson_order/reference_diffusion` → `model['spatial']`; serializer round‑trip; `SPATIAL_DYSON_ORDER` env; divergence guard `‖𝒟̂‖/D₀ ≥ 1` |
+| D‑4 policy | **DONE** | `SpatialModelBuilder.dyson/dyson_order/reference_diffusion` → `model['spatial']`; serializer round‑trip; `SPATIAL_DYSON_ORDER` env; divergence guard `‖𝒟̂‖/D₀ ≥ 1` |
 | D‑5 ladder | **DONE (tree)** | N=0..3 vs exact `expm`/Lyapunov oracle (N=3 ≤ 2e‑3); unequal‑D e2e through `compute_cumulants` (periodic) vs exact mode‑sum oracle; sim transitivity via `coupled_box_correlator` (pinned against the 2‑species Langevin sim in `tests/test_coupled_rd_sim.py`) |
 
 Plus: the coupled TREE IFT is now **analytic** (spectral `Σ_{αβ}` × `free_two_point(μ_d,D₀,½)` with `μ_d=(m_α+m_β)/2` — no q_cut truncation).
@@ -34,10 +34,10 @@ column — guard); (ii) the momentum insertion has the closed‑form identity
 This wires the paper's Appendix‑B §B.24–B.30 Dyson/Duhamel series into the spatial
 pipeline so **coupled multi‑field theories with unequal diffusion** (`𝒟̂ ≠ 0`) become
 computable. Today the code is hard‑gated to a single scalar diffusion `D` (`𝒟̂ = 0`),
-so only the `n=0` term is realized. Builds on `docs/theory_builder_split_plan.md`.
+so only the `n=0` term is realized. Builds on the internal design notes (not distributed).
 
 **Done (validated, committed):**
-- **Spectral reference propagator** `G₀` — `msrjd/integration/spatial/spectral_propagator.py`
+- **Spectral reference propagator** `G₀` — `engine/integration/spatial/spectral_propagator.py`
   (`D₀` split, eigenprojectors `P_α`, `G₀=Σ_α P_α e^{−(m_α+D₀|k|²)t}`). Commit `24135f1`.
 - **`M`/`𝒟` extraction** from the symbolic `K_ft` — `heat_kernel.reaction_diffusion_matrices`.
   Commit `0205e42`. (Full chain `K_ft → M,𝒟 → G₀ == expm` validated.)
@@ -121,8 +121,8 @@ where the `{n_e}` sum runs over each retarded edge's `0…N` (the truncation ord
 nested‑exponential simplex integral** (`expdd.chain_simplex`; the older
 `final_integral._exp_over_chain_simplex` was retired in audit W7, and
 the proposed Opitz‑via‑`expm`‑of‑a‑bidiagonal primitive for confluent nodes —
-`docs/m_ge3_chain_simplex_fix_proposal.md`). Adapt it to `Φ_n` (this is one of the
-spatial←temporal lessons in `docs/temporal_lessons_from_spatial.md`).
+the internal design notes (not distributed)). Adapt it to `Φ_n` (this is one of the
+spatial←temporal lessons in the internal design notes (not distributed)).
 
 ## Keeping `compute_cumulants` simple: order is a MODEL property
 
@@ -130,7 +130,7 @@ The truncation order is **set at build time and read from the model** — never 
 `compute_cumulants` argument. The signature does not change.
 
 ```python
-SpatialTheoryBuilder(...).diffusion_matrix(...).dyson_order(2)...build()
+SpatialModelBuilder(...).diffusion_matrix(...).dyson_order(2)...build()
 # → model['spatial']['dyson'] = {'mode': 'fixed', 'order': 2}
 ```
 
@@ -166,7 +166,7 @@ theories pay nothing.
 
 ## Technical pipeline implementation
 
-**(1) Build time — `SpatialTheoryBuilder` (new methods):**
+**(1) Build time — `SpatialModelBuilder` (new methods):**
 - Accept coupled fields (lift the diagonal‑only restriction at the authoring layer).
 - Parse the diffusion matrix `𝒟` from the action's Laplacian coefficients (incl. any
   cross‑field `A^(2)`). Choose the reference `D_0` (default: mean or min eigenvalue of
@@ -199,7 +199,7 @@ adaptive policy (C) prunes this later.
 ## Phasing
 
 1. **Spectral propagator** (coupled `M`: `Ψ, m_α, P_α`; `D_0` split; `𝒟̂`) behind
-   `SpatialTheoryBuilder` — validate the `n=0` term reproduces today's diagonal result.
+   `SpatialModelBuilder` — validate the `n=0` term reproduces today's diagonal result.
 2. **`Φ_n` evaluator** (adapt the temporal chain‑simplex / Opitz primitive) +
    unit‑test vs a brute‑force nested‑simplex quadrature and the confluent limit.
 3. **Per‑edge dressing** + the `{n_e}` sum (`mode='fixed'`), wired through the existing
@@ -273,7 +273,7 @@ fine at small N.
    per-edge form factor `Rcal` (even polynomial in the routed momentum → existing
    GH/Wick-moment average, exact). Time side: `𝓗_{n_e}(w_e)` multiplies `𝒞(w)`
    via the (already per-edge after 3c-1) mass factor.
-4. **D-4 builder + policy:** `SpatialTheoryBuilder.dyson_order(N)` /
+4. **D-4 builder + policy:** `SpatialModelBuilder.dyson_order(N)` /
    `.reference_diffusion(D0)` → `model['spatial']['dyson']={'mode':'fixed','order':N}`
    (+ `'off'`); build-time `‖𝒟̂‖/D₀` convergence warning; `SPATIAL_DYSON_ORDER` env
    escape hatch. `compute_cumulants` signature unchanged.

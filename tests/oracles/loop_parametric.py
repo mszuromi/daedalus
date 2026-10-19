@@ -28,7 +28,7 @@ a pure Gaussian with the Symanzik forms (for ONE loop momentum ℓ, edges
 There are **no momentum-dependent poles** — only a Schwinger/time integral of
 the erf family remains — so the close-pair slow path can never arise.
 
-Validated (``docs/spatial_spikes/stageC5_momentumfirst_spike.py`` and the
+Validated (the internal design notes (not distributed) and the
 ``Σ_K`` 2-D check): both bubble self-energies reproduce the direct ``∫dℓ`` to
 ~1e-12.
 """

@@ -1627,7 +1627,7 @@ class ModelUI:
         self._save_hint = W.HTML(value='')
         self._save_hint.add_class('tb-save-hint')
 
-        # "Open in runner" bridge (item 5).  After Save, the user can
+        # "Open in runner" bridge.  After Save, the user can
         # click this to open ``model_runner.ipynb`` and have the just-
         # saved MODEL_NAME picked up automatically via a tiny scratch
         # file written by ``_on_save``.
@@ -2259,7 +2259,7 @@ class ModelUI:
             return True
         return False
 
-    # ── Open in runner notebook (item 5) ──────────────────────────
+    # ── Open in runner notebook ──────────────────────────
     def _on_open_in_runner(self, _btn) -> None:
         """Write a tiny scratch file with the last-saved model name
         and emit JS to open ``model_runner.ipynb`` in a new tab.

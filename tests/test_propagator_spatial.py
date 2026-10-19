@@ -2,7 +2,7 @@
 tests/test_propagator_spatial.py
 ================================
 Phase 2 + 3 acceptance tests for the spatial heat-kernel propagator
-(docs/spatial_implementation_plan.md Phases 2-3).
+(the internal design notes (not distributed) Phases 2-3).
 
 Covers:
   * build_propagator on a spatial model produces the spatial block

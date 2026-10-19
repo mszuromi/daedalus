@@ -1051,8 +1051,10 @@ class SymbolicCumulant:
                            'denominator': str(x.denominator())})
 
     def callable(self, ell=None):
-        """numpy callable ``f(**params)`` of the symbolic variables, through
-        Horner forms of numerator and denominator (``sympy.lambdify``)."""
+        """numpy callable ``f(**params)`` of the symbolic variables: the
+        expanded rational function lambdified with ``sympy.lambdify`` (no
+        Horner rewriting; very high-degree numerators lose digits to
+        cancellation, so check against :meth:`evaluate` there)."""
         import sympy
         ex = self.sympy(ell)
         syms = [sympy.Symbol(n) for n in self.names]
@@ -1365,7 +1367,7 @@ class _Setup:
                         and not p.get('mean_field')}
                 full.update(parameters)
                 parameters = full
-            # the exact realizations (no balanced truncation, item 45): the
+            # the exact realizations (no balanced truncation): the
             # replay below is exact, and checks the reference to CHECK_RTOL
             from api._realization import truncation_scope
             with truncation_scope(0):
@@ -1759,7 +1761,7 @@ def _sweep_magnitude(cfn):
 
 def _refuse_truncated_reference(result):
     """Refuse (``truncated_reference``) a supplied reference whose propagator
-    realization is balanced-truncated under the tolerance in effect (item 45):
+    realization is balanced-truncated under the tolerance in effect:
     its numbers are within that tolerance of the exact pipeline, which the
     1e-12 checks would report as a mismatch."""
     from api._realization import truncation_tol, try_realize
@@ -1963,7 +1965,7 @@ def _check_zero_pattern(sp, prop, fld, reference, num_params):
 def _phase_j_parts_or_refuse(contrib):
     """The contribution's ``phase_j_parts``, or a named refusal: a diagram
     whose conductance kernel slots have several placements is a weighted sum
-    of placement closures (``phase_j_placements``, item 50) with no subset
+    of placement closures (``phase_j_placements``) with no subset
     structure of its own (``_Setup.diagrams`` refuses conductance vertices
     first; this keeps a supplied result from reaching an AttributeError)."""
     parts = getattr(contrib, 'phase_j_parts', None)

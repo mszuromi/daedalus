@@ -468,7 +468,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                               prop, model, k, max_ell, verbose, preflight,
                               ss_route=None, n_tau=1, run_budget=None,
                               discard=False, discard_ok=False):
-    """Item 35: the estimate of the modesum-plan memory of the whole Phase J
+    """The estimate of the modesum-plan memory of the whole Phase J
     run (``final_integral.estimate_modesum_plans`` over every diagram of
     every ell, times the pole-deformation node runs), recorded in the
     analyzer report (``diagnostics['phase_j_memory']`` and an assertion in
@@ -485,7 +485,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     the largest segment working set) instead of pole tuples, and a run the
     route covers makes one Phase J pass (no deformation runs).
 
-    Item 61 (``discard``: the caller's option; ``discard_ok``: the run has
+    Evaluate-and-discard (``discard``: the caller's option; ``discard_ok``: the run has
     fixed evaluation points and one pass): with evaluate-and-discard the
     run holds one diagram at a time, so the largest diagram plus one
     segment working set (``held_bytes``) is compared with the budget
@@ -511,7 +511,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     # done only when the bound is over budget)
     runs = int(getattr(deform, 'n_nodes', 1) or 1) if deform is not None \
         else 1
-    # ``run_budget``: the run's ``(bytes, rule)``, read once (item 53)
+    # ``run_budget``: the run's ``(bytes, rule)``, read once
     budget, budget_rule = (run_budget if run_budget is not None
                            else _fi.mem_budget('PHASE_J_MEM_BUDGET_GB'))
     est = _fi.estimate_modesum_plans(
@@ -898,7 +898,7 @@ class PhaseJEngineFallbackWarning(UserWarning):
 
 
 def _realization_check(prop, num_params):
-    """Item 60: the state-space realization's a posteriori check
+    """The state-space realization's a posteriori check
     (``api._realization``: run when the rounded realization is graded or
     not numerically Hurwitz) for the analyzer's G6 accuracy estimate:
     ``{'checked', 'err_rel', 'graded', 'bad_margin'}``, or ``None`` when the
@@ -974,7 +974,7 @@ def _attach_provenance(result, route, pf):
 
 
 
-# ── switch-on transients (item 44) ─────────────────────────────────────────
+# ── switch-on transients ─────────────────────────────────────────
 
 def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
                        tau_grid, *, spatial, saving):
@@ -1227,7 +1227,7 @@ def compute_cumulants(
     times=None,                      # with t_min: absolute external times, (n, k) or (n,) (every leg at t)
     initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
     delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
-    discard=False,                   # item 61: evaluate each diagram on the grid, then release it (True / 'auto')
+    discard=False,                   # evaluate each diagram on the grid, then release it (True / 'auto')
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1276,7 +1276,7 @@ def compute_cumulants(
 
         **Previously this floor was 4**, which forced models at
         ``k=2, max_ell=0`` to pay an order-4 expansion they didn't
-        mathematically need — see ``docs/CHANGELOG.md``
+        mathematically need — see ``CHANGELOG.md``
         (model-precompute-cache branch) for the cost it imposed on
         the dendritic-linear model.
     origin_leaf_idx : int
@@ -1318,7 +1318,7 @@ def compute_cumulants(
         each stage pick its own default (``min(os.cpu_count(),
         n_tasks)``).
     discard : bool or 'auto', default False
-        Evaluate-and-discard (item 61).  ``True``: each diagram is
+        Evaluate-and-discard.  ``True``: each diagram is
         evaluated on the τ grid right after it is built and then
         released (its pole plans and stationary states are refunded to
         the memory budget), so Phase J holds one diagram at a time: the
@@ -1488,7 +1488,7 @@ def compute_cumulants(
     # the call as given (a model with delay kernels is handed to api.delay,
     # which re-enters compute_cumulants with Pade-approximated copies)
     _delay_call = dict(locals())
-    # item 60: a misspelled DAEDALUS_PHASE_J_ENGINE fails here, not at the
+    # a misspelled DAEDALUS_PHASE_J_ENGINE fails here, not at the
     # first Phase J subset after the enumeration
     from engine.integration.time_domain import statespace as _ss_env
     _ss_env.engine_requested()
@@ -1714,7 +1714,7 @@ def compute_cumulants(
         _delays = _delay.kernel_delays(model, ft._ns)
         if _delays and switch_on is not None:
             # the delay driver's exact tree and its Pade-order search are
-            # stationary (item 44: not combined yet)
+            # stationary (not combined yet)
             from engine.integration.time_domain import statespace as _ss_dl
             raise _ss_dl.SwitchOnUnsupported(
                 'delay_kernels', 'models with delay kernels (api.delay) are '
@@ -1985,7 +1985,7 @@ def _run_spatial(state):
     # integrator sums EVERY enumerated diagram up to max_ell loops through one
     # genuine integral (Symanzik ∫dᵈℓ → causal-chamber time integral →
     # ret+adv), weighted by the enumeration 𝒮(Γ) — no shortcut, no diagram
-    # dropped (docs/spatial_generic_pipeline_plan.md).
+    # dropped (the internal design notes (not distributed)).
     if max_ell >= 1:
         from engine.integration.spatial.pipeline_bridge import (
             compute_spatial_correlator_generic,
@@ -2288,13 +2288,13 @@ def _run_phase_j(state):
         'model_name': model.get('name'),
     }
 
-    # Item 35: the memory pre-pass, before any modesum plan is built.  The
-    # budget is read ONCE for the run (item 53: its default depends on what
+    # the memory pre-pass, before any modesum plan is built.  The
+    # budget is read ONCE for the run (its default depends on what
     # the process holds), so the pre-pass and the running guard agree.
     from engine.integration.time_domain import final_integral as _fi_b
     _run_budget = (_fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
-    # Item 61: evaluate-and-discard needs fixed evaluation points (k <= 2
+    # evaluate-and-discard needs fixed evaluation points (k <= 2
     # on the τ grid) and a single pass
     discard = getattr(state, 'discard', False)
     if discard not in (False, True, 'auto'):
@@ -2377,7 +2377,7 @@ def _run_phase_j(state):
                 continue
 
             if _discard_on:
-                # item 61: each diagram evaluated on the grid, then released
+                # each diagram evaluated on the grid, then released
                 with _phase_j_warning_scope():
                     td_result_ell = compute_correction_td(
                         typed_diagrams   = [r['typed_diagram']
@@ -2471,7 +2471,7 @@ def _run_phase_j(state):
                 pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
             if _discard_on:
                 # several passes are averaged: evaluate-and-discard is off
-                # for them (item 61); the running guard still checks
+                # for them; the running guard still checks
                 _discard_on = False
                 if mem_estimate is not None:
                     mem_estimate['discard'] = False
@@ -2503,7 +2503,7 @@ def _run_phase_j(state):
     def total_C(*ext_time_values):
         return sum(complex(fn(*ext_time_values))
                    for fn in total_C_by_ell.values())
-    # item 35 (F3): ``dd.run`` may form total_C's values from the per-ell
+    # ``dd.run`` may form total_C's values from the per-ell
     # values it evaluates anyway (the same sum, in this order)
     total_C.sum_of_by_ell = total_C_by_ell
 

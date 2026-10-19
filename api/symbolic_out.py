@@ -77,7 +77,7 @@ Not covered (clear errors, never a silently wrong result)
 * Non-local noise left as a cumulant kernel (not Markov-embedded):
   ``UnsupportedModelError``.
 * ``inverse_transform`` and ``pair_with_kernel`` run on the stage-C2 engine
-  below (item 40): no degree limit, the half-plane split stated as
+  below: no degree limit, the half-plane split stated as
   assumptions.  Their pre-C2 routes (every irreducible factor of degree <= 2
   in omega, split sampled around ``reference``, ``ClosedFormUnavailable``
   otherwise) remain behind ``legacy=True`` / ``any_degree=False``.
@@ -97,7 +97,7 @@ polynomial x exponential, two-sided exponential) gives ``int L(s) C(s) ds`` exac
 it equals the Fourier route ``pair_with_kernel(C0, L~(-omega))`` on the
 smooth part.  The numeric twin for a computed cumulant at any loop order
 (matrix-exponential triples of the state-space route, no poles) is
-``api.me_output`` / ``Cumulant.integrate_against`` (item 40).
+``api.me_output`` / ``Cumulant.integrate_against``.
 """
 from __future__ import annotations
 
@@ -1409,7 +1409,7 @@ def pair_with_kernel(C0_entry, L_tilde, omega=None, *,
     This is ``int dt L(t) C(-t)`` for a real kernel ``L`` with
     ``L_tilde(omega) = int dt L(t) exp(-i omega t)``.
 
-    Default (since item 40, C2 decision (a)): the stage-C2 engine,
+    Default (, C2 decision (a)): the stage-C2 engine,
     ``any_degree=True``: residues are taken in K[x]/(p) for every
     irreducible factor p of the denominator (any degree), summed by traces,
     and the half-plane split is stated as conditions on the parameters
@@ -1598,7 +1598,7 @@ def inverse_transform(C0_entry, omega=None, tau=None, *,
     r"""Exact inverse transform ``C(tau) = (1/2 pi) int d omega C0(omega)
     exp(-i omega tau)`` (any denominator degree).
 
-    Since item 40 this runs on the stage-C2 engine (:func:`tree_modes`): the
+    This runs on the stage-C2 engine (:func:`tree_modes`): the
     residues are taken per irreducible factor in ``K[x]/(p)``, roots of
     factors of degree >= 3 are :class:`RootOf` symbols, and the half-plane
     split is stated as conditions on the parameters (``'assumptions'``)

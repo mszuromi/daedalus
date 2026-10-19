@@ -21,7 +21,7 @@ Subcritical / stable fixed point φ* = 0 (the other root φ* = −μ/g is
 unstable); we expand around φ* = 0.
 
 Mirrors the inline build of
-``notebooks/spatial/pipeline_reaction_diffusion_2d_loop_sim_compare.ipynb``
+the spatial example notebooks
 VERBATIM (same field, parameters, equation, action, boundary, initial).
 """
 

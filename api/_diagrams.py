@@ -194,7 +194,7 @@ def enumerate_unique_diagrams(
     # classes at k=3 for OU+ax^2+bx^3), silently dropping their
     # integrals.  Loading a v2 cache would resurrect that bug.
     stage_name = f'unique_typed_mult_v3_{ext_tag}_taylor{ft.taylor_order}'
-    # Conductance vertices (item 27): before it a warm expand cache built
+    # Conductance vertices: before it a warm expand cache built
     # plain vertices for them and the typed-diagram cache stored those, so
     # a file under the plain name is not trusted for a model whose vertex
     # list has a ``ConvVertexType``.  Every other model keeps its name.

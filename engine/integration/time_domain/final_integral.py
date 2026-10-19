@@ -676,7 +676,7 @@ def _modes_from_freq_image(ft_fn, num_params=None, direct=False):
     simple poles in the upper half plane (a δ part, a repeated or an
     acausal pole, a non-rational image).
 
-    ``direct=True`` (item 56): also a kernel with a direct term, ``ĝ = c +
+    ``direct=True``: also a kernel with a direct term, ``ĝ = c +
     (strictly proper)``, i.e. ``g = c δ + Θ Σ C_α e^{λ_α t}`` (the all-pass
     Pade image of a bare delay); returns ``(c, modes)`` (``c = 0`` for a
     strictly proper image; the modes as above, of the strictly proper
@@ -723,7 +723,7 @@ def _modes_from_freq_image(ft_fn, num_params=None, direct=False):
 
 
 def _kernel_direct_split(att, num_params=None):
-    """Item 56: ``(c, modes)`` for a conductance kernel attachment whose
+    """``(c, modes)`` for a conductance kernel attachment whose
     frequency image has a direct term, ``ĝ = c + (strictly proper)`` with
     ``c != 0`` (``g = c δ + Θ Σ C_α e^{λ_α t}``: the all-pass Pade (n, n)
     image of a bare hard delay at a vertex leg), or ``None`` (no frequency
@@ -762,14 +762,14 @@ def _kernel_modes(att, num_params=None):
     return _extract_exp_modes(g, tau)
 
 
-#: Item 27: fold a conductance kernel that is a finite exponential sum into
+#: fold a conductance kernel that is a finite exponential sum into
 #: the propagator of the line it sits on (``(g ∗ G)``, a pole sum: no extra
 #: time variable).  Off: every kernel takes the leg-time path.  Read at call
 #: time; env ``DAEDALUS_PHASE_J_DRESS_KERNELS=0`` switches it off at import
 #: (``engine._env.flag``: any other word raises).
 DRESS_CONV_KERNELS = _env.flag('DAEDALUS_PHASE_J_DRESS_KERNELS', True)
 
-# Item 35 (F1): every modesum plan leaves out the pole tuples that take a
+# every modesum plan leaves out the pole tuples that take a
 # mode whose residue is EXACTLY zero (no tolerance; ``_build_pruned_modesum_
 # plan``).  Driven filters that do not feed back (block-triangular K) give
 # such entries; at k = 3 one loop the full product n_poles^E was 1e2-1e3
@@ -778,7 +778,7 @@ DRESS_CONV_KERNELS = _env.flag('DAEDALUS_PHASE_J_DRESS_KERNELS', True)
 # audit W7; ``_build_modesum_plan(prune=False)`` still builds the unpruned
 # plan.)
 
-#: Item 35: a pruned plan replays the group order of the full product (so
+#: a pruned plan replays the group order of the full product (so
 #: that the group sums run in the unpruned order, bit for bit) when that
 #: product has at most this many pole tuples; beyond it (an unpruned plan of
 #: ~70 GB that could never be built) the groups keep the order of their
@@ -786,11 +786,11 @@ DRESS_CONV_KERNELS = _env.flag('DAEDALUS_PHASE_J_DRESS_KERNELS', True)
 PRUNE_ORDER_MAX_TUPLES = 1 << 26
 
 
-# ── Item 35: the Phase J memory budget ──────────────────────────────────
+# ── the Phase J memory budget ──────────────────────────────────
 #: Bytes one pole tuple of a modesum plan holds: its plan entries (the
 #: (C, lambdas) pair, alphas, gamma constant and slopes as Python complex:
-#: ~800 B) plus the batched kernels' numpy rows (~270 B), measured at m = 6
-#: (item 34).  Plans live as long as the result's callables.
+#: ~800 B) plus the batched kernels' numpy rows (~270 B), measured at m = 6.
+#: Plans live as long as the result's callables.
 PLAN_BYTES_PER_TUPLE = 1100
 
 #: The pre-pass (``estimate_modesum_plans``) is an upper bound that can be
@@ -815,7 +815,7 @@ class PhaseJResourceError(MemoryError):
         self.estimate = estimate
 
 
-# ── the default memory budget (item 53) ───────────────────────────────────
+# ── the default memory budget ───────────────────────────────────
 # A fixed 6 GB is more than a small machine can give one run on top of the
 # Python + Sage baseline.  With the variable unset the budget is
 #     min(MEM_BUDGET_CAP_GB, MEM_BUDGET_RAM_FRACTION x RAM - this process now)
@@ -1001,7 +1001,7 @@ def _budget_now():
 
 
 def _plan_guard(n_tuples, n_full, where=None):
-    """The running guard (item 35): account ``n_tuples`` pole tuples of the
+    """The running guard: account ``n_tuples`` pole tuples of the
     plan about to be built (``n_full``: before pruning) and raise
     ``PhaseJResourceError`` BEFORE it is allocated when the run's total (or,
     outside a ``phase_j_memory_scope``, the plan alone) would exceed the
@@ -1099,7 +1099,7 @@ def _dress_edge_modes(ems, kernel_modes, direct=0):
     as an exact zero; with a real residue the result is ``None`` (the line
     then takes the leg-time path).
 
-    ``direct`` (item 56): the kernel's direct term ``c`` (``g = c δ + Θ Σ_k
+    ``direct``: the kernel's direct term ``c`` (``g = c δ + Θ Σ_k
     c_k e^{μ_k x}``, ``_kernel_direct_split``) adds ``c G``: ``c C_α`` at
     every ``λ_α`` and the δ part ``c D`` (nonzero only on a line with a δ
     part, a point-process field)."""
@@ -1183,7 +1183,7 @@ class _ScaledCoeff:
 
 
 def _conv_monomial_split(vertex_assignments, combined_prefactor):
-    """Item 60 (bug 14): ``None`` when every conductance vertex's coefficient
+    """``None`` when every conductance vertex's coefficient
     is a single kernel monomial (the slots follow from it); else the list of
     ``(prefactor, {vertex: term})`` over every choice of one term (grouped
     by the powers of the vertex's kernel symbols) per vertex, the prefactor's
@@ -1530,7 +1530,7 @@ _ROW_COEF_ATOL = 1e-12
 #     (counters ``dbm_declined_*``).
 
 
-#: Item 27: a DBM closed form that fails the conditioning test is
+#: a DBM closed form that fails the conditioning test is
 #: re-evaluated in ``dbm_integral.MP_DPS``-digit arithmetic before the
 #: subset may fall to the quadrature fallback (read at call time; env
 #: ``DAEDALUS_PHASE_J_DBM_MP=0`` switches it off at import; any other word
@@ -1592,8 +1592,8 @@ _RUNTIME_COUNTERS = {
     'scipy_nquad_called_m1': 0,
     'scipy_nquad_called_m2': 0,
     'scipy_nquad_called_mge3': 0,
-    # ── M0.1 observational counters (the internal Phase J plan (not distributed)
-    # §2.4 item 8, §4.1).  Purely observational: nothing reads them to
+    # ── M0.1 observational counters (the internal Phase J plan, not
+    # distributed).  Purely observational: nothing reads them to
     # decide control flow.
     #
     # Entries into the scipy.nquad fallback: ``_integrate_polytope`` calls
@@ -1601,7 +1601,7 @@ _RUNTIME_COUNTERS = {
     # always.  (An entry may still return before invoking
     # scipy.integrate.nquad, and an invoked quadrature integrates the real
     # and imaginary parts separately: invocations <= 2 * nquad_calls.)
-    # The plan's "0 nquad calls on the model zoo" gate (§2.4 item 8, M9) is
+    # The plan's "0 nquad calls on the model zoo" gate (M9) is
     # keyed on this counter.
     'nquad_calls': 0,
     # ``_integrate_polytope`` entries with m = 0: a direct constraint check
@@ -1621,7 +1621,7 @@ _RUNTIME_COUNTERS = {
     # constant after δ-elimination) processed by ``_polygon_from_2d_
     # constraints`` or ``_extract_causal_poset``.
     'zero_normal_rows_seen': 0,
-    # ── M1 Θ(0) counters (plan §2.4 item 8).  One count per
+    # ── M1 Θ(0) counters (M1).  One count per
     # ``_const_row_verdict`` call (i.e. per zero-normal row per
     # evaluation):
     #   theta0_const_empty -- verdict EMPTY (c_eff < 0, or a tie decided
@@ -1792,18 +1792,18 @@ _RUNTIME_COUNTERS = {
     # calls declined (the subset goes on to ``_integrate_polytope``): a row
     # that is not a difference row (e.g. a ConvVertex 3-term row):
     'dbm_declined_rows': 0,
-    # item 27: ill-conditioned closed forms re-evaluated at MP_DPS digits
+    # ill-conditioned closed forms re-evaluated at MP_DPS digits
     'dbm_mp_attempted': 0,
     'dbm_mp_answered': 0,
-    # item 27: conductance kernels folded into lines / exact-zero modes
+    # conductance kernels folded into lines / exact-zero modes
     'conv_lines_dressed': 0,
     'conv_dress_zero_modes_dropped': 0,
     'conv_kernel_leg_edges': 0,
-    # item 56: lines dressed with a kernel that has a direct term (c δ + a
+    # lines dressed with a kernel that has a direct term (c δ + a
     # pole sum), and such kernels refused on a kernel edge
     'conv_lines_dressed_direct': 0,
     'conv_kernel_direct_refused': 0,
-    # item 35: exact-zero residue modes left out of the modesum plans
+    # exact-zero residue modes left out of the modesum plans
     # (modes, and the pole tuples of the full product that took one), the
     # plans built pruned, and pruned plans whose group order could not be
     # replayed from the full product (beyond ``PRUNE_ORDER_MAX_TUPLES``)
@@ -1812,7 +1812,7 @@ _RUNTIME_COUNTERS = {
     'zero_mode_plans_pruned': 0,
     'zero_mode_order_unreplayed': 0,
     'zero_mode_order_mismatch': 0,
-    # item 35 F2: pole-tuple groups whose folded coefficient is 0, skipped
+    # F2: pole-tuple groups whose folded coefficient is 0, skipped
     # by the batched poset kernels before any chain is computed
     'dd_batch_zero_groups_skipped': 0,
     # ... a final term beyond the log-overflow limit:
@@ -1909,7 +1909,7 @@ def _reset_runtime_counters():
 #                  g(Δt) is causal: edge semantics);
 #   'noise_box'    a NoiseSource τ_v box row, ±TAU_KERNEL_CAP;
 #   'conv_tau'     a ConvVertex τ box row ([0, TAU_KERNEL_CAP)); no longer
-#                  produced (the kernel delay is an edge since item 27).
+#                  produced (the kernel delay is an edge).
 # The box kinds always keep τ as an integration variable (a_int[τ] = ±1), so
 # they can never be constant (plan §7.6, M0.7: 0 occurrences in the zoo); a
 # constant one would mean an unexpected δ-forcing of a kernel variable, and
@@ -2570,7 +2570,7 @@ def _build_modesum_plan(smooth_edge_modes, subset_constraint_data,
     analytic modesum integrators.
 
     ``prune`` (default ``True``): leave out every pole tuple
-    that takes a mode whose residue is exactly zero (item 35, see
+    that takes a mode whose residue is exactly zero (see
     ``_build_pruned_modesum_plan``); the plan's numbers are bit-identical
     to the unpruned plan's.  ``n_tuples_full`` / ``n_groups_full``: the
     tuple and group counts of the UNPRUNED plan (the group count exact below
@@ -2718,7 +2718,7 @@ class _KeptModes:
 def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
                                m, n_ext, where=None):
     r"""The modesum plan of ``smooth_edge_modes`` over the pole tuples whose
-    residues are all nonzero (item 35, F1), or ``None`` when no edge has an
+    residues are all nonzero, or ``None`` when no edge has an
     exact-zero mode, when an edge has no nonzero mode at all (the whole
     product is zero; the unpruned plan keeps the old behaviour), or when the
     group order cannot be replayed (the caller then builds the unpruned plan).
@@ -2732,7 +2732,7 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
     C_mats[k][pi, ri])))``), and the propagator builder (``api/_propagator``)
     stores an exact 0 where an entry of ``G`` has no denominator, where a
     pole is not a root of the entry's own denominator (the exact tier-1
-    membership test over QQ[i], item 31: a driven filter that does not feed
+    membership test over QQ[i]: a driven filter that does not feed
     back makes ``K`` block triangular, and the entries below it miss its
     poles), and, on the numerical cofactor tiers only, where a residue is
     below the 1e-12 noise clip relative to the largest at its pole.  The
@@ -3077,7 +3077,7 @@ def _extract_causal_poset(subset_constraint_data, free_ext_vals, m,
       ``a_int[v] = +1`` (upper).  "≈ 0" is the pre-existing SHIFT
       tolerance ``|c_eff| <= 1000·tol`` (1e-9): a row inside it is
       integrated as the unshifted order ``s_v > s_u``, an approximation
-      of ``s_v > s_u − c_eff`` (plan §2.4 item 1: route such rows to the
+      of ``s_v > s_u − c_eff`` (route such rows to the
       exact DBM path at M3).  It is not a tie rule; ties of constant rows
       are decided exactly by ``_const_row_verdict``.
     * **Scalar lower**: ``a_int`` has exactly one +1 entry, all else 0.
@@ -3382,7 +3382,7 @@ _chain_dd_batch_size = [0]
 # group and ~500 extensions per region, ``ou_quartic`` k = 4 ℓ = 2, ran
 # 1.4x slower batched).
 _DD_BATCH_MIN = 8
-#: Item 35 (F2): the batched poset kernels compute chains only for the
+#: the batched poset kernels compute chains only for the
 #: groups whose folded coefficient is nonzero (the fold skips the others).
 DD_BATCH_SKIP_ZERO_GROUPS = True
 
@@ -3850,7 +3850,7 @@ def _chain_dd_batch(plan, arrs, m, sigma, L, upp, U_ext, key_suffix, tol,
     ``sigma`` for every group of ``plan`` (``_chain_dd_log`` per group, so
     the very values of the per-chain memo), memoised per (group alphas,
     ``sigma``, suffix, tag).  ``None`` when a chain cannot be evaluated (the
-    scalar loop then meets the same input and decides).  ``live`` (item 35, F2):
+    scalar loop then meets the same input and decides).  ``live``:
     the indices of the groups to compute, in order (``None``: all); the
     arrays then hold those groups only, keyed on their alphas."""
     bf = _bf()
@@ -3895,7 +3895,7 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
     (``boxfree.chain_fold``), in the scalar loop's order: ``(value,
     Σ|term|, scale)`` (``_dd_accuracy``).  ``None`` when any term leaves the
     plain case (the scalar loop then runs and decides)."""
-    # the UNPRUNED group count decides (item 35), as before the pruning
+    # the UNPRUNED group count decides, as before the pruning
     if (plan.get('n_groups_full', len(plan['tuple_groups'])) < _DD_BATCH_MIN
             or any(k is None for k in key_suffixes)):
         return None
@@ -3909,7 +3909,7 @@ def _poset_dd_batch(plan, m, extensions, L, upper_for_ext,
                                         arrs['member_off'])
     if not np.any(tc != 0):
         return 0.0 + 0.0j, 0.0, 0.0
-    # F2 (item 35): chains only for the groups whose folded coefficient is
+    # F2: chains only for the groups whose folded coefficient is
     # nonzero; ``chain_fold`` skips the others, so the sum is the same
     live = np.flatnonzero(tc != 0)
     if len(live) == len(tc) or not DD_BATCH_SKIP_ZERO_GROUPS:
@@ -4237,7 +4237,7 @@ def _integrate_subset_dbm(
             rows.append((e_v, -t_min))
     if cap is None:
         base = _nquad_outer_cap()
-        # every mode of every edge (item 35: from the edges when they are
+        # every mode of every edge (from the edges when they are
         # given, since a pruned plan or grouped tuple list lacks the
         # exact-zero modes; the same set as the full product's)
         if smooth_edge_modes is not None:
@@ -4283,7 +4283,7 @@ def _integrate_subset_dbm(
             and _dbm_high_precision_on()):
         # The same exact elimination in MP_DPS-digit arithmetic: the
         # expansion's cancellation (near-equal rates) costs digits of the
-        # double closed form, not of the integral (item 27: a conductance
+        # double closed form, not of the integral (a conductance
         # kernel rate next to a propagator pole sent such subsets to days
         # of nested quadrature).
         _RUNTIME_COUNTERS['dbm_mp_attempted'] += 1
@@ -6198,7 +6198,7 @@ def integrate_diagram(
     # * 'dress' (the default): a kernel that is a finite exponential sum
     #   (``_extract_exp_modes``) is folded into that line's propagator,
     #   ``(g ∗ G)(Δt)`` with Δt = t − t_tail, again a finite pole sum
-    #   (``_dress_edge_modes``) with no δ part (item 56: a kernel with a
+    #   (``_dress_edge_modes``) with no δ part (a kernel with a
     #   direct term c δ keeps c times the line's δ part): no extra time, no
     #   extra row;
     # * 'leg': otherwise (a kernel that is not an exponential sum, a kernel
@@ -6209,7 +6209,7 @@ def integrate_diagram(
     kernel_edge_specs = []      # [(v, att, s_sym)]             ('leg')
     conv_dress = {}             # {edge_key: kernel modes}      ('dress')
     conv_dress_att = {}         # {edge_key: the attachment}    ('dress', S3)
-    conv_dress_direct = {}      # {edge_key: c} a direct term c δ (item 56)
+    conv_dress_direct = {}      # {edge_key: c} a direct term c δ
     # S3: the state-space route realizes a kernel exactly (equal or close
     # rates, a Jordan-type chain; ``api._realization.realize_kernel``), so a
     # kernel without separated modes is no longer refused when that route is
@@ -6245,7 +6245,7 @@ def integrate_diagram(
         _model, _why = _ssk.realization_for(propagator_data, num_params)
         return _model is not None and not isinstance(
             _model.kernel_entry(att), str)
-    # Item 60 (bug 14): a vertex coefficient that is a SUM of terms with
+    # a vertex coefficient that is a SUM of terms with
     # different powers of the kernel symbols (``-ee*x*x - c*x*Conv(h, x)``:
     # coefficient ``c*z_h + ee`` on one leg tuple) is linear in its terms:
     # each term has its own slot count (a plain term has no kernel slot).
@@ -6368,7 +6368,7 @@ def integrate_diagram(
             kmodes = _kernel_modes(att, num_params)
             kdirect = None
             if kmodes is None:
-                # item 56: a direct term, g = c δ + (a pole sum): the
+                # a direct term, g = c δ + (a pole sum): the
                 # all-pass Pade (n, n) image of a bare hard delay at a
                 # vertex leg (x*x(t - d)).  Dressed, the line becomes
                 # c G + (g_smooth ∗ G), on both routes; a kernel edge
@@ -6523,7 +6523,7 @@ def integrate_diagram(
     n_prop_edges = len(edge_info)
     # Dressed lines (section 2c 'dress'): the line's propagator G becomes
     # (g ∗ G), a pole sum (its δ part c D only for a kernel with a direct
-    # term c, item 56), at the same times.
+    # term c), at the same times.
     dressed_idx = set()
     if conv_dress:
         if edge_mode_sums is None:
@@ -6534,7 +6534,7 @@ def integrate_diagram(
                 'reason': ('conductance kernel: the propagator has no '
                            'mode data to dress a line with'),
             }
-        # item 56 (D10): each line's δ part after its own dressing (a
+        # each line's δ part after its own dressing (a
         # strictly proper kernel removes it, a direct term c keeps c D)
         _delta_after = {}
         if conv_dress_direct:
@@ -6552,7 +6552,7 @@ def integrate_diagram(
                     and any(abs(_delta_after.get(j, 0)) >= 1e-15
                             for j, ej in enumerate(edge_info)
                             if j != i and ej['v'] == ei['v'])):
-                # item 56 (D10): the direct term passes this line's δ part
+                # the direct term passes this line's δ part
                 # (a spike train) to a vertex where another physical line
                 # has one too: a product of δ functions at one time (exp of
                 # a delayed spike train), which is not defined
@@ -6583,7 +6583,7 @@ def integrate_diagram(
                     prop_td=prop_td, on_divergence=on_divergence,
                     _conv_assign=_conv_assign,
                     # the coefficient term this call integrates (a split
-                    # coefficient, item 60): without it the rerun splits
+                    # coefficient): without it the rerun splits
                     # the term's own prefactor again and refuses it
                     _conv_monomial=_conv_monomial,
                     _conv_force_leg=(set(_conv_force_leg or ())
@@ -6598,7 +6598,7 @@ def integrate_diagram(
                 'u': ei['u'], 'v': ei['v'], 'lbl': ei['lbl'],
                 'ri': ei['ri'], 'pi': ei['pi'],
                 'dt_sym': dt,
-                # item 56: a kernel direct term c on a line with a δ part D
+                # a kernel direct term c on a line with a δ part D
                 # leaves c D δ (zero otherwise, as before)
                 'delta_coeff': (0.0 if kdirect is None
                                 or complex(dressed.delta_coeff) == 0
@@ -6833,7 +6833,7 @@ def integrate_diagram(
         else frozenset())
     if dressed_idx and _forced_delta:
         # a dressed line always has a smooth part (D g + c G + g ∗ G), so it
-        # is never a forced δ edge (item 56: its δ part is c D, zero unless
+        # is never a forced δ edge (its δ part is c D, zero unless
         # its kernel has a direct term)
         _forced_delta = frozenset(_forced_delta) - dressed_idx
 
@@ -11758,7 +11758,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
                            prune=None, prefactors=None, budget_bytes=None,
                            ss_estimate=None):
     r"""Estimate of the pole tuples the modesum plans of ``typed_diagrams``
-    will hold (item 35's memory pre-pass), without integrating anything: an
+    will hold (the memory pre-pass), without integrating anything: an
     upper bound on the per-diagram route for propagator edges (not for
     conductance-kernel placements, dressed lines or the residues of a
     pole-deformed propagator, which the running guard covers).
@@ -11830,7 +11830,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
         return hit
 
     per_diagram = []            # (tuples, tuples_unpruned, per-edge, ss)
-    delta_rec = []              # may give shot-noise δ records (item 61)
+    delta_rec = []              # may give shot-noise δ records
     for td in typed_diagrams:
         per = []
         pidx = td.propagator_indices
@@ -11871,7 +11871,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     if prefactors is not None and (
             budget_bytes is None
             or sum(_bytes(r) for r in per_diagram) > budget_bytes):
-        # item 61: the diagrams charged the state-space estimate are tested
+        # the diagrams charged the state-space estimate are tested
         # too (an exactly-zero diagram builds no subset on either route)
         tested = True
         memo = {}
@@ -11914,7 +11914,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
            'n_diagrams': len(typed_diagrams), 'worst': worst,
            'pruned': bool(prune), 'prefactors_tested': tested,
            # the largest single diagram (pole plans or stationary states):
-           # what one diagram at a time holds (item 61, ``discard``), and
+           # what one diagram at a time holds  (``discard``), and
            # the diagrams that may keep theirs (shot-noise δ records)
            'max_diagram_bytes': max_diag,
            'delta_record_bytes': delta_bytes}

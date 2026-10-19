@@ -375,7 +375,7 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_models',
         'vertex_alias_by_tp': (
             None if getattr(ft, '_vertex_alias_by_tp', None) is None
             else _by_tp_to_dict_form(ft._vertex_alias_by_tp)),
-        # Written with Conv(g, constant) = ĝ(0)·constant (item 52); a bundle
+        # Written with Conv(g, constant) = ĝ(0)·constant; a bundle
         # without it took every kernel as normalised.
         'kernel_dc_rule':  1,
         'cache_version':   2,
@@ -638,7 +638,7 @@ def load_expand(model: dict, ft, target_order: int,
     # Conductance vertices: restore ``ns._kernel_attachments`` (written by
     # ``reduce_conv_in_action`` during ``expand()``), which
     # ``extract_vertex_types`` reads to build ``ConvVertexType`` records.
-    # Before item 27 it was not restored: every warm run built plain
+    # It used to be not restored: every warm run built plain
     # vertices with the kernel symbol left in the coefficient.
     _att = bundle.get('kernel_attachments')
     if _att:

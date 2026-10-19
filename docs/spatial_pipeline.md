@@ -63,7 +63,7 @@ there is no place left to silently drop one.
 ## Data flow
 
 ```
-compute_cumulants(model, k=2, max_ell=ℓ, spatial_grid=xs, …)        [pipeline/compute.py]
+compute_cumulants(model, k=2, max_ell=ℓ, spatial_grid=xs, …)        [api/compute.py]
   │  [1/7] expand action → vertices/sources     [2/7] propagator     [3/7] mean field
   │       (shared with the temporal path — same code)
   ▼  [4/7] momentum stays symbolic (Laplacian) → skip ω pole-finder + Phase J
@@ -85,11 +85,11 @@ and the back half diverges into the integrator instead of the ω-domain Phase J.
 
 | File | Role |
 |---|---|
-| `msrjd/integration/spatial/full_integrator.py` | THE integrator: `diagram_correlator`/`_value`/`_kinematic` (momentum-space, ret+adv, Symanzik chamber quadrature); the analytic-IFT analogues `diagram_correlator_x`/`_value_x` + `_symanzik_kernel_batch` (per-sample heat-kernel) + `_formfactor_average_x` (derivative-vertex moment); `diagram_kinematic(method='grid'|'mc', mc_n, mc_seed)` (switchable backend); `_momentum_factor_batch` (Symanzik, vectorized). |
-| `msrjd/integration/spatial/causal_chambers.py` | enumerate the retarded-poset chambers; the smooth nested-time quadrature primitive. |
-| `msrjd/integration/spatial/diagram_descriptor.py` | `diagram_to_cstack(td)` — typed diagram → C-stack (contract noise sources, classify edges). |
-| `msrjd/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator: analytic-IFT vs numerical-FT gate, the memory guard, the `SPATIAL_INTEGRATOR` backend switch), `_formfactor_callable` + `_build_wick_moment` (the joint-`(ℓ,q)` Wick form-factor moment → `ff.moment_x`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
-| `pipeline/compute.py` | `compute_cumulants` spatial branch + the `q→x` transforms. |
+| `engine/integration/spatial/full_integrator.py` | THE integrator: `diagram_correlator`/`_value`/`_kinematic` (momentum-space, ret+adv, Symanzik chamber quadrature); the analytic-IFT analogues `diagram_correlator_x`/`_value_x` + `_symanzik_kernel_batch` (per-sample heat-kernel) + `_formfactor_average_x` (derivative-vertex moment); `diagram_kinematic(method='grid'|'mc', mc_n, mc_seed)` (switchable backend); `_momentum_factor_batch` (Symanzik, vectorized). |
+| `engine/integration/spatial/causal_chambers.py` | enumerate the retarded-poset chambers; the smooth nested-time quadrature primitive. |
+| `engine/integration/spatial/diagram_descriptor.py` | `diagram_to_cstack(td)` — typed diagram → C-stack (contract noise sources, classify edges). |
+| `engine/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator: analytic-IFT vs numerical-FT gate, the memory guard, the `SPATIAL_INTEGRATOR` backend switch), `_formfactor_callable` + `_build_wick_moment` (the joint-`(ℓ,q)` Wick form-factor moment → `ff.moment_x`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
+| `api/compute.py` | `compute_cumulants` spatial branch + the `q→x` transforms. |
 
 **Oracle-only (NOT on the production path)**, kept as independent cross-checks in
 `tests/oracles/` (moved out of the library in audit W7): `loop_dyson.py`,
@@ -248,7 +248,7 @@ every field (see *Constant drift* below).
 **`d=2`/`d=3` derivative vertices are now done** (the `L·d`-dim transverse-moment
 GH average, `_formfactor_average(…, spatial_dim)` + the per-component
 `diagram_form_factor(…, d)`; `Lap→−|p|²`, `Dx_i→i p_i`, KPZ `(∇h)²=Σ_i(∂_i h)²`)
-— see `docs/spatial_d_ge_2.md`. The remaining `d≥2` caveat is physical: the loop
+— see the internal design notes (not distributed). The remaining `d≥2` caveat is physical: the loop
 form factor raises the superficial degree of divergence, so the *bare* loop is
 cutoff-sensitive (needs renormalisation). The UV power count includes the form
 factor (see *Accuracy status*), so such loops now refuse (`SpatialUVDivergenceError`;
@@ -272,7 +272,7 @@ inverse transform is closed form:
 Gate (`compute_spatial_correlator_generic`): `_use_analytic = _all_plain or d==1`. `d≥2`
 derivative vertices fall back to the numerical FT (kept as the validated cross-check — env
 `SPATIAL_FORCE_NUMERICAL_FT=1`, `SPATIAL_Q_CUT`/`SPATIAL_N_Q`). Full derivation:
-`docs/spatial_reduction_derivation.md`; analytic-vs-MC study: `docs/spatial_loop_integral_analytic_mc.md`.
+the internal design notes (not distributed); analytic-vs-MC study: `docs/spatial_loop_integral_analytic_mc.md`.
 
 ## Integrator backends & the ℓ≥2 cost wall
 
@@ -323,11 +323,11 @@ Foundational check (local prototype script): plain integrand = a single Bessel-K
 
 ## Notebooks
 
-- `notebooks/spatial/pipeline_allen_cahn_1d_full_loop_sim_compare.ipynb` — φ⁴, config cell
+- the spatial example notebooks — φ⁴, config cell
   `MAX_ELL ∈ {0,1,2}`, cumulative per-loop progression, sim overlay, `VERBOSE` staged trace.
-- `notebooks/spatial/pipeline_allen_cahn_quintic_1d_full_loop_sim_compare.ipynb` — φ⁶
+- the spatial example notebooks — φ⁶
   generalization test (default `MAX_ELL=2` to exercise γ).
-- `notebooks/spatial/pipeline_linear_diffusion_1d_sim_compare.ipynb`,
+- the spatial example notebooks,
   `pipeline_linear_field_2d_sim_compare.ipynb`,
   `pipeline_reaction_diffusion_2d_loop_sim_compare.ipynb` — earlier spatial validations.
 

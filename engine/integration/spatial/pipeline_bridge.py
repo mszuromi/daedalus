@@ -1070,7 +1070,7 @@ def _isserlis(idx, Sget):
 
 def _build_wick_moment(Rcal, ls, qs):
     """Analytic spatial IFT of a derivative-vertex form factor by the **joint
-    `(ℓ,q)`-Gaussian moment** (Case C of docs/spatial_analytic_ift_plan.md) —
+    `(ℓ,q)`-Gaussian moment** (Case C of the internal design notes (not distributed)) —
     the principled one-pass route that replaces the `q_deg+1`-node polynomial
     fit.  Returns a numpy callable ``moment_x(a, S, Bcal, xs) → (P, n_x)`` complex.
 
