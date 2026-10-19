@@ -27,7 +27,7 @@ from sage.all import (
 )
 
 from engine.core.cache import PipelineCache
-from engine.core.field_theory import fourier_transform
+from engine.core.field_theory import fourier_transform, _sr_nonzero
 
 
 # Maximum wall-time (seconds) we'll spend in the polynomial fraction-field
@@ -939,9 +939,63 @@ def _omega_inf_limit_fast(expr, omega_var):
                   if den_deg > 0 else SR(den))
     except (AttributeError, TypeError, ValueError):
         return None
-    if SR(den_lc).is_zero():
+    if _sr_is_zero(den_lc):
         return None
     return SR(num_lc) / SR(den_lc)
+
+
+#: Largest entry (``repr`` length) of the symbolic inverse for which
+#: :func:`build_propagator` takes the omega -> infinity limit symbolically
+#: (the model zoo's largest is ~800 characters).
+_SYMBOLIC_DDELTA_MAX_CHARS = 4000
+
+
+def _sr_is_zero(e) -> bool:
+    """``SR(e).is_zero()`` (the same verdict), with the certified nonzero
+    fast path of :func:`engine.core.field_theory._sr_nonzero`: a float or
+    ``I*omega`` entry otherwise goes to Maxima on every test."""
+    return not _sr_nonzero(SR(e))
+
+
+def _sr_inverse(K):
+    """``K.inverse()`` for a square matrix over SR, step for step what Sage
+    does (``Matrix.__invert__``: augment with the identity, classical
+    in-place Gauss-Jordan elimination of ``Matrix_symbolic_dense``, then the
+    last-pivot check), so the entries are the same expressions.  Only the
+    truth tests of the pivot search and the elimination use
+    :func:`_sr_nonzero` (same verdict as ``bool``) instead of ``bool``,
+    which sends every float or ``I*omega`` entry to Maxima (183 s on a 3x3
+    jump-process kernel matrix; 0.5 s here)."""
+    n = K.nrows()
+    if K.ncols() != n:
+        raise ArithmeticError('self must be a square matrix')
+    if n == 0:
+        return K
+    A = [[SR(K[i, j]) for j in range(n)]
+         + [SR(1) if i == j else SR(0) for j in range(n)] for i in range(n)]
+    nc = 2 * n
+
+    def nz(e):
+        return not e.is_trivial_zero() and _sr_nonzero(e)
+
+    start = 0
+    for c in range(nc):
+        for r in range(start, n):
+            if nz(A[r][c]):
+                a_inv = ~A[r][c]
+                for j in range(c, nc):
+                    A[r][j] = A[r][j] * a_inv
+                A[r], A[start] = A[start], A[r]
+                for i in range(n):
+                    if i != start and nz(A[i][c]):
+                        minus_b = -A[i][c]
+                        for j in range(c, nc):
+                            A[i][j] = A[i][j] + minus_b * A[start][j]
+                start += 1
+                break
+    if not nz(A[n - 1][n - 1]):
+        raise ZeroDivisionError('input matrix must be nonsingular')
+    return matrix(SR, [row[n:] for row in A])
 
 
 def _to_kernel(c, Dt, delta_D, delta_Dp):
@@ -1128,7 +1182,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
     for i in range(nf):
         for j in range(nf):
             c = K_ker[i, j]
-            if not c.is_zero():
+            if not _sr_is_zero(c):
                 K_ft_data[i][j] = fourier_transform(
                     SR(c).subs(time_subs), t_var, omega
                 )
@@ -1205,7 +1259,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
 
         def _do_symbolic_inverse_block():
             t0 = _time.perf_counter()
-            G    = K_ft.inverse()
+            G    = _sr_inverse(K_ft)
             D_om = K_ft.det()
             # Adjugate via the identity ``adj(K) = K^(-1) · det(K)``.
             # ``K_ft.adjugate()`` would re-expand all n² cofactor
@@ -1216,15 +1270,24 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             if verbose:
                 print(f'      symbolic inverse/adj/det took '
                       f'{_time.perf_counter() - t0:.2f}s')
-            # Symbolic D_delta via fast leading-coefficient ratio.
+            # Symbolic D_delta via fast leading-coefficient ratio, for
+            # entries of moderate size: ``numerator()`` of a large nested
+            # entry is a full normalisation (minutes per entry on a 3x3
+            # jump-process kernel matrix with float rates); D_delta is then
+            # left to the exact tier of ``compute_poles_and_residues``.
+            if max(len(repr(e)) for e in G.list()) > _SYMBOLIC_DDELTA_MAX_CHARS:
+                if verbose:
+                    print('      symbolic D_delta skipped (large entries): '
+                          'compute_poles_and_residues fills it')
+                return G, D_om, adj, None
             Dd_data = [[SR(0)] * nf for _ in range(nf)]
             for i in range(nf):
                 for j in range(nf):
                     entry = SR(G[i, j])
-                    if entry.is_zero():
+                    if _sr_is_zero(entry):
                         continue
                     lim_val = _omega_inf_limit_fast(entry, omega)
-                    if lim_val is not None and not SR(lim_val).is_zero():
+                    if lim_val is not None and not _sr_is_zero(lim_val):
                         Dd_data[i][j] = lim_val
             return G, D_om, adj, matrix(SR, Dd_data)
 

@@ -153,7 +153,7 @@ def test_find_best_cached_order_picks_smallest_above_target(
 def test_compute_cumulants_warm_cache_speedup(
         model_and_fund, isolated_cache):
     """Calling ``compute_cumulants`` twice with the same arguments —
-    the second call hits the cache and runs much faster (>= 10x),
+    the second call hits the cache and runs much faster (>= 3x),
     and produces identical numerical output."""
     import time
     import numpy as np
@@ -185,10 +185,12 @@ def test_compute_cumulants_warm_cache_speedup(
     assert np.allclose(th1['C_tau'], th2['C_tau'], rtol=1e-12, atol=1e-12), \
         'C_tau differs between cold and warm runs'
 
-    # Warm run must be substantially faster than cold.  Conservative
-    # threshold (10x) — typical speedup on this small model is ~40x.
-    assert t_warm < t_cold / 10, \
-        (f'expected warm run < cold / 10; got cold={t_cold:.2f}s, '
+    # Warm run must be substantially faster than cold.  The cold run was
+    # ~40x the warm one while the symbolic propagator inverse went through
+    # Maxima; since the cold build is ~1 s (audit W8, SPD-04) the speedup
+    # is ~8x, so the threshold is 3x.
+    assert t_warm < t_cold / 3, \
+        (f'expected warm run < cold / 3; got cold={t_cold:.2f}s, '
          f'warm={t_warm:.2f}s')
 
 
