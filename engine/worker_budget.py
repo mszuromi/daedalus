@@ -93,14 +93,19 @@ def workers_that_fit(n, per_worker, counter=None):
 
 class FootprintWatch:
     """Polls ``pids()`` every ``POLL_SECONDS``; a pid over ``share`` bytes is
-    passed to ``on_over(pid, footprint)`` once.  ``share=None``: no limit
-    (the watch does nothing).  Use as a context manager."""
+    passed to ``on_over(pid, footprint)`` once.  ``relative=True`` measures
+    each pid's growth since its first reading (a forked child: what it holds
+    from the start is pages it may still share with its parent, dirtied by
+    reference counting).  ``share=None``: no limit (the watch does
+    nothing).  Use as a context manager."""
 
-    def __init__(self, pids, share, on_over, counter='parallel_workers_over_share'):
+    def __init__(self, pids, share, on_over,
+                 counter='parallel_workers_over_share', relative=False):
         self.pids, self.share, self.on_over = pids, share, on_over
-        self.counter = counter
+        self.counter, self.relative = counter, relative
         self.over = {}
         self.peak = {}
+        self.first = {}
         self._stop = threading.Event()
         self._th = None
 
@@ -114,6 +119,8 @@ class FootprintWatch:
             if fp is None:
                 continue
             self.peak[pid] = max(self.peak.get(pid, 0), fp)
+            if self.relative:
+                fp = fp - self.first.setdefault(pid, fp)
             if self.share is not None and fp > self.share \
                     and pid not in self.over:
                 self.over[pid] = fp
@@ -154,13 +161,18 @@ def watched_map(pool, fn, items, share):
     work serially, under its own growth guard."""
     over = threading.Event()
     res = pool.map_async(fn, items, chunksize=1)
+    start = [p for p in list(getattr(pool, '_pool', ()))]
 
     def pids():
         return [p.pid for p in list(getattr(pool, '_pool', ())) if p.pid]
-    with FootprintWatch(pids, share, lambda pid, fp: over.set()):
+    with FootprintWatch(pids, share, lambda pid, fp: over.set(),
+                        relative=True):
         while not res.ready():
             res.wait(0.2)
-            if over.is_set():
+            # a worker that died (killed from outside, e.g. by the OS) never
+            # returns its task: multiprocessing would wait for ever
+            dead = any(p.exitcode is not None for p in start)
+            if over.is_set() or dead:
                 pool.terminate()
                 return None
     return res.get()

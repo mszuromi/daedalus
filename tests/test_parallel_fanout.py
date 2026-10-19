@@ -224,12 +224,13 @@ def test_spawn_bit_identical_counters_merged_no_sage(td, n_workers,
                 if v - a.get(k, 0) and not k.startswith('parallel_')}
     from engine import spawn_pool as SP
     seen = []
-    real_init = SP.SpawnPool.__init__
+    real_map = SP.SpawnPool.map
 
     def spy(self, *a_, **k_):
-        real_init(self, *a_, **k_)
-        seen.append([w.info for w in self.workers])
-    monkeypatch.setattr(SP.SpawnPool, '__init__', spy)
+        out = real_map(self, *a_, **k_)
+        seen.append((len(self.workers), self.sage_loaded, out[3]))
+        return out
+    monkeypatch.setattr(SP.SpawnPool, 'map', spy)
     b = ints()
     got = td['total_C_batch'](pts, parallel=True, n_workers=n_workers,
                               start_method='spawn')
@@ -237,8 +238,9 @@ def test_spawn_bit_identical_counters_merged_no_sage(td, n_workers,
                if v - b.get(k, 0) and not k.startswith('parallel_')}
     assert _bytes(got) == _bytes(serial)
     assert d_spawn == d_serial                    # workers' counters came back
-    assert seen and len(seen[0]) == n_workers
-    assert not any(i['sage_loaded'] for i in seen[0])
+    # every diagram was evaluated BY A WORKER (none redone here), and no
+    # worker imported Sage while evaluating
+    assert seen == [(n_workers, False, [])]
 
 
 def test_spawn_refused_or_lost_diagrams_are_evaluated_here(td, monkeypatch):
@@ -257,7 +259,7 @@ def test_spawn_refused_or_lost_diagrams_are_evaluated_here(td, monkeypatch):
                                 for s, _p, e in pls[1]['subsets']])
     items = [(0, pls[0]), (1, bad), (2, pls[2])]
     with SP.SpawnPool(2, SS.payload_shared(pls)) as pool:
-        vals, counters, lost = pool.map([items[:2], items[2:]], POINTS)
+        vals, _st, counters, lost = pool.map([items[:2], items[2:]], POINTS)
     assert lost == [1] and sorted(vals) == [0, 2]
     assert _bytes(vals[0]) == _bytes(P._eval_diagram(fns[0], POINTS))
     # a dead worker: its tasks are lost, the other worker finishes the queue
@@ -265,7 +267,7 @@ def test_spawn_refused_or_lost_diagrams_are_evaluated_here(td, monkeypatch):
     with SP.SpawnPool(2, SS.payload_shared(pls)) as pool:
         pool.workers[0].proc.kill()
         pool.workers[0].proc.wait()
-        vals, counters, lost = pool.map(tasks, POINTS)
+        vals, _st, counters, lost = pool.map(tasks, POINTS)
     assert sorted(set(vals) | set(lost)) == list(range(5))
     for d, v in vals.items():
         assert _bytes(v) == _bytes(P._eval_diagram(fns[d], POINTS))
@@ -304,7 +306,9 @@ def test_auto_spawn_needs_enough_predicted_work(td, monkeypatch):
     monkeypatch.setattr(SP, 'SpawnPool', boom)
     monkeypatch.setattr(P, 'SPAWN_MIN_SECONDS', 1e9)
     fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
-    vals = P._spawn_fan_out(fns, POINTS, 2, explicit=False)
+    vals = [None] * len(fns)
+    assert P._spawn_fan_out(fns, POINTS, 2, explicit=False, vals=vals) is False
+    P._fill_serial(fns, POINTS, vals)
     want = [P._eval_diagram(f, POINTS) for f in fns]
     assert _bytes(vals) == _bytes(want)
 
@@ -346,8 +350,9 @@ def test_spawn_workers_that_do_not_fit_run_serially(td, monkeypatch):
     monkeypatch.setattr(SP, 'SpawnPool', boom)
     monkeypatch.setattr(WB, 'budget_left', lambda: (1, 'test'))
     fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
-    vals = P._spawn_fan_out(fns, POINTS, 2, explicit=True)
-    assert _bytes(vals) == _bytes([P._eval_diagram(f, POINTS) for f in fns])
+    vals = [None] * len(fns)
+    assert P._spawn_fan_out(fns, POINTS, 2, explicit=True, vals=vals) is False
+    assert all(v is None for v in vals)
 
 
 def test_spawn_worker_over_its_share_is_killed_and_redone_here(td,
@@ -361,7 +366,8 @@ def test_spawn_worker_over_its_share_is_killed_and_redone_here(td,
                         lambda n, per, counter=None: (2, 1))
     fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
     pts = [(0.0, t) for t in np.linspace(-3.0, 3.0, 25)]
-    vals = P._spawn_fan_out(fns, pts, 2, explicit=True)
+    vals = [None] * len(fns)
+    assert P._spawn_fan_out(fns, pts, 2, explicit=True, vals=vals) is True
     assert _bytes(vals) == _bytes([P._eval_diagram(f, pts) for f in fns])
 
 
@@ -376,3 +382,27 @@ def test_fork_pools_that_do_not_fit_run_serially(td, monkeypatch):
     monkeypatch.setattr(mp, 'get_context', boom)
     fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
     assert P._fork_fan_out(fns, POINTS, 2) is None
+
+
+def test_spawn_needs_plain_times_and_settles_settings(td):
+    """Symbolic or odd time values never travel (the worker would import
+    Sage); the settings a worker takes over are the module's numbers."""
+    assert P._plain_times([(0.0, 1), (np.float64(2.0), -3.5)])
+    assert not P._plain_times([(0.0, __import__('fractions').Fraction(1, 2))])
+    st = P._spawn_settings()
+    assert st['statespace']['WORKER_BUDGET'] is False
+    assert 'OP_DENSE_MAX' in st['statespace'] and len(st['budget']) == 2
+
+
+def test_auto_spawn_start_failure_falls_back(td, monkeypatch):
+    from engine import spawn_pool as SP
+
+    def broken(*a, **k):
+        raise SP.SpawnWorkerError('no interpreter')
+    monkeypatch.setattr(SP, 'SpawnPool', broken)
+    monkeypatch.setattr(P, 'SPAWN_MIN_SECONDS', 0.0)
+    fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
+    vals = [None] * len(fns)
+    assert P._spawn_fan_out(fns, POINTS, 2, explicit=False, vals=vals) is False
+    with pytest.raises(SP.SpawnWorkerError):
+        P._spawn_fan_out(fns, POINTS, 2, explicit=True, vals=[None] * len(fns))

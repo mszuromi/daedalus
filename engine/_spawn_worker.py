@@ -16,15 +16,20 @@ import Sage); see :func:`_bootstrap`.  A diagram task is the numeric state
 the parent already built (``statespace.diagram_payload``), so the worker's
 values are the same bytes as the parent's.
 
-Protocol (binary stdin/stdout, frames of an 8-byte little-endian length and a
-pickle):
-  parent -> worker  ('init', shared_bytes)       objects shared by the tasks
+Protocol (binary stdin and a private duplicate of stdout -- the real fd 1 is
+pointed at stderr, so nothing a library prints can corrupt a frame -- frames
+of an 8-byte little-endian length and a pickle):
+  parent -> worker  ('init', shared_bytes, settings)
+                       settings: the parent's running Phase J budget and the
+                       numeric module settings of ``statespace`` / ``_light``
                     ('task', tid, task_bytes, points)
                     ('exit',)
   worker -> parent  ('ready', info)              after init: pid, Sage loaded?
-                    ('done', tid, results, counters)
-                       results: [(index, values or None)]; None = the
-                       diagram raised here (the parent evaluates it itself)
+                    ('done', tid, results, counters, sage_loaded)
+                       results: [(index, values or None, states)]; None = the
+                       diagram raised here (the parent evaluates it itself);
+                       states: [(subset, stationary states, residual)] built
+                       here (the parent keeps them, as if it had built them)
                     ('fail', tid, message)       the task itself failed
 Shared objects (model / entry ops) travel once; tasks reference them by the
 parent's ``id()`` (pickle persistent ids).
@@ -106,6 +111,18 @@ def _bootstrap():
     return statespace, _light
 
 
+def sage_loaded():
+    return any(m == 'sage' or m.startswith('sage.') for m in sys.modules)
+
+
+#: Module settings a worker takes over from its parent (numbers, flags and
+#: strings with an upper-case name), so it routes every evaluation as the
+#: parent would.
+def module_settings(mod):
+    return {k: v for k, v in vars(mod).items()
+            if k.isupper() and isinstance(v, (bool, int, float, str))}
+
+
 def _serve(stdin, stdout):
     import io
     statespace, _light = _bootstrap()
@@ -113,10 +130,13 @@ def _serve(stdin, stdout):
     if msg[0] != 'init':
         raise RuntimeError(f'expected init, got {msg[0]!r}')
     shared = pickle.loads(msg[1])
-    write_frame(stdout, ('ready', {
-        'pid': os.getpid(),
-        'sage_loaded': any(m == 'sage' or m.startswith('sage.')
-                           for m in sys.modules)}))
+    settings = msg[2]
+    for mod, key in ((statespace, 'statespace'), (_light, 'light')):
+        for k, v in settings.get(key, {}).items():
+            setattr(mod, k, v)
+    statespace.WORKER_BUDGET = tuple(settings['budget'])
+    write_frame(stdout, ('ready', {'pid': os.getpid(),
+                                   'sage_loaded': sage_loaded()}))
     while True:
         msg = read_frame(stdin)
         if msg[0] == 'exit':
@@ -131,13 +151,18 @@ def _serve(stdin, stdout):
             continue
         results, counters = [], {}
         for idx, payload in items:
+            fresh = [j for j, (sub, _p, _e) in enumerate(payload['subsets'])
+                     if sub._stat is None]
             try:
                 with _light.counter_delta() as cd:
                     vals = statespace.payload_values(payload, points)
             except Exception:
-                results.append((idx, None))   # the parent evaluates it
+                results.append((idx, None, []))   # the parent evaluates it
                 continue
-            results.append((idx, vals))
+            subs = payload['subsets']
+            states = [(j, subs[j][0]._stat, subs[j][0].rho) for j in fresh
+                      if subs[j][0]._stat is not None]
+            results.append((idx, vals, states))
             for k, v in cd.delta.items():     # this diagram's counters
                 if isinstance(v, dict):
                     d = counters.setdefault(k, {})
@@ -147,16 +172,20 @@ def _serve(stdin, stdout):
                     counters[k] = max(counters.get(k, 0), v)
                 else:
                     counters[k] = counters.get(k, 0) + v
-        write_frame(stdout, ('done', tid, results, counters))
+        write_frame(stdout, ('done', tid, results, counters, sage_loaded()))
 
 
 def main():
-    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
-    # anything printed by imported code must not corrupt the frame stream
+    stdin = sys.stdin.buffer
+    # frames go to a private duplicate of fd 1; fd 1 itself (Python's and C
+    # libraries' prints) now goes to stderr and can never corrupt a frame
+    sys.stdout.flush()
+    stdout = os.fdopen(os.dup(1), 'wb')
+    os.dup2(2, 1)
     sys.stdout = sys.stderr
     try:
         _serve(stdin, stdout)
-    except EOFError:
+    except (EOFError, BrokenPipeError, KeyboardInterrupt):
         pass                        # the parent went away: just stop
 
 

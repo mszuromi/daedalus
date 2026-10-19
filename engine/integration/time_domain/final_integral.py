@@ -807,17 +807,7 @@ PLAN_BYTES_PER_TUPLE = 1100
 PHASE_J_PREPASS_REFUSE_FACTOR = 8
 
 
-class PhaseJResourceError(MemoryError):
-    r"""Phase J would hold more modesum-plan memory than the budget
-    ``PHASE_J_MEM_BUDGET_GB`` (default: ``default_mem_budget``) allows: raised
-    BEFORE the plan that crosses it is allocated (and, from
-    ``compute_cumulants``, before Phase J starts when its estimate already
-    crosses it), under every analyzer policy.  ``estimate``: the numbers
-    (tuples, bytes, budget, the offending diagram / subset)."""
-
-    def __init__(self, message, estimate=None):
-        super().__init__(message)
-        self.estimate = estimate
+from engine.integration.time_domain._light import PhaseJResourceError  # noqa: E402,F401
 
 
 # ── the default memory budget (item 53) ───────────────────────────────────

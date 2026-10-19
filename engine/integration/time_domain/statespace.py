@@ -2784,14 +2784,14 @@ def _late_errors():
     late refusals, a segment over the memory budget, a numerical failure.
     (A ``ValueError`` -- non-finite times, ``PHASE_J_T_MIN`` after an
     external time -- is the caller's and is raised.)"""
-    return (SSLateRefusal, _FI().PhaseJResourceError, np.linalg.LinAlgError,
+    return (SSLateRefusal, _light.PhaseJResourceError, np.linalg.LinAlgError,
             ArithmeticError)
 
 
 def _late_reason(exc):
     if isinstance(exc, SSLateRefusal):
         return exc.reason
-    if isinstance(exc, _FI().PhaseJResourceError):
+    if isinstance(exc, _light.PhaseJResourceError):
         return 'segment_memory'
     return 'numerical_' + type(exc).__name__
 
@@ -3114,13 +3114,28 @@ def _t_min_frame(free_vals, tie_ctx):
     return t_rel
 
 
+#: In a spawned worker (``engine._spawn_worker``): the parent's running
+#: ``(budget bytes or None, rule)``, so a segment check decides there as it
+#: would in the parent (it compares with the budget only, not the charges).
+#: ``False`` everywhere else: read ``final_integral``'s running budget.
+WORKER_BUDGET = False
+
+
+def budget_view():
+    """``(budget bytes or None, rule)`` of the running Phase J budget."""
+    if WORKER_BUDGET is not False:
+        return WORKER_BUDGET
+    FI = _FI()
+    with FI._PLAN_MEM_LOCK:
+        _scoped, budget, rule, _used = FI._budget_now()
+    return budget, rule
+
+
 def _check_transient(sub, acts):
     """Refuse (``PhaseJResourceError``) a segment system whose working set
     (the Taylor action's vectors, and the dense generator when it is formed)
     alone would exceed ``PHASE_J_MEM_BUDGET_GB``, before it is built."""
-    FI = _FI()
-    with FI._PLAN_MEM_LOCK:
-        _scoped, budget, rule, _used = FI._budget_now()
+    budget, rule = budget_view()
     if budget is None:
         return
     item = 8 if sub.model.is_real else 16
@@ -3131,7 +3146,12 @@ def _check_transient(sub, acts):
             sz *= sub.edge_ops[e].n
         D += sz
     nbytes = 6 * D * item + (2 * D * D * item if D <= OP_DENSE_MAX else 0)
+    if nbytes > budget and WORKER_BUDGET is not False:
+        raise _light.PhaseJResourceError(           # the parent redoes it
+            'segment working set over the budget (spawned worker)',
+            {'bytes': nbytes, 'states': D, 'budget_bytes': budget})
     if nbytes > budget:
+        FI = _FI()
         raise FI.PhaseJResourceError(
             f'Phase J memory budget exceeded: one state-space segment system '
             f'has {D:,} states ({len(acts)} downsets), a working set of '

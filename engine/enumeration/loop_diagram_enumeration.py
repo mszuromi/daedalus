@@ -1446,32 +1446,40 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
         return
     n_procs = n_fit
     over = threading.Event()
+
+    def on_over(pid, fp):
+        over.set()
+        _wb.kill_pid(pid)                # stop its growth now
+    done = 0
+    broken = False
     with ProcessPoolExecutor(max_workers=n_procs,
                              mp_context=mp.get_context('fork')) as ex:
-        watch = _wb.FootprintWatch(
-            lambda: list(getattr(ex, '_processes', None) or ()), share,
-            lambda pid, fp: over.set())
-        with watch:
-            done = 0
-            for res in ex.map(fn, items,
-                              chunksize=max(1, len(items) // (n_procs * 8))):
-                if over.is_set():
-                    ex.shutdown(wait=False, cancel_futures=True)
-                    for pid in list(getattr(ex, '_processes', None) or ()):
-                        _wb.kill_pid(pid)
-                    from engine.integration.time_domain.final_integral \
-                        import PhaseJResourceError
-                    raise PhaseJResourceError(
-                        f'{label or "enumeration"}: a worker process outgrew '
-                        f'its share of the memory budget '
-                        f'({share / 1e9:.2f} GB); the enumeration was '
-                        f'stopped.  Use fewer workers (n_workers) or raise '
-                        f'PHASE_J_MEM_BUDGET_GB.',
-                        {'share_bytes': share, 'workers': n_procs})
-                done += 1
-                if verbose and done % 200 == 0:
-                    print(f'  {label} {done}/{len(items)}...', end='\r')
-                yield res
+        procs = lambda: list(getattr(ex, '_processes', None) or ())  # noqa: E731
+        with _wb.FootprintWatch(procs, share, on_over, relative=True):
+            try:
+                for res in ex.map(fn, items,
+                                  chunksize=max(1, len(items) // (n_procs * 8))):
+                    if over.is_set():
+                        broken = True
+                        break
+                    done += 1
+                    if verbose and done % 200 == 0:
+                        print(f'  {label} {done}/{len(items)}...', end='\r')
+                    yield res
+            except Exception as exc:     # BrokenProcessPool after a kill
+                from concurrent.futures.process import BrokenProcessPool
+                if not isinstance(exc, BrokenProcessPool):
+                    raise
+                broken = True
+            if broken:
+                for pid in procs():
+                    _wb.kill_pid(pid)
+                ex.shutdown(wait=False, cancel_futures=True)
+    if broken:
+        # a worker outgrew its share: the rest in this process (in order:
+        # ``ex.map`` yields in input order, so ``items[done:]`` is the rest)
+        for it in items[done:]:
+            yield fn(it)
 
 
 def stream_topology_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):

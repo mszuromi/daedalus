@@ -14,6 +14,21 @@ import nothing but the standard library.
 """
 from collections import namedtuple
 
+
+class PhaseJResourceError(MemoryError):
+    r"""Phase J would hold more modesum-plan memory than the budget
+    ``PHASE_J_MEM_BUDGET_GB`` (default: ``default_mem_budget``) allows: raised
+    BEFORE the plan that crosses it is allocated (and, from
+    ``compute_cumulants``, before Phase J starts when its estimate already
+    crosses it), under every analyzer policy.  ``estimate``: the numbers
+    (tuples, bytes, budget, the offending diagram / subset).  (Defined here,
+    re-exported by ``final_integral``, so a spawned worker raises the same
+    class without importing Sage.)"""
+
+    def __init__(self, message, estimate=None):
+        super().__init__(message)
+        self.estimate = estimate
+
 import collections as _collections_ctr
 import threading as _threading_ctr
 
