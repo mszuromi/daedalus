@@ -566,10 +566,11 @@ class Config:
     parallel: bool = False
     # Worker count for the parallel backend (forwarded to compute_cumulants).
     # None → the backend's own default (spatial threads: min(8, cores);
-    # temporal batch: os.cpu_count()).  NOTE: the SPATIAL backend is
-    # thread-based (safe in a Jupyter kernel); the TEMPORAL batch and type
-    # assignment are fork-based and run serially on macOS (macOS never forks,
-    # see engine.fork_safety), so n_workers there only takes effect on Linux.
+    # temporal batch: up to 8 threads, or os.cpu_count() fork workers on
+    # Linux).  The spatial backend and the temporal batch's thread fan-out
+    # (diagrams with large state blocks) are safe in a Jupyter kernel; fork
+    # (temporal batch, type assignment) is Linux-only: macOS never forks
+    # (engine.fork_safety).  The numbers do not depend on it.
     # DAEDALUS_PARALLEL=0 turns every pool off.
     n_workers: Optional[int] = None
     verbose: bool = False
@@ -824,8 +825,8 @@ def config_options(spatial=None):
             ('reference_diffusion', 'reference D for the Dyson expansion'),
         ]),
         ('execution', [
-            ('parallel',  'enable the parallel backend (temporal fork-parallelism runs serially on macOS; DAEDALUS_PARALLEL=0 turns every pool off)'),
-            ('n_workers', 'worker count (spatial threads; temporal batch on Linux)'),
+            ('parallel',  'enable the parallel backend (threads everywhere, fork on Linux only; same numbers; DAEDALUS_PARALLEL=0 turns every pool off)'),
+            ('n_workers', 'worker count (spatial and temporal threads; fork workers on Linux)'),
             ('verbose',   'print backend progress'),
         ]),
         ('model analyzer (api.analyze)', [

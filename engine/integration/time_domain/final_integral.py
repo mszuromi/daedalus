@@ -1654,7 +1654,103 @@ POSET_PHYSICAL_MARGIN = 50.0
 # ``subset_diagnostics`` is INTENT (set at subset setup time); these
 # counters are RUNTIME.  Call ``_reset_runtime_counters()`` before a
 # timed run, then read ``_RUNTIME_COUNTERS`` after.
-_RUNTIME_COUNTERS = {
+import collections as _collections_ctr
+import threading as _threading_ctr
+
+_CTR_TLS = _threading_ctr.local()
+
+
+class _CounterDict(dict):
+    """``_RUNTIME_COUNTERS``: a plain dict, except in a thread that opened
+    :class:`counter_delta` (a worker of a parallel Phase J batch).  There
+    every write goes to that thread's overlay (a read of a key the overlay
+    lacks gives 0, or an empty ``Counter`` for a nested dict), so concurrent
+    workers never race on a read-modify-write, and the parent merges the
+    overlays in a fixed order (:func:`merge_counter_delta`).  Keys ending in
+    ``_max`` are maxima, merged with ``max``."""
+
+    __slots__ = ()
+
+    def __getitem__(self, k):
+        ov = getattr(_CTR_TLS, 'overlay', None)
+        if ov is None:
+            return dict.__getitem__(self, k)
+        if k in ov:
+            return ov[k]
+        base = dict.__getitem__(self, k)            # KeyError as without
+        if isinstance(base, dict):
+            ov[k] = _collections_ctr.Counter()
+            return ov[k]
+        return 0.0 if isinstance(base, float) else 0
+
+    def __setitem__(self, k, v):
+        ov = getattr(_CTR_TLS, 'overlay', None)
+        if ov is None:
+            dict.__setitem__(self, k, v)
+        else:
+            ov[k] = v
+
+    def __contains__(self, k):
+        ov = getattr(_CTR_TLS, 'overlay', None)
+        return dict.__contains__(self, k) or (ov is not None and k in ov)
+
+    def get(self, k, default=None):
+        ov = getattr(_CTR_TLS, 'overlay', None)
+        if ov is None:
+            return dict.get(self, k, default)
+        if k in ov or dict.__contains__(self, k):
+            return self[k]
+        return default
+
+    def setdefault(self, k, default=None):
+        ov = getattr(_CTR_TLS, 'overlay', None)
+        if ov is None:
+            return dict.setdefault(self, k, default)
+        if k in ov or dict.__contains__(self, k):
+            return self[k]
+        ov[k] = default
+        return default
+
+
+class counter_delta:
+    """Context manager for a worker of a parallel batch: inside it this
+    thread's ``_RUNTIME_COUNTERS`` writes collect in ``self.delta`` (see
+    :class:`_CounterDict`); the parent hands ``self.delta`` to
+    :func:`merge_counter_delta`.  Not reentrant."""
+
+    def __enter__(self):
+        self.delta = {}
+        self._prev = getattr(_CTR_TLS, 'overlay', None)
+        _CTR_TLS.overlay = self.delta
+        return self
+
+    def __exit__(self, *exc):
+        _CTR_TLS.overlay = self._prev
+        return False
+
+
+def merge_counter_delta(delta):
+    """Add a worker's counter ``delta`` (``counter_delta.delta``, or the
+    plain dict a worker process returned) to ``_RUNTIME_COUNTERS``: numbers
+    are summed, keys ending in ``_max`` take the maximum, nested dicts are
+    merged key by key.  Call in a fixed order for reproducible float sums."""
+    c = _RUNTIME_COUNTERS
+    with _PLAN_MEM_LOCK:
+        for k, v in delta.items():
+            if isinstance(v, dict):
+                cur = dict.get(c, k)
+                if not isinstance(cur, dict):
+                    cur = {}
+                    dict.__setitem__(c, k, cur)
+                for r, n in v.items():
+                    cur[r] = cur.get(r, 0) + n
+            elif k.endswith('_max'):
+                dict.__setitem__(c, k, max(dict.get(c, k, 0), v))
+            else:
+                dict.__setitem__(c, k, dict.get(c, k, 0) + v)
+
+
+_RUNTIME_COUNTERS = _CounterDict({
     # m=2 polygon path
     'polygon_attempted': 0,
     'polygon_returned_none': 0,
@@ -1960,7 +2056,7 @@ _RUNTIME_COUNTERS = {
     # audit W7: always 0):
     'chain_uppers_legacy_partial': 0,
     'chain_uppers_legacy_huge': 0,
-}
+})
 
 _NQUAD_FALLBACK_REASONS = (
     'polygon_guard', 'polygon_other',

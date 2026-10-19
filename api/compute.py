@@ -868,8 +868,9 @@ _SS_DICT_COUNTERS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 def _counter_delta(token):
     """``(counters of the run, complete)``: additive counters as
     differences, maxima as the run's maximum (the global value restored to
-    ``max(before, run)``); ``complete`` is False when ``total_C_batch``
-    handed work to forked workers (their counters stay in the children)."""
+    ``max(before, run)``); ``complete`` is False when work went to forked
+    workers whose counters stayed in the children (the Phase J batch now
+    returns its workers' counters, W8p S1)."""
     from engine.integration.time_domain import final_integral as _fi
     from engine.integration.time_domain import pipeline as _pl
     snap, maxes, workers = token
@@ -1344,16 +1345,18 @@ def compute_cumulants(
         never uses the prediagram cache; it streams its prediagrams in
         memory whatever this says.
     parallel : bool, default True
-        Enable fork-based multiprocessing for the two heavy stages
-        that support it: per-prediagram type assignment in step [5]
-        and per-τ Phase J evaluation in step [7].  Both stages share
-        the same flag.  macOS never forks: there both stages run
-        serially (one warning per process).  ``DAEDALUS_PARALLEL=0``
-        turns every worker pool off, spatial threads included.
+        Parallel evaluation where it helps, by a method safe for the
+        platform; the numbers are the same bytes as ``parallel=False``.
+        Phase J's τ grid (step [7]) fans its diagrams out: diagrams with
+        large state blocks go to threads on every platform (notebooks
+        included), and on Linux a fork pool takes batches with many
+        diagrams.  Type assignment (step [5]) forks on Linux only.  macOS
+        never forks.  ``DAEDALUS_PARALLEL=0`` turns every worker pool
+        off, spatial threads included.
     n_workers : int or None, default None
-        Worker process count when ``parallel=True``.  ``None`` lets
-        each stage pick its own default (``min(os.cpu_count(),
-        n_tasks)``).
+        Worker count when ``parallel=True``.  ``None`` lets each stage
+        pick its own default (Phase J threads: up to 8; fork workers:
+        ``os.cpu_count()`` within the memory budget).
     discard : bool or 'auto', default False
         Evaluate-and-discard (item 61).  ``True``: each diagram is
         evaluated on the τ grid right after it is built and then
