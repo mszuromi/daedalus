@@ -180,6 +180,37 @@ def _workers_within_budget(n_w):
     return max(1, min(n_w, fit))
 
 
+def _worker_budget_init(share):
+    """Pool initializer of a forked Phase J batch: the worker's running
+    total may grow by its ``share`` of what the parent's budget had left
+    (each worker builds its own lazily built states and charges them to its
+    own copy of the total; with the full budget each, n workers could
+    together use n times it -- item 57 Q4)."""
+    from engine.integration.time_domain import final_integral as _fi
+    lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
+    if lock is None or share is None:
+        return
+    with lock:
+        if _fi._PLAN_MEM['active'] > 0 and _fi._PLAN_MEM['budget'] is not None:
+            _fi._PLAN_MEM['budget'] = _fi._PLAN_MEM['used'] + share
+
+
+def _worker_share(n_w):
+    """``(initializer, initargs)`` giving each of ``n_w`` forked workers an
+    equal share of the running budget's remainder (no limit: no
+    initializer)."""
+    from engine.integration.time_domain import final_integral as _fi
+    lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
+    if lock is None:
+        return {}
+    with lock:
+        if _fi._PLAN_MEM['active'] <= 0 or _fi._PLAN_MEM['budget'] is None:
+            return {}
+        left = max(0, _fi._PLAN_MEM['budget'] - _fi._PLAN_MEM['used'])
+    return {'initializer': _worker_budget_init,
+            'initargs': (left // max(1, int(n_w)),)}
+
+
 class DiscardedDiagramsError(DaedalusError, RuntimeError):
     """A callable of a Phase J run made with ``discard=True`` (item 61) was
     asked for a point it was not evaluated on, or for a diagram it
@@ -357,8 +388,12 @@ def compute_correction_td(
                     'kept_for_delta': 0, 'built_bytes': 0,
                     'max_diagram_bytes': 0}
 
+    from engine.integration.time_domain import final_integral as _fi_g
+    _growth = getattr(_fi_g, 'growth_guard', None)
     for idx, (td, pf) in enumerate(zip(typed_diagrams, prefactors)):
         loop_number = _loop_number_from_graph(td)
+        if _growth is not None:
+            _growth(f'diagram #{idx} of {len(typed_diagrams)}')
         mark = _mem_mark() if discard_points is not None else None
 
         # ``integrate_diagram`` handles every loop order -- tree and
@@ -608,7 +643,7 @@ def compute_correction_td(
             # identity as serial.
             _WORKER_STATE['total_C'] = total_C
             n_w = min(n_w_cap, len(tau_list))
-            with ctx.Pool(processes=n_w) as pool:
+            with ctx.Pool(processes=n_w, **_worker_share(n_w)) as pool:
                 return pool.map(_worker_eval_total_C, tau_list)
 
         # ── Per-(τ, diagram) nested parallel path (small-batch) ──
@@ -620,7 +655,7 @@ def compute_correction_td(
                  for p_idx, pt in enumerate(tau_list)
                  for d_idx in range(n_diag)]
         n_w = min(n_w_cap, len(tasks))
-        with ctx.Pool(processes=n_w) as pool:
+        with ctx.Pool(processes=n_w, **_worker_share(n_w)) as pool:
             partial = pool.map(_worker_eval_one_diagram, tasks)
         # Aggregate into (n_tau,) complex array.  Sum per τ in the
         # SAME diagram order as serial ``total_C`` (ascending d_idx),
@@ -697,7 +732,7 @@ def compute_correction_td(
                  for d_idx in range(n_diag)]
         ctx = mp.get_context(start_method)
         n_w = min(n_w_cap, len(tasks))
-        with ctx.Pool(processes=n_w) as pool:
+        with ctx.Pool(processes=n_w, **_worker_share(n_w)) as pool:
             partial = pool.map(_worker_eval_one_diagram, tasks)
         vals = [[0.0 + 0.0j] * n_diag for _ in tau_list]
         for (p_idx, d_idx, val) in partial:

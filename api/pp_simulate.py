@@ -242,12 +242,14 @@ def _param_values(sde, params):
 
 
 def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0,
-             record=None):
+             record=None, max_bytes=None):
     """Simulate ``sde`` (an :class:`api.sde.SDE` with point processes, drifts and
     Gaussian sources).  Returns ``{'counts': {name: (n_bins, size, n_paths)},
     'fields': {name: (n_bins, size, n_paths)}, 'bin': bin, 'dt': dt, ...}``:
     spike counts per bin of width ``bin`` (default ``dt``) and continuous fields
-    sampled at the bin ends, after ``burn_in``."""
+    sampled at the bin ends, after ``burn_in``.  ``max_bytes``: the largest output
+    allowed (default: the memory guards' default budget, ``default_mem_budget``);
+    a larger one raises ``MemoryError`` before anything is allocated."""
     from api.noise import expr_to_text
     from api.sde import SDEError
     sde._derive()                                   # validates; declares composites
@@ -401,11 +403,25 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
         if any(a == 0 for a, _ in coef[f]):
             raise PPSimulationError(f'equation({f!r}): zero Dt coefficient.')
 
-    out_counts = {f: np.zeros((nb, size[f], n_paths)) for f in spikes}
     bad = [f for f in (record or []) if f not in conts]
     if bad:
         raise PPSimulationError(f'record={bad}: only continuous fields are sampled (spike '
                                 f'trains are always recorded as counts).')
+    # the output is 8 bytes per bin, unit and path of every recorded field:
+    # refuse before allocating it (T=1e4, dt=1e-3, 100 paths is 8 GB; audit MEM-13)
+    out_bytes = 8 * nb * n_paths * sum(size[f] for f in [*spikes, *(record or conts)])
+    if max_bytes is None:
+        from engine.integration.time_domain.final_integral import default_mem_budget
+        max_bytes, rule = default_mem_budget()
+    else:
+        rule = f'max_bytes={float(max_bytes):g}'
+    if out_bytes > max_bytes:
+        raise MemoryError(
+            f'simulate: the output would hold {out_bytes / 1e9:.2f} GB ({nb:,} bins x '
+            f'{n_paths} paths x {out_bytes // (8 * nb * n_paths)} recorded units, 8 bytes each), '
+            f'over {max_bytes / 1e9:.2f} GB ({rule}); use a coarser bin= (counts are summed '
+            f'per bin), fewer paths or a shorter T, record= fewer fields, or pass max_bytes=.')
+    out_counts = {f: np.zeros((nb, size[f], n_paths)) for f in spikes}
     out_fields = {f: np.zeros((nb, size[f], n_paths)) for f in (record or conts)}
     rate_sum = {f: np.zeros(size[f]) for f in spikes}
     for k in range(nburn + nsteps):
