@@ -7,7 +7,7 @@ A parameter is a mean-field saddle iff the model declares it with
 under any other name).  The field a saddle belongs to is the saddle's
 ``natural_name``.  Nothing here reads a spelling: a real parameter named
 ``tstar`` is an ordinary parameter, and a saddle named ``rate_mf`` is a
-saddle.  (Audit GEN-03/GEN-04: the suffix ``star`` and the letters
+saddle.  (the suffix ``star`` and the letters
 ``n``/``v``/``m`` used to decide this in several places.)
 """
 from __future__ import annotations
@@ -100,7 +100,7 @@ def is_parameter_symbol(name: str, model: Optional[dict]) -> bool:
     saddle) parameter, plain or with its indices appended (``w`` /
     ``w12``).  Derived symbols a solve also reports (a Taylor coefficient
     ``phi1_1``, a formal function's saddle value ``phi0_1``) are neither
-    parameters nor saddles (audit GEN-17)."""
+    parameters nor saddles."""
     return any(re.fullmatch(re.escape(b) + r'\d*', name)
                for b in free_parameter_names(model))
 

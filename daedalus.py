@@ -122,7 +122,7 @@ _PIPELINE_EXPORTS = {
     'Cumulant':                  'api.cumulant',
     'DeltaComponent':            'api.cumulant',
     'ModeTerm':                  'api.cumulant',
-    # matrix-exponential triples of the smooth part (C0, state-space S4):
+    # matrix-exponential triples of the smooth part (C0 output):
     # dd.cumulant(result).me / .modes / .integrate_against / .spectrum
     'CumulantME':                'api.me_output',
     'RationalKernel':            'api.me_output',

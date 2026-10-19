@@ -399,8 +399,7 @@ def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
 
 def _note_tier1_fallback(analysis_out, reason):
     """Record why the exact tier returned no residues without its own
-    warning (``compute_poles_and_residues`` then warns once: audit W4b,
-    ACC-61, the numerical tier was entered silently on these paths)."""
+    warning (``compute_poles_and_residues`` then warns once: the numerical tier was entered silently on these paths)."""
     if analysis_out is not None:
         analysis_out['_tier1_fallback_reason'] = reason
 
@@ -1422,9 +1421,9 @@ def _warn_zero_residue(pk):
 
 
 #: Retarded-pole decisions are made per root, from that root's OWN accuracy
-#: (audit W4b): an absolute floor (``Im omega > 1e-9``, the old rule) drops a
+#: An absolute floor (``Im omega > 1e-9``, the old rule) drops a
 #: stable slow mode in slow units, and a floor relative to the LARGEST |root|
-#: drops it next to a far root (CI review of W4b: the float model of a
+#: drops it next to a far root (the float model of a
 #: cancelling mass matrix has a far root ~1e16 times its pole, which emptied
 #: the pole list on the exact tier).  A root clearly off the real axis keeps
 #: its double-precision sign; a root within ``NEAR_AXIS_RTOL`` of the axis (or
@@ -1574,7 +1573,7 @@ def _local_unit(om, scale=None):
 def _singular_at(det_at, om, scale=None):
     """Scale-free test that ``det K`` vanishes at ``om``: ``|det K(om)|`` at
     most 1e-6 of its largest value on a small circle around ``om`` (radius
-    1e-3 ``_local_unit(om, scale)``, relative: audit W4b replaced the radius
+    1e-3 ``_local_unit(om, scale)``, relative: this replaced the radius
     1e-3 (1 + |om|), which in slow units encircled other roots).  An
     absolute ``|det| < tol`` misfires both ways: a
     high-degree det is huge everywhere (rounding at a true root exceeds any
@@ -1598,7 +1597,7 @@ def _newton_det(det_at, om, max_iter=30, scale=None):
     """Newton on ``det K`` from ``om``, with a difference step and a step
     tolerance relative to ``_local_unit(om, scale)``; ``None`` on a
     vanishing or non-finite derivative or value.  The one Newton of the
-    numerical tiers (audit W4b, RED-08: three drifted copies had absolute
+    numerical tiers (three drifted copies had absolute
     ``|det| < 1e-13`` exits, which in slow units return the unrefined
     candidate, and absolute steps 1e-7 (1 + |om|))."""
     import numpy as np
@@ -1636,7 +1635,7 @@ def _verified_roots(candidates, det_at):
     """Newton-refine every candidate root of det K(omega) and keep the
     distinct TRUE zeros (``_singular_at``), in every half plane, with the
     frequency scale of that verified set.  No threshold depends on an
-    unverified root (audit W4b review: a spurious root ~1e16 times the true
+    unverified root (a spurious root ~1e16 times the true
     scale, from a noise leading coefficient just above the trim, set the
     retarded floor above every genuine pole).  First pass: steps relative to
     each root (``scale=None``); a root much smaller than the others, whose
@@ -1667,7 +1666,7 @@ def _verified_roots(candidates, det_at):
 
 
 def _refine_retarded_poles(candidates, K_at, verbose=False):
-    """The numerical tiers' one pole rule (RED-08 merged the drifted copies
+    """The numerical tiers' one pole rule (one copy replaced the drifted copies
     of the rich and legacy paths): the verified zeros of det K
     (``_verified_roots``) that are retarded beyond their own rounding error
     (``_numeric_retarded``), sorted by (Im, Re).  Returns ``(poles, roots,
@@ -1729,7 +1728,7 @@ def _numerical_residues(pole_vals, K_at, nonzero, roots, nf, scale=None):
     numerical tiers (cofactor adjugate, central-difference det').
 
     Noise entries are decided per ENTRY, never against the largest entry of
-    the matrix (audit W4b, ACC-61: that clip, 1e-12 of the largest, zeroed a
+    the matrix (that clip, 1e-12 of the largest, zeroed a
     genuine 1e-14 coupling residue -- a field in other units -- on every
     engine's ``propagator['C_mats']``): a structural zero of ``G``
     (``_structural_zero_entries``) is an exact 0; any other entry is noise
@@ -1778,7 +1777,7 @@ def _numerical_residues(pole_vals, K_at, nonzero, roots, nf, scale=None):
         # and at most half the pole's own modulus -- on a circle as wide as a
         # far zero (1e16 x the pole: a cancelling mass matrix) the Cauchy
         # bound is set by G's constant part and the far pole, and a genuine
-        # residue was clipped as noise (CI review of W4b)
+        # residue was clipped as noise.
         rho = 0.25 * min(others + [2.0 * abs(pk)])
         ring = np.zeros((nf, nf))
         for k in range(8):
@@ -1808,7 +1807,7 @@ def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
     candidates have nothing within 1e-7 (relative); a noise coefficient's
     roots are not zeros of det K, so a true noise trim is unchanged.  The
     retarded test and the steps are relative to the frequency scale of the
-    verified roots (audit W4b).  Returns ``(extra, full)``: the restored
+    verified roots.  Returns ``(extra, full)``: the restored
     poles and the untrimmed polynomial's roots (the caller's candidates when
     ``extra`` is not empty: one per root, so an ill-conditioned root does
     not come back twice, from the trimmed and the untrimmed polynomial,
@@ -2288,7 +2287,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     # refined on det K(omega) and kept only when det K vanishes there; the
     # retarded test, the dedup and the residue circles are relative to the
     # frequency scale of those verified zeros (``_refine_retarded_poles``,
-    # shared by both paths).  Audit W4b (ACC-62): an absolute 1e-9 retarded
+    # shared by both paths).  An absolute 1e-9 retarded
     # floor, a 1e-5 pre-Newton dedup and probe frequencies max(1, Im omega)
     # lost a pole of the same model written in slow units.
     try:

@@ -12,7 +12,7 @@ vectors.  With the parameters symbolic, therefore,
 * the EQUAL-TIME cumulants (all external times equal; any k),
 * the k = 2 pairings ``∫ L(τ) C(τ) dτ`` with exponential and polynomial ×
   exponential kernels (one more resolvent, ``q! c (z − βG)^{−(q+1)} x0``), and
-* the k = 2 matrix-exponential triples ``(G, x0, c)`` of S4
+* the k = 2 matrix-exponential triples ``(G, x0, c)`` of the C0 output
   (``C(u) = c e^{G u} x0`` on each side of τ = 0)
 
 are RATIONAL functions of the parameters (and of the saddle), at every loop
@@ -39,11 +39,11 @@ How
    refused, ``improper_entry``) and realized by its controllable companion
    form (``d`` monic over ``F``): minimal, since ``r/d`` is reduced, and exact
    through repeated roots of ``d``.  ``D`` is the δ(t) coefficient (the
-   pipeline's ``D_delta``).  This replaces S1's construction
+   pipeline's ``D_delta``).  This replaces the realization's construction
    (``api._realization``: exact factorization of ``d`` into a cascade of
    rate / Schwarz blocks, Kalman reduction, balancing): those steps serve the
-   floating-point conditioning of S2, are irrelevant in exact arithmetic,
-   and factoring over ``QQ(params)`` is not needed; S1's exact conversion of
+   floating-point conditioning of the state-space integrator, are irrelevant in exact arithmetic,
+   and factoring over ``QQ(params)`` is not needed; the realization's exact conversion of
    inexact model numbers is reused in spirit (below).
 3. Each diagram is integrated once more by ``integrate_diagram`` with a unit
    prefactor, only for its subsets: the state-space ``SubsetSS`` objects
@@ -77,7 +77,7 @@ How
    the reference per loop order (:meth:`SymbolicCumulant.check`: relative to the largest
    |pipeline value| over the loop orders, ``CHECK_RTOL``, ``AssertionError``
    beyond): equal time against ``phase_j_by_ell[ell]['total_C'](0, ..., 0)``,
-   a pairing against S4's exact smooth ``Cumulant.integrate_against`` (no
+   a pairing against the C0 output's exact smooth ``Cumulant.integrate_against`` (no
    such reference: ``no_reference``, unless ``reference_check=False``),
    triples at ``C(0⁻)`` and ``C(±1)`` (:meth:`SymbolicTriple.check`).  A
    ``result=`` must answer the same request (external fields, given
@@ -87,7 +87,7 @@ Symbols, numbers and the saddle
 -------------------------------
 ``symbols=None`` keeps every model parameter of the run symbolic (not the
 saddle); a list keeps those, and the others enter as the SIMPLEST rational
-that rounds to their double (``1/6`` for ``1/6.``; S1 takes the exact binary
+that rounds to their double (``1/6`` for ``1/6.``; the realization takes the exact binary
 value instead, whose 53-bit denominators make expressions unreadable; the
 two differ by less than half an ulp).  Kernel coefficients and rates given
 as floats, and variable-free irrational constants (``sqrt(7/10)`` when the
@@ -128,7 +128,7 @@ Conventions
   inside a subset (its δ edges) are.
 * Pairing (k = 2): ``∫ L(s) C(s) ds`` with ``C(τ) = κ(x_1(0), x_2(τ))`` and a
   C2 :class:`api.symbolic_out.PairingKernel` (terms ``coeff · s^q e^{rate s}`` on
-  side 'positive' / 'negative'), no contact term (S4's
+  side 'positive' / 'negative'), no contact term (the C0 output's
   ``contact='exclude'``).
 * τ != 0: ``C(τ)`` itself needs ``e^{G τ}``, i.e. the eigen data of the
   triple's generator.  :class:`SymbolicTriple` holds the rational triple;
@@ -992,7 +992,7 @@ class SymbolicCumulant:
     ``total``: their sum; ``field``: the field (``names`` = its variables);
     ``reference``: {name: value} of the reference point; ``pipeline``:
     {ell: the pipeline's value there} (equal time: ``phase_j_by_ell[ell]
-    ['total_C'](0, ..., 0)``; pairing: S4's exact smooth
+    ['total_C'](0, ..., 0)``; pairing: the C0 output's exact smooth
     ``Cumulant.integrate_against``; empty when unavailable); ``stats``:
     sizes and timings; ``notes``: the decisions taken (saddle, numeric
     parameters)."""
@@ -1118,7 +1118,7 @@ class SymbolicTriple:
     """Result of :func:`symbolic_triple` (k = 2): per loop order and side
     ('+': τ > 0, '-': τ < 0) a list of rational blocks ``(G, x0, c)`` with
     ``C_side(u) = Σ_blocks c e^{G u} x0`` (``u = |τ|``; weights and the
-    segment slope folded in), the matrix-exponential triple of S4 over
+    segment slope folded in), the matrix-exponential triple of the C0 output over
     ``F``.  Rational: :meth:`laplace` (``Σ c (z − G)^{−(q+1)} x0`` at a
     number or field element ``z``), :meth:`resolvent` (in a new variable),
     :meth:`spectrum` (``C0(ω)``), :meth:`at_zero`.  ``C(τ)`` itself needs
@@ -1330,7 +1330,7 @@ def _saddle_names(model, num_params):
     """The run's symbols that are not free parameters: the saddle values and
     any value derived from them (a formal function at the saddle, a Taylor
     coefficient ``phi{k}_i``), which move with the saddle and are never a
-    free parameter (audit GEN-17)."""
+    free parameter."""
     from api.naming import is_parameter_symbol
     return [str(k) for k in num_params
             if not is_parameter_symbol(str(k), model)]
@@ -1877,7 +1877,7 @@ def _value_floor(vals) -> float:
     """Absolute floor of the relative saddle checks: 1e-6 of the largest
     |value| of the run's numbers (parameters and saddles).  The old floor
     max(1, |x|) made the checks absolute below 1 in the model's units: a
-    saddle of 1e-6 moving by 1.4 % went unnoticed (audit G1-symbolic 7)."""
+    saddle of 1e-6 moving by 1.4 % went unnoticed."""
     m = 0.0
     for v in (vals.values() if isinstance(vals, dict) else vals):
         try:
@@ -1891,8 +1891,8 @@ def _value_floor(vals) -> float:
 
 def _pipeline_values(st, ells, kernel):
     """The pipeline's own numbers at the reference point (module docstring,
-    step 5): equal time from the Phase J callables, pairings from S4's
-    exact smooth ``integrate_against`` (omitted when S4 has no triples)."""
+    step 5): equal time from the Phase J callables, pairings from the C0 output's
+    exact smooth ``integrate_against`` (omitted when the C0 output has no triples)."""
     out = {}
     pjs = st.result.get('phase_j_by_ell') or {}
     if kernel is None:

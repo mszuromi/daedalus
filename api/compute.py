@@ -51,7 +51,7 @@ from engine.errors import DaedalusError
 # right; the sign only matters for a genuine τ=0 jump, where Itô takes the left.)
 _ITO_EPS = 1e-6
 
-# The k = 2 τ = 0 convention (audit A3a-1 / 3B-01, Oct 2026).  'exact':
+# The k = 2 τ = 0 convention.  'exact':
 # the τ = 0 point is evaluated AT equal times; Phase J's exact tie rule
 # (``final_integral._const_row_verdict``: of Θ(t1 − t0) and Θ(t0 − t1) at
 # t1 == t0 exactly the one with leg 1 earlier holds) gives the Itô left
@@ -75,8 +75,7 @@ def _tau0_mode():
 def _tau0_lag():
     """The lag a k = 2 τ = 0 point is evaluated at: 0.0 ('exact') or
     −_ITO_EPS ('nudge').  'exact' uses Phase J's exact tie rule (the only
-    constant-row rule since the pre-M1 'legacy_clip' mode was retired in
-    audit W7)."""
+    constant-row rule since the pre-M1 'legacy_clip' mode was retired)."""
     return -_ITO_EPS if _tau0_mode() != 'exact' else 0.0
 
 
@@ -143,7 +142,7 @@ def _tau_extent(tau_grid, tau_max):
 
 
 def _ss_route_prediction(prop, num_params, vertex_types):
-    """S3: the run-level route prediction (``statespace.run_route``) plus
+    """The run-level route prediction (``statespace.run_route``) plus
     ``bypass_deformation``: the run is covered by the state-space route and
     the propagator has a pole-cluster deformation, which then is not run
     (the route uses no poles or residues)."""
@@ -160,7 +159,7 @@ def _ss_route_prediction(prop, num_params, vertex_types):
 
 def _pole_cluster_preamble(prop, max_ell, ss_route=None):
     """The run's pole-cluster report (``None`` when no two poles are close)
-    and the warning for a cluster the pipeline cannot resolve.  S3: when
+    and the warning for a cluster the pipeline cannot resolve.  When
     the state-space route covers the run (``ss_route['covers_run']``) the
     poles are not used: status ``'bypassed'`` (the pole engine's status in
     ``status_poles``), no warning."""
@@ -481,7 +480,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     plan is built, under every policy; between 1x and that factor the
     running guard decides at each allocation.
 
-    S3 (``ss_route``: the run's route prediction, ``_ss_route_prediction``):
+    The state-space route (``ss_route``: the run's route prediction, ``_ss_route_prediction``):
     the diagrams the state-space route takes are charged its estimate
     (``statespace.diagram_estimate``: stationary states x the τ batch, and
     the largest segment working set) instead of pole tuples, and a run the
@@ -614,7 +613,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
 
 
 def _phase_j_ss_bypass(phase_j_pass, propagator_data, engine_report):
-    """S3: one Phase J pass without the pole-cluster deformation, for a run
+    """One Phase J pass without the pole-cluster deformation, for a run
     the state-space route is predicted to cover.  Every subset must then
     take the route: a subset that declines it (its rows) or falls back on
     the pole route (which would use the undeformed poles and residues)
@@ -851,7 +850,7 @@ def _counter_snapshot():
     from engine.integration.time_domain import pipeline as _pl
     c = _fi._RUNTIME_COUNTERS
     snap = {k_: v for k_, v in c.items() if not isinstance(v, dict)}
-    # S3: the state-space route's counters by reason (dicts)
+    # the state-space route's counters by reason (dicts)
     for k_ in _SS_DICT_COUNTERS:
         if isinstance(c.get(k_), dict):
             snap[k_] = dict(c[k_])
@@ -870,7 +869,7 @@ def _counter_delta(token):
     differences, maxima as the run's maximum (the global value restored to
     ``max(before, run)``); ``complete`` is False when work went to forked
     workers whose counters stayed in the children (the Phase J batch now
-    returns its workers' counters, W8p S1)."""
+    returns its workers' counters)."""
     from engine.integration.time_domain import final_integral as _fi
     from engine.integration.time_domain import pipeline as _pl
     snap, maxes, workers = token
@@ -951,7 +950,7 @@ def _truncation_record(real):
 
 
 def _engine_census(result, counters):
-    """``result['phase_j_engine']`` (S3): the run's prediction (set by the
+    """``result['phase_j_engine']``: the run's prediction (set by the
     Phase J backend) plus the census of the counters: subsets built on the
     state-space route, declined by reason, fallbacks by reason, and
     ``statespace_share`` (routed / all subsets evaluated).  A fallback warns
@@ -1522,17 +1521,23 @@ def compute_cumulants(
         'C_tau_x'         : ndarray ``(n_tau, n_x)`` of C(x, τ) at the top
                              loop order
         'C_tau'           : the slice of ``C_tau_x`` at the x closest to 0
-        'C_tau_x_by_ell'  : {ell: ndarray} the cumulative C(x, τ) at each
-                             loop order (``'C_tau_x_by_order'`` is the same
-                             dict under its older name)
+        'C_tau_x_by_ell'  : {ell: ndarray} the loop-order INCREMENTS of
+                             C(x, τ): ell = 0 the tree, ell >= 1 the
+                             ell-loop contribution, so
+                             ``sum(C_tau_x_by_ell.values()) == C_tau_x``
+                             (the temporal ``C_tau_by_ell`` convention)
+        'C_tau_x_by_order': {ell: ndarray} the CUMULATIVE C(x, τ) through
+                             each loop order (tree, tree + 1-loop, ...);
+                             do not sum these
         'total_C_by_ell'  : {ell: callable(tau, x)} the loop-order increments
+                             (the same data as ``C_tau_x_by_ell``)
         'tau_grid', 'chi_grid' : the grids (``'spatial_grid'`` is the older
                              name of ``chi_grid``)
         'status'          : ``'ok'``
         'spatial_info', 'mf_values', 'mf', 'params', 'num_params',
         'propagator', 'config' : as above
     (There is no ``C_tau_by_ell``: the per-order data are the x-dependent
-    ``C_tau_x_by_ell``.)
+    ``C_tau_x_by_ell``, increments like the temporal schema.)
 
     SPATIAL k≥3 (``spatial_points`` given) returns a DIFFERENT dict (an
     early return), keyed by the explicit evaluation events rather than a
@@ -1546,7 +1551,7 @@ def compute_cumulants(
         'k', 'max_ell', 'mf'
     """
     model = as_model_dict(model)         # an SDE / builder is built here
-    # Grouped Phase J is retired (audit W7, RED-03): the flag is accepted
+    # Grouped Phase J is retired: the flag is accepted
     # for one release and runs the per-diagram integrator (same numbers)
     if use_grouped_phase_j:
         warnings.warn(
@@ -1562,7 +1567,7 @@ def compute_cumulants(
     # first Phase J subset after the enumeration
     from engine.integration.time_domain import statespace as _ss_env
     _ss_env.engine_requested()
-    _ss_env.fallback_enabled()      # (validated before the run too, W7)
+    _ss_env.fallback_enabled()      # (validated before the run too)
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
     # ``chi_grid``), mirroring onto the internal names; canonical wins.
     if parameters is not None:
@@ -1647,7 +1652,7 @@ def compute_cumulants(
         # a CGF with a removable singularity at 0 (the uniform jump) enters
         # the action as its Taylor polynomial: vertices above that order are
         # absent, and a vertex of any order up to k + 2*max_ell can enter a
-        # k-point max_ell-loop diagram (audit F2-noise 0)
+        # k-point max_ell-loop diagram
         raise ValueError(
             f"noise source(s) {', '.join(_nso.get('sources', []))}: the action "
             f"carries their CGF as a Taylor polynomial of order {_nso['order']} "
@@ -1820,7 +1825,7 @@ def compute_cumulants(
     _t_phase = time.perf_counter()
     try:
         # One multi-root solver for every model (``.equation`` rows or
-        # ``.set_mf_equation`` saddle equations; audit GEN-02); its root
+        # ``.set_mf_equation`` saddle equations); its root
         # census (mf_all_roots, mf_index_used, ...) is surfaced below.
         mf = solve_mean_field(
             ft, model, fundamental, verbose=verbose,
@@ -1894,7 +1899,7 @@ def compute_cumulants(
         result = route.backend.run(state)
     finally:                              # restores the maxima on a raise too
         _counters, _complete = _counter_delta(_snap)
-    # S3: the Phase J engine census of the run (subsets on the state-space
+    # the Phase J engine census of the run (subsets on the state-space
     # route, declined by reason, call-time fallbacks by reason)
     if isinstance(result, dict) and 'phase_j_by_ell' in result:
         _engine_census(result, _counters)
@@ -2169,10 +2174,11 @@ def _run_spatial(state):
         # — the WHOLE progression from ONE call (the highest-ℓ run already
         # contains every lower order; no need to re-run per order).
         'C_tau_x_by_order': sp_info.get('C_by_order', {0: C_tau_x}),
-        # the temporal schema's names for the same data: ``status`` and the
-        # per-loop-order key spelled with ell (the same dict as ``_by_order``)
+        # the temporal schema's names: ``status`` and the per-loop-order
+        # INCREMENTS keyed by ell (tree, then each loop order's own
+        # contribution: they sum to C_tau_x; ``_by_order`` above is cumulative)
         'status':         'ok',
-        'C_tau_x_by_ell': sp_info.get('C_by_order', {0: C_tau_x}),
+        'C_tau_x_by_ell': dict(_incr),
         'tau_grid':       tau_grid,
         'spatial_grid':   spatial_grid_arr,
         'chi_grid':       spatial_grid_arr,   # canonical alias of spatial_grid
@@ -2229,7 +2235,7 @@ def _run_phase_j(state):
                                tau_max=_tau_extent(tau_grid, tau_max),
                                resolve_clusters=True)
     _phase_time('poles', _t_phase)
-    # S3: whether the state-space route takes the whole run (no noise-kernel
+    # whether the state-space route takes the whole run (no noise-kernel
     # sources, every conductance kernel realizable, a Hurwitz realization)
     ss_route = _ss_route_prediction(
         prop, num_params, list(vtypes or ()) + list(stypes or ()))
@@ -2417,7 +2423,7 @@ def _run_phase_j(state):
         _lag0 = _tau0_lag()
         # a grid value is the equal-time point when it is 0 to round-off of
         # the grid's own scale (an absolute 1e-12 turned every lag of a model
-        # in fast time units, rates ~1e12, into tau = 0: audit W4a)
+        # in fast time units, rates ~1e12, into tau = 0)
         _tz = 1e-12 * max([0.0] + [abs(float(t)) for t in tau_grid])
         tau_points = [(0.0, float(t) if abs(float(t)) > _tz else _lag0)
                       for t in tau_grid]
@@ -2686,7 +2692,7 @@ def _run_phase_j(state):
             mf_values[pname] = vals
 
     result = {
-        # S3: the Phase J engine of the run (prediction, deformation; the
+        # the Phase J engine of the run (prediction, deformation; the
         # per-subset census is added by compute_cumulants)
         'phase_j_engine':  engine_report,
         'phase_j_memory':  mem_estimate,
@@ -2723,7 +2729,7 @@ def _run_phase_j(state):
             # were computed with (the Phase J flags are read at call time).
             'phase_j_convention': _phase_j_convention(),
             'phase_j_flags':      _phase_j_flags(),
-            # grouped Phase J is retired (W7): kept so readers of old
+            # grouped Phase J is retired: kept so readers of old
             # result files see one key
             'use_grouped_phase_j': False,
         },

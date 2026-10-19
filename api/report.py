@@ -79,7 +79,7 @@ def _install_pdf_repr_sage_fallback():
 def _plt():
     """``matplotlib.pyplot``, imported on first use with the PDF fallback
     above installed (importing it with the module cost ~0.4 s of every
-    ``from api import ...``; audit SPD-06)."""
+    ``from api import ...``)."""
     import matplotlib.pyplot as plt
     _install_pdf_repr_sage_fallback()
     return plt

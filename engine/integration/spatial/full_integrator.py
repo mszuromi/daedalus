@@ -473,7 +473,7 @@ def chamber_peak_bytes(P, *, n_V, n_leaf, n_C, E, L, n_ext, n_x=0,
                        spatial_dim=1, formfactor=None, gh_order=6):
     """Peak bytes of ONE causal chamber of :func:`diagram_kinematic` with
     ``P`` quadrature samples (grid or MC), counted from its arrays and
-    calibrated against tracemalloc peaks (audit MEM-04: plain and derivative
+    calibrated against tracemalloc peaks (plain and derivative
     vertices, k = 2 and 3, d = 1-3, one and two loops; every measured peak
     sits at 0.4-0.9 of this estimate):
 

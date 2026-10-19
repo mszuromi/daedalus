@@ -21,7 +21,7 @@
   their entries in the saved `phase_j_flags` stamp. Old result files stamped `theta0_legacy_clip` still load (with
   their warning). Older CHANGELOG entries that say a retired switch "reproduces" or "restores" something describe
   0.2.1 and earlier. A retired switch set after import warns at the next Phase J pass. The pole engine (`DAEDALUS_PHASE_J_ENGINE=poles`) stays fully supported; its default routes
-  are unchanged (zoo A/B bit-identical on both engines, below). ZOO_MOVES_PR2
+  are unchanged: the zoo is bit-identical on both engines (`DAEDALUS_PHASE_J_ENGINE` default and `poles`).
 - **One parser for every switch (RED-05).** New `engine._env` (on/off words `1 true yes on` / `0 false no off`,
   choices, integers, numbers, memory budgets); garbage raises `ValueError` naming the variable instead of meaning
   "on" at some sites and "off" at others. `DAEDALUS_PHASE_J_ENGINE` has one reader (four of five accepted a typo as

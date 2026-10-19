@@ -172,14 +172,26 @@ def test_a_non_model_is_a_clear_type_error():
                           external_fields=[('x', 1)] * 2, verbose=False)
 
 
-def test_spatial_k2_result_carries_status_and_ell_keys():
-    model, mod = dd.load_model('linear_diffusion_test')
-    r = dd.run(model, dd.Config(k=2, max_ell=0, chi_grid=[0.0, 1.0],
+def test_spatial_k2_result_carries_status_and_ell_increments():
+    """C_tau_x_by_ell are the per-order INCREMENTS (they sum to C_tau_x, like the
+    temporal C_tau_by_ell and total_C_by_ell); C_tau_x_by_order stays cumulative."""
+    model, mod = dd.load_model('allen_cahn_1d_subcritical_infinite')
+    r = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=[0.0, 1.0],
                                 tau_max=0.0, tau_step=1.0), mod)
     assert r['status'] == 'ok'
-    assert r['C_tau_x_by_ell'] is r['C_tau_x_by_order'] or \
-        all(np.array_equal(r['C_tau_x_by_ell'][e], r['C_tau_x_by_order'][e])
-            for e in r['C_tau_x_by_order'])
+    by_ell, by_order = r['C_tau_x_by_ell'], r['C_tau_x_by_order']
+    assert sorted(by_ell) == sorted(by_order) == [0, 1]
+    total = np.asarray(r['C_tau_x'])
+    np.testing.assert_allclose(sum(np.asarray(v) for v in by_ell.values()),
+                               total, rtol=1e-12, atol=1e-15)
+    np.testing.assert_array_equal(by_ell[0], by_order[0])
+    np.testing.assert_allclose(by_ell[1], np.asarray(by_order[1]) - np.asarray(by_order[0]),
+                               rtol=1e-12, atol=1e-15)
+    np.testing.assert_allclose(np.asarray(by_order[1]), total, rtol=1e-12, atol=1e-15)
+    # the callables of the same increments
+    for e in by_ell:
+        np.testing.assert_allclose(complex(r['total_C_by_ell'][e](0.0, 0.0)),
+                                   complex(np.asarray(by_ell[e])[0, 0]), rtol=1e-12, atol=1e-15)
 
 
 # ---------------------------------------------------------------- CON-09 ----

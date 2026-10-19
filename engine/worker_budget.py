@@ -1,9 +1,9 @@
 """
 engine.worker_budget
 ===================
-Memory caps for every worker pool (W8p S4), on top of the run's memory
+Memory caps for every worker pool, on top of the run's memory
 budget and growth baseline (``final_integral.run_growth_scope`` /
-``run_budget``, audit W8):
+``run_budget``):
 
 * :func:`budget_left` -- what the run's budget still allows: the budget
   minus the process's growth since the run started (``None``: no limit).
