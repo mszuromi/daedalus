@@ -1279,7 +1279,7 @@ def _fold_delay_into_g6(_an, findings, diag, info, pol):
     """The sub-run's G6 accuracy estimate covers Phase J of the Pade model
     only; the approximant's own estimated error (``est_rel_error``,
     |C_n - C_2n| relative, 0 when the exact tree makes it irrelevant) is part
-    of the result's error too (audit 3B-13: R = 2e-14 reported next to a
+    of the result's error too (R = 2e-14 reported next to a
     6.5e-5 Pade tree error).  Adds it to ``accuracy_estimate``, rewrites
     G6_ACCURACY and adds G6_ACCURACY_LOW when the sum exceeds the threshold."""
     est = info.get('est_rel_error')

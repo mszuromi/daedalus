@@ -45,7 +45,7 @@ from engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Parallel evaluation of a τ batch (W8p S1)
+# Parallel evaluation of a τ batch
 # ───────────────────────────────────────────────────────────────────────
 #
 # ``compute_correction_td`` returns a scalar ``total_C(*tau)`` (the serial,
@@ -81,14 +81,14 @@ from engine.errors import DaedalusError
 # merges in diagram order, so no increment is lost to a race.
 
 #: Smallest largest-stationary-block size (entries) of a diagram's
-#: state-space subsets for which a worker thread pays (S1 calibration:
+#: state-space subsets for which a worker thread pays (calibration:
 #: blocks >= 256 gave 2.7x at 4 threads, blocks <= 81 ran 0.75-0.86x).
 THREAD_BLOCK_MIN = 256
 #: Default thread count of the fan-out (``n_workers`` overrides).
 DEFAULT_THREADS = 8
 #: Automatic spawned workers (macOS / Windows, outside a Jupyter kernel):
 #: only when a timing sample of the batch predicts at least this many
-#: seconds of serial work (a worker starts in ~0.3 s; S2 measurements).
+#: seconds of serial work (a worker starts in ~0.3 s; measured).
 SPAWN_MIN_SECONDS = 3.0
 #: Default spawned worker count (``n_workers`` overrides).
 DEFAULT_SPAWN_WORKERS = 4
@@ -202,7 +202,7 @@ def _fan_out(fns, tau_list, parallel, n_workers, start_method):
              if blocks[d] >= THREAD_BLOCK_MIN and vals[d] is None]
     n_t = min(want or DEFAULT_THREADS, os.cpu_count() or 4, len(heavy))
     if n_t >= 2:
-        # S4: a thread's own memory is its segment work (the states are
+        # a thread's own memory is its segment work (the states are
         # shared and already charged): a few vectors of the largest block
         from engine import worker_budget as _wb
         n_t, _share = _wb.workers_that_fit(
@@ -316,7 +316,7 @@ def _spawn_fan_out(fns, tau_list, n_w, explicit, vals):
             return False
     order = sorted(elig, key=lambda d: (-costs[d], d))
     tasks = _spawn_tasks(order, payloads, costs, n_w)
-    # S4: a worker holds one task's states, programs and work at a time
+    # a worker holds one task's states, programs and work at a time
     task_bytes = max(sum(sub.state_bytes() for i, pl in t
                          for sub, _p, _e in pl['subsets']) for t in tasks)
     n_fit, share = _wb.workers_that_fit(
@@ -441,7 +441,7 @@ def _fork_fan_out(fns, tau_list, n_w):
 
 
 def _ss_grid(points):
-    """S3: the state-space route's τ batch over ``points`` (the raw tuples
+    """The state-space route's τ batch over ``points`` (the raw tuples
     passed to ``total_C``): ``statespace.tau_grid_prefetch``, or a no-op
     context with ``DAEDALUS_PHASE_J_ENGINE=poles`` (the module is then not
     imported).  Only the serial evaluation paths use it (a forked worker
@@ -562,7 +562,7 @@ def compute_correction_td(
     external_fields=None,
     # Spatial loop integrator (Stage C.5): td -> per-edge EdgeModeSum builder.
     edge_mode_sums_builder_fn=None,
-    # retired (audit W7, ACC-67): raises; pass typed_diagrams + prefactors
+    # retired: raises; pass typed_diagrams + prefactors
     kernel_groups=None,
     # M8: divergence policy of the box-free routes (``integrate_diagram``)
     on_divergence=None,
@@ -577,7 +577,7 @@ def compute_correction_td(
 
     Takes ``typed_diagrams`` + ``prefactors`` (one prefactor per diagram).
     The legacy ``kernel_groups=`` input is retired: it integrated every
-    diagram of a group with the group's summed prefactor (audit ACC-67) and
+    diagram of a group with the group's summed prefactor and
     now raises ``TypeError``.
 
     For each tree-level diagram, calls ``integrate_tree_diagram``

@@ -225,7 +225,7 @@ def _qq_from_numeric(e) -> Any:
 
 def _integral_exponent(ex):
     """The integer value of a numeric exponent that is an integer, also
-    when float-typed (a float model's ``x^1.000``, audit GEN-08); else
+    when float-typed (a float model's ``x^1.000``); else
     ``None``."""
     if ex.is_integer():
         return int(ex)
@@ -533,7 +533,7 @@ def _solve_mean_field(ft, model: dict, fundamental: dict) -> dict:
 def _clean_float(x: float, scale: float = 1.0):
     """Numbers from the MF solver: snap round-off dust to exactly 0,
     relative to ``scale`` (the magnitude of the solve's numbers; an absolute
-    1e-12 zeroed genuine saddles of small-unit models, audit G1-symbolic 0).
+    1e-12 zeroed genuine saddles of small-unit models).
     User ``values=`` are never snapped."""
     x = float(x)
     return 0 if abs(x) < 1e-12 * scale else x
@@ -624,7 +624,7 @@ def tree_covariance_from_matrices(G, D, omega, *, K=None,
             f'values= names {unknown} do not occur in G, K or D; known '
             f'symbols: {sorted(free)}')
     # user values are taken as given (an absolute snap of floats < 1e-12
-    # turned D = 1e-13 into C0 = 0; audit G1-symbolic 0)
+    # turned D = 1e-13 into C0 = 0)
     sub = {free[k]: SR(0 if (isinstance(v, float) and v == 0.0) else v)
            for k, v in vals.items()}
 
@@ -659,7 +659,7 @@ def tree_covariance_from_matrices(G, D, omega, *, K=None,
         # G = K^-1 exactly in the rational field.  A supplied G (the
         # pipeline's, inverted in floats for a float model) is only checked
         # against it numerically: its rationalized float coefficients are
-        # not the exact inverse (audit GEN-08: 'K * G != identity' on a fully
+        # not the exact inverse ('K * G != identity' on a fully
         # coupled float model).
         Kf = to_F(Ks, 'K')
         try:
@@ -790,7 +790,7 @@ def _check_value_names(vals: dict, model, prop, D, omega):
     """A user ``values=`` name must occur in K / G / D, or be a declared
     parameter (plain or indexed) or a saddle symbol of the model: anything
     else is a typo, refused as ``tree_covariance_from_matrices`` refuses it
-    (it was dropped silently; audit G1-symbolic 6)."""
+    (it was dropped silently)."""
     import re
     occurring = {str(v) for m in (prop['K_ft'], D) for e in m.list()
                  for v in SR(e).variables()}
@@ -837,7 +837,7 @@ def _is_saddle_symbol(name: str, model: Optional[dict]) -> bool:
     """Whether the symbol ``name`` is a mean-field value: a declared saddle
     (``mean_field=True``), plain or with a population index (``xstar`` /
     ``xstar1`` / ``nEstar2``); ``api.naming``, no spelling rule (a
-    parameter named ``tstar`` is a parameter, audit GEN-03)."""
+    parameter named ``tstar`` is a parameter)."""
     from api.naming import is_saddle_symbol
     return is_saddle_symbol(name, model)
 
@@ -1602,8 +1602,7 @@ def _generic_retry(fn, exprs, omega, reference):
             return _at_user_point(out)
 
         def _at_user_point(out):
-            # never hand back numbers at the MOVED point (audit G1-symbolic
-            # 2): a ModeSum keeps the user's reference (evaluating there is
+            # never hand back numbers at the MOVED point: a ModeSum keeps the user's reference (evaluating there is
             # refused by the coincidence assumptions, loudly), a pairing's
             # value at the moved point is dropped with the reason
             if isinstance(out, ModeSum):
@@ -1716,8 +1715,7 @@ def _inverse_transform_legacy(C0_entry, omega=None, tau=None, *,
         fresh_ref = {(str(by_name[k]) if k in by_name else k): val for k, val in reference.items()}
     out = _inverse_transform_impl(SR(C0_entry).subs(fwd), om, tau, reference=fresh_ref, simplify=simplify)
     # a parameter named tau: the lag becomes tau_lag (as on the C2 route), so
-    # the back substitution tau__c1p -> tau does not merge the two (audit
-    # G1-symbolic 1)
+    # the back substitution tau__c1p -> tau does not merge the two
     lag = out.get('tau')
     ren = {}
     if (lag is not None and str(lag) == 'tau'
@@ -1785,7 +1783,7 @@ def _is_mirror(a, b, reference, lag) -> bool:
     side): symbolic zero test of ``a - b``, with a numeric cross-check at
     sample points when the simplifier cannot decide, RELATIVE to
     ``|a| + |b|`` there (an absolute 1e-9 called every small-amplitude
-    asymmetric entry even; audit G1-symbolic 3).  20-digit arithmetic:
+    asymmetric entry even).  20-digit arithmetic:
     no underflow at fast rates."""
     a, b = SR(a), SR(b)
     expr = a - b
@@ -1815,7 +1813,7 @@ def _modes_mirror(ms) -> bool:
     """Mirror symmetry ``C(tau) == C(-tau)`` of a mode sum at its reference
     point, on the 256-bit modes at lags scaled by the slowest and fastest
     rate (fixed lags 0.37 / 1.3 / 4.1 underflowed to 0 == 0 at rates above
-    ~2e3 and were called even; audit G1-symbolic 4).  Both sides 0 at every
+    ~2e3 and were called even).  Both sides 0 at every
     lag is undecided: not even."""
     terms = ms._numeric_hp(None)
     if not terms:
@@ -1904,7 +1902,7 @@ def numeric_inverse_transform(f: Callable, tau: float, *,
     The integral runs in ``v = omega / omega_s`` with ``omega_s`` the
     half-width of ``|f - contact|`` (read off the decades), so the quadrature
     sees the same integrand in any time unit (an absolute ``omega`` lost the
-    result for spectra much narrower or wider than 1: audit UNIT-06).
+    result for spectra much narrower or wider than 1).
 
     Tolerances: ``epsrel`` per quad call; ``epsabs`` absolute on the
     integral over ``omega`` (default ``None``: 1e-12 of the integrand's
@@ -2773,8 +2771,7 @@ class ModeSum:
         is not a parameter of the result any more).  Any other name does not
         occur in C and cannot change it: it is ignored (callers pass a
         model's whole parameter dict), unless it equals a name the modes
-        depend on up to case, which is an error (audit G1-symbolic 5:
-        ``{'Mu': 3}`` evaluated at the reference; an edit-distance rule
+        depend on up to case, which is an error (``{'Mu': 3}`` evaluated at the reference; an edit-distance rule
         would flag real distinct names such as ``nstar1`` / ``vstar1``)."""
         if values is None:
             return dict(self.reference)
@@ -3070,7 +3067,7 @@ class PairingKernel:
 
 
 
-#: Deprecated alias of :class:`PairingKernel` (renamed in audit W9: ``api.delay.Kernel`` is a
+#: Deprecated alias of :class:`PairingKernel` (renamed: ``api.delay.Kernel`` is a
 #: different class, a delay/kernel *image* builder).  Kept so existing code works.
 Kernel = PairingKernel
 

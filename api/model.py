@@ -608,7 +608,7 @@ class _TemporalMethods:
         into the action template's specializations.  The templates are
         combined whenever either is (re)applied, so the call order of
         ``use_action_template`` / ``use_synaptic_kernel`` /
-        ``add_gtas_noise`` does not matter (audit GEN-06: the kernel's
+        ``add_gtas_noise`` does not matter (the kernel's
         specialization was lost when the kernel came first or GTaS was
         added after it).
         """
@@ -629,7 +629,7 @@ class _TemporalMethods:
         rate, participation, shift mean / variance) are declared WITHOUT a
         value when the model has not declared them: give them with
         ``.parameter(name, default=...)`` (before or after this call) or in
-        ``parameters=`` at run time (audit GEN-06: invented physical
+        ``parameters=`` at run time (invented physical
         defaults 0.25 / 1.7 / 0.6 were filled in silently)."""
         self._pending_gtas = template
 
@@ -1975,7 +1975,7 @@ class _BaseModelBuilder:
         is then an ordinary population model (same symbols, same index set
         ``pop``), solved by the population mean-field path, which reads no
         field or parameter spelling; the former flat-population solver read
-        the names ``nstar``/``vstar``/``E``/``g`` (audit GEN-01)."""
+        the names ``nstar``/``vstar``/``E``/``g``."""
         name, size = 'pop', int(self.n_populations)
         self.populations.append({
             'name': name, 'size': size,

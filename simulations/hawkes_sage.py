@@ -207,11 +207,11 @@ HAWKES_MODEL: dict = {
     # variables — the framework Taylor-expands them automatically.
     # -----------------------------------------------------------------------
     'action': lambda ns: sum(
-        # S1: ñ_i (ṅ_i* + δṅ_i)
+        # term 1: ñ_i (ṅ_i* + δṅ_i)
         ns.nt[i] * (ns.ndot_bg[i] + ns.dn[i])
-        # S2: -(e^{ñ_i} - 1) φ_i(δv_i)     ← exp and phi auto-expanded
+        # term 2: -(e^{ñ_i} - 1) φ_i(δv_i)     ← exp and phi auto-expanded
         - (exp(ns.nt[i]) - 1) * ns.phi(i, ns.dv[i])
-        # S3: ṽ_i [(τ ∂_t + 1) δv_i  +  v_i* - E_i  -  Σ_j w_{ij} g (n*_j + δṅ_j)]
+        # term 3: ṽ_i [(τ ∂_t + 1) δv_i  +  v_i* - E_i  -  Σ_j w_{ij} g (n*_j + δṅ_j)]
         + ns.vt[i] * (
             (ns.tau * ns.Dt + 1) * ns.dv[i]
             + ns.vstar[i] - ns.E[i]
