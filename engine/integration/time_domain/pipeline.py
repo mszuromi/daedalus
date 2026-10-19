@@ -196,6 +196,13 @@ def _fan_out(fns, tau_list, parallel, n_workers, start_method):
     blocks = [_diagram_block(fn) for fn in fns]
     heavy = [d for d in range(n) if blocks[d] >= THREAD_BLOCK_MIN]
     n_t = min(want or DEFAULT_THREADS, os.cpu_count() or 4, len(heavy))
+    if n_t >= 2:
+        # S4: a thread's own memory is its segment work (the states are
+        # shared and already charged): a few vectors of the largest block
+        from engine import worker_budget as _wb
+        n_t, _share = _wb.workers_that_fit(
+            n_t, 2**20 + 64 * max(blocks[d] for d in heavy),
+            'parallel_workers_capped_by_budget')
     if n_t < 2:
         return None
     return _thread_fan_out(fns, tau_list, heavy, blocks, n_t)
@@ -272,9 +279,26 @@ def _spawn_fan_out(fns, tau_list, n_w, explicit):
         elig = rest
     order = sorted(elig, key=lambda d: (-costs[d], d))
     tasks = _spawn_tasks(order, payloads, costs, n_w)
+    # S4: a worker holds one task's states, programs and work at a time
+    from engine import worker_budget as _wb
+    task_bytes = max(sum(sub.state_bytes() for i, pl in t
+                         for sub, _p, _e in pl['subsets']) for t in tasks)
+    n_fit, share = _wb.workers_that_fit(
+        n_w, _wb.SPAWN_WORKER_BASE + 3 * task_bytes,
+        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        with _ss_grid(tau_list):
+            for d in range(n):
+                if vals[d] is None:
+                    vals[d] = [complex(fns[d](*pt)) for pt in tau_list]
+        return vals
+    if n_fit < n_w:
+        n_w = n_fit
+        tasks = _spawn_tasks(order, payloads, costs, n_w)
     shared = _ss.payload_shared([payloads[d] for d in elig])
     elig_set = set(elig)
     pool = _sp.SpawnPool(n_w, shared)
+    watch = _wb.FootprintWatch(pool.pids, share, _wb.kill_pid)
     try:
         blobs = pool.encode(tasks)
         box = {}
@@ -286,12 +310,13 @@ def _spawn_fan_out(fns, tau_list, n_w, explicit):
                 box['err'] = exc
         th = threading.Thread(target=run, daemon=True,
                               name='daedalus-spawn-map')
-        th.start()
-        with _ss_grid(tau_list):                    # the rest, meanwhile
-            for d in range(n):
-                if vals[d] is None and d not in elig_set:
-                    vals[d] = [complex(fns[d](*pt)) for pt in tau_list]
-        th.join()
+        with watch:
+            th.start()
+            with _ss_grid(tau_list):                # the rest, meanwhile
+                for d in range(n):
+                    if vals[d] is None and d not in elig_set:
+                        vals[d] = [complex(fns[d](*pt)) for pt in tau_list]
+            th.join()
     finally:
         pool.close()
     if 'err' in box:
@@ -343,13 +368,24 @@ def _fork_fan_out(fns, tau_list, n_w):
     n = len(fns)
     size = max(1, -(-n // (4 * n_w)))
     chunks = [list(range(a, min(n, a + size))) for a in range(0, n, size)]
+    from engine import worker_budget as _wb
+    n_fit, share = _wb.workers_that_fit(n_w, _wb.FORK_WORKER_FLOOR,
+                                        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        return None
+    if n_fit < n_w:
+        n_w = n_fit
+        size = max(1, -(-n // (4 * n_w)))
+        chunks = [list(range(a, min(n, a + size))) for a in range(0, n, size)]
     _FANOUT['fns'], _FANOUT['tau_list'] = fns, tau_list
     try:
         ctx = mp.get_context('fork')
         with ctx.Pool(processes=n_w, **_worker_share(n_w)) as pool:
-            parts = pool.map(_fork_task, chunks, chunksize=1)
+            parts = _wb.watched_map(pool, _fork_task, chunks, share)
     finally:
         _FANOUT.clear()
+    if parts is None:               # a worker outgrew its share: serial
+        return None
     vals = [None] * n
     for out, delta in parts:
         for d, v in out:

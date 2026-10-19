@@ -307,3 +307,72 @@ def test_auto_spawn_needs_enough_predicted_work(td, monkeypatch):
     vals = P._spawn_fan_out(fns, POINTS, 2, explicit=False)
     want = [P._eval_diagram(f, POINTS) for f in fns]
     assert _bytes(vals) == _bytes(want)
+
+
+# ── S4: per-worker memory caps (engine.worker_budget) ──────────────────────
+
+def test_workers_that_fit_and_share(monkeypatch):
+    from engine import worker_budget as WB
+    monkeypatch.setattr(WB, 'budget_left', lambda: (None, 'off'))
+    assert WB.workers_that_fit(6, 10**9) == (6, None)
+    monkeypatch.setattr(WB, 'budget_left', lambda: (10 * 2**20, 'test'))
+    key = 'parallel_workers_capped_by_budget'
+    before = FI._RUNTIME_COUNTERS.get(key, 0)
+    assert WB.workers_that_fit(6, 3 * 2**20, key) == (3, (10 * 2**20) // 3)
+    assert FI._RUNTIME_COUNTERS[key] == before + 1
+    assert WB.workers_that_fit(6, 10**9)[0] == 1          # serial
+    assert WB.pid_footprint_bytes(__import__('os').getpid()) > 0
+
+
+def test_footprint_watch_reports_each_worker_once(monkeypatch):
+    from engine import worker_budget as WB
+    sizes = {11: 5, 12: 50, 13: 70}
+    monkeypatch.setattr(WB, 'pid_footprint_bytes', lambda pid: sizes[pid])
+    hits = []
+    w = WB.FootprintWatch(lambda: [11, 12, 13], 40,
+                          lambda pid, fp: hits.append((pid, fp)))
+    w.poll()
+    w.poll()
+    assert hits == [(12, 50), (13, 70)] and w.peak[11] == 5
+    assert WB.FootprintWatch(lambda: [12], None, hits.append).share is None
+
+
+def test_spawn_workers_that_do_not_fit_run_serially(td, monkeypatch):
+    from engine import spawn_pool as SP
+    from engine import worker_budget as WB
+
+    def boom(*a, **k):
+        raise AssertionError('a worker pool started')
+    monkeypatch.setattr(SP, 'SpawnPool', boom)
+    monkeypatch.setattr(WB, 'budget_left', lambda: (1, 'test'))
+    fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
+    vals = P._spawn_fan_out(fns, POINTS, 2, explicit=True)
+    assert _bytes(vals) == _bytes([P._eval_diagram(f, POINTS) for f in fns])
+
+
+def test_spawn_worker_over_its_share_is_killed_and_redone_here(td,
+                                                               monkeypatch):
+    """A share far below any worker's footprint: the watch kills workers as
+    they run; whatever they had not returned is evaluated here.  The batch
+    is still the serial bytes."""
+    from engine import worker_budget as WB
+    monkeypatch.setattr(WB, 'POLL_SECONDS', 0.01)
+    monkeypatch.setattr(WB, 'workers_that_fit',
+                        lambda n, per, counter=None: (2, 1))
+    fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
+    pts = [(0.0, t) for t in np.linspace(-3.0, 3.0, 25)]
+    vals = P._spawn_fan_out(fns, pts, 2, explicit=True)
+    assert _bytes(vals) == _bytes([P._eval_diagram(f, pts) for f in fns])
+
+
+@LINUX_FORK_ONLY
+def test_fork_pools_that_do_not_fit_run_serially(td, monkeypatch):
+    import multiprocessing as mp
+    from engine import worker_budget as WB
+    monkeypatch.setattr(WB, 'budget_left', lambda: (1, 'test'))
+
+    def boom(*a, **k):
+        raise AssertionError('forked although no worker fits')
+    monkeypatch.setattr(mp, 'get_context', boom)
+    fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
+    assert P._fork_fan_out(fns, POINTS, 2) is None

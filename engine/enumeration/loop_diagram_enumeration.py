@@ -1435,15 +1435,43 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
     # established that forking is allowed here (not macOS), the same contract
     # the temporal pipeline runs under.
     import multiprocessing as mp
+    import threading
     from concurrent.futures import ProcessPoolExecutor
+    from engine import worker_budget as _wb
+    n_fit, share = _wb.workers_that_fit(n_procs, _wb.FORK_WORKER_FLOOR,
+                                        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        for it in items:
+            yield fn(it)
+        return
+    n_procs = n_fit
+    over = threading.Event()
     with ProcessPoolExecutor(max_workers=n_procs,
                              mp_context=mp.get_context('fork')) as ex:
-        done = 0
-        for res in ex.map(fn, items, chunksize=max(1, len(items) // (n_procs * 8))):
-            done += 1
-            if verbose and done % 200 == 0:
-                print(f'  {label} {done}/{len(items)}...', end='\r')
-            yield res
+        watch = _wb.FootprintWatch(
+            lambda: list(getattr(ex, '_processes', None) or ()), share,
+            lambda pid, fp: over.set())
+        with watch:
+            done = 0
+            for res in ex.map(fn, items,
+                              chunksize=max(1, len(items) // (n_procs * 8))):
+                if over.is_set():
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    for pid in list(getattr(ex, '_processes', None) or ()):
+                        _wb.kill_pid(pid)
+                    from engine.integration.time_domain.final_integral \
+                        import PhaseJResourceError
+                    raise PhaseJResourceError(
+                        f'{label or "enumeration"}: a worker process outgrew '
+                        f'its share of the memory budget '
+                        f'({share / 1e9:.2f} GB); the enumeration was '
+                        f'stopped.  Use fewer workers (n_workers) or raise '
+                        f'PHASE_J_MEM_BUDGET_GB.',
+                        {'share_bytes': share, 'workers': n_procs})
+                done += 1
+                if verbose and done % 200 == 0:
+                    print(f'  {label} {done}/{len(items)}...', end='\r')
+                yield res
 
 
 def stream_topology_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
