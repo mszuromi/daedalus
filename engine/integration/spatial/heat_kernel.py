@@ -45,9 +45,10 @@ from typing import Callable, Optional
 
 import mpmath as mp
 from sage.all import SR, I as SR_I, matrix
+from engine.errors import DaedalusError
 
 
-class SpatialPropagatorError(Exception):
+class SpatialPropagatorError(DaedalusError, Exception):
     """Raised when the Tier-1 closed-form heat-kernel path does not
     apply (non-diagonal coupling, higher-derivative operator,
     non-unit iω coefficient, …).  The caller may fall back to a

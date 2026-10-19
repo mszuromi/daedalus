@@ -42,6 +42,7 @@ import warnings
 import numpy as np
 
 from engine.integration.spatial.causal_chambers import causal_chambers
+from engine.errors import DaedalusError
 
 
 class BesselUnequalTimesWarning(RuntimeWarning):
@@ -464,7 +465,7 @@ def _spatial_mem_budget():
     return default_mem_budget()
 
 
-class SpatialMemoryBudgetError(MemoryError):
+class SpatialMemoryBudgetError(DaedalusError, MemoryError):
     """A spatial chamber evaluation would exceed the memory budget."""
 
 
@@ -660,7 +661,7 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     return total / norm
 
 
-class SpatialUVDivergenceError(NotImplementedError):
+class SpatialUVDivergenceError(DaedalusError, NotImplementedError):
     """A loop subgraph is UV-divergent at this spatial dimension: its value
     would be set by the quadrature grid, not by the model."""
 

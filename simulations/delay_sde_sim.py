@@ -90,6 +90,10 @@ def autocovariance(rec, i, j, lag_steps, n_batches=20):
     xi = X[:, i, :] - X[:, i, :].mean()
     xj = X[:, j, :] - X[:, j, :].mean()
     n_t, n_p = xi.shape
+    if n_p < 2:
+        raise ValueError(
+            f'autocovariance: the standard error is a spread over paths and '
+            f'needs at least 2 (got {n_p}); simulate with n_paths >= 2.')
     lag_steps = np.atleast_1d(np.asarray(lag_steps, dtype=int))
     nb = max(2, min(int(n_batches), n_p))
     groups = np.array_split(np.arange(n_p), nb)

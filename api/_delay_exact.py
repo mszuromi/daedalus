@@ -55,12 +55,13 @@ import math
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = ['ExactTree', 'ExactTreeUnavailable', 'delayed_state_space',
            'DelayedStateSpace']
 
 
-class ExactTreeUnavailable(ValueError):
+class ExactTreeUnavailable(DaedalusError, ValueError):
     """The exact tree does not apply (several delays, a neutral term, a
     singular instantaneous part, ...); the Pade tree is used instead."""
 

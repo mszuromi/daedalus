@@ -37,6 +37,7 @@ from typing import Iterable, Optional, Sequence
 
 from sage.all import SR, Integer, exp, log, sqrt, function, sage_eval
 from sage.all import gamma as _gamma, cos as _cos, matrix as _matrix
+from engine.errors import DaedalusError
 
 __all__ = [
     'NoiseError', 'NoiseSource',
@@ -53,7 +54,7 @@ __all__ = [
 ]
 
 
-class NoiseError(ValueError):
+class NoiseError(DaedalusError, ValueError):
     """Raised for an invalid noise declaration."""
 
 
@@ -96,8 +97,8 @@ def parse_expr(value, *, what: str = 'expression'):
 
     Indexed names become flat symbols (``x[i]`` -> ``x__i``); calls of
     unknown names become formal Sage functions (``phi[i](v[i])`` ->
-    ``phi__i(v__i)``).  Population sums (``sum(... for j in E)``) are
-    not supported inside noise parameters.
+    ``phi__i(v__i)``).  Population sums (``sum(... for j in E)``) cannot be
+    parsed here (noise parameters, separated drift terms).
     """
     if isinstance(value, str):
         txt = ' '.join(value.split())
@@ -105,8 +106,13 @@ def parse_expr(value, *, what: str = 'expression'):
             raise NoiseError(f'{what}: empty expression')
         if re.search(r'\bfor\b', txt):
             raise NoiseError(
-                f'{what}: population sums are not supported inside a noise '
-                f'parameter ({value!r}); declare a parameter or function '
+                f'{what}: population sums ("sum(... for j in pop)") cannot '
+                f'be split or parsed in this expression ({value!r}); they are '
+                f'accepted where the model is written as a whole (an '
+                f'equation(lhs=..., rhs=...) whose lhs carries the restoring '
+                f'term, a point_process rate), '
+                f'not as a noise parameter or a separated term.  Declare a '
+                f'parameter or function '
                 f'for the summed quantity instead (a spike train whose rate '
                 f'sums or filters fields: SDE.point_process).')
         txt = _flatten_indices(txt)
@@ -531,11 +537,14 @@ class CGF(NoiseSource):
         self._K = parse_expr(expression, what='CGF(expression)')
         if THETA not in self._K.variables():
             raise NoiseError('CGF: the expression must depend on theta.')
-        super().__init__()
+        # Analyticity first: the generic K(0) check in the base constructor
+        # evaluates the expression at 0 and used to let the raw Sage error
+        # (e.g. 'division by zero' for CGF('1/theta')) escape unnamed.
         try:
             self._K.subs({THETA: 0})
         except Exception as exc:                       # noqa: BLE001
             raise NoiseError(f'CGF: not analytic at theta = 0 ({exc}).') from exc
+        super().__init__()
 
     def _cgf(self):
         return self._K
@@ -712,7 +721,13 @@ class FinitePMF(JumpDistribution):
         for j in range(self._n):
             self._require(f'p{j}', _nonneg, f'need probs[{j}] >= 0')
         total = sum(self.params[f'p{j}'] for j in range(self._n))
-        if total.is_numeric() or not total.variables():
+        x = _numeric(total)
+        if x is not None:
+            # the same round-off allowance as Hyperexponential: float
+            # probabilities that sum to 1 up to 1e-12 are a distribution
+            if abs(x - 1) > 1e-12:
+                raise NoiseError(f'FinitePMF: probabilities sum to {total}, not 1.')
+        elif not total.variables():
             if not (SR(total) - 1).simplify_full().is_zero():
                 raise NoiseError(f'FinitePMF: probabilities sum to {total}, not 1.')
 

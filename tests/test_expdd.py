@@ -654,7 +654,7 @@ def test_a_nan_upper_raises():
 
 def _captured_calls():
     """The captured chain calls of ``tests/fixtures/chain_uppers_captured.npz``
-    (recorded from quad_exp, spike_reset, ou_quartic_two_dim and ou_quartic
+    (recorded from quad_exp, spike_reset, a two-field OU quartic and ou_quartic
     k=4 runs, with the values of the retired legacy evaluator,
     ``final_integral._chain_with_intermediate_uppers``, memo off)."""
     z = np.load(os.path.join(os.path.dirname(__file__), 'fixtures',
@@ -719,7 +719,7 @@ def _degenerate_calls():
 
 
 def test_captured_degenerate_chain_calls():
-    """cs_bench [A]: 200 real degenerate chain calls (ou_quartic_two_dim k=2
+    """cs_bench [A]: 200 real degenerate chain calls (a two-field OU quartic k=2
     l=2, ou_quartic k=4 l=2; every block sum of the alphas that vanishes is a
     repeated node)."""
     calls = _degenerate_calls()

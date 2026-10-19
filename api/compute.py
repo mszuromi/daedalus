@@ -39,6 +39,7 @@ from api.save       import _phase_j_convention, _phase_j_flags
 from api.access     import (
     MeanField, Parameters, normalize_external_fields,
 )
+from engine.errors import DaedalusError
 
 # Itô equal-time regularizer (magnitude).  Our SDEs use the Itô convention, which
 # is LEFT-continuous (Θ(0)=Θ(0⁻)); the equal-time *observable* is therefore the
@@ -199,7 +200,7 @@ class PhaseJIncompleteWarning(UserWarning):
 
 
 from engine.integration.time_domain.final_integral import (  # noqa: E402
-    PhaseJResourceError)
+    PhaseJResourceError, growth_scoped as _growth_scoped)
 
 
 class SpatialAccuracyWarning(UserWarning):
@@ -208,7 +209,7 @@ class SpatialAccuracyWarning(UserWarning):
     says why and gives the measured spread)."""
 
 
-class SpatialAccuracyError(RuntimeError):
+class SpatialAccuracyError(DaedalusError, RuntimeError):
     """Raised instead of :class:`SpatialAccuracyWarning` under
     ``policy={'mode': 'strict'}``; ``result`` is the approximate result."""
 
@@ -272,7 +273,7 @@ def _spatial_accuracy(result, tau_grid, max_ell):
     return out
 
 
-class PhaseJIncompleteError(RuntimeError):
+class PhaseJIncompleteError(DaedalusError, RuntimeError):
     """Raised instead of :class:`PhaseJIncompleteWarning` under
     ``policy={'mode': 'strict'}``.  ``result``: the (incomplete) result
     dict; ``failures``: ``{ell: [failure record, ...]}``."""
@@ -326,6 +327,24 @@ def _entry_int(name, v):
                     f'({type(v).__name__}).')
 
 
+def as_model_dict(model):
+    """The model dict of ``model``: a dict passes; an unbuilt builder (an
+    ``api.sde.SDE`` or a ``ModelBuilder``/``TemporalModelBuilder``, anything
+    with a ``build()``) is built, as ``dd.run`` does.  Anything else is a
+    ``TypeError`` that says what was given."""
+    if isinstance(model, dict):
+        return model
+    build = getattr(model, 'build', None)
+    if callable(build):
+        built = build()
+        if isinstance(built, dict):
+            return built
+    raise TypeError(
+        f'model must be a model dict (the result of .build()) or a builder '
+        f'with a build() method (api.sde.SDE, ModelBuilder); got '
+        f'{type(model).__name__}.')
+
+
 def _is_count(v):
     import operator
     if isinstance(v, (bool, np.bool_)):
@@ -335,23 +354,6 @@ def _is_count(v):
         return True
     except TypeError:
         return False
-
-
-def _check_grid_slip(name, g):
-    """Refuse a 3-entry tuple / list whose last entry is an integer count
-    >= 2 (``(-5, 5, 51)``, ``[-5, 5, 51]``): ``compute_cumulants`` takes its
-    grids literally, so that would be the 3 points {-5, 5, 51}, while
-    ``dd.Config`` reads the tuple as a ``linspace`` range.  Literal grids of
-    floats (``[0.0, 0.5, 2.0]``) and arrays pass."""
-    if (isinstance(g, (tuple, list)) and len(g) == 3
-            and _is_count(g[2]) and g[2] >= 2):
-        lo, hi, n = g
-        raise ValueError(
-            f'{name}={g!r} is ambiguous: compute_cumulants reads a sequence '
-            f'as literal grid points ({{{lo}, {hi}, {n}}}, note the {n}), '
-            f'while dd.Config reads the tuple (lo, hi, n) as a range.  Pass '
-            f'{name}=np.linspace({lo}, {hi}, {n}) for the range of {n} '
-            f'points, or an array / floats for literal points.')
 
 
 def _policy_is_strict(policy):
@@ -917,7 +919,34 @@ def _realization_check(prop, num_params):
     return {'checked': bool(cond.get('aposteriori_checked')),
             'err_rel': cond.get('aposteriori_err_rel'),
             'graded': bool(cond.get('graded')),
-            'bad_margin': bool(cond.get('bad_margin'))}
+            'bad_margin': bool(cond.get('bad_margin')),
+            'truncation': _truncation_record(m.real),
+            # the run's own realization, for the census to re-read the
+            # truncation record once the dressed lines exist (popped there;
+            # never part of the result)
+            '_real': m.real}
+
+
+def _truncation_record(real):
+    """The balanced-truncation record of a realization for the result and
+    the G6 estimate: ``{'tol', 'n_truncated', 'n_dressed_truncated',
+    'max_bound_rel'}`` -- the per-entry truncation of the propagator and,
+    once the run has built them, the truncated dressed lines
+    (``Realization.truncation['dressed']``) -- or ``None`` when the
+    realization has no record.  ``max_bound_rel`` is the largest relative
+    H-infinity bound ``2 sum(discarded HSV) / sigma_1`` of any truncated
+    entry or line (0.0 when nothing was cut)."""
+    tr = getattr(real, 'truncation', None)
+    if not isinstance(tr, dict):
+        return None
+    dressed = tr.get('dressed') or {}
+    cut = [v for v in dressed.values() if v.get('r', 0) < v.get('n', 0)]
+    worst = max([float(tr.get('max_bound_rel') or 0.0)]
+                + [float(v.get('bound_rel') or 0.0) for v in cut])
+    return {'tol': tr.get('tol'),
+            'n_truncated': int(tr.get('n_truncated') or 0),
+            'n_dressed_truncated': len(cut),
+            'max_bound_rel': worst}
 
 
 def _engine_census(result, counters):
@@ -943,6 +972,13 @@ def _engine_census(result, counters):
         fallback_evals=int(c.get('ss_fallback_evals', 0)),
         fallback_by_reason=dict(c.get('ss_fallback_by_reason') or {}),
         statespace_share=(n_ss / (n_ss + n_dec)) if n_ss + n_dec else None)
+    # the dressed lines are truncated while the run builds them: re-read the
+    # realization's record now that the run is over
+    rc = rep.get('realization_check')
+    if isinstance(rc, dict):
+        real = rc.pop('_real', None)
+        if real is not None:
+            rc['truncation'] = _truncation_record(real)
     pc = result.get('pole_clusters')
     if (isinstance(pc, dict) and pc.get('status') == 'bypassed'
             and rep.get('pole_deformation') != 'bypassed'
@@ -1190,6 +1226,7 @@ def _switch_on_check(result, failures, model_name):
                 f'subsets); their switch-on weights are not implemented')
 
 
+@_growth_scoped
 def compute_cumulants(
     model: dict,
     k: int,
@@ -1236,8 +1273,8 @@ def compute_cumulants(
     Parameters
     ----------
     model : dict
-        The model dict (e.g. ``HAWKES_MODEL`` from
-        ``simulations/hawkes_linear_expg_gtas.py``).  Must declare:
+        The model dict (``builder.build()``; an unbuilt ``api.sde.SDE`` or
+        builder is built for you).  Must declare:
         ``response_fields``, ``physical_fields``, ``parameters``,
         ``kernels``, ``operators``, ``functions``, ``mf_substitutions``,
         ``mf_bg_conditions``, ``specializations``, ``kernel_ft_image``,
@@ -1410,7 +1447,13 @@ def compute_cumulants(
         'total_C_by_ell'  : {ell: callable(*tau)} — per-loop-order
         'C_tau'           : ndarray of total_C on the τ-grid (k=1, 2;
                              None for k≥3 — caller uses total_C / per-
-                             ell callables instead)
+                             ell callables instead).  k=2: the connected
+                             cumulant C(τ) = <dφ(0) dφ(τ)> of the
+                             fluctuation about the saddle.  k=1: the mean
+                             SHIFT <φ> − φ* produced by the loops (0 at
+                             tree level, since the cumulants expand
+                             around the saddle); the mean itself is
+                             ``mf_values`` + ``C_tau``.
         'C_tau_by_ell'    : {ell: ndarray or None} — per-loop-order
                              grid eval; ``C_tau == sum(values())``
         'tau_grid'        : ndarray of τ values
@@ -1465,6 +1508,23 @@ def compute_cumulants(
     and ``total_C`` / ``total_C_by_ell`` take ABSOLUTE times (each call runs
     inside :func:`statespace.switch_on_scope`).
 
+    SPATIAL k=2 (a ``spatial`` model) returns the same schema where it
+    applies, keyed by space as well:
+        'C_tau_x'         : ndarray ``(n_tau, n_x)`` of C(x, τ) at the top
+                             loop order
+        'C_tau'           : the slice of ``C_tau_x`` at the x closest to 0
+        'C_tau_x_by_ell'  : {ell: ndarray} the cumulative C(x, τ) at each
+                             loop order (``'C_tau_x_by_order'`` is the same
+                             dict under its older name)
+        'total_C_by_ell'  : {ell: callable(tau, x)} the loop-order increments
+        'tau_grid', 'chi_grid' : the grids (``'spatial_grid'`` is the older
+                             name of ``chi_grid``)
+        'status'          : ``'ok'``
+        'spatial_info', 'mf_values', 'mf', 'params', 'num_params',
+        'propagator', 'config' : as above
+    (There is no ``C_tau_by_ell``: the per-order data are the x-dependent
+    ``C_tau_x_by_ell``.)
+
     SPATIAL k≥3 (``spatial_points`` given) returns a DIFFERENT dict (an
     early return), keyed by the explicit evaluation events rather than a
     τ-grid:
@@ -1476,6 +1536,7 @@ def compute_cumulants(
         'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
         'k', 'max_ell', 'mf'
     """
+    model = as_model_dict(model)         # an SDE / builder is built here
     # Grouped Phase J is retired (audit W7, RED-03): the flag is accepted
     # for one release and runs the per-diagram integrator (same numbers)
     if use_grouped_phase_j:
@@ -1566,8 +1627,12 @@ def compute_cumulants(
     elif not (isinstance(discard, str) and discard == 'auto'):
         raise ValueError(f"discard={discard!r}: expected False, True or "
                          f"'auto'")
-    _check_grid_slip('tau_grid', tau_grid)
-    _check_grid_slip('spatial_grid', spatial_grid)
+    # one rule for every entry point (dd.Config, YAML, here): an
+    # (lo, hi, n) tuple is a range, a list/array is literal points, and a
+    # 3-element integer-count list is refused (api._grids)
+    from api._grids import resolve_grid
+    tau_grid = resolve_grid(tau_grid, 'tau_grid')
+    spatial_grid = resolve_grid(spatial_grid, 'spatial_grid')
     _nso = model.get('noise_series_order') if isinstance(model, dict) else None
     if _nso and k + 2 * max_ell > int(_nso['order']):
         # a CGF with a removable singularity at 0 (the uniform jump) enters
@@ -2095,6 +2160,10 @@ def _run_spatial(state):
         # — the WHOLE progression from ONE call (the highest-ℓ run already
         # contains every lower order; no need to re-run per order).
         'C_tau_x_by_order': sp_info.get('C_by_order', {0: C_tau_x}),
+        # the temporal schema's names for the same data: ``status`` and the
+        # per-loop-order key spelled with ell (the same dict as ``_by_order``)
+        'status':         'ok',
+        'C_tau_x_by_ell': sp_info.get('C_by_order', {0: C_tau_x}),
         'tau_grid':       tau_grid,
         'spatial_grid':   spatial_grid_arr,
         'chi_grid':       spatial_grid_arr,   # canonical alias of spatial_grid
@@ -2292,7 +2361,8 @@ def _run_phase_j(state):
     # budget is read ONCE for the run (its default depends on what
     # the process holds), so the pre-pass and the running guard agree.
     from engine.integration.time_domain import final_integral as _fi_b
-    _run_budget = (_fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    _run_budget = (_fi_b.run_budget() if hasattr(_fi_b, 'run_budget')
+                   else _fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
     # evaluate-and-discard needs fixed evaluation points (k <= 2
     # on the τ grid) and a single pass

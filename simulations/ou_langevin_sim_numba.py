@@ -495,7 +495,7 @@ def sim_ou_quartic_two_dim_numba(
         dx/dt = -mu1·x - eps1·x³ + J1·y + √(2 D1)·η_x(t)
         dy/dt = -mu2·y - eps2·y³ + J2·x + √(2 D2)·η_y(t)
 
-    matching the action in ``models/ou_quartic_two_dim.model.py``:
+    matching the action of the two-field OU quartic with these parameters:
 
         S = xt·((Dt + mu1)·x + eps1·x³ - J1·y) - D1·xt²
           + yt·((Dt + mu2)·y + eps2·y³ - J2·x) - D2·yt²

@@ -169,6 +169,7 @@ import logging
 import lzma
 import os
 import pickle
+import uuid
 
 from sage.all import DiGraph, Graph
 
@@ -296,21 +297,37 @@ def read_cert_file(path, k=None, ell=None):
                      f'packed certs, got {type(obj).__name__}')
 
 
+def _unique_tmp(path):
+    """A temp name beside *path* that no other writer (thread or process)
+    shares, so concurrent cold-cache runs never clobber each other's file."""
+    return f'{path}.{os.getpid()}.{uuid.uuid4().hex[:10]}.tmp'
+
+
 def write_cert_file(path, k, ell, certs, cert_backend=None):
-    """Atomically write a stamped v2 file; returns the stamp."""
+    """Atomically write a stamped v2 file; returns the stamp.
+
+    The bytes go to a writer-private temp name and are renamed over *path*
+    at the end; the temp file is removed on any failure."""
     certs = set(certs)
     stamp = make_stamp(k, ell, certs, cert_backend)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.tmp'
-    if str(path).endswith('.xz'):
-        with lzma.open(tmp, 'wb', preset=9 | lzma.PRESET_EXTREME) as f:
-            pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
-                        protocol=pickle.HIGHEST_PROTOCOL)
-    else:
-        with open(tmp, 'wb') as f:
-            pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
-                        protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp, path)
+    tmp = _unique_tmp(path)
+    try:
+        if str(path).endswith('.xz'):
+            with lzma.open(tmp, 'wb', preset=9 | lzma.PRESET_EXTREME) as f:
+                pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            with open(tmp, 'wb') as f:
+                pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     return stamp
 
 
@@ -427,7 +444,7 @@ def fetch_cache(cells='core', dest=None, base_url=None, *, manifest=None,
                              f'{FETCH_URL_ENV} (file {e["name"]} is not in git)')
         os.makedirs(outdir, exist_ok=True)
         final = os.path.join(outdir, e['name'])
-        tmp = final + '.part'
+        tmp = _unique_tmp(final)
         h = hashlib.sha256()
         size = 0
         try:
@@ -827,6 +844,46 @@ def save_v2_certs(root, k, ell, certs, cert_backend=None):
     return path
 
 
+def _copy_file_atomic(src, dest):
+    """Copy ``src`` to ``dest`` through a writer-private temp name (no
+    half-written cache file if the run is killed; the temp file is removed
+    on any failure)."""
+    import shutil
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = _unique_tmp(dest)
+    try:
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _save_v2_best_effort(root, k, ell, certs, cert_backend=None,
+                         copy_from=None):
+    """Save the local v2 copy of a cell that is already in memory.  The copy
+    is only a speed-up for the next run, so a cache root that cannot be
+    written (read-only mount, no permission) must not fail the run that
+    already holds the data.  ``copy_from``: a compressed shipped file, copied
+    as it is (re-pickling it uncompressed put 38 MB of (2,4) into every
+    working directory; audit RED-11)."""
+    try:
+        if copy_from is not None:
+            dest = v2_path(root, k, ell)
+            dest = dest if dest.endswith('.xz') else dest + '.xz'
+            _copy_file_atomic(copy_from, dest)
+            return dest
+        return save_v2_certs(root, k, ell, certs, cert_backend)
+    except OSError as exc:
+        _log.warning('prediagram cache root %s is not writable (%s); cell '
+                     '(%d, %d) is served from memory and not copied locally',
+                     root, exc, int(k), int(ell))
+        return None
+
+
 def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
                      stream=True):
     """Prediagram records for ``(k, ell)``, cheapest available source first.
@@ -884,11 +941,16 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     """
     from sage.all import load as sage_load
 
+    # the manifests' count (or an extrapolation): refuse before any file is
+    # read or any cert computed; the counted checks below catch the rest
+    _load_guard(k, ell, None)
     if not use_cache:
         if _cache_off_source(stream) == 'eager':
             return (list(_enumerate_eager(k=k, ell=ell, verbose=verbose)[2]),
                     'eager')
-        return records_from_certs(_streamed_certs(k, ell, verbose)), 'streamed'
+        certs = _streamed_certs(k, ell, verbose)
+        _load_guard(k, ell, len(certs))
+        return records_from_certs(certs), 'streamed'
 
     fmt = cache_format()
 
@@ -899,6 +961,7 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     if fmt in ('auto', 'v2') and v2_exists(root, k, ell):
         certs = load_v2_certs(root, k, ell)
         if _local_cell_ok(root, k, ell, len(certs), 'v2'):
+            _load_guard(k, ell, len(certs))
             return records_from_certs(certs), 'v2'
 
     if fmt in ('auto', 'v1') and v1_exists(root, k, ell):
@@ -907,16 +970,60 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
             return recs, 'v1'
 
     if fmt in ('auto', 'v2') and shipped_exists(k, ell):
-        certs, stamp = read_cert_file(shipped_path(k, ell), k, ell)
-        save_v2_certs(root, k, ell, certs,
-                      (stamp or {}).get('cert_backend', 'sage'))
+        src_path = shipped_path(k, ell)
+        certs, stamp = read_cert_file(src_path, k, ell)
+        _load_guard(k, ell, len(certs))
+        _save_v2_best_effort(
+            root, k, ell, certs, (stamp or {}).get('cert_backend', 'sage'),
+            copy_from=src_path if str(src_path).endswith('.xz') else None)
         return records_from_certs(certs), 'shipped'
 
     certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
                                     verbose=verbose)
     if fmt in ('auto', 'v2'):
-        save_v2_certs(root, k, ell, certs)
+        _save_v2_best_effort(root, k, ell, certs)
+    _load_guard(k, ell, len(certs))
     return records_from_certs(certs), 'computed'
+
+
+def _load_guard(k, ell, n):
+    """Refuse a cell whose records would not fit the run's memory budget
+    (``PHASE_J_MEM_BUDGET_GB``; default ``default_mem_budget``), BEFORE they
+    are built: :data:`_LOAD_BYTES_PER_CLASS` per class (two Sage graphs; the
+    records of (2,4) or (5,2) need 10-13 GB, of (4,3) / (6,2) 81 / 140 GB).
+    ``n``: the class count when known (the cert set is in hand), else the
+    manifests' count or an extrapolation (none: no check).  Raises
+    :class:`engine.integration.time_domain.final_integral.PhaseJResourceError`
+    (audit MEM-01)."""
+    if n is None:
+        n, how = estimate_class_count(k, ell)
+        if n is None:
+            return
+        how = 'known' if how == 'known' else 'estimated'
+    else:
+        how = 'counted'
+    need = int(n) * _LOAD_BYTES_PER_CLASS
+    from engine.integration.time_domain import final_integral as _fi
+    budget, rule = _fi.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    # an extrapolated count is good to a factor of two: refuse on it only
+    # beyond that (the count is checked again once the certs are in hand)
+    if budget is None or need <= budget * (2 if how == 'estimated' else 1):
+        return
+    ram = _fi._ram_bytes()
+    # the same machine sentence as the Phase J pre-pass refusal
+    machine = (f'This machine has {ram / 1e9:.1f} GB of RAM; the estimate is '
+               f'{need / 1e9:.2f} GB ({need / ram:.0%} of it).' if ram else
+               f'The estimate is {need / 1e9:.2f} GB (this machine\'s RAM is '
+               f'unknown).')
+    raise _fi.PhaseJResourceError(
+        f'the prediagrams of (k={k}, ell={ell}) do not fit the memory budget: '
+        f'{int(n):,} classes ({how}) need ~{_fmt_bytes(need)} as records '
+        f'(~{_LOAD_BYTES_PER_CLASS:,} B per class), the budget is '
+        f'{_fi._fmt_budget(budget, rule)}.  {machine}  Nothing was built.  '
+        f'Options: {_fi._BUDGET_HOW}.',
+        estimate={'k': k, 'ell': ell, 'classes': int(n), 'classes_how': how,
+                  'bytes': need, 'budget_bytes': budget, 'budget_rule': rule,
+                  'where': 'prediagram records'})
 
 
 _KNOWN_COUNTS = []

@@ -127,7 +127,7 @@ Conventions
   surface) are not included, as in ``C_tau``; δ parts of the propagator
   inside a subset (its δ edges) are.
 * Pairing (k = 2): ``∫ L(s) C(s) ds`` with ``C(τ) = κ(x_1(0), x_2(τ))`` and a
-  C2 :class:`api.symbolic_out.Kernel` (terms ``coeff · s^q e^{rate s}`` on
+  C2 :class:`api.symbolic_out.PairingKernel` (terms ``coeff · s^q e^{rate s}`` on
   side 'positive' / 'negative'), no contact term (S4's
   ``contact='exclude'``).
 * τ != 0: ``C(τ)`` itself needs ``e^{G τ}``, i.e. the eigen data of the
@@ -171,6 +171,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
 import numpy as np
+from engine.errors import DaedalusError
 
 __all__ = ['SymbolicLoopRefused', 'SaddleWarning', 'SymbolicPropagator',
            'SymbolicCumulant',
@@ -186,7 +187,7 @@ MAX_SYMBOLS = 12
 CHECK_RTOL = 1e-12
 
 
-class SymbolicLoopRefused(ValueError):
+class SymbolicLoopRefused(DaedalusError, ValueError):
     """The symbolic route does not cover this model / request
     (``reason``: a short name, see the module docstring)."""
 
@@ -1589,7 +1590,7 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
                       verbose=False) -> SymbolicCumulant:
     """Equal-time cumulant (``kernel=None``; any k) or the k = 2 kernel
     pairing ``∫ L(s) C(s) ds`` (``kernel``: a C2
-    :class:`api.symbolic_out.Kernel`), per loop order, as rational
+    :class:`api.symbolic_out.PairingKernel`), per loop order, as rational
     functions of the parameters (module docstring).
 
     ``parameters``: the reference values (model defaults otherwise);
@@ -1606,6 +1607,8 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
     ``CHECK_RTOL``); ``max_block`` / ``max_symbols``: the size limits
     (defaults ``MAX_BLOCK`` / ``MAX_SYMBOLS``; beyond them ``too_large``)."""
     from engine.integration.time_domain import final_integral as FI
+    from api.compute import as_model_dict
+    model = as_model_dict(model)
     if kernel is not None and int(k) != 2:
         raise SymbolicLoopRefused('k_unsupported',
                                   'kernel pairings are defined for k = 2')
@@ -1765,6 +1768,20 @@ def _refuse_truncated_reference(result):
     its numbers are within that tolerance of the exact pipeline, which the
     1e-12 checks would report as a mismatch."""
     from api._realization import truncation_tol, try_realize
+    # the result's own record first: it includes the truncated dressed lines,
+    # which a fresh realization (below) has not built yet
+    own = (((result.get('phase_j_engine') or {}).get('realization_check')
+            or {}).get('truncation')) if isinstance(result, dict) else None
+    if own and (own.get('n_truncated') or own.get('n_dressed_truncated')):
+        n = int(own.get('n_truncated') or 0) + int(
+            own.get('n_dressed_truncated') or 0)
+        raise SymbolicLoopRefused(
+            'truncated_reference', f'the supplied result= was computed with '
+            f'{n} balanced-truncated propagator entr'
+            f'{"y" if n == 1 else "ies"} / dressed line(s) (relative '
+            f'tolerance {own.get("tol") or 0:g}); call without result= (the '
+            'reference then runs with exact realizations) or compute it with '
+            'DAEDALUS_REALIZATION_TRUNCATION=0')
     if not truncation_tol() > 0:
         return
     prop, nump = result.get('propagator'), result.get('num_params')

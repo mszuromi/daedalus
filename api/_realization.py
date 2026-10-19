@@ -175,6 +175,7 @@ from typing import Any, Optional
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = [
     'Realization', 'EntryRealization', 'RealizationRefused', 'realize',
@@ -191,7 +192,7 @@ _REASONS = ('non_rational', 'unbound_symbol', 'spatial', 'improper_entry',
             'kernel_not_hurwitz', 'kernel_shifted_step')
 
 
-class RealizationRefused(ValueError):
+class RealizationRefused(DaedalusError, ValueError):
     """The propagator has no (supported) finite state-space realization.
 
     ``reason`` is one of ``non_rational``, ``unbound_symbol``, ``spatial``,

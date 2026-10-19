@@ -92,7 +92,7 @@ are ``RootOf`` symbols (root ``index`` of a polynomial, roots ordered by real
 part); coefficients are polynomials in them with coefficients rational in the
 parameters.  Each result lists the ``assumptions`` it needs (Routh/Sturm sign
 conditions, distinct poles) and refuses (``AssumptionViolation``) at values
-that violate them.  ``integrate_against`` with a ``Kernel`` (exponential,
+that violate them.  ``integrate_against`` with a ``PairingKernel`` (exponential,
 polynomial x exponential, two-sided exponential) gives ``int L(s) C(s) ds`` exactly;
 it equals the Fourier route ``pair_with_kernel(C0, L~(-omega))`` on the
 smooth part.  The numeric twin for a computed cumulant at any loop order
@@ -116,6 +116,7 @@ from sage.all import (
 from sage.rings.rational import Rational as _Rational
 from sage.rings.integer import Integer as _Integer
 from sage.rings.real_mpfr import RealNumber as _RealNumber
+from engine.errors import DaedalusError
 
 __all__ = [
     'SymbolicOutError', 'UnsupportedModelError', 'NonRationalPropagatorError',
@@ -127,7 +128,7 @@ __all__ = [
     'from_sympy', 'to_latex', 'to_callable', 'to_json', 'from_json',
     # stage C2
     'AssumptionViolation', 'Mode', 'RootOf', 'Assumption', 'ModeSum',
-    'Kernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
+    'PairingKernel', 'Kernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
     # stage C3 (api.symbolic_loop; resolved lazily, see __getattr__)
     'symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
     'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning',
@@ -164,7 +165,7 @@ _REAL_AXIS_TOL = 1e-9
 # Errors
 # ═════════════════════════════════════════════════════════════════════════════
 
-class SymbolicOutError(ValueError):
+class SymbolicOutError(DaedalusError, ValueError):
     """Base class of every error raised by this module."""
 
 
@@ -237,6 +238,31 @@ def _integral_exponent(ex):
     return None
 
 
+def _exact_exponent(ex):
+    """An SR numeric exponent as an exact rational, or None.
+
+    Rationals pass; a float such as ``0.5`` is accepted when it IS a small
+    rational exactly (denominator <= 64: ``0.5``, ``0.25``, ``1.5``) so the
+    scan and the conversion agree -- they used to disagree on floats, which
+    refused ``D**0.5`` with a message about omega.  Anything else
+    (``0.3``, an irrational) is None."""
+    x = ex.pyobject()
+    if isinstance(x, _Rational):
+        return QQ(x)
+    try:
+        q = QQ(x)
+    except (TypeError, ValueError):
+        return None
+    if q.denominator() <= 64 and float(q) == float(x):
+        return q
+    return None
+
+
+def _power_name(base, x):
+    return (f'pw__{base}__{"m" if x < 0 else "p"}'
+            f'{abs(x.numerator())}_{x.denominator()}')
+
+
 class _Bridge:
     """Conversion between Sage SR expressions in ``omega`` and the field
     ``QQ(s, params...)``."""
@@ -281,11 +307,10 @@ class _Bridge:
         if _opname(op) == 'pow':
             base, ex = e.operands()
             if base.is_symbol() and ex.is_numeric():
-                x = ex.pyobject()
-                if isinstance(x, _Rational) and x.denominator() != 1:
-                    nm = (f'pw__{base}__{"m" if x < 0 else "p"}'
-                          f'{abs(x.numerator())}_{x.denominator()}')
-                    pows[nm] = (base, QQ(x))
+                x = _exact_exponent(ex)
+                if x is not None and x.denominator() != 1:
+                    nm = _power_name(base, x)
+                    pows[nm] = (base, x)
         for o in e.operands():
             self._scan(o, syms, pows, seen)
 
@@ -323,9 +348,14 @@ class _Bridge:
             if ex.is_numeric() and _integral_exponent(ex) is not None:
                 out = self._conv(base, memo) ** _integral_exponent(ex)
             elif ex.is_numeric() and base.is_symbol():
-                x = QQ(ex.pyobject())
-                nm = (f'pw__{base}__{"m" if x < 0 else "p"}'
-                      f'{abs(x.numerator())}_{x.denominator()}')
+                x = _exact_exponent(ex)
+                if x is None:
+                    raise NonRationalPropagatorError(
+                        f'power {e!r}: the exponent {ex!r} is not an exact '
+                        f'rational number (write 1/2, not an irrational or '
+                        f'long decimal); only rational powers of a '
+                        f'parameter symbol are supported.')
+                nm = _power_name(base, x)
                 if nm not in self._names:
                     raise NonRationalPropagatorError(
                         f'non-rational power {e!r} of omega (or of a '
@@ -334,9 +364,11 @@ class _Bridge:
                 out = self.F(self.R(nm))
             else:
                 raise NonRationalPropagatorError(
-                    f'non-rational power {e!r}: the covariance requires a '
-                    f'rational function of omega (e.g. no square roots of '
-                    f'omega-dependent terms).')
+                    f'non-rational power {e!r}: only integer powers of '
+                    f'anything, and rational powers (1/2, 3/2, ...) of a '
+                    f'plain parameter symbol, are allowed; the covariance '
+                    f'requires a rational function of omega (e.g. no square '
+                    f'roots of omega-dependent terms).')
         else:
             raise NonRationalPropagatorError(
                 f'non-rational function {op} in {e!r}: the propagator must '
@@ -1060,7 +1092,14 @@ class TreeCovariance:
                 npar = _solve_mean_field(self._ft, self._model, fund)
                 out = {str(k): float(v) for k, v in npar.items()
                        if isinstance(v, (int, float, np.floating))}
-            except Exception:
+            except Exception as exc:
+                warnings.warn(
+                    'TreeCovariance.default_values: the mean-field solve for '
+                    f'the reference values failed ({type(exc).__name__}: '
+                    f'{exc}); returning no defaults, so symbols without a '
+                    'value are treated as 1.0 (assumed positive).  Pass '
+                    'reference=/values= explicitly.', RuntimeWarning,
+                    stacklevel=2)
                 out = {}
         self._cache['defaults'] = out
         return dict(out)
@@ -1116,7 +1155,7 @@ class TreeCovariance:
         ms._fixed.update(_expand_param_names(self.values))
         return ms
 
-    def integrate_against(self, a, b, kernel: 'Kernel', *,
+    def integrate_against(self, a, b, kernel: 'PairingKernel', *,
                           values: Optional[dict] = None,
                           reference: Optional[dict] = None,
                           contact: Optional[str] = None) -> 'KernelIntegral':
@@ -2843,7 +2882,7 @@ class ModeSum:
         return out
 
     # ── kernel integrals ────────────────────────────────────────────────
-    def integrate_against(self, kernel: 'Kernel', values: Optional[dict]
+    def integrate_against(self, kernel: 'PairingKernel', values: Optional[dict]
                           = None, contact: Optional[str] = None
                           ) -> 'KernelIntegral':
         """``int L(s) C(s) ds`` in closed form from the modes; see
@@ -2974,7 +3013,7 @@ def tree_modes(C0_entry, omega=None, *, values: Optional[dict] = None,
 # ── kernels and time-domain kernel integrals ────────────────────────────────
 
 @dataclass(frozen=True)
-class Kernel:
+class PairingKernel:
     """A kernel ``L(s) = sum coeff * s**power * exp(rate * s)`` over its
     terms, each on ``side`` 'positive' (s > 0) or 'negative' (s < 0).
     Terms are :class:`Mode` objects; coefficients and rates are real Sage
@@ -2990,21 +3029,21 @@ class Kernel:
 
     @classmethod
     def exponential(cls, amplitude, rate, side: str = 'positive',
-                    power: int = 0) -> 'Kernel':
+                    power: int = 0) -> 'PairingKernel':
         """``amplitude * s**power * exp(rate * s)`` on one side."""
         return cls((Mode(SR(amplitude), SR(rate), int(power), side),),
                    'exponential')
 
     @classmethod
-    def two_sided_exponential(cls, a_pos, tau_pos, a_neg, tau_neg) -> 'Kernel':
+    def two_sided_exponential(cls, a_pos, tau_pos, a_neg, tau_neg) -> 'PairingKernel':
         """``L(s) = a_pos e^{-s/tau_pos}`` (s > 0),
         ``a_neg e^{s/tau_neg}`` (s < 0)."""
         return cls((Mode(SR(a_pos), -1 / SR(tau_pos), 0, 'positive'),
                     Mode(SR(a_neg), 1 / SR(tau_neg), 0, 'negative')),
                    'two_sided_exponential')
 
-    def __add__(self, other: 'Kernel') -> 'Kernel':
-        return Kernel(tuple(self.terms) + tuple(other.terms),
+    def __add__(self, other: 'PairingKernel') -> 'PairingKernel':
+        return PairingKernel(tuple(self.terms) + tuple(other.terms),
                       self.name or other.name)
 
     def at_zero(self, side: str):
@@ -3029,6 +3068,11 @@ class Kernel:
     def expressions(self) -> list:
         return [SR(x) for t in self.terms for x in (t.coeff, t.rate)]
 
+
+
+#: Deprecated alias of :class:`PairingKernel` (renamed in audit W9: ``api.delay.Kernel`` is a
+#: different class, a delay/kernel *image* builder).  Kept so existing code works.
+Kernel = PairingKernel
 
 @dataclass
 class KernelIntegral:
@@ -3065,10 +3109,10 @@ def _kernel_assumption_items(kterms, ctx, ref_pt):
     return items
 
 
-def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
-    if not isinstance(kernel, Kernel):
-        raise SymbolicOutError('kernel must be a Kernel (Kernel.two_sided_exponential, '
-                               'Kernel.exponential, ...)')
+def _integrate_modes(ms: ModeSum, kernel: PairingKernel, values, contact):
+    if not isinstance(kernel, PairingKernel):
+        raise SymbolicOutError('kernel must be a PairingKernel (PairingKernel.two_sided_exponential, '
+                               'PairingKernel.exponential, ...)')
     if contact not in (None, 'exclude', 'positive', 'negative', 'mid'):
         raise SymbolicOutError(
             "contact must be None, 'exclude', 'positive', 'negative' or "
@@ -3216,7 +3260,7 @@ def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
                           roots=roots)
 
 
-def integrate_against(C0_entry, kernel: Kernel, omega=None, *,
+def integrate_against(C0_entry, kernel: PairingKernel, omega=None, *,
                       values: Optional[dict] = None,
                       reference: Optional[dict] = None,
                       contact: Optional[str] = None) -> KernelIntegral:

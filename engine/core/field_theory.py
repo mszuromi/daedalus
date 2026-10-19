@@ -28,7 +28,7 @@ from sage.all import (
     SR, PolynomialRing, factorial, QQ, latex,
     diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
 )
-from IPython.display import display, Math as _Math
+from engine.errors import DaedalusError
 
 
 def fourier_transform(f, t, s):
@@ -75,6 +75,7 @@ def fourier_transform(f, t, s):
 
 def _show(expr):
     """Display a SageMath expression or Conv/IP object as rendered LaTeX."""
+    from IPython.display import display, Math as _Math   # on use (SPD-06)
     display(_Math(latex(expr)))
 
 
@@ -255,7 +256,7 @@ def _expand_legacy_requested() -> bool:
     return False
 
 
-class DerivativeAtomTaylorError(Exception):
+class DerivativeAtomTaylorError(DaedalusError, Exception):
     """A derivative of an abstract function (``D[0](f)(x)``) in the action,
     in a place where Maxima's multivariate ``taylor()`` would truncate it
     (it stops ``k`` orders early on a ``k``-th derivative atom: ``taylor(
@@ -2207,7 +2208,8 @@ class FieldTheory:
 
     def _require_expanded(self):
         if self._by_tp is None:
-            raise RuntimeError("Call expand() first.")
+            raise RuntimeError(
+                "FieldTheory.expand() has not been run yet: the sectors, vertices and propagators are built by expand(); call it before reading them.")
 
     @staticmethod
     def _sector_label(n_t: int, n_p: int) -> str:

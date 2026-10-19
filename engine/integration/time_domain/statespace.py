@@ -215,6 +215,7 @@ from collections import OrderedDict
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = [
     'ENGINE_ENV', 'FALLBACK_ENV', 'engine_requested', 'engine_name',
@@ -348,7 +349,7 @@ def decline_reason_known(reason):
         str(reason).startswith(p) for p in DECLINE_PREFIXES)
 
 
-class SSIneligible(Exception):
+class SSIneligible(DaedalusError, Exception):
     """A subset (or model) the state-space route does not take; ``reason``
     is the counter key."""
 
@@ -357,7 +358,7 @@ class SSIneligible(Exception):
         super().__init__(f'{reason}: {detail}' if detail else reason)
 
 
-class SSLateRefusal(RuntimeError):
+class SSLateRefusal(DaedalusError, RuntimeError):
     """A routed subset's evaluation refused at call time (``reason``: the
     ``ss_fallback_by_reason`` key); the dispatch falls back to the pole
     route for that call (``FALLBACK_ENV``)."""
@@ -368,14 +369,14 @@ class SSLateRefusal(RuntimeError):
                          f'{ENGINE_ENV}=poles to use the pole routes')
 
 
-class SSNoPoleFallback(RuntimeError):
+class SSNoPoleFallback(DaedalusError, RuntimeError):
     """A routed subset was refused at call time and the pole route cannot
     take it: the subset has none (a kernel only this route realizes), or
     ``compute_cumulants`` skipped the pole-cluster deformation for the run
     (``ss_no_pole_fallback``).  Never silent: it raises."""
 
 
-class SwitchOnUnsupported(ValueError):
+class SwitchOnUnsupported(DaedalusError, ValueError):
     """A switch-on run (``compute_cumulants(t_min=...)``,
     :func:`switch_on_scope`) met a subset this route does not take, or one it
     refused at call time: such runs are computed on the state-space route
@@ -1343,33 +1344,71 @@ def _taylor_action(apply_A, mu, dnorms, x, t, min_terms=0):
     return F
 
 
+#: largest ``A`` whose ``||A^2||_1`` is formed exactly (n^3 flops, a few seconds
+#: at the limit; ``A`` is already held dense)
+_EXACT_NORM_N = 2000
+#: ``onenormest`` draws its start vectors from numpy's global RandomState: it
+#: is seeded for the call (and the state restored) so an estimate is reproducible
+_ONENORMEST_SEED = 20251018
+_ONENORMEST_LOCK = threading.Lock()
+
+
 def _onenorm_powers(A, pmax=_P_MAX + 1):
-    """``d_p = ||A^p||_1^{1/p}``, p = 1..pmax: exact for a small dense ``A``,
-    1-norm estimates (scipy ``onenormest``) for larger ones."""
+    """``d_p = ||A^p||_1^{1/p}``, p = 1..pmax: ``d_1`` exact, ``d_2`` exact for
+    a dense ``A`` up to ``_EXACT_NORM_N`` states (a seeded 1-norm estimate,
+    scipy ``onenormest``, beyond: the estimate draws random start vectors, so
+    unseeded it changed the Taylor parameters, and the last bits of the
+    values, from one identical run to the next), and ``d_p`` for p > 2 the
+    submultiplicative upper bound
+    ``||A^p|| <= min(||A||^p, ||A^2||^(p//2) ||A||^(p%2))`` (an upper bound is
+    what ``_taylor_params`` needs; the seven further powers or estimates were
+    about half of a state-space run, audit SPD-03)."""
     d = {1: float(np.abs(A).sum(axis=0).max()) if A.size else 0.0}
     n = A.shape[0]
-    if n <= 300:
-        P = A
-        for p in range(2, pmax + 1):
-            P = P @ A
-            d[p] = float(np.abs(P).sum(axis=0).max()) ** (1.0 / p)
-        return d
-    from scipy.sparse.linalg import LinearOperator, onenormest
-    AT = A.conj().T
-    for p in range(2, pmax + 1):
-        def mv(v, p=p):
-            for _ in range(p):
-                v = A @ v
-            return v
-
-        def rmv(v, p=p):
-            for _ in range(p):
-                v = AT @ v
-            return v
-        op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
-                            matmat=mv, rmatmat=rmv, dtype=A.dtype)
-        d[p] = float(onenormest(op)) ** (1.0 / p)
+    if pmax >= 2:
+        if n <= _EXACT_NORM_N:
+            d[2] = float(np.abs(A @ A).sum(axis=0).max()) ** 0.5
+        else:
+            d[2] = _onenormest_power(A, 2)
+    for p in range(3, pmax + 1):
+        n1, n2 = d[1] ** p, d[2] ** (2 * (p // 2)) * d[1] ** (p % 2)
+        d[p] = min(n1, n2) ** (1.0 / p)
     return d
+
+
+def _seeded_onenormest(op):
+    """scipy ``onenormest(op)`` with numpy's global RandomState seeded for the
+    call (and restored after): reproducible, and the caller's stream is
+    untouched."""
+    from scipy.sparse.linalg import onenormest
+    with _ONENORMEST_LOCK:
+        state = np.random.get_state()
+        np.random.seed(_ONENORMEST_SEED)
+        try:
+            return float(onenormest(op))
+        finally:
+            np.random.set_state(state)
+
+
+def _onenormest_power(A, p):
+    """scipy ``onenormest`` of ``A^p`` (matrix-free powers), as ``d_p``."""
+    from scipy.sparse.linalg import LinearOperator
+    n = A.shape[0]
+    AT = A.conj().T
+
+    def mv(v):
+        for _ in range(p):
+            v = A @ v
+        return v
+
+    def rmv(v):
+        for _ in range(p):
+            v = AT @ v
+        return v
+    op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
+                        matmat=mv, rmatmat=rmv, dtype=A.dtype)
+    est = _seeded_onenormest(op)
+    return est ** (1.0 / p)
 
 
 # ─── geometry ─────────────────────────────────────────────────────────────
@@ -1534,7 +1573,7 @@ class _Segment:
         ``expm_multiply`` does; a crude bound for every p would cost ~60x
         more steps on a graded realization."""
         if self._dnorms_free is None:
-            from scipy.sparse.linalg import LinearOperator, onenormest
+            from scipy.sparse.linalg import LinearOperator
             mu = self.trace() / self.D if self.D else 0.0
             if self.sub.model.is_real:
                 mu = float(np.real(mu))
@@ -1572,7 +1611,7 @@ class _Segment:
                 op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
                                     matmat=mv, rmatmat=rmv, dtype=dt)
                 try:
-                    dn[p] = min(nrm, float(onenormest(op)) ** (1.0 / p))
+                    dn[p] = min(nrm, _seeded_onenormest(op) ** (1.0 / p))
                 except Exception:
                     dn[p] = nrm
             self._dnorms_free = (mu, dn)
@@ -2581,6 +2620,7 @@ class SubsetSS:
         fixed segments), from ``seg_from``'s stacked space to ``seg_to``'s:
         one run per basis vector (``me_chain``)."""
         n_ev = sum(1 for k_, _d in prog[:i_from + 1] if k_ == 'event')
+        _check_dense_map(seg_to.D, seg_from.D)
         M = np.zeros((seg_to.D, seg_from.D), dtype=complex)
         for qb in range(seg_from.D):
             e = np.zeros(seg_from.D, dtype=dt)
@@ -3023,6 +3063,27 @@ def _check_transient(sub, acts):
             {'bytes': nbytes, 'states': D, 'budget_bytes': budget})
 
 
+def _check_dense_map(d_to, d_from):
+    """Refuse (``PhaseJResourceError``) a dense ``d_to x d_from`` complex map
+    of a C0 chain output (``_between``) larger than the budget,
+    before it is allocated (uncharged above ``OP_DENSE_MAX`` states: 6.4 GB
+    at D = 2e4; audit MEM-07)."""
+    FI = _FI()
+    with FI._PLAN_MEM_LOCK:
+        _scoped, budget, rule, _used = FI._budget_now()
+    nbytes = 16 * int(d_to) * int(d_from)
+    if budget is None or nbytes <= budget:
+        return
+    raise FI.PhaseJResourceError(
+        f'Phase J memory budget exceeded: the dense map between two moving '
+        f'segments of a chain output ({int(d_to):,} x {int(d_from):,} '
+        f'states) needs {FI._fmt_gb(nbytes)}, over the budget of '
+        f'{FI._fmt_budget(budget, rule)}.  Nothing was allocated for it.  '
+        f'Options: {FI._BUDGET_HOW}.',
+        {'bytes': nbytes, 'states': (int(d_to), int(d_from)),
+         'budget_bytes': budget})
+
+
 def _charge(sub):
     """Charge the subset's stationary-state bytes against the memory pre-pass's running
     budget (``PHASE_J_MEM_BUDGET_GB``) before anything is allocated."""
@@ -3400,6 +3461,10 @@ def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
     for (_u, _v, n, _dl) in edges:
         prod_n *= max(n, 1)
     n_sub = 2 ** len(didx)
+    # a stateless delta line (n == 0) is never kept smooth (``_contract``:
+    # that subset is never built), so only the delta lines with states
+    # double the subsets built (audit MEM-05: 2^k over-estimate since #38)
+    n_sub_built = 2 ** sum(1 for i in didx if edges[i][2] > 0)
     cheap_stat = (2 ** n_int) * prod_n
     if (cheap_stat * item <= PREPASS_CHEAP_BYTES
             or len(didx) > PREPASS_MAX_DELTA_EDGES):
@@ -3410,7 +3475,7 @@ def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
                 nv, leaf_mask, [(u, v, max(n, 1)) for (u, v, n, _d) in edges])
         D = full_sum
         Dd = min(D, OP_DENSE_MAX)
-        out = (n_sub * (stat_sum * item + prefetch),
+        out = (n_sub_built * (stat_sum * item + prefetch),
                6 * D * item + 2 * Dd * Dd * item)
     else:
         stat = 0

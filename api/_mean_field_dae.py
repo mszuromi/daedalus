@@ -29,6 +29,7 @@ import numpy as np
 from scipy.optimize import root as _scipy_root
 
 from engine.core.dt_order import NonlinearDtError
+from engine.errors import DaedalusError
 
 # Residual value where an equation cannot be evaluated (overflow, log of a
 # negative number, ...).  Far above any physical residual in any units (the
@@ -1913,7 +1914,7 @@ def linear_stability(
     }
 
 
-class UnstableSaddleError(ValueError):
+class UnstableSaddleError(DaedalusError, ValueError):
     """The selected mean-field saddle is linearly unstable: there is no
     stationary state around it to expand about."""
 
