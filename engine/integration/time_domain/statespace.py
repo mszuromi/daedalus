@@ -2833,7 +2833,8 @@ def _warn_outside_run(reason):
     census: warn once per process and reason (never silent)."""
     FI = _FI()
     with FI._PLAN_MEM_LOCK:
-        inside = FI._PLAN_MEM['active'] > 0
+        inside = (FI._PLAN_MEM['active'] > 0
+                  and not FI._PLAN_MEM.get('resumed', False))
     if inside or reason in _WARNED_OUTSIDE:
         return
     _WARNED_OUTSIDE.add(reason)

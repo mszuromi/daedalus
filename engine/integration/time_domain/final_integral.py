@@ -1118,9 +1118,19 @@ class _ResumedRunCallable:
         label = f'{self._label}({pt})' + (f' of {what}' if what else '')
         with run_growth_scope(what=label, budget=budget, rule=rule, fp0=fp0), \
                 phase_j_memory_scope(budget=budget, rule=rule, use_env=False,
-                                     what=label):
-            growth_guard(f'the start of {self._label}({pt})')
-            return self._fn(*args, **kwargs)
+                                     what=label) as scope:
+            if scope._outer:
+                # not a compute_cumulants run: its fallbacks are not in a
+                # run's census (statespace._warn_outside_run warns)
+                with _PLAN_MEM_LOCK:
+                    _PLAN_MEM['resumed'] = True
+            try:
+                growth_guard(f'the start of {self._label}({pt})')
+                return self._fn(*args, **kwargs)
+            finally:
+                if scope._outer:
+                    with _PLAN_MEM_LOCK:
+                        _PLAN_MEM['resumed'] = False
 
     def __getattr__(self, name):
         fn = self.__dict__.get('_fn')
