@@ -47,7 +47,8 @@ that reaches the fallback; flip the flag only when every case fails as an unexpe
 
 A model is a `models/<name>.model.py` file that builds a model dict with
 `TemporalModelBuilder` / `SpatialModelBuilder` — see
-[`notebooks/model_builder_tutorial.ipynb`](notebooks/model_builder_tutorial.ipynb) and
+[`notebooks/tutorials/06_actions_by_hand.ipynb`](notebooks/tutorials/06_actions_by_hand.ipynb),
+[`notebooks/legacy/model_builder_tutorial.ipynb`](notebooks/legacy/model_builder_tutorial.ipynb) and
 `api/model.py`. It must expose `build()`, `DEFAULT_FUNDAMENTAL`, and `METADATA`. Load it with
 `dd.load_model('<name>')`; it then appears in `dd.list_models()`. Confirm it runs at its own
 defaults (`dd.run(*dd.load_model('<name>'))`) before committing — a shipped model that fails

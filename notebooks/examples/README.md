@@ -1,12 +1,13 @@
 # Example notebooks
 
-Eight curated examples, each headlining **one** capability of the pipeline and together spanning
+Curated examples, each headlining **one** capability of the pipeline and together spanning
 its range — temporal SDEs to spatial SPDEs, single- to multi-field, and Gaussian / colored /
 correlated / point-process noise.
 
 Each example follows the same three steps:
 
-1. **The model** — `dd.load_model(...)` + `dd.describe_model(...)` print the structure.
+1. **The model** — `dd.load_model(...)` + `dd.describe_model(...)` print the structure (the delay
+   examples declare their model inline with the SDE front end, `api.sde.SDE`, and print it with `show()`).
 2. **The pipeline → cumulants** — one `dd.run(...)` drives the chain (enumerate → propagator →
    mean-field → loop integrals → cumulant); the plot is the model alone.
 3. **Independent simulation** — a from-scratch simulator overlaid on the pipeline curve as an
@@ -23,6 +24,9 @@ They are split into [`SDE/`](SDE) (temporal — SDEs / point processes) and [`SP
 | [`OU_quartic_correlated_colored`](SDE/OU_quartic_correlated_colored.ipynb) | Two coupled OU fields with **correlated, colored** noise — Markovian embedding of a finite-τc cross-correlated drive; nonzero cross-correlator. |
 | [`Hawkes_quadratic_alpha`](SDE/Hawkes_quadratic_alpha.ipynb) | A nonlinear **Hawkes point process** with an α-function synaptic kernel (a rise-then-decay convolution). |
 | [`Dendritic_nonlinear`](SDE/Dendritic_nonlinear.ipynb) | Two-compartment neuron — quadratic soma + sigmoidal (probabilistic) dendrite; a non-Markovian multi-field DAE. |
+| [`Delayed_OU`](SDE/Delayed_OU.ipynb) | A **hard delay** in the drift, `x(t - d)`: exact tree, Padé loops with the automatic order. |
+| [`Delayed_product`](SDE/Delayed_product.ipynb) | A delay **inside a nonlinear term**, `x*x(t - d)`: (n, n) Padé loops with a direct term at the delayed leg; mean and `C(τ)`. |
+| [`Hawkes_delayed_alpha`](SDE/Hawkes_delayed_alpha.ipynb) | Two **point processes** coupled through **delayed alpha kernels** (`Kernel.delay(d) * Kernel.alpha(τ)`); cross-covariance. |
 
 ## Spatial (SPDE)
 
@@ -45,6 +49,7 @@ simulator serves all three OU notebooks.
 | `OU_quartic_correlated_colored` | `ou_quartic_two_dim_color_corr` | `ou_langevin_sim_numba` |
 | `Hawkes_quadratic_alpha` | `quadratic_hawkes_alpha` | `hawkes_sim_multipop_numba` |
 | `Dendritic_nonlinear` | `dendritic_quad_soma_sigmoid` | `dendritic_quad_sigmoid_sim_numba` |
+| `Delayed_OU`, `Delayed_product`, `Hawkes_delayed_alpha` | inline (`SDE(...)`) | inline numba simulator |
 | `Allen_Cahn_phi4` | `allen_cahn_1d_subcritical_infinite` | `spatial_field_1d_sim` |
 | `RD_2D` | `reaction_diffusion_2d` | `spatial_field_2d_sim` |
 | `RD_2_species` | `coupled_rd_2species_1d` | `coupled_rd_1d_sim` |
@@ -56,5 +61,9 @@ simulator serves all three OU notebooks.
 - **Connected cumulants.** The pipeline produces *connected* correlators; the simulator cells
   subtract the mean where it is nonzero before comparing.
 - **Speed.** Simulations use reduced Monte-Carlo / SPDE settings so each notebook runs in
-  roughly 10–60 s — showcases, not precision benchmarks. `numba` is required for the simulation
+  roughly 10–60 s (`Hawkes_delayed_alpha`: about five minutes) — showcases, not precision benchmarks. `numba` is required for the simulation
   cells (see the top-level [README](../../README.md)).
+
+- **Models written as SDEs.** The earlier examples load models written as hand-written actions
+  (`models/*.model.py`); the same models can be declared with the SDE front end (see the
+  [tutorials](../tutorials/)), which derives the identical action.
