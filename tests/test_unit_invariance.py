@@ -234,24 +234,56 @@ def _rotation(T):
             .noise('eta', Gaussian(var=r(0.3)), couples={'y': 1}).build())
 
 
+_ROT_TAUS = np.array([0.0, 0.3, 1.1, 2.9])
+_ROT_EXT = ((('x', 1), ('x', 1)), (('y', 1), ('x', 1)))
+
+
+def _rotation_runs(T, engine):
+    import engine.integration.time_domain.statespace as SS
+    import os
+    old = os.environ.get(SS.ENGINE_ENV)
+    if engine is None:
+        os.environ.pop(SS.ENGINE_ENV, None)
+    else:
+        os.environ[SS.ENGINE_ENV] = engine
+    SS._clear_caches()
+    try:
+        return {ext: _cc(_rotation(T), ell=1, ext=ext, taus=_ROT_TAUS * T) for ext in _ROT_EXT}
+    finally:
+        if old is None:
+            os.environ.pop(SS.ENGINE_ENV, None)
+        else:
+            os.environ[SS.ENGINE_ENV] = old
+        SS._clear_caches()
+
+
 @pytest.fixture(scope='module')
 def rotation():
-    taus = np.array([0.0, 0.3, 1.1, 2.9])
-    return {ext: _cc(_rotation(1.0), ell=1, ext=ext, taus=taus)
-            for ext in ((('x', 1), ('x', 1)), (('y', 1), ('x', 1)))}, taus
+    return {eng: _rotation_runs(1.0, eng) for eng in (None, 'poles')}
 
 
-@pytest.mark.parametrize('T', (1e-12, 1e-9, 1e3))
-def test_rotation_time_twin(rotation, T):
-    """Rates 1e12 returned C(0) at every lag below 1e-12 (absolute tau = 0
-    tie, status ok).  (Slower twins also need the pole route's retarded
-    filter and the closed-form routes' error estimates to be relative: added
-    with those fixes.)"""
-    base, taus = rotation
+@pytest.mark.parametrize('engine', (None, 'poles'))
+@pytest.mark.parametrize('T', (1e-12, 1e-9, 1e-6, 1e3, 1e6, 1e9, 1e12))
+def test_rotation_time_twin(rotation, T, engine):
+    """Every rate divided by ``T``, on both engines: the same values, the same
+    analyzer codes (no INTERNAL_ERROR), and the run's accuracy estimate (G6
+    R) within a constant factor of T = 1's.  Before: rates 1e12 returned C(0)
+    at every lag below 1e-12 (absolute tau = 0 tie, status ok); the
+    state-space route's estimate grew with T (R = 6e-10 at T = 1e6: a false
+    G6_ACCURACY_LOW; 8e-3 at 1e12; its resolvent residual was normwise); at
+    T = 1e12 the G5 regime gate raised (absolute pole rounding, then a
+    division by zero) and was skipped as INTERNAL_ERROR."""
+    base = rotation[engine]
+    twins = _rotation_runs(T, engine)
     for ext, b in base.items():
-        twin = _cc(_rotation(T), ell=1, ext=ext, taus=taus * T)
+        twin = twins[ext]
+        assert 'INTERNAL_ERROR' not in _codes(twin)
         assert _codes(twin) == _codes(b)
         _assert_twin(b, twin, 1.0, 1e-13)
+        r0 = b['analysis'].diagnostics['accuracy_estimate']
+        r1 = twin['analysis'].diagnostics['accuracy_estimate']
+        assert r0 is not None and r1 is not None
+        assert r0 / 10 <= r1 <= 10 * r0, (r0, r1)
 
 
 def _spiking(s):

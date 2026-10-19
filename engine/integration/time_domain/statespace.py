@@ -1150,6 +1150,18 @@ class _SolveData:
             out = out + _mode(y, e.a, ax)
         return out
 
+    def apply_absM(self, ay):
+        """``|⊕ a_e| |y|`` (entrywise magnitudes): the size of the terms
+        that ``apply_M`` sums, per entry (the scale of its round-off)."""
+        ay = np.abs(ay)
+        if self.nontriv and self.size <= DENSE_SOLVE_MAX:
+            M = self._dense_ops()[3]
+            return (np.abs(M) @ np.ravel(ay)).reshape(self.shape)
+        out = abs(self.scalar) * ay
+        for ax, e in self.nontriv:
+            out = out + _mode(ay, np.abs(e.a), ax)
+        return out
+
     def _solve_once(self, r):
         if self.nontriv and self.size <= DENSE_SOLVE_MAX:
             U, Uh, T, _M = self._dense_ops()
@@ -1220,17 +1232,20 @@ class _SolveData:
 
     def solve_neg(self, r, want_residual=False):
         """``y`` with ``(⊕ a_e) y = -r``, i.e. ``y = (-M)^{-1} r``.  With
-        ``want_residual``: ``(y, rho)``, ``rho`` the relative residual
-        ``|r + M y|_inf / |r|_inf`` of the returned ``y`` (G6's estimate)."""
+        ``want_residual``: ``(y, rho)``, ``rho`` the componentwise relative
+        residual ``max_i |r + M y|_i / (|M| |y| + |r|)_i`` of the returned
+        ``y`` (G6's estimate; unit free: a normwise ``|r + M y| / |r|``
+        compared entries of different powers of the time unit and grew
+        linearly with it)."""
         _count('ss_resolvent_solves')
         y = self._solve_once(r)
         if not self.unitary or REFINE_STEPS <= 0:
             if not want_residual:
                 return y
-            rn = float(np.abs(-r - self.apply_M(y)).max()) if y.size else 0.0
-            return y, _rel_res(rn, r)
+            res = -r - self.apply_M(y)
+            return y, self._rel_res(res, r, y)
         res = -r - self.apply_M(y)
-        best, rbest = y, float(np.abs(res).max())
+        best, bres, rbest = y, res, float(np.abs(res).max())
         for _ in range(REFINE_STEPS):
             if rbest == 0.0:
                 break
@@ -1240,13 +1255,19 @@ class _SolveData:
             _count('ss_refinements')
             if not rn < rbest:
                 break
-            best, rbest = y, rn
-        return (best, _rel_res(rbest, r)) if want_residual else best
+            best, bres, rbest = y, res, rn
+        return (best, self._rel_res(bres, r, best)) if want_residual else best
 
-
-def _rel_res(rn, r):
-    rm = float(np.abs(r).max()) if np.size(r) else 0.0
-    return rn / rm if rm > 0 else (0.0 if rn == 0 else math.inf)
+    def _rel_res(self, res, r, y):
+        """``max_i |res_i| / (|M| |y| + |r|)_i`` (0/0 counts as 0)."""
+        if not np.size(res):
+            return 0.0
+        ares = np.abs(res)
+        scale = self.apply_absM(y) + np.abs(r)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            q = np.where(ares == 0, 0.0, ares / scale)
+        out = float(np.max(q))
+        return out if math.isfinite(out) else math.inf
 
 
 # ─── the error estimate's per-evaluation accumulators (G6) ────────────────
