@@ -1652,13 +1652,16 @@ def test_phase_J_fork_guard_macos_never_forks(monkeypatch):
     monkeypatch.setattr(fs, '_WARNED', set())
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
+        auto = j_result['total_C_batch'](tau_points, parallel=True,
+                                         n_workers=8)
         guarded = j_result['total_C_batch'](tau_points, parallel=True,
-                                            n_workers=8)
+                                            n_workers=8, start_method='fork')
         guarded_pd, _ = j_result['eval_per_diagram_batch'](
-            tau_points, parallel=True, n_workers=8)
+            tau_points, parallel=True, n_workers=8, start_method='fork')
     msgs = [str(r.message) for r in rec if 'disabled on macOS' in str(r.message)]
+    # the automatic method never asks for fork; an explicit 'fork' warns once
     assert len(msgs) == 1 and msgs[0].startswith('Phase J parallel batch')
-    assert guarded == serial and guarded_pd == serial_pd
+    assert auto == guarded == serial and guarded_pd == serial_pd
 
 
 def test_phase_J_parallel_kill_switch(monkeypatch):
