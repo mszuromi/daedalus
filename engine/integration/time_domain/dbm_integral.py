@@ -88,7 +88,7 @@ the caller integrates the region another way.  ``scale`` (``integral_scale``)
 is the integrand's scale times a volume, ``Σ_t |C_t| e^{Re E_t} · ∏_v min(w_v,
 T)`` with ``T = 1 / max_{t,v} |β_tv|`` the time unit of the fastest exponent
 and ``w_v`` the region's extent along ``s_v``: units [integrand]·[time]^m,
-like the integral, so the verdict is the same in every time unit (audit W4b, ACC-64: without ``T^m`` the same integral flipped
+like the integral, so the verdict is the same in every time unit (without ``T^m`` the same integral flipped
 ill_conditioned -> ok when time was rescaled, the ratio scaling as λ^-m; the
 caller's Σ|C| also lacked e^{Re E}, so an ill-conditioned closed form in a
 correlator tail, e^{Re E} << 1, passed and skipped its mp retry).  With all

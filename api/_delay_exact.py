@@ -275,7 +275,7 @@ def _balanced_state(ss):
     covariance ``C_z C C_z^T`` is unchanged).  Fields in very different units
     make the state covariance entries span the squared unit ratio; in the
     balanced coordinates the boundary-value problem and the exponentials
-    see O(1) entries (audit 3B-02)."""
+    see O(1) entries."""
     n = ss.A.shape[0]
     if n == 0:
         return ss
@@ -379,7 +379,7 @@ class ExactTree:
             # terms dropped; with W = 0 the noise never enters Phi @ Y0).
             # The Jacobian below is built from it EXACTLY: as resid(e) -
             # resid(0) it cancelled the O(N) constant (field scale squared)
-            # and lost 8e-6 relative at a field scale of 1e6 (audit 3B-02)
+            # and lost 8e-6 relative at a field scale of 1e6
             U0 = x[:n * n].reshape(n, n)
             V0 = x[n * n:].reshape(n, n)
             W1, W2 = (W1_0, W2_0) if affine else (0.0 * W1_0, 0.0 * W2_0)

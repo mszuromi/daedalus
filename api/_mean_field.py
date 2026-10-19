@@ -1,7 +1,7 @@
 """
 Mean-field front door: parameter completion, the kernel values at the
 saddle, and :func:`solve_mean_field`, which hands every model to the one
-multi-root solver in :mod:`api._mean_field_dae` (audit GEN-01/GEN-02: the
+multi-root solver in :mod:`api._mean_field_dae` (the
 former flat-population branch read the names ``nstar``/``vstar``/``E``/``g``
 and the single-root iteration started from four fixed unit-scale guesses).
 """

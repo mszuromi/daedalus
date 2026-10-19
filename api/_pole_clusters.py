@@ -37,8 +37,8 @@ only a close pair (``CLUSTER_RTOL``) or a repeated root triggers the exact
 high-precision analysis, and only a cluster whose cancellation factor
 ``kappa`` exceeds ``KAPPA_MAX`` (or a repeated root) is deformed.  Models
 without such a cluster take exactly the old path.  (The switch
-``DAEDALUS_POLE_CLUSTERS=0``, which turned the deformation off, was retired
-in audit W7: set, it warns once and is ignored.)
+``DAEDALUS_POLE_CLUSTERS=0``, which turned the deformation off, was retired:
+set, it warns once and is ignored.)
 """
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ class PoleClusterWarning(UserWarning):
 from engine import _env                                     # noqa: E402
 
 _env.retired('DAEDALUS_POLE_CLUSTERS',
-             'the near-degenerate pole deformation is always on (audit W7)')
+             'the near-degenerate pole deformation is always on')
 
 
 def has_close_pair(poles, rtol=None):
@@ -270,7 +270,7 @@ class ClusterAnalysis:
     (deformation built), 'unresolved' (needed but not possible: the 50-digit
     residues, or the old path for a repeated pole; a warning above
     ``LOST_DIGITS_WARN``).  ('disabled', the deformation switched off, was
-    retired in audit W7.)
+    retired.)
     ``nominal``: (pole_vals, C_mats) at w = 0, residues to 50 digits (at a
     repeated root the Laurent 1/(lambda - rho) coefficient only)."""
     status: str
@@ -323,7 +323,7 @@ def analyze(G_ft_F, Q_poly, nf, tau_max=None):
         if sum(mult_Q) != Qh.degree():
             raise ArithmeticError('coprime base does not account for Q')
         # retarded: decaying beyond the 50-digit roots' own accuracy, per
-        # root (audit W4b, ACC-65: an absolute -1e-9 dropped a stable mode
+        # root (an absolute -1e-9 dropped a stable mode
         # slower than 1e-9; a floor relative to the largest root would drop
         # it next to a far root); an exact zero root is marginal
         # an exact zero root: the root nearest 0 of a factor with no

@@ -76,7 +76,7 @@ one is active.  The two agree to rounding (FMA contraction and libm
 differences), not bit for bit.
 
 Phase J evaluates every closed form here, through ``boxfree`` (M7; since
-audit W7 the only route: the switches ``final_integral.CHAIN_UPPERS_KERNEL``
+now the only route: the switches ``final_integral.CHAIN_UPPERS_KERNEL``
 and ``USE_PHASE_J_DD_KERNELS``, which selected the pre-0.2.0 chain-simplex
 and boxed routines, were retired).
 """
@@ -582,7 +582,7 @@ def triangle_log(v0, v1, v2, alpha, beta, gamma=0j):
 def triangle(v0, v1, v2, alpha, beta, gamma=0j):
     """``int_T exp(alpha x + beta y + gamma) dA``; ``None`` only if the
     result itself overflows (no bail on a large exponent, unlike the
-    pre-0.2.0 ``final_integral._exp_over_triangle``, retired in audit W7)."""
+    pre-0.2.0 ``final_integral._exp_over_triangle``, retired)."""
     return _finish(*triangle_log(v0, v1, v2, alpha, beta, gamma))
 
 
@@ -679,7 +679,7 @@ def chain_with_uppers_log(alphas_chain, L, upper_per_position, U_chain_top):
     """``(status, log_scale, mant)`` for the chain integral with scalar
     uppers at arbitrary positions -- the quantity of the pre-0.2.0
     ``final_integral._chain_with_intermediate_uppers_uncached`` (retired in
-    audit W7), with the same argument conventions:
+    retired), with the same argument conventions:
 
     * ``upper_per_position[k]`` bounds chain position ``k`` (0-indexed);
       keys outside ``0..m-1`` are ignored and a ``None`` value is absent;

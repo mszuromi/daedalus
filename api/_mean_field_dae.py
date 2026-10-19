@@ -61,7 +61,7 @@ _MATH_NS = {
 }
 
 # The mean of a library noise (CGMY, tempered stable, ...) with a symbolic
-# exponent carries Gamma functions (audit LOUD-02: NameError 'factorial' in
+# exponent carries Gamma functions (NameError 'factorial' in
 # the saddle solve).  Placed BEFORE the model's names in every namespace: a
 # parameter called ``gamma`` keeps its value.
 _SPECIAL_NS = {'gamma': _gamma, 'factorial': _factorial}
@@ -629,7 +629,7 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
 # Every criterion below is relative (to the root, to the row's own linear
 # scale, or to the root's own error estimate): rescaling a field or the time
 # unit rescales the roots and the residual rows but leaves the verdicts, the
-# root set and the selected root unchanged (audit UNIT-02).
+# root set and the selected root unchanged.
 
 #: A converged point is a root when every residual row satisfies
 #: ``|R_k| <= _ROOT_RTOL * sum_j |J_kj| w_j`` (``J``: a finite-difference
@@ -643,7 +643,7 @@ _ROOT_RTOL = 1e-7
 #: (a zero has no scale of its own).
 _ZERO_FLOOR = 1e-8
 #: Chord-Newton refinement steps after the hybrid solve (hybr stops at a
-#: relative step ~1.5e-8, leaving saddles accurate to ~1e-11 only: ACC-21).
+#: relative step ~1.5e-8, leaving saddles accurate to ~1e-11 only).
 _REFINE_STEPS = 8
 #: Linear stability: ``Re sigma < -_EIG_RTOL * r`` for every mode, ``r`` the
 #: model's fastest rate (``_rate_scale``).
@@ -1148,7 +1148,7 @@ def solve_mean_field_dae(
     ``.set_mf_equation(saddle, rhs)`` instead, the saddle equations
     ``saddle - rhs = 0`` (read from ``model['mf_bg_conditions'](ns)``; needs
     the FieldTheory namespace ``ns``).  Every model gets the same multi-root
-    search (audit GEN-02: the second form used a separate single-root
+    search (the second form used a separate single-root
     iteration from four fixed unit-scale guesses).
 
     Parameters
@@ -1225,7 +1225,7 @@ def solve_mean_field_dae(
         # compound saddle (a voltage, often negative, with no declared
         # domain) then neither enters the seed box nor the root order, and a
         # model written with or without its voltage selects the same root
-        # (audit W6).  The full system otherwise, or when this finds none.
+        # The full system otherwise, or when this finds none.
         system = None
         if _reduced is not False:
             system = _saddle_system(model, fundamental, ns, reduced=True)
@@ -1285,7 +1285,7 @@ def solve_mean_field_dae(
     # basin, e.g. the middle root of a cubic, can be missed there)
     # ... repeated for the root scales a pass discovers (a box at one
     # root's scale can reach a root of another scale whose basin the first
-    # boxes miss; audit W6: an exactly rescaled cubic lost its largest root),
+    # boxes miss: an exactly rescaled cubic lost its largest root),
     # each scale boxed once, at most _RESCALE_ROUNDS rounds
     n_mirror = len(seeds)
     used = set()
@@ -1308,8 +1308,8 @@ def solve_mean_field_dae(
         # fields that declare no domain; the roots they reach are selectable
         # like any other.  (They were only reported: a negative root was
         # selectable when a seed happened to overshoot to it, which depends
-        # on the field's units -- an exactly rescaled cubic lost a root;
-        # audit W6.)  Not the second-pass boxes: their roots are reached
+        # on the field's units -- an exactly rescaled cubic lost a root.)
+        # Not the second-pass boxes: their roots are reached
         # from seeds that are mirrored already.
         run(mirrored(seeds[:n_mirror]), mirror_points)
         cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
@@ -1426,7 +1426,7 @@ def solve_mean_field_dae(
         # come first
         # (each group nearest to 0 first): the default fixed_point_index = 0 is then a
         # stable root whenever one exists, whatever the roots' order on the
-        # axis (audit W6: the units decided which root was found, and so
+        # axis (the units decided which root was found, and so
         # which one index 0 was).
         stable_first = set()
         if model.get('equations') and len(deduped) > 1:

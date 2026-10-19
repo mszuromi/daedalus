@@ -882,7 +882,7 @@ def _save_v2_best_effort(root, k, ell, certs, cert_backend=None,
     written (read-only mount, no permission) must not fail the run that
     already holds the data.  ``copy_from``: a compressed shipped file, copied
     as it is (re-pickling it uncompressed put 38 MB of (2,4) into every
-    working directory; audit RED-11)."""
+    working directory)."""
     try:
         if copy_from is not None:
             dest = v2_path(root, k, ell)
@@ -1008,7 +1008,7 @@ def _load_guard(k, ell, n):
     ``n``: the class count when known (the cert set is in hand), else the
     manifests' count or an extrapolation (none: no check).  Raises
     :class:`engine.integration.time_domain.final_integral.PhaseJResourceError`
-    (audit MEM-01)."""
+   ."""
     if n is None:
         n, how = estimate_class_count(k, ell)
         if n is None:

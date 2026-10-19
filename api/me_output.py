@@ -1,7 +1,7 @@
 """
 api.me_output
 =============
-C0 output (state-space stage S4): the smooth part of a computed cumulant as
+C0 output (state-space route): the smooth part of a computed cumulant as
 **matrix-exponential triples**, with the exponential-mode list derived from
 them on request.
 
@@ -89,7 +89,7 @@ MAX_DENSE_TOTAL = 20000
 #: memory budget (``PHASE_J_MEM_BUDGET_GB``, default ``default_mem_budget``)
 #: in all; beyond it a form is rebuilt on demand (one frequency of
 #: ``spectrum_smooth`` on a 3-field one-loop result cached 5 GB of them under
-#: a 4 GB budget, audit MEM-03)
+#: a 4 GB budget)
 FORM_CACHE_BUDGET_FRACTION = 0.5
 _FORM_CACHE = {'bytes': 0}
 _FORM_CACHE_LOCK = __import__('threading').Lock()
@@ -97,7 +97,7 @@ _FORM_CACHE_LOCK = __import__('threading').Lock()
 
 def _check_dense_bytes(nbytes, what):
     """Refuse (``PhaseJResourceError``) a dense form of ``nbytes`` larger than
-    the memory budget before it is allocated (audit MEM-09)."""
+    the memory budget before it is allocated."""
     from engine.integration.time_domain import final_integral as FI
     budget, rule = FI.mem_budget('PHASE_J_MEM_BUDGET_GB')
     if budget is None or nbytes <= budget:
@@ -564,7 +564,7 @@ def _decomp_put(key, hit):
     """Cache a segment decomposition: at most 256 entries and, in bytes,
     ``FORM_CACHE_BUDGET_FRACTION`` of the memory budget (each holds two
     dense ``n x n`` transformations; by count alone 256 of them could be
-    tens of GB, audit MEM-09).  A full cache is cleared; an entry larger
+    tens of GB).  A full cache is cleared; an entry larger
     than the whole allowance is not cached."""
     from engine.integration.time_domain.final_integral import mem_budget
     _seg, S, Si, cl, _cond = hit
@@ -759,7 +759,7 @@ class SideME:
             raise ValueError('u = |τ| must be finite and >= 0')
         # beyond a finite chamber the blocks' segment lengths go negative
         # (clamped to 0): the value would be another chamber's order of the
-        # external times (audit G2-outputs 1).  Rounding slack 1e-12.
+        # external times.  Rounding slack 1e-12.
         if math.isfinite(self.u_max) and np.any(
                 u > self.u_max + 1e-12 * max(1.0, self.u_max)):
             raise ValueError(
@@ -1565,7 +1565,7 @@ def _global_reasons(result, FI):
     if name in st and str(getattr(FI, name, '<absent>')) != st[name]:
         out.append(f'{name} changed since the run ({st[name]} -> '
                    f'{getattr(FI, name, "<absent>")})')
-    # a result made before the 'legacy_clip' mode was retired (audit W7)
+    # a result made before the 'legacy_clip' mode was retired
     if st.get('THETA0_CONST_ROW_MODE') == 'legacy_clip':
         out.append("THETA0_CONST_ROW_MODE='legacy_clip'")
     if int((result.get('phase_j_engine') or {}).get('fallback_evals') or 0):
@@ -1887,8 +1887,7 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     if len(base) != k - 1:
         raise ValueError(f'base must have k-1 = {k - 1} entries')
     if not all(math.isfinite(b) for b in base):
-        # (the inverted comparison below sent a NaN to the left limit;
-        # audit G2-outputs 3)
+        # (the inverted comparison below sent a NaN to the left limit)
         raise ValueError(f'base lags must be finite, got {base}')
     pinned = {leg: (-eps if abs(b) <= 1e-12 else b)
               for leg, b in zip(range(1, k), base) if leg != j}
