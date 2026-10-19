@@ -216,6 +216,8 @@ from collections import OrderedDict
 import numpy as np
 import scipy.linalg as sl
 
+from engine.integration.time_domain import _light
+
 __all__ = [
     'ENGINE_ENV', 'FALLBACK_ENV', 'engine_requested', 'engine_name',
     'subset_maker', 'SubsetSS', 'realization_for', 'tau_grid_prefetch',
@@ -501,7 +503,7 @@ _COUNTER_DICTS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 
 
 def _counters():
-    C = _FI()._RUNTIME_COUNTERS
+    C = _light._RUNTIME_COUNTERS
     if 'ss_fallback_evals' not in C:
         for k_ in _COUNTER_KEYS:
             C.setdefault(k_, 0)
@@ -530,7 +532,7 @@ def census(counters=None):
 def _count(key, n=1):
     # (``_reset_runtime_counters`` clears the dict in place: its identity
     # is stable)
-    C = _FI()._RUNTIME_COUNTERS
+    C = _light._RUNTIME_COUNTERS
     try:
         C[key] += n
     except KeyError:
@@ -872,6 +874,24 @@ class _ModelOps:
         self.entries = {}
         for key, ent in real.entries.items():
             self.entries[key] = _EntryOps(ent, self.dtype)
+        self._solve_data = {}
+        self._extra = {}
+        self._lock = threading.RLock()
+
+    def __getstate__(self):
+        """What a spawned Phase J worker needs to evaluate subsets built on
+        this model: the dtype and an empty resolvent cache (keyed by entry
+        identity, rebuilt in the worker -- bit-identical, deterministic).
+        The realization, parameters and kernel builders (symbolic, build
+        time only) stay in the parent."""
+        return {'is_real': self.is_real, 'dtype': self.dtype}
+
+    def __setstate__(self, state):
+        self.real = None
+        self.num_params = None
+        self.is_real = state['is_real']
+        self.dtype = state['dtype']
+        self.entries = {}
         self._solve_data = {}
         self._extra = {}
         self._lock = threading.RLock()
@@ -1876,6 +1896,21 @@ class SubsetSS:
         self._stat_downsets = self._downsets(self.free0)
 
     # ── structure helpers ─────────────────────────────────────────────
+    def __getstate__(self):
+        """Pickled for a spawned Phase J worker: the numeric geometry, the
+        entry ops and (when already built) the stationary states; the lock,
+        the τ-grid memos and the program cache are rebuilt there."""
+        st = dict(self.__dict__)
+        for k in ('_lock', '_prefetch', '_patterns'):
+            st.pop(k, None)
+        return st
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._lock = threading.RLock()
+        self._prefetch = {}
+        self._patterns = {}
+
     def _topo_order(self):
         indeg = [len(p) for p in self.preds]
         stack = [v for v in range(self.m) if indeg[v] == 0]
@@ -2105,11 +2140,10 @@ class SubsetSS:
 
     def scalar_factor(self, free_vals, tie_ctx):
         """Product of the constant rows' factors; 0 when one is EMPTY."""
-        FI = _FI()
         scal = 1.0
         for (_idx, a_int, a_ext, c0, ent) in self.const_rows:
-            verdict = FI._const_row_verdict(a_int, a_ext, c0, free_vals,
-                                            'edge', tie_ctx)
+            verdict = _light._const_row_verdict(a_int, a_ext, c0, free_vals,
+                                                'edge', tie_ctx)
             if verdict == 'EMPTY':
                 return 0.0
             c_eff = float(c0) + sum(float(a_ext[j]) * float(free_vals[j])
@@ -2922,23 +2956,9 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                 return 0.0 + 0.0j
             t_min = _t_min_frame(free_vals, _tie_ctx)
             try:
-                hit = _prefetched(sub, free_vals, _tie_ctx, t_min)
-                if hit is None:
-                    val = sub.evaluate(free_vals, _tie_ctx, t_min)
-                    err = _EST.err
-                else:
-                    val, err = hit
-                    if isinstance(val, _Refused):
-                        raise SSLateRefusal(val.reason, val.detail)
-                val = complex(pref * val)
-                if not (math.isfinite(val.real) and math.isfinite(val.imag)):
-                    raise SSLateRefusal('non_finite', 'a non-finite value')
+                val = _subset_value(sub, pref, free_vals, _tie_ctx, t_min)
             except _late_errors() as exc:
                 return _pole_route(exc)(free_vals, _hook_ctx, _tie_ctx)
-            C = _counters()
-            C['ss_evals'] = C.get('ss_evals', 0) + 1
-            C['ss_estimated'] = C.get('ss_estimated', 0) + 1
-            C['ss_err_abs_sum'] = C.get('ss_err_abs_sum', 0) + abs(pref) * err
             hook = FI._SUBSET_HOOK
             if hook is not None:
                 # the documented payload (``plan`` / ``pole_tuples``: none;
@@ -2960,6 +2980,92 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
         _contrib.ss_theta0_empty = bool(theta0_empty)
         return _contrib
     return make
+
+
+def diagram_payload(fn):
+    """The picklable numeric task of one diagram ``contribution`` (from
+    ``final_integral.integrate_diagram``) for a spawned worker, or ``None``
+    when the diagram cannot leave this process: a subset off the state-space
+    route (pole routes keep closures), a subset hook, a finite
+    ``PHASE_J_T_MIN`` or a switch-on scope.  Its value in a worker is the
+    same bytes as here (same ``_light.diagram_sum``, same
+    :func:`_subset_value`, same numeric state)."""
+    parts = getattr(fn, 'phase_j_parts', None)
+    if not parts or switch_on_active():
+        return None
+    FI = _FI()
+    if FI._SUBSET_HOOK is not None or FI.PHASE_J_T_MIN != float('-inf'):
+        return None
+    subs = []
+    for cfn in parts['subsets']:
+        sub = getattr(cfn, 'ss_subset', None)
+        if sub is None:
+            return None
+        subs.append((sub, cfn.ss_prefactor, bool(cfn.ss_theta0_empty)))
+    return {'perms': [tuple(p) for p in parts['perms']], 'k': parts['k'],
+            'origin_leaf_idx': parts['origin_leaf_idx'],
+            'free_ext_idx': tuple(parts['free_ext_idx']),
+            'compensation': parts['compensation'], 'subsets': subs}
+
+
+def payload_values(payload, points):
+    """A :func:`diagram_payload` task's values at ``points`` (raw external
+    time tuples), inside its own τ-grid prefetch: ``contribution(*pt)``'s
+    arithmetic.  A late refusal propagates (the parent then evaluates the
+    diagram itself, with its pole-route fallback)."""
+    subs = payload['subsets']
+    t_min = float('-inf')
+
+    def value(j, free_vals, tie_ctx):
+        sub, pref, theta0_empty = subs[j]
+        if theta0_empty:
+            _light._RUNTIME_COUNTERS['theta0_subsets_pruned'] += 1
+            return 0.0 + 0.0j
+        return _subset_value(sub, pref, free_vals, tie_ctx, t_min)
+    with tau_grid_prefetch(points):
+        return [complex(_light.diagram_sum(
+            payload['perms'], payload['k'], payload['origin_leaf_idx'],
+            payload['free_ext_idx'], payload['compensation'], pt,
+            len(subs), value)) for pt in points]
+
+
+def payload_shared(payloads):
+    """``{id: obj}`` of the model ops and entry ops the payloads share,
+    shipped once per worker; tasks reference them by id (so a worker's
+    resolvent caches are shared across its diagrams, as here)."""
+    out = {}
+    for pl in payloads:
+        for sub, _pref, _e in pl['subsets']:
+            out.setdefault(id(sub.model), sub.model)
+            for e in sub.edge_ops:
+                out.setdefault(id(e), e)
+            for row in sub.const_rows:
+                out.setdefault(id(row[4]), row[4])
+    return out
+
+
+def _subset_value(sub, pref, free_vals, tie_ctx, t_min):
+    """``pref`` x the subset integral at ``free_vals`` (from the τ-grid
+    prefetch when one is open, else evaluated), counted; raises a late
+    refusal (``_late_errors``) for the caller's fallback.  The one code
+    path of a subset closure and of a spawned worker
+    (``engine._spawn_worker``)."""
+    hit = _prefetched(sub, free_vals, tie_ctx, t_min)
+    if hit is None:
+        val = sub.evaluate(free_vals, tie_ctx, t_min)
+        err = _EST.err
+    else:
+        val, err = hit
+        if isinstance(val, _Refused):
+            raise SSLateRefusal(val.reason, val.detail)
+    val = complex(pref * val)
+    if not (math.isfinite(val.real) and math.isfinite(val.imag)):
+        raise SSLateRefusal('non_finite', 'a non-finite value')
+    C = _counters()
+    C['ss_evals'] = C.get('ss_evals', 0) + 1
+    C['ss_estimated'] = C.get('ss_estimated', 0) + 1
+    C['ss_err_abs_sum'] = C.get('ss_err_abs_sum', 0) + abs(pref) * err
+    return val
 
 
 def _pole_plan_fits(modes):
