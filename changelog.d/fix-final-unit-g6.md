@@ -31,5 +31,8 @@ the unscaled run's; the mean-field root choice of two models is fixed separately
   `G2_UNSTABLE_SADDLE`, with eigenvalues `[+0.888, -2.94, -1.15]` instead of all negative. The eigenvalues now agree
   with the unscaled model to 1e-9, and the saddle to 1e-12.
 
-Numbers that move: only the G6 accuracy estimate R of state-space runs, and the linearization eigenvalues at
-round-off level (equilibrated QZ). ZOO_RESULT
+Numbers that move: state-space results at round-off level (the realizations are formed differently), the G6
+accuracy estimate R, and the linearization eigenvalues at round-off level. Zoo A/B (23 runnable public entries,
+`use_cache=False`, base main a46ddcf): 15 bit-identical; `quad_exp` 2.3e-15, `dendritic_quad_soma_sigmoid`
+1.5e-16, `quadratic_hawkes_alpha` 1.7e-16, `spike_reset` k=2 4.5e-16 relative; analyzer codes identical; R moves
+at most 1.4 % (`quad_exp`, `quadratic_hawkes_alpha`); the 5 entries that refuse do so identically on both sides.
