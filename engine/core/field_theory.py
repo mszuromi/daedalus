@@ -28,7 +28,6 @@ from sage.all import (
     SR, PolynomialRing, factorial, QQ, latex,
     diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
 )
-from IPython.display import display, Math as _Math
 from engine.errors import DaedalusError
 
 
@@ -76,6 +75,7 @@ def fourier_transform(f, t, s):
 
 def _show(expr):
     """Display a SageMath expression or Conv/IP object as rendered LaTeX."""
+    from IPython.display import display, Math as _Math   # on use (SPD-06)
     display(_Math(latex(expr)))
 
 

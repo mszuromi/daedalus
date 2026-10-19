@@ -27,8 +27,6 @@ import os
 from datetime import datetime
 
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
 
 from api.compute import compute_cumulants
 
@@ -77,7 +75,14 @@ def _install_pdf_repr_sage_fallback():
     if getattr(_bp.pdfRepr, '__name__', '') != '_patched':
         _bp.pdfRepr = _patched
 
-_install_pdf_repr_sage_fallback()
+
+def _plt():
+    """``matplotlib.pyplot``, imported on first use with the PDF fallback
+    above installed (importing it with the module cost ~0.4 s of every
+    ``from api import ...``; audit SPD-06)."""
+    import matplotlib.pyplot as plt
+    _install_pdf_repr_sage_fallback()
+    return plt
 
 
 def _canonical_view(td):
@@ -231,6 +236,7 @@ def _draw_prediagram(td, ax, display_id=None):
 def _draw_cover_page(pdf, model, k, max_ell, fundamental,
                      external_fields, result):
     """Page 1: model name, parameters, MF values, total slice plot."""
+    plt = _plt()
     fig = plt.figure(figsize=(11, 8.5))
     gs = fig.add_gridspec(3, 2, height_ratios=[0.7, 1.5, 2.5])
 
@@ -397,6 +403,7 @@ def _draw_diagram_page(pdf, idx, total, td_record, result, k, contrib=None,
     ``display_id`` maps vertices to the numbers printed on the page
     (:func:`_canonical_view`); by default the canonical numbering is
     computed here."""
+    plt = _plt()
     td = td_record['typed_diagram']
     info = td_record['classify']
     pf = td_record['combined_prefactor']
@@ -494,6 +501,7 @@ def generate_report(
 
     Returns the result dict so the caller can do further analysis.
     """
+    plt = _plt()
     # Accept the canonical name ``parameters`` (the dd.Config name); it wins
     # over the legacy ``fundamental`` if both are given.
     if parameters is not None:
@@ -566,6 +574,7 @@ def generate_report(
     # inline / agg backends used by the calling notebook.
     import matplotlib as _mpl
     with _mpl.rc_context({'text.usetex': False}):
+        from matplotlib.backends.backend_pdf import PdfPages
         with PdfPages(output_pdf) as pdf:
             _draw_cover_page(pdf, model, k, max_ell, fundamental,
                              external_fields, result)
