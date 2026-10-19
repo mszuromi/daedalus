@@ -287,6 +287,9 @@ _RUNTIME_COUNTERS = _CounterDict({
     # the hardened fallback's QUADPACK error estimates (absolute, in the
     # units of the subset integrals; G6 adds them to the accuracy estimate)
     'nquad_hardened_err_abs_sum': 0.0,
+    # the most integrand evaluations one hardened region used (its budget:
+    # final_integral.NQUAD_EVAL_BUDGET)
+    'nquad_hardened_evals_max': 0,
     # entries without mode data (epsabs from a pre-sample of the integrand,
     # open sides at the legacy cap, no geometric breakpoints):
     'nquad_hardened_no_modes': 0,

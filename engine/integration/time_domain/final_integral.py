@@ -4432,23 +4432,30 @@ def _noise_kernel_halfwidth(kernels, tau_sym):
     return None if sc is None else sc[0]
 
 
-#: Ratio of the breakpoint ladder of a noise source's τ variable
-#: (``_noise_kernel_ladder``) and how far below the kernel's core it starts.
+#: Breakpoint ladder of a noise source's τ variable (``_noise_kernel_ladder``):
+#: none while the box is at most _TAU_LADDER_MIN_SPAN core widths (adaptive
+#: quadrature sees a peak at a panel end when the panel is within ~100 times
+#: its width: its outermost Gauss-Kronrod node lies 0.0022 panel widths from
+#: the end); else ±core·_TAU_LADDER_FIRST·_TAU_LADDER_RATIO^j out to the box.
 _TAU_LADDER_RATIO = 4.0
-_TAU_LADDER_BELOW = 3
+_TAU_LADDER_FIRST = 16.0
+_TAU_LADDER_MIN_SPAN = 64.0
 
 
 def _noise_kernel_ladder(core, halfwidth):
-    """Breakpoints of a noise source's τ variable: 0 and ±core·4^j from
-    4^-3 core out to the box's half-width.  The kernel's peak (width
-    ``core``) and its tail then sit in panels no wider than 4 times their
-    own scale, so the hardened quadrature cannot step over the peak of a
-    kernel whose box (set by a slow tail, e.g. 1/(1+τ^4): ~1e4) is many
-    orders wider than it."""
-    pts = [0.0]
-    if not (core and math.isfinite(core) and core > 0.0):
-        return tuple(pts)
-    x = core * _TAU_LADDER_RATIO ** -_TAU_LADDER_BELOW
+    """Breakpoints of a noise source's τ variable for the hardened quadrature
+    (the external times, 0 among them, are breakpoints anyway): ``()`` while
+    the box half-width is at most _TAU_LADDER_MIN_SPAN core widths (a kernel
+    that decays fast: nothing changes), else ±core·16·4^j out to it.  A
+    kernel with a slow tail (1/(1+τ^4): box ~1e4, core ~1) then has no
+    panel more than 4 times wider than its distance from the peak; without
+    them the peak sat at the end of a panel as wide as the box, and with
+    equal external times the region came back exactly 0."""
+    if not (core and math.isfinite(core) and core > 0.0
+            and halfwidth > _TAU_LADDER_MIN_SPAN * core):
+        return ()
+    pts = []
+    x = core * _TAU_LADDER_FIRST
     while x < halfwidth:
         pts.extend((x, -x))
         x *= _TAU_LADDER_RATIO
@@ -8813,6 +8820,25 @@ _NQUAD_INNERMOST_NUMPY_MIN = 64
 _NQUAD_OSC_MIN = 100
 
 
+#: Integrand evaluations one region of the hardened quadrature fallback may
+#: use (``None``: no limit).  Past it the region raises
+#: ``PhaseJQuadratureBudgetError`` instead of running on: nested adaptive
+#: quadrature of a slowly decaying, non-exponential integrand (a noise
+#: kernel with a power-law tail at one loop) can take hours.  Measured: the
+#: test suite and the public zoo stay below NQUAD_EVAL_MEASURED_MAX.
+NQUAD_EVAL_BUDGET = 20_000_000
+
+
+class PhaseJQuadratureBudgetError(DaedalusError, RuntimeError):
+    """A region of the hardened quadrature fallback needed more than
+    ``NQUAD_EVAL_BUDGET`` integrand evaluations: refused, never left
+    running silently.  ``region``: the diagram / subset description."""
+
+    def __init__(self, message, region=None):
+        super().__init__(message)
+        self.region = region
+
+
 class PhaseJNquadFallbackWarning(UserWarning):
     """Phase J integrated regions with scipy quadrature (the hardened
     fallback of ``_integrate_polytope``) because no analytic path answered
@@ -10690,6 +10716,9 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
     inner_cut = [False]
     inf = math.inf
 
+    n_ev = [0]
+    budget_ev = NQUAD_EVAL_BUDGET
+
     def g0(*s):
         # The Heaviside filter: Θ(0) = 0, nothing is evaluated outside.
         for (c, prs) in rows_t:
@@ -10698,6 +10727,19 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                 dt += a * s[j]
             if dt <= 0.0:
                 return 0.0 + 0.0j
+        n_ev[0] += 1
+        if budget_ev is not None and n_ev[0] > budget_ev:
+            raise PhaseJQuadratureBudgetError(
+                f'Phase J: the hardened quadrature fallback needed more than '
+                f'NQUAD_EVAL_BUDGET = {budget_ev:,} integrand evaluations on '
+                f'one region ({_describe_diagram(diag_meta, m)}): refused '
+                f'rather than left running (nested adaptive quadrature of an '
+                f'integrand without exponential modes, e.g. a noise kernel '
+                f'with a slowly decaying tail at one loop).  Options: a noise '
+                f'kernel with exponential modes (markovianize=True, or a sum '
+                f'of exponentials that fits it), max_ell=0, or a larger '
+                f'final_integral.NQUAD_EVAL_BUDGET (None: no limit).',
+                region=_describe_diagram(diag_meta, m))
         return complex(f(*(list(s) + free_list)))
 
     def gm(*s):
@@ -11250,6 +11292,8 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
         ctr['nquad_hardened_capped'] += stats[1]
         ctr['nquad_hardened_uncertified'] += stats[2]
         ctr['nquad_hardened_floor_cut'] += stats[3]
+        if n_ev[0] > ctr['nquad_hardened_evals_max']:
+            ctr['nquad_hardened_evals_max'] = n_ev[0]
         if math.isfinite(err_reg[0]):
             ctr['nquad_hardened_err_abs_sum'] += err_reg[0]
         ctr['nquad_hardened_quad_flags'] += len(pflags)

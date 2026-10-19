@@ -115,14 +115,17 @@ def test_quadrature_share_reaches_g6():
 
 
 def test_ladder_reaches_the_box_and_resolves_the_core():
-    from sage.all import SR
+    from sage.all import SR, exp
     t = SR.var('tt')
     hw, core = FI._noise_kernel_scales([1 / (1 + t ** 4)], t)
     assert 1e3 < hw < 1e6 and 0.5 <= core <= 2.0
     lad = FI._noise_kernel_ladder(core, hw)
     pos = [x for x in lad if x > 0]
-    assert 0.0 in lad and min(pos) < core / 16 and max(pos) > hw / 4
+    assert min(pos) <= 16 * core and max(pos) > hw / 4
     assert all(b / a <= FI._TAU_LADDER_RATIO * (1 + 1e-12)
                for a, b in zip(pos, pos[1:]))
+    # a kernel that decays fast keeps the breakpoints it had (none added)
+    hw, core = FI._noise_kernel_scales([exp(-abs(t))], t)
+    assert FI._noise_kernel_ladder(core, hw) == ()
     # a kernel that cannot be sampled: the box only (no ladder)
-    assert FI._noise_kernel_ladder(None, 50.0) == (0.0,)
+    assert FI._noise_kernel_ladder(None, 50.0) == ()
