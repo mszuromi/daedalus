@@ -848,7 +848,8 @@ _MAX_COUNTERS = ('dd_err_ratio_max', 'dbm_error_ratio_max',
 #: lost the run's sum entirely when it was far below an earlier run's (a
 #: model in slow time units after one in unit time: 1e-34 - 0 against 6.9e-17
 #: gave R = 0).
-_SUM_COUNTERS = ('dd_err_abs_sum', 'dbm_err_abs_sum', 'ss_err_abs_sum')
+_SUM_COUNTERS = ('dd_err_abs_sum', 'dbm_err_abs_sum', 'ss_err_abs_sum',
+                 'nquad_hardened_err_abs_sum')
 
 
 def _counter_snapshot():
