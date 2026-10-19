@@ -33,6 +33,7 @@ Public API
     Same check swept over every monomial of a bigrade-classified action.
 """
 from __future__ import annotations
+from engine.errors import DaedalusError
 
 __all__ = [
     'NonlinearDtError',
@@ -42,7 +43,7 @@ __all__ = [
 ]
 
 
-class NonlinearDtError(ValueError):
+class NonlinearDtError(DaedalusError, ValueError):
     """A model term has degree ≥ 2 in the time-derivative symbol ``Dt``.
 
     Subclasses ``ValueError`` so existing ``except ValueError`` handlers

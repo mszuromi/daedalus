@@ -37,6 +37,7 @@ from typing import Iterable, Optional, Sequence
 
 from sage.all import SR, Integer, exp, log, sqrt, function, sage_eval
 from sage.all import gamma as _gamma, cos as _cos, matrix as _matrix
+from engine.errors import DaedalusError
 
 __all__ = [
     'NoiseError', 'NoiseSource',
@@ -53,7 +54,7 @@ __all__ = [
 ]
 
 
-class NoiseError(ValueError):
+class NoiseError(DaedalusError, ValueError):
     """Raised for an invalid noise declaration."""
 
 
@@ -96,8 +97,8 @@ def parse_expr(value, *, what: str = 'expression'):
 
     Indexed names become flat symbols (``x[i]`` -> ``x__i``); calls of
     unknown names become formal Sage functions (``phi[i](v[i])`` ->
-    ``phi__i(v__i)``).  Population sums (``sum(... for j in E)``) are
-    not supported inside noise parameters.
+    ``phi__i(v__i)``).  Population sums (``sum(... for j in E)``) cannot be
+    parsed here (noise parameters, separated drift terms).
     """
     if isinstance(value, str):
         txt = ' '.join(value.split())
@@ -105,8 +106,13 @@ def parse_expr(value, *, what: str = 'expression'):
             raise NoiseError(f'{what}: empty expression')
         if re.search(r'\bfor\b', txt):
             raise NoiseError(
-                f'{what}: population sums are not supported inside a noise '
-                f'parameter ({value!r}); declare a parameter or function '
+                f'{what}: population sums ("sum(... for j in pop)") cannot '
+                f'be split or parsed in this expression ({value!r}); they are '
+                f'accepted where the model is written as a whole (an '
+                f'equation(lhs=..., rhs=...) whose lhs carries the restoring '
+                f'term, a point_process rate), '
+                f'not as a noise parameter or a separated term.  Declare a '
+                f'parameter or function '
                 f'for the summed quantity instead (a spike train whose rate '
                 f'sums or filters fields: SDE.point_process).')
         txt = _flatten_indices(txt)

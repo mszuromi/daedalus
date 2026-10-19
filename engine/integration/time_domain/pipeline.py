@@ -40,6 +40,7 @@ from engine.integration.time_domain.final_integral import (
     PropagatorTD,
     _loop_number_from_graph,
 )
+from engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -179,7 +180,7 @@ def _workers_within_budget(n_w):
     return max(1, min(n_w, fit))
 
 
-class DiscardedDiagramsError(RuntimeError):
+class DiscardedDiagramsError(DaedalusError, RuntimeError):
     """A callable of a Phase J run made with ``discard=True`` (item 61) was
     asked for a point it was not evaluated on, or for a diagram it
     released."""

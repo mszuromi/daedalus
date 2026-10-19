@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+from engine.errors import DaedalusError
 
 __all__ = ['Backend', 'Reason', 'RouteRequest', 'Route', 'NoBackendError',
            'NoBackendValueError', 'NoBackendNotImplementedError',
@@ -114,7 +115,7 @@ class Route:
                              for n, rs in self.rejected]}
 
 
-class NoBackendError(Exception):
+class NoBackendError(DaedalusError, Exception):
     """No registered backend applies.  Raised through :func:`_raise_none`
     as a subclass of the reported trait's exception type."""
 

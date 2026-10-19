@@ -215,6 +215,7 @@ from collections import OrderedDict
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = [
     'ENGINE_ENV', 'FALLBACK_ENV', 'engine_requested', 'engine_name',
@@ -348,7 +349,7 @@ def decline_reason_known(reason):
         str(reason).startswith(p) for p in DECLINE_PREFIXES)
 
 
-class SSIneligible(Exception):
+class SSIneligible(DaedalusError, Exception):
     """A subset (or model) the state-space route does not take; ``reason``
     is the counter key."""
 
@@ -357,7 +358,7 @@ class SSIneligible(Exception):
         super().__init__(f'{reason}: {detail}' if detail else reason)
 
 
-class SSLateRefusal(RuntimeError):
+class SSLateRefusal(DaedalusError, RuntimeError):
     """A routed subset's evaluation refused at call time (``reason``: the
     ``ss_fallback_by_reason`` key); the dispatch falls back to the pole
     route for that call (``FALLBACK_ENV``)."""
@@ -368,14 +369,14 @@ class SSLateRefusal(RuntimeError):
                          f'{ENGINE_ENV}=poles to use the pole routes')
 
 
-class SSNoPoleFallback(RuntimeError):
+class SSNoPoleFallback(DaedalusError, RuntimeError):
     """A routed subset was refused at call time and the pole route cannot
     take it: the subset has none (a kernel only this route realizes), or
     ``compute_cumulants`` skipped the pole-cluster deformation for the run
     (``ss_no_pole_fallback``).  Never silent: it raises."""
 
 
-class SwitchOnUnsupported(ValueError):
+class SwitchOnUnsupported(DaedalusError, ValueError):
     """A switch-on run (``compute_cumulants(t_min=...)``,
     :func:`switch_on_scope`) met a subset this route does not take, or one it
     refused at call time: such runs are computed on the state-space route

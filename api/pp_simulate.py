@@ -36,11 +36,12 @@ import math
 import re
 
 import numpy as np
+from engine.errors import DaedalusError
 
 __all__ = ['simulate', 'cross_covariance', 'mean_rate', 'PPSimulationError']
 
 
-class PPSimulationError(ValueError):
+class PPSimulationError(DaedalusError, ValueError):
     """The model has a part this simulator does not handle."""
 
 
