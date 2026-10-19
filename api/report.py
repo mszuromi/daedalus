@@ -254,7 +254,7 @@ def _draw_cover_page(pdf, model, k, max_ell, fundamental,
     ax_params.set_axis_off()
     ax_params.set_title('Fundamental parameters', fontsize=11, loc='left')
     params_text = []
-    for key, val in fundamental.items():
+    for key, val in (fundamental or {}).items():
         if isinstance(val, list):
             val_repr = str(val)
             if len(val_repr) > 35:
@@ -490,7 +490,9 @@ def generate_report(
     Run compute_cumulants() and produce a multi-page PDF report.
 
     If ``result`` is provided (e.g., from a prior compute_cumulants()
-    call), reuses it instead of recomputing.
+    call), reuses it instead of recomputing; the cover page is then labelled
+    from the result's own ``config`` (k, max_ell, parameters, external
+    fields), so ``parameters=`` and ``external_fields=`` are not needed.
 
     Returns the result dict so the caller can do further analysis.
     """
@@ -523,6 +525,22 @@ def generate_report(
             use_cache       = use_cache,
             verbose         = verbose,
         )
+
+    else:
+        # A reused result describes itself: the cover is labelled from the
+        # result's own config, never from call arguments that may disagree
+        # with it (or be missing: ``parameters=`` is not needed).
+        cfg = result.get('config') or {}
+        if cfg.get('k') is not None:
+            k = cfg['k']
+        if cfg.get('max_ell') is not None:
+            max_ell = cfg['max_ell']
+        if fundamental is None:
+            fundamental = cfg.get('fundamental') or cfg.get('parameters')
+        external_fields = (cfg.get('external_fields_in')
+                           or cfg.get('external_fields') or external_fields)
+        if not (model or {}).get('name') and cfg.get('model_name'):
+            model = dict(model or {}, name=cfg['model_name'])
 
     # Spatial models compute C(x,τ) fine, but the multi-page PDF layout below is
     # temporal-specific (per-diagram Phase-J pages keyed on result['diagrams']).

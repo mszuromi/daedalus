@@ -237,6 +237,31 @@ def _integral_exponent(ex):
     return None
 
 
+def _exact_exponent(ex):
+    """An SR numeric exponent as an exact rational, or None.
+
+    Rationals pass; a float such as ``0.5`` is accepted when it IS a small
+    rational exactly (denominator <= 64: ``0.5``, ``0.25``, ``1.5``) so the
+    scan and the conversion agree -- they used to disagree on floats, which
+    refused ``D**0.5`` with a message about omega.  Anything else
+    (``0.3``, an irrational) is None."""
+    x = ex.pyobject()
+    if isinstance(x, _Rational):
+        return QQ(x)
+    try:
+        q = QQ(x)
+    except (TypeError, ValueError):
+        return None
+    if q.denominator() <= 64 and float(q) == float(x):
+        return q
+    return None
+
+
+def _power_name(base, x):
+    return (f'pw__{base}__{"m" if x < 0 else "p"}'
+            f'{abs(x.numerator())}_{x.denominator()}')
+
+
 class _Bridge:
     """Conversion between Sage SR expressions in ``omega`` and the field
     ``QQ(s, params...)``."""
@@ -281,11 +306,10 @@ class _Bridge:
         if _opname(op) == 'pow':
             base, ex = e.operands()
             if base.is_symbol() and ex.is_numeric():
-                x = ex.pyobject()
-                if isinstance(x, _Rational) and x.denominator() != 1:
-                    nm = (f'pw__{base}__{"m" if x < 0 else "p"}'
-                          f'{abs(x.numerator())}_{x.denominator()}')
-                    pows[nm] = (base, QQ(x))
+                x = _exact_exponent(ex)
+                if x is not None and x.denominator() != 1:
+                    nm = _power_name(base, x)
+                    pows[nm] = (base, x)
         for o in e.operands():
             self._scan(o, syms, pows, seen)
 
@@ -323,9 +347,14 @@ class _Bridge:
             if ex.is_numeric() and _integral_exponent(ex) is not None:
                 out = self._conv(base, memo) ** _integral_exponent(ex)
             elif ex.is_numeric() and base.is_symbol():
-                x = QQ(ex.pyobject())
-                nm = (f'pw__{base}__{"m" if x < 0 else "p"}'
-                      f'{abs(x.numerator())}_{x.denominator()}')
+                x = _exact_exponent(ex)
+                if x is None:
+                    raise NonRationalPropagatorError(
+                        f'power {e!r}: the exponent {ex!r} is not an exact '
+                        f'rational number (write 1/2, not an irrational or '
+                        f'long decimal); only rational powers of a '
+                        f'parameter symbol are supported.')
+                nm = _power_name(base, x)
                 if nm not in self._names:
                     raise NonRationalPropagatorError(
                         f'non-rational power {e!r} of omega (or of a '
@@ -334,9 +363,11 @@ class _Bridge:
                 out = self.F(self.R(nm))
             else:
                 raise NonRationalPropagatorError(
-                    f'non-rational power {e!r}: the covariance requires a '
-                    f'rational function of omega (e.g. no square roots of '
-                    f'omega-dependent terms).')
+                    f'non-rational power {e!r}: only integer powers of '
+                    f'anything, and rational powers (1/2, 3/2, ...) of a '
+                    f'plain parameter symbol, are allowed; the covariance '
+                    f'requires a rational function of omega (e.g. no square '
+                    f'roots of omega-dependent terms).')
         else:
             raise NonRationalPropagatorError(
                 f'non-rational function {op} in {e!r}: the propagator must '
@@ -1060,7 +1091,14 @@ class TreeCovariance:
                 npar = _solve_mean_field(self._ft, self._model, fund)
                 out = {str(k): float(v) for k, v in npar.items()
                        if isinstance(v, (int, float, np.floating))}
-            except Exception:
+            except Exception as exc:
+                warnings.warn(
+                    'TreeCovariance.default_values: the mean-field solve for '
+                    f'the reference values failed ({type(exc).__name__}: '
+                    f'{exc}); returning no defaults, so symbols without a '
+                    'value are treated as 1.0 (assumed positive).  Pass '
+                    'reference=/values= explicitly.', RuntimeWarning,
+                    stacklevel=2)
                 out = {}
         self._cache['defaults'] = out
         return dict(out)

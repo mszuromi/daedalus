@@ -41,6 +41,19 @@ def _dispersion(N, dx, mu, D):
     return mu + (2.0 * D / dx**2) * (1.0 - np.cos(2.0 * np.pi * m / N))
 
 
+def _require_stationary(omega, mu):
+    """The exponential integrator and its noise normalization divide by the
+    mode rates; a non-positive one (mu <= 0 puts the k = 0 mode at mu) has no
+    stationary state and used to give NaN fields (or a negative default dt)
+    without a word."""
+    if not np.all(np.asarray(omega) > 0):
+        raise ValueError(
+            f'mu = {mu}: the spectral simulator needs a positive mass term '
+            f'(every mode rate omega_k = mu + D*k^2 must be > 0; the k = 0 '
+            f'mode has omega = mu), otherwise the field has no stationary '
+            f'state.')
+
+
 def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0,
             g_lap=0.0, lam_burg=0.0, lam_kpz=0.0):
     """Spectral exponential-Euler (ETD1) integrator.
@@ -62,6 +75,7 @@ def _evolve(phi, n_steps, dt, mu, D, lam, T, dx, record_every, rng, g=0.0,
     out = np.empty((n_rec, N), dtype=np.float64)
 
     omega = _dispersion(N, dx, mu, D)          # (M,)
+    _require_stationary(omega, mu)
     M = omega.shape[0]
     # finite-difference Laplacian eigenvalue on the rfft grid (≤0): the linear
     # dispersion is ω = μ − D·lap_eig, so lap_eig = −(ω−μ)/D.  Used for the
@@ -144,6 +158,7 @@ def simulate(L=20.0, N=200, mu=1.0, D=1.0, lam=0.0, T=1.0,
     record_every = int(record_every)
     seed = int(seed)
     dx = L / N
+    _require_stationary(_dispersion(N, dx, mu, D), mu)
     if dt is None:
         # The linear part is exact (exponential integrator), so dt is
         # limited only by the ETD1 nonlinear splitting accuracy, not by
@@ -264,6 +279,10 @@ def third_cumulant_x(snaps):
         kappa_3(m) = (1/N) IFFT( conj(FFT(dphi)) * FFT(dphi^2) )[m].
     """
     n_rec, N = snaps.shape
+    if n_rec < 2:
+        raise ValueError(
+            f'third_cumulant_x: the error bar is a spread over snapshots and '
+            f'needs at least 2 (got {n_rec}).')
     mean = float(np.mean(snaps))
     per = np.empty((n_rec, N))
     for r in range(n_rec):

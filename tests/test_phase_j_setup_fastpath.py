@@ -53,14 +53,15 @@ def _model(key):
     return dd.load_model(key)[0]
 
 
-def _run(key, k, ell, ext_field='dx', **kw):
+def _run(key, k, ell, ext_field='dx', model=None, **kw):
     """``compute_cumulants`` -> dict of arrays (per-ell totals, per-diagram
     values at fixed points) and the Phase J counters."""
     FI._reset_runtime_counters()
     ext = [(ext_field, 1)] * k
     with contextlib.redirect_stdout(io.StringIO()):
         res = AC.compute_cumulants(
-            _model(key), k=k, max_ell=ell, tau_grid=_TAUS, use_cache=True,
+            _model(key) if model is None else model, k=k, max_ell=ell,
+            tau_grid=_TAUS, use_cache=True,
             parallel=False, verbose=False, external_fields=ext, **kw)
     pts = _P2 if k == 2 else _P4
     out = {}
@@ -145,15 +146,34 @@ def test_l1_fires_and_two_runs_agree(key, k, ell):
     assert c_on['setup_zero_exit'] > 0                 # it fired
 
 
+def _two_field_ou():
+    """A plain two-field coupled OU with quartic terms, inline."""
+    from api.model import TemporalModelBuilder
+    return (TemporalModelBuilder('two-field OU quartic (test)', n_populations=0)
+            .physical_field('x', indexed=True)
+            .physical_field('y', indexed=True)
+            .parameter('mu1', default=1.0, domain='real')
+            .parameter('mu2', default=1.0, domain='real')
+            .parameter('eps1', default=0.05, domain='positive')
+            .parameter('eps2', default=0.05, domain='positive')
+            .parameter('J1', default=0.5, domain='real')
+            .parameter('J2', default=0.5, domain='real')
+            .parameter('D1', default=1.0, domain='positive')
+            .parameter('D2', default=1.0, domain='positive')
+            .set_action_text('xt*((Dt+mu1)*x + eps1*x^3 - J1*y) - D1*xt^2 '
+                             '+ yt*((Dt+mu2)*y + eps2*y^3 - J2*x) - D2*yt^2')
+            .equation(lhs='(Dt+mu1)*x', rhs='-eps1*x^3 + J1*y')
+            .equation(lhs='(Dt+mu2)*y', rhs='-eps2*y^3 + J2*x')
+            .stability_analysis(True)
+            .build())
+
+
 def test_l1_counts_on_the_two_field_ou(monkeypatch):
     """The two-field OU is the motivating case (most diagrams have a zero
-    prefactor).  Its model file is git-ignored, so skip without it."""
-    path = os.path.join(os.path.dirname(__file__), '..', 'models',
-                        'ou_quartic_two_dim.model.py')
-    if not os.path.exists(path):
-        pytest.skip('models/ou_quartic_two_dim.model.py is not in this checkout')
-    _run('ou_quartic_two_dim', 2, 1)
-    _on, c = _run('ou_quartic_two_dim', 2, 1)
+    prefactor); an inline plain model, so it runs in every checkout."""
+    m = _two_field_ou()
+    _run('two_field_ou', 2, 1, model=m)
+    _on, c = _run('two_field_ou', 2, 1, model=m)
     assert c['setup_zero_exit'] > 10
 
 
