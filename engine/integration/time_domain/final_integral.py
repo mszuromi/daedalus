@@ -8824,8 +8824,10 @@ _NQUAD_OSC_MIN = 100
 #: use (``None``: no limit).  Past it the region raises
 #: ``PhaseJQuadratureBudgetError`` instead of running on: nested adaptive
 #: quadrature of a slowly decaying, non-exponential integrand (a noise
-#: kernel with a power-law tail at one loop) can take hours.  Measured: the
-#: test suite and the public zoo stay below NQUAD_EVAL_MEASURED_MAX.
+#: kernel at one loop) can take hours.  Measured: the test suite and the
+#: public zoo pass under it; the one-loop colored-noise OU (non-Markov
+#: kernels exp(-|τ|), exp(-τ^2) and power-law tails alike) exceeds it after
+#: ~3 minutes, and ran over 40 minutes without it.
 NQUAD_EVAL_BUDGET = 20_000_000
 
 
