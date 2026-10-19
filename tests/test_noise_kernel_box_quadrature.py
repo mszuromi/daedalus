@@ -129,3 +129,15 @@ def test_ladder_reaches_the_box_and_resolves_the_core():
     assert FI._noise_kernel_ladder(core, hw) == ()
     # a kernel that cannot be sampled: the box only (no ladder)
     assert FI._noise_kernel_ladder(None, 50.0) == ()
+
+
+def test_quadrature_budget_refuses_by_name(monkeypatch):
+    """A region past NQUAD_EVAL_BUDGET raises PhaseJQuadratureBudgetError
+    (here with a tiny budget; the default refuses the one-loop colored-noise
+    OU after ~3 minutes instead of running for hours)."""
+    from engine.errors import DaedalusError
+    monkeypatch.setattr(FI, 'NQUAD_EVAL_BUDGET', 1000)
+    with pytest.raises(FI.PhaseJQuadratureBudgetError) as ei:
+        _run(_model('1/(1+tau^4)', 1.0, 'kernel box budget'), [0.0, 0.7])
+    assert isinstance(ei.value, DaedalusError)
+    assert 'NQUAD_EVAL_BUDGET' in str(ei.value)

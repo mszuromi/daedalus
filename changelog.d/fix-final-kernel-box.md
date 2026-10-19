@@ -37,5 +37,5 @@ Zoo A/B (17 public entries that run, `use_cache=False`, base main a46ddcf): all 
 unchanged; five more refuse identically on both sides. No zoo entry has a slow-tailed non-Markov noise kernel.
 Full suite: 0 failures.
 
-Tests: `tests/test_noise_kernel_box_quadrature.py` (eight of its ten cases fail on the code before; exp and gaussian
-pass on both).
+Tests: `tests/test_noise_kernel_box_quadrature.py` (eight of its first ten cases fail on the code before; exp and gaussian
+pass on both; plus the budget refusal).
