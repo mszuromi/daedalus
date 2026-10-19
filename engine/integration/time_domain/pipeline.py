@@ -69,8 +69,8 @@ from engine.errors import DaedalusError
 #   inherit the per-diagram closures (nested functions that ``pickle``
 #   cannot serialise) through ``_FANOUT``; each returns its diagrams' values
 #   and its ``_RUNTIME_COUNTERS`` delta.  Used when the batch has enough
-#   diagrams to amortise the pool, capped by the memory budget (item 61 /
-#   item 57 Q4: per-worker budget shares).
+#   diagrams to amortise the pool, capped by the memory budget (per-worker
+#   budget shares).
 #
 # **macOS never forks** (a fork after Cocoa/BLAS/ECL initialisation has
 # hard-crashed a Jupyter kernel and the OS; a Sage process is multithreaded
