@@ -2314,6 +2314,7 @@ _HARDENED_COUNTERS = (
     'nquad_hardened_reruns', 'nquad_hardened_tail_widened',
     'nquad_hardened_inner_unchecked', 'nquad_hardened_innermost_overflow',
     'nquad_hardened_floor_limited', 'nquad_hardened_floor_cut',
+    'nquad_hardened_err_abs_sum', 'nquad_hardened_evals_max',
     'nquad_hardened_innermost_capped')
 
 

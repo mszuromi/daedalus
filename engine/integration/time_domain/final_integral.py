@@ -4512,7 +4512,49 @@ _TAU_KERNEL_GRID = 10.0 ** (np.arange(-48, 49) / 4.0)
 
 
 def _noise_kernel_halfwidth(kernels, tau_sym):
-    """The half-width of the τ box of a non-local noise source whose
+    """The half-width of :func:`_noise_kernel_scales` (``None`` when a kernel
+    cannot be sampled)."""
+    sc = _noise_kernel_scales(kernels, tau_sym)
+    return None if sc is None else sc[0]
+
+
+#: Breakpoint ladder of a noise source's τ variable (``_noise_kernel_ladder``):
+#: none while the box is at most _TAU_LADDER_MIN_SPAN core widths (adaptive
+#: quadrature sees a peak at a panel end when the panel is within ~100 times
+#: its width: its outermost Gauss-Kronrod node lies 0.0022 panel widths from
+#: the end); else ±core·_TAU_LADDER_FIRST·_TAU_LADDER_RATIO^j out to the box.
+_TAU_LADDER_RATIO = 4.0
+_TAU_LADDER_FIRST = 16.0
+_TAU_LADDER_MIN_SPAN = 64.0
+
+
+def _noise_kernel_ladder(core, halfwidth):
+    """Breakpoints of a noise source's τ variable for the hardened quadrature
+    (the external times, 0 among them, are breakpoints anyway): ``()`` while
+    the box half-width is at most _TAU_LADDER_MIN_SPAN core widths (a kernel
+    that decays fast: nothing changes), else ±core·16·4^j out to it.  A
+    kernel with a slow tail (1/(1+τ^4): box ~1e4, core ~1) then has no
+    panel more than 4 times wider than its distance from the peak; without
+    them the peak sat at the end of a panel as wide as the box, and with
+    equal external times the region came back exactly 0."""
+    if not (core and math.isfinite(core) and core > 0.0
+            and halfwidth > _TAU_LADDER_MIN_SPAN * core):
+        return ()
+    pts = []
+    x = core * _TAU_LADDER_FIRST
+    while x < halfwidth:
+        pts.extend((x, -x))
+        x *= _TAU_LADDER_RATIO
+    return tuple(sorted(pts))
+
+
+def _noise_kernel_scales(kernels, tau_sym):
+    """``(halfwidth, core)`` of a non-local noise source's τ box: the
+    half-width (below) and the kernel's core width (the first sampled |τ|
+    where every |κ| has fallen below half the largest sampled |κ|: the
+    scale of its peak), or ``None`` when a kernel cannot be sampled.
+
+    The half-width of the τ box of a non-local noise source whose
     cumulant kernels are the SR expressions ``kernels`` in ``tau_sym``
     (parameters substituted): the first sampled |τ| (quarter decades) beyond
     which every |κ(±τ)| stays below ``TAU_KERNEL_RTOL`` of the largest
@@ -4552,7 +4594,14 @@ def _noise_kernel_halfwidth(kernels, tau_sym):
     big = np.nonzero(mags > TAU_KERNEL_RTOL * peak)[0]
     reach = float(np.max(np.abs(pts[big])))
     nxt = grid[grid > reach]
-    return float(nxt[0]) if nxt.size else float(grid[-1])
+    hw = float(nxt[0]) if nxt.size else float(grid[-1])
+    # |κ| on each |τ| of the grid (both signs), for the core width
+    both = np.maximum(mags[:grid.size][::-1], mags[grid.size:])
+    half = np.nonzero(both < 0.5 * peak)[0]
+    i_pk = int(np.argmax(both))
+    after = half[half > i_pk]
+    core = float(grid[after[0]]) if after.size else hw
+    return hw, core
 
 
 def _line_decay_floor(propagator_data, num_params):
@@ -5773,6 +5822,7 @@ def integrate_diagram(
     conv_vertex_specs  = {}     # {v: list of (tau_sym, att_dict) pairs}
     extra_tau_syms = []         # list of (tau_sym, vertex) pairs
     noise_tau_box = {}          # {tau_sym: half-width of its box}
+    noise_tau_ladder = {}       # {tau_sym: breakpoints of its quadrature}
     leg_kernel_rates = []       # decay rates of the conductance kernels
     vertex_assignments = (
         getattr(typed_diagram, 'vertex_assignments', None) or {}
@@ -6416,12 +6466,14 @@ def integrate_diagram(
                 )
                 kv.append(kappa_subs[spec['symbol']].subs(num_params)
                           if num_params else kappa_subs[spec['symbol']])
+            sc = _noise_kernel_scales(kv, tau_sym_v)
             if TAU_KERNEL_CAP is not None:
                 noise_tau_box[tau_sym_v] = float(TAU_KERNEL_CAP)
             else:
-                hw = _noise_kernel_halfwidth(kv, tau_sym_v)
                 noise_tau_box[tau_sym_v] = (
-                    hw if hw is not None else _TAU_KERNEL_CAP_LEGACY)
+                    sc[0] if sc is not None else _TAU_KERNEL_CAP_LEGACY)
+            noise_tau_ladder[tau_sym_v] = _noise_kernel_ladder(
+                None if sc is None else sc[1], noise_tau_box[tau_sym_v])
         if kappa_subs:
             cp = cp.subs(kappa_subs)
             if num_params:
@@ -6995,6 +7047,7 @@ def integrate_diagram(
         # adaptive quad is well-behaved.  Outside ±5σ a Gaussian
         # is < 1e-6 of its peak; ±50 with σ ~ 1 is overkill and
         # safe for any kernel with σ < 10.
+        subset_var_breaks = {}
         if extra_tau_syms and remaining_int_vars:
             n_iv = len(remaining_int_vars)
             n_ext = len(free_ext_syms)
@@ -7002,6 +7055,10 @@ def integrate_diagram(
                 if tau_s not in remaining_int_vars:
                     continue
                 idx = remaining_int_vars.index(tau_s)
+                # the hardened quadrature's breakpoints of this τ variable
+                # (``_noise_kernel_ladder``)
+                if noise_tau_ladder.get(tau_s):
+                    subset_var_breaks[idx] = noise_tau_ladder[tau_s]
                 # Upper cap:  -τ_v + CAP > 0  ⇒  τ_v < CAP
                 cap = noise_tau_box.get(tau_s, _TAU_KERNEL_CAP_LEGACY)
                 a_up  = [0.0] * n_iv
@@ -7410,6 +7467,8 @@ def integrate_diagram(
             # and its warnings' parameter point (ACC-17)
             'kappa_floor': _kappa_floor,
             'params': _params_fp,
+            # breakpoints of the noise sources' τ variables (by index)
+            'var_breaks': subset_var_breaks,
             'diagram': typed_diagram,
             'loop_number': loop_number,
             'subset_id': branch_bits,
@@ -8845,6 +8904,27 @@ _NQUAD_INNERMOST_NUMPY_MIN = 64
 # The starting subinterval limit of a quad call is raised to NQUAD_LIMIT +
 # the oscillation count ω·(U − L)/π when that count exceeds this.
 _NQUAD_OSC_MIN = 100
+
+
+#: Integrand evaluations one region of the hardened quadrature fallback may
+#: use (``None``: no limit).  Past it the region raises
+#: ``PhaseJQuadratureBudgetError`` instead of running on: nested adaptive
+#: quadrature of a slowly decaying, non-exponential integrand (a noise
+#: kernel at one loop) can take hours.  Measured: the test suite and the
+#: public zoo pass under it; the one-loop colored-noise OU (non-Markov
+#: kernels exp(-|τ|), exp(-τ^2) and power-law tails alike) exceeds it after
+#: ~3 minutes, and ran over 40 minutes without it.
+NQUAD_EVAL_BUDGET = 20_000_000
+
+
+class PhaseJQuadratureBudgetError(DaedalusError, RuntimeError):
+    """A region of the hardened quadrature fallback needed more than
+    ``NQUAD_EVAL_BUDGET`` integrand evaluations: refused, never left
+    running silently.  ``region``: the diagram / subset description."""
+
+    def __init__(self, message, region=None):
+        super().__init__(message)
+        self.region = region
 
 
 class PhaseJNquadFallbackWarning(UserWarning):
@@ -10589,6 +10669,7 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
 
     kmin = kfast = None
     floor_span = None
+    var_breaks = (diag_meta or {}).get('var_breaks') or {}
     if mode_info is not None:
         kmin, kfast = mode_info.decay_rates()
     else:
@@ -10723,6 +10804,9 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
     inner_cut = [False]
     inf = math.inf
 
+    n_ev = [0]
+    budget_ev = NQUAD_EVAL_BUDGET
+
     def g0(*s):
         # The Heaviside filter: Θ(0) = 0, nothing is evaluated outside.
         for (c, prs) in rows_t:
@@ -10731,6 +10815,19 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                 dt += a * s[j]
             if dt <= 0.0:
                 return 0.0 + 0.0j
+        n_ev[0] += 1
+        if budget_ev is not None and n_ev[0] > budget_ev:
+            raise PhaseJQuadratureBudgetError(
+                f'Phase J: the hardened quadrature fallback needed more than '
+                f'NQUAD_EVAL_BUDGET = {budget_ev:,} integrand evaluations on '
+                f'one region ({_describe_diagram(diag_meta, m)}): refused '
+                f'rather than left running (nested adaptive quadrature of an '
+                f'integrand without exponential modes, e.g. a noise kernel '
+                f'with a slowly decaying tail at one loop).  Options: a noise '
+                f'kernel with exponential modes (markovianize=True, or a sum '
+                f'of exponentials that fits it), max_ell=0, or a larger '
+                f'final_integral.NQUAD_EVAL_BUDGET (None: no limit).',
+                region=_describe_diagram(diag_meta, m))
         return complex(f(*(list(s) + free_list)))
 
     def gm(*s):
@@ -10876,10 +10973,21 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
         #   region's tolerance.)
         ea = max(eps[0], ea_min)
         r = first
+        return _qcall_loop(fun, L, U, p, lim, wprod, other, defer, r, ea)
+
+    # the last quad result of the innermost call that finished (the caller
+    # reads its error estimate right after its own call returns: nested
+    # calls run inside quad, before the assignment)
+    last_r = [None]
+    # the error estimate of the level call that returned last (``level``)
+    last_err = [0.0]
+
+    def _qcall_loop(fun, L, U, p, lim, wprod, other, defer, r, ea):
         while True:
             if r is None:
                 r = quad(fun, L, U, epsabs=ea, epsrel=epsrel, limit=lim,
                          points=p, full_output=1)
+            last_r[0] = r
             if len(r) <= 3:
                 return r[0], None
             if other is not None and r[1] <= max(
@@ -10907,6 +11015,7 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
         # (a strip between two cuts, ``tail_k``) instead of its truncated
         # interval; the breakpoints inside it are kept.
         L, U = _level_interval(tabs[k], gen[k], outer)
+        last_err[0] = 0.0
         if not L < U:
             stats[0] += 1              # empty: no sampling at all
             return 0.0 + 0.0j
@@ -10944,6 +11053,9 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                 v = float(v)
                 if L < v < U:
                     pts.append(v)
+        for v in var_breaks.get(k, ()):
+            if L < v < U:
+                pts.append(v)
         anchor = None
         if pts and (lo_open or hi_open) and _NQUAD_TAIL_ANCHOR:
             fin = [p for p in pts if math.isfinite(p)]
@@ -11006,6 +11118,7 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                 lim = max(lim, min(NQUAD_LIMIT_MAX,
                                    NQUAD_LIMIT + int(math.ceil(n_osc))))
         cache = {}
+        errc = {}
         if k == 0:
             def F(x):
                 v = cache.get(x)
@@ -11022,6 +11135,7 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                 if v is None:
                     v = level(km1, (x,) + outer, wk)
                     cache[x] = v
+                    errc[x] = last_err[0]
                 return v
         p = pts if pts else None
         # The part (real or imaginary) that is larger at the centre of the
@@ -11042,11 +11156,27 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
         else:
             pa, pb = (lambda x: F(x).real), (lambda x: F(x).imag)
         a_, held = qcall(pa, L, U, p, lim, wprod, defer=True)
+        e_a = float(last_r[0][1]) if last_r[0] is not None else 0.0
         b_, _h = qcall(pb, L, U, p, lim, wprod, other=a_,
                        ea_min=epsrel * abs(a_) if held is None else 0.0)
+        e_b = float(last_r[0][1]) if last_r[0] is not None else 0.0
         if held is not None:
             a_, _h = qcall(pa, L, U, p, held[1], wprod, other=b_,
                            first=held[0])
+            e_a = float(last_r[0][1]) if last_r[0] is not None else e_a
+        # this level's error estimate: its own two quad calls plus the
+        # inner levels' estimates integrated over this level's nodes
+        # (trapezoid over the sorted evaluation points, held constant to the
+        # ends)
+        e_in = 0.0
+        if k >= 1 and errc:
+            xs = sorted(errc)
+            es = [errc[x] for x in xs]
+            e_in = es[0] * (xs[0] - L) + es[-1] * (U - xs[-1])
+            for i in range(len(xs) - 1):
+                e_in += 0.5 * (es[i] + es[i + 1]) * (xs[i + 1] - xs[i])
+        e_tot = abs(e_a) + abs(e_b) + e_in
+        last_err[0] = e_tot if math.isfinite(e_tot) else math.inf
         return complex(b_, a_) if swap else complex(a_, b_)
 
     def strip(lo_, hi_):
@@ -11173,9 +11303,11 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
             Kp += 1.0
         return Kp
 
+    err_reg = [0.0]                    # the region's error estimate
     try:
         floor_limited = [0.0]
         val = level(m - 1, ())
+        err_reg[0] = last_err[0]
         # Further passes, the tolerances relative to the result:
         # * epsabs: the first pass's scale (bound or sample of |integrand|)
         #   can exceed the integral by orders of magnitude (close poles,
@@ -11230,11 +11362,13 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
                 cutinfo[0] = None
                 inner_cut[0] = False
                 val = level(m - 1, ())
+                err_reg[0] = last_err[0]
             elif K_new > K_used:
                 side, anc, cut = cutinfo[0]
                 new = anc - K_new / kap if side == 'lo' else anc + K_new / kap
                 val = val + (strip(new, cut) if side == 'lo'
                              else strip(cut, new))
+                err_reg[0] += last_err[0]
                 kmin_eff[0] += K_new - K_used
                 cutinfo[0] = (side, anc, new)
                 K_used = K_new
@@ -11246,6 +11380,10 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
         ctr['nquad_hardened_capped'] += stats[1]
         ctr['nquad_hardened_uncertified'] += stats[2]
         ctr['nquad_hardened_floor_cut'] += stats[3]
+        if n_ev[0] > ctr['nquad_hardened_evals_max']:
+            ctr['nquad_hardened_evals_max'] = n_ev[0]
+        if math.isfinite(err_reg[0]):
+            ctr['nquad_hardened_err_abs_sum'] += err_reg[0]
         ctr['nquad_hardened_quad_flags'] += len(pflags)
         ctr['nquad_hardened_innermost_overflow'] += stats[4]
         ctr['nquad_hardened_quad_retries'] += stats[5]
