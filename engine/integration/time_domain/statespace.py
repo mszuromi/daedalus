@@ -702,6 +702,13 @@ def _mode(x, M, ax):
     return np.moveaxis(np.tensordot(M, x, axes=(1, ax)), 0, ax)
 
 
+def _pow2_scale(x):
+    """The power of two nearest ``x`` (> 0; 1 otherwise)."""
+    if not (x > 0 and math.isfinite(x)):
+        return 1.0
+    return 2.0 ** round(math.log2(x))
+
+
 def _balance_siso(a, b, c):
     """Exact power-of-two similarity balancing of the augmented matrix
     ``[[a, b], [c, 0]]`` (``scipy.linalg.matrix_balance``, no permutation):
@@ -716,10 +723,19 @@ def _balance_siso(a, b, c):
     smallest ``max(|a|_1, |b|_1 |c|_inf)`` is kept.  A diagonal similarity
     keeps a triangular ``a`` triangular."""
     n = a.shape[0]
+    # every comparison below is unit free: ``a`` (a rate) and ``b c`` (the
+    # entry's own units) are each measured against their size as given (a
+    # power of two: exact).  Mixing them raw chose a different, graded
+    # similarity in other time units (|a_21| 6e-4 next to rates 1e-9) and
+    # the exponentials lost ~1e-9 relative there.
+    na0 = float(np.abs(a).sum(axis=0).max())
+    nbc0 = float(np.abs(b).sum()) * float(np.abs(c).max())
+    ra, rbc = _pow2_scale(na0), _pow2_scale(nbc0)
+    rb = 2.0 ** round(0.5 * math.log2(rbc))
     aug = np.zeros((n + 1, n + 1), dtype=a.dtype)
-    aug[:n, :n] = a
-    aug[:n, n] = b
-    aug[n, :n] = c
+    aug[:n, :n] = a / ra
+    aug[:n, n] = b / rb
+    aug[n, :n] = c / rb
     if not np.all(np.isfinite(aug)):
         return a, b, c
     cands = [_equalize_bc(a, b, c)]
@@ -740,8 +756,8 @@ def _balance_siso(a, b, c):
     # smaller (both enter ||G|| and the Taylor step count)
     def cost(abc):
         a_, b_, c_ = abc
-        return max(float(np.abs(a_).sum(axis=0).max()),
-                   float(np.abs(b_).sum()) * float(np.abs(c_).max()))
+        return max(float(np.abs(a_).sum(axis=0).max()) / ra,
+                   float(np.abs(b_).sum()) * float(np.abs(c_).max()) / rbc)
     return min(cands, key=cost)
 
 

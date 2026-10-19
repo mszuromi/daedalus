@@ -1496,6 +1496,89 @@ def _aposteriori_error(A, B, C):
 
 # ─── main entry points ────────────────────────────────────────────────────
 
+def _time_scale(ents):
+    """A power of two near the rate scale of the rational functions
+    ``ents`` (elements of ``F(s)``): the median over every numerator and
+    denominator of ``|c_k / c_n|^(1/(n - k))`` (each coefficient ratio of a
+    polynomial of degree ``n``, which scales as a rate^(n-k)).  The
+    realization is formed in ``sigma = s / omega0`` (``_rescale_s``) and
+    mapped back exactly (``A = omega0 A~``, ``B = omega0 B~``): in other
+    time units the coefficients of a companion / chain form carry different
+    powers of the unit, and the rounded, balanced realization was graded
+    (balancing does not undo it), so exponentials lost ~1e-9 at rates 1e-9
+    and a posteriori checks fired at rates 1e6.  1 when nothing sets a
+    scale."""
+    import math
+    logs = []
+    for x in ents:
+        for poly in (x.numerator(), x.denominator()):
+            n = poly.degree()
+            if n < 1:
+                continue
+            cs = poly.list()
+            cn = abs(complex(cs[n]))
+            if cn == 0:
+                continue
+            for k in range(n):
+                ck = abs(complex(cs[k]))
+                if ck > 0:
+                    logs.append(math.log2(ck / cn) / (n - k))
+    if not logs:
+        return 1
+    logs.sort()
+    m = len(logs)
+    med = logs[m // 2] if m % 2 else 0.5 * (logs[m // 2 - 1] + logs[m // 2])
+    return 2 ** int(round(med))
+
+
+def _field_scales(ents, nf, sweeps=8):
+    """Powers of two ``(r, c)`` (row / column exponents) that equilibrate
+    ``|K(sigma = 1)|`` (Ruiz iterations): ``K~ = diag(2^r) K diag(2^c)``
+    has the fields in comparable units.  The realization of ``K~`` is mapped
+    back exactly (``realize_K``); without it a model whose fields carry
+    different powers of the time unit (a spike train next to a voltage) was
+    'graded' at fast time units and the a posteriori check added a spurious
+    5e-4..8e-4 to the accuracy estimate."""
+    import math
+    mag = {}
+    for (i, j), x in ents.items():
+        try:
+            v = abs(complex(x(1)))
+        except (ZeroDivisionError, ArithmeticError, TypeError, ValueError):
+            v = 0.0
+        if v > 0 and math.isfinite(v):
+            mag[(i, j)] = math.log2(v)
+    r = [0] * nf
+    c = [0] * nf
+    for _ in range(sweeps):
+        changed = False
+        for i in range(nf):
+            row = [m + r[i] + c[j] for (ii, j), m in mag.items() if ii == i]
+            if row:
+                d = -int(round(max(row) / 2.0)) if abs(max(row)) >= 1 else 0
+                if d:
+                    r[i] += d
+                    changed = True
+        for j in range(nf):
+            col = [m + r[i] + c[j] for (i, jj), m in mag.items() if jj == j]
+            if col:
+                d = -int(round(max(col) / 2.0)) if abs(max(col)) >= 1 else 0
+                if d:
+                    c[j] += d
+                    changed = True
+        if not changed:
+            break
+    return r, c
+
+
+def _rescale_s(x, w0, P):
+    """``x(w0 s)`` for ``x`` in ``F(s)`` (``w0`` a power of two: exact)."""
+    if w0 == 1:
+        return x
+    sv = P.gen() * P.base_ring()(w0)
+    return x.numerator()(sv) / x.denominator()(sv)
+
+
 def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
               per_entry=True, minimal=True, balance=True, truncation=None):
     """Realization of ``G = K_ft^{-1}`` at ``num_params`` (module docstring).
@@ -1514,6 +1597,19 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
     subs = _exact_subs(num_params)
     ents, F, P, fname = _entries_to_field(K_ft, omega, subs)
     prov = [f'field {fname}; omega -> -i s; parameters at their exact binary values']
+    # realized in sigma = s / w0 (unit free), mapped back below
+    w0 = _time_scale(ents.values())
+    if w0 != 1:
+        ents = {k: _rescale_s(x, w0, P) for k, x in ents.items()}
+        prov.append(f'realized in s / {w0} (the model rate scale, a power of two)')
+    # and with the fields in comparable units (K~ = diag(2^fr) K diag(2^fc);
+    # G = diag(2^fc) G~ diag(2^fr), mapped back below, exactly)
+    fr, fc = _field_scales(ents, nf)
+    if any(fr) or any(fc):
+        ents = {(i, j): x * F(2) ** (fr[i] + fc[j]) for (i, j), x in ents.items()}
+        prov.append(f'fields equilibrated by powers of two (rows {fr}, columns {fc})')
+    rs = np.array([2.0 ** k for k in fr])          # G's input (column) scales
+    cs = np.array([2.0 ** k for k in fc])          # G's output (row) scales
 
     K0 = S.matrix(F, nf, nf)
     K1 = S.matrix(F, nf, nf)
@@ -1570,7 +1666,7 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
 
     cplx = fname != 'QQ'
     An, Bn, Cn, Dn = (_to_numpy(M, cplx) for M in (A, B, C, D))
-    norm_A_raw = float(np.linalg.norm(An, 1)) if An.size else 0.0
+    norm_A_raw = float(np.linalg.norm(An, 1)) * w0 if An.size else 0.0
     if balance:
         An, Bn, Cn, sca = _balance(An, Bn, Cn)
     else:
@@ -1600,6 +1696,14 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
                 f'{margin}, balancing range {float(sca.max() / max(sca.min(), 1e-300)):.3g}, '
                 f'|B| {float(np.abs(Bn).max()):.3g}, |C| {float(np.abs(Cn).max()):.3g}): {why}')
 
+    # the checks above ran on the unit-free realization; back to the model's
+    # time and field units (exact powers of two)
+    if w0 != 1:
+        An, Bn = An * w0, Bn * w0
+    if An.size or Bn.size:
+        Bn = Bn * rs[None, :]
+        Cn = Cn * cs[:, None]
+    Dn = Dn * cs[:, None] * rs[None, :]
     entries = {}
     est = np.zeros((nf, nf), dtype=int)
     trunc = None
@@ -1614,7 +1718,10 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
                 an, bn, cn = (_to_numpy(M, cplx) for M in (a_, b_, c_))
                 if balance and an.shape[0]:
                     an, bn, cn, _s = _balance(an, bn, cn)
-                dn = _round(D[p, r_])
+                if w0 != 1:
+                    an, bn = an * w0, bn * w0
+                bn, cn = bn * rs[r_], cn * cs[p]
+                dn = _round(D[p, r_]) * (cs[p] * rs[r_])
                 dn = dn if cplx else dn.real
                 k = an.shape[0]
                 ent = EntryRealization(a=an, b=bn.reshape(k), c=cn.reshape(k),
@@ -1650,7 +1757,16 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         balance=np.asarray(sca, dtype=float), hurwitz=hur,
         lyapunov_margin=margin, conditioning=cond, provenance=tuple(prov),
         field_name=fname,
-        exact={'A': A, 'B': B, 'C': C, 'D': D, 'field': F, 'K0': K0, 'K1': K1},
+        exact={'A': A * F(w0),
+               'B': B * F(w0) * S.diagonal_matrix(F, [F(2) ** k for k in fr]),
+               'C': S.diagonal_matrix(F, [F(2) ** k for k in fc]) * C,
+               'D': (S.diagonal_matrix(F, [F(2) ** k for k in fc]) * D
+                     * S.diagonal_matrix(F, [F(2) ** k for k in fr])),
+               'field': F,
+               'K0': S.diagonal_matrix(F, [F(2) ** -k for k in fr]) * K0
+               * S.diagonal_matrix(F, [F(2) ** -k for k in fc]),
+               'K1': S.diagonal_matrix(F, [F(2) ** -k for k in fr]) * K1
+               * S.diagonal_matrix(F, [F(2) ** -k for k in fc]) / F(w0)},
         truncation=trunc)
 
 
@@ -1760,6 +1876,8 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
         raise RealizationRefused(
             'non_rational', f'kernel {att.get("symbol")}: {str(e)[:120]} is '
             f'not a rational function of s ({type(last).__name__})')
+    w0 = _time_scale([x])                  # realized in s / w0 (realize_K)
+    x = _rescale_s(x, w0, P)
     q, r, d = _split_entry(x, P)
     cplx = fname != 'QQ'
     d0 = 0.0
@@ -1793,6 +1911,9 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
     tol = truncation_tol() if truncation is None else float(truncation)
     if tol > 0 and k >= 2:
         ent, _info = truncate_entry(ent, tol)
+    if w0 != 1 and ent.n_states:          # back to the model's time unit (exact)
+        ent = EntryRealization(a=ent.a * w0, b=ent.b * w0, c=ent.c, d=ent.d,
+                               n_states=ent.n_states)
     return ent, fname
 
 

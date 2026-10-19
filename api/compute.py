@@ -843,6 +843,12 @@ def _make_preflight(preflight, model, k, max_ell, external_fields_user,
 #: call sees the same value as without the analyzer).
 _MAX_COUNTERS = ('dd_err_ratio_max', 'dbm_error_ratio_max',
                  'nquad_hardened_cap_span_max')
+#: Float sums (the G6 error estimates): reset to 0 around a run and restored
+#: to ``before + run`` like the maxima.  A difference of process-wide totals
+#: lost the run's sum entirely when it was far below an earlier run's (a
+#: model in slow time units after one in unit time: 1e-34 - 0 against 6.9e-17
+#: gave R = 0).
+_SUM_COUNTERS = ('dd_err_abs_sum', 'dbm_err_abs_sum', 'ss_err_abs_sum')
 
 
 def _counter_snapshot():
@@ -858,8 +864,11 @@ def _counter_snapshot():
     maxes = {k_: c[k_] for k_ in _MAX_COUNTERS if k_ in c}
     for k_ in maxes:
         c[k_] = 0.0
+    sums = {k_: c.get(k_, 0.0) for k_ in _SUM_COUNTERS}
+    for k_ in sums:
+        c[k_] = 0.0
     workers = {k_: id(v) for k_, v in _pl._WORKER_STATE.items()}
-    return snap, maxes, workers
+    return snap, (maxes, sums), workers
 
 
 _SS_DICT_COUNTERS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
@@ -873,7 +882,7 @@ def _counter_delta(token):
     returns its workers' counters, W8p S1)."""
     from engine.integration.time_domain import final_integral as _fi
     from engine.integration.time_domain import pipeline as _pl
-    snap, maxes, workers = token
+    snap, (maxes, sums), workers = token
     c = _fi._RUNTIME_COUNTERS
     out = {}
     for k_, v in c.items():
@@ -887,6 +896,9 @@ def _counter_delta(token):
         if k_ in maxes:
             out[k_] = v
             c[k_] = max(maxes[k_], v)
+        elif k_ in sums:
+            out[k_] = v
+            c[k_] = sums[k_] + v
         else:
             out[k_] = v - snap.get(k_, 0)
     now = {k_: id(v) for k_, v in _pl._WORKER_STATE.items()}
