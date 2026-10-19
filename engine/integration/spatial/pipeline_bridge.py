@@ -73,58 +73,82 @@ def _norm_sr(num_params):
     return out
 
 
-def _field_index(prop, leg_name):
-    """Map an external-leg field name to the diagonal field index in the
-    propagator's physical columns (mirrors ``spatial_correlator``)."""
-    ring_names = prop['ring_gen_names']
-    n_tilde = prop['nf']
-    phys_names = ring_names[n_tilde:]
-    base = str(leg_name)
-    for idx, pn in enumerate(phys_names):
-        if base == pn or base.rstrip('0123456789') == pn.rstrip('0123456789'):
-            return idx
-    return 0
+def _field_index(prop, leg):
+    """Map one external leg (a ``(name, population)`` pair or a bare name) to
+    its physical column in the propagator.  Resolved through the phys_idx keys
+    (:func:`_legs_to_phys_idx`), so the POPULATION survives: on a
+    multi-population field ``('dp', 2)`` is column 1, never column 0.  Raises
+    :class:`SpatialPropagatorError` for a leg that names no physical field."""
+    from engine.diagrams.type_assignment import build_field_index_map
+    _, phys_idx = build_field_index_map(list(prop['ring_gen_names']),
+                                        int(prop['nf']))
+    return int(phys_idx[_legs_to_phys_idx([leg], phys_idx)[0]])
 
 
 def _legs_to_phys_idx(external_fields, phys_idx):
     """Map external-leg specs to VALID phys_idx keys for diagram enumeration.
 
-    ``compute_cumulants`` normalizes external fields to internal fluctuation
-    names but KEEPS the per-leg label, e.g. a 2-point auto-correlation arrives
-    as ``[('dphi',1),('dphi',2)]``.  A single-population field has only the
-    phys_idx key ``('dphi',1)``, so the ``('dphi',2)`` leg is invalid and
-    ``enumerate_unique_diagrams`` would type 0 diagrams (the Stage A unblock:
-    both auto-correlation legs must sit on the same valid key).  Map each leg's
-    field NAME to its actual phys_idx ``(name, population)`` key.
+    A leg is a ``(name, population)`` pair (``compute_cumulants`` normalizes
+    the name to the internal fluctuation name: a user's ``('b', 1)`` arrives
+    as ``('db', 1)``; both spellings are accepted here) or a bare name.  The
+    key is matched EXACTLY, population included, so a multi-population
+    field's ``('dp', 2)`` is population 2.  Two lenient cases remain, and
+    only where they cannot pick a wrong field: a field with a SINGLE
+    population key takes any population label (a 2-point auto-correlation
+    used to arrive as ``[('dphi', 1), ('dphi', 2)]`` and must sit on the one
+    valid key), and a bare name maps to its field's key when that field has
+    one population.  Anything else (an unknown name, a population the field
+    does not have, a bare name of a multi-population field) raises.
     """
     keys = list(phys_idx.keys())
+
+    def _strip(nm):
+        return str(nm).rstrip('0123456789')
+
     out = []
     for leg in external_fields:
         if isinstance(leg, (tuple, list)):
             if tuple(leg) in phys_idx:
                 out.append(tuple(leg))
                 continue
-            name = str(leg[0])
+            name, pop = str(leg[0]), (int(leg[1]) if len(leg) > 1 else None)
         else:
-            name = str(leg)
-        base = name.rstrip('0123456789')
-        # try the natural name AND the 'd'-prefixed fluctuation name (a user
-        # passes ('b',1); the ring key is ('db',1))
-        cands = (name, 'd' + name)
-        bases = (base, 'd' + base)
-        match = None
-        for key in keys:
-            kn = str(key[0])
-            if kn in cands or kn.rstrip('0123456789') in bases:
-                match = key
-                break
-        if match is None:
-            # NEVER fall back silently (a wrong leg would quietly compute a
-            # DIFFERENT correlator — e.g. C_aa instead of C_ab)
+            name, pop = str(leg), None
+        # the natural name AND the 'd'-prefixed fluctuation name; a bare name
+        # may carry a population suffix ('dp2')
+        cands = [name, 'd' + name]
+        exact = [kk for kk in keys if str(kk[0]) in cands
+                 and (pop is None or int(kk[1]) == pop)]
+        if pop is not None and exact:
+            out.append(exact[0])
+            continue
+        same = [kk for kk in keys if str(kk[0]) in cands]
+        if not same:
+            # a bare 'dp2' style name: base name + population suffix
+            m = (pop is None and _strip(name) != name)
+            if m:
+                bpop = int(name[len(_strip(name)):])
+                same_b = [kk for kk in keys
+                          if str(kk[0]) in (_strip(name), 'd' + _strip(name))]
+                hit = [kk for kk in same_b if int(kk[1]) == bpop]
+                if hit:
+                    out.append(hit[0])
+                    continue
+                same = same_b
+        if len(same) == 1:
+            out.append(same[0])
+            continue
+        # NEVER fall back silently (a wrong leg would quietly compute a
+        # DIFFERENT correlator — e.g. C_aa instead of C_ab, or population 1
+        # instead of population 2)
+        if same:
             raise SpatialPropagatorError(
-                f'external leg {leg!r} does not name any physical field '
-                f'(available: {keys}).')
-        out.append(match)
+                f'external leg {leg!r}: field {str(same[0][0])!r} has '
+                f'populations {sorted(int(kk[1]) for kk in same)}; name one '
+                f'of them as (name, population).')
+        raise SpatialPropagatorError(
+            f'external leg {leg!r} does not name any physical field '
+            f'(available: {keys}).')
     return out
 
 
@@ -157,6 +181,184 @@ def _bc_from_prop(prop, num_params_sr, model=None):
     return bc_mode, L
 
 
+# ── constant drift: the Galilean boost ───────────────────────────────
+# A constant advection ``v·∂_xφ`` shared by EVERY field (inverse propagator
+# ``K ∋ V·k`` with ``V = i·v·I`` after ``GradX → i·k``) is removed exactly by
+# the boost ``x → x − v·t``: ``∂_t + v·∂_x`` becomes ``∂_t``, the Laplacian,
+# spatial-derivative vertices, a homogeneous saddle and the δ-correlated white
+# noise are invariant, and the stationary state maps to itself.  So at every
+# loop order and every k
+#     C_v(x_1, τ_1; …) = C_0(x_1 − v·τ_1, τ_1; …),
+# ``C_0`` the cumulant of the drift-free theory (``GradX → 0``), with the
+# package convention ``C(x, τ) = ⟨φ(0, 0) φ(x, τ)⟩`` (a pattern advected to
+# +x at speed v).  Unequal drifts, cross-advection (off-diagonal V) and a real
+# part of V (not an advection) have no such frame and refuse loudly.
+_DRIFT_RTOL = 1e-10
+
+
+def _drift_velocity(V, M, D):
+    """The common drift velocity ``v`` of a numeric ``(n, n)`` k-linear block
+    ``V`` (``V = i·v·I``), or raise :class:`NotImplementedError`.  Thresholds
+    are relative to the model's velocity scale ``sqrt(|eig M|·|eig D|)`` (and
+    ``|V|``), so an exact change of units never flips a decision.  Returns
+    ``0.0`` for a drift below that relative tolerance."""
+    V = np.atleast_2d(np.asarray(V, dtype=complex))
+    M = np.atleast_2d(np.asarray(M, dtype=complex))
+    D = np.atleast_2d(np.asarray(D, dtype=complex))
+    scale = max(math.sqrt(float(np.max(np.abs(np.linalg.eigvals(M))))
+                          * float(np.max(np.abs(np.linalg.eigvals(D))))),
+                float(np.max(np.abs(V))))
+    if scale == 0.0:
+        return 0.0
+    tol = _DRIFT_RTOL * scale
+    off = V - np.diag(np.diag(V))
+    if float(np.max(np.abs(off))) > tol:
+        raise NotImplementedError(
+            'spatial drift: the k-linear block V of the inverse propagator is '
+            f'off-diagonal (cross-advection, max |V_ij| = '
+            f'{float(np.max(np.abs(off))):.4g}); only a drift shared by every '
+            'field (V = i*v*I, removed exactly by a Galilean boost) is '
+            'supported.')
+    dg = np.diag(V)
+    if float(np.max(np.abs(dg.real))) > tol:
+        raise NotImplementedError(
+            'spatial drift: the k-linear block V has a REAL part '
+            f'(max |Re V_ii| = {float(np.max(np.abs(dg.real))):.4g}); a '
+            'first-derivative term must enter as i*v*k (v*Dx(phi) in the '
+            'action, v real).  Check the coefficient of the Dx term.')
+    vs = dg.imag
+    if float(np.max(vs) - np.min(vs)) > tol:
+        raise NotImplementedError(
+            f'spatial drift: the fields drift at different velocities '
+            f'{[float(x) for x in vs]}; no Galilean frame removes all of them '
+            '(a relative advection).  Only a common drift is supported.')
+    v = float(np.mean(vs))
+    return v if abs(v) > tol else 0.0
+
+
+def _drift_boost(ft, prop, num_params):
+    """``None`` when the propagator has no k-linear term at the saddle (the
+    usual case: nothing changes, bit for bit).  Otherwise ``(v, prop0,
+    nps0)``: the common drift velocity (:func:`_drift_velocity`) and the
+    drift-free propagator / parameters (``GradX → 0``; ``ac_drift`` zeroed)
+    the boosted evaluation runs on."""
+    # the operator IR lowers a bilinear Dx to the global GradX symbol (Sage
+    # caches symbols by name; the namespace carries no GradX attribute)
+    grad = getattr(ft._ns, 'GradX', None) or SR.var('GradX')
+    K_ft = prop.get('K_ft')
+    if K_ft is None or not any(SR(e).has(grad) for e in K_ft.list()):
+        return None
+    from engine.integration.spatial.heat_kernel import (
+        reaction_diffusion_matrices)
+    k_var = SR.var('k')
+    M_sr, D_sr, V_sr = reaction_diffusion_matrices(
+        K_ft, prop['omega'], k_var, ft._ns.Laplacian, grad)
+    n = int(V_sr.nrows())
+    if all(SR(V_sr[a, b]).is_zero() for a in range(n) for b in range(n)):
+        return None
+    nps_sr = _norm_sr(num_params)
+
+    def _num(sm, what):
+        out = np.zeros((n, n), dtype=complex)
+        for a in range(n):
+            for b in range(n):
+                e = SR(sm[a, b]).subs(nps_sr)
+                try:
+                    out[a, b] = complex(e)
+                except (TypeError, ValueError):
+                    raise SpatialPropagatorError(
+                        f'spatial drift: the {what} entry [{a},{b}] = {e} does '
+                        f'not evaluate at the given parameters (unresolved '
+                        f'symbols {sorted(str(x) for x in e.variables())}).')
+        return out
+    V = _num(V_sr, 'drift (V)')
+    if not np.any(V):
+        return None
+    if any(SR(e).degree(grad) >= 2 for e in K_ft.list()):
+        # GradX -> 0 below would also drop a GradX^2 term (Dx(Dx(phi)))
+        raise NotImplementedError(
+            'spatial drift with a second first-derivative (GradX^2) term in '
+            'the inverse propagator: write the second derivative as Lap(...).')
+    v = _drift_velocity(V, _num(M_sr, 'reaction (M)'),
+                        _num(D_sr, 'diffusion (D)'))
+    prop0 = dict(prop)
+    prop0['K_ft'] = K_ft.apply_map(lambda e: SR(e).subs({grad: 0}))
+    if prop.get('ac_drift'):
+        prop0['ac_drift'] = {kk: SR(0) for kk in prop['ac_drift']}
+    nps0 = dict(num_params)
+    nps0[str(grad)] = 0.0
+    return v, prop0, nps0
+
+
+def _boosted_k2(fn, ft, model, prop, num_params, external_fields, tau_grid,
+                spatial_grid, kw, per_tau_kw=None):
+    """Run the k=2 driver ``fn`` with a constant drift removed by the Galilean
+    boost (:func:`_drift_boost`).  ``None`` when there is no drift (the caller
+    proceeds unchanged).  Each τ row is the drift-free correlator at the
+    boosted points ``x − v·τ`` (one drift-free call per τ; ``per_tau_kw(i)``
+    adds keyword overrides for the i-th call, e.g. certify only once)."""
+    b = _drift_boost(ft, prop, num_params)
+    if b is None:
+        return None
+    v, prop0, nps0 = b
+    if v == 0.0:
+        return fn(ft, model, prop0, nps0, external_fields, tau_grid,
+                  spatial_grid, **kw)
+    if int(prop.get('spatial_dim', 1)) != 1:
+        raise NotImplementedError(
+            f'spatial drift v = {v:.6g} at d = {int(prop.get("spatial_dim"))}: '
+            'the correlator is not isotropic and the output grid holds '
+            'distances |x|; a drift is supported at d = 1 only.')
+    taus = [float(t) for t in tau_grid]
+    xs = np.asarray(spatial_grid, dtype=float)
+    rows, infos = [], []
+    for i, tau in enumerate(taus):
+        kwi = dict(kw)
+        if per_tau_kw is not None:
+            kwi.update(per_tau_kw(i))
+        Ci, inf = fn(ft, model, prop0, nps0, external_fields, [tau],
+                     xs - v * tau, **kwi)
+        rows.append(np.asarray(Ci)[0])
+        infos.append(inf)
+    C = np.array(rows)
+    info = dict(infos[0])
+    # per-τ diagnostics: the worst over every boosted run
+    for key in ('max_abs_imag', 'imag_frac', 'certify_max_rel'):
+        vals = [inf.get(key) for inf in infos if inf.get(key) is not None]
+        if vals:
+            info[key] = max(vals)
+    # the accuracy records of every τ (the τ = 0 run holds the equal-time one)
+    eqs = [inf['equal_time'] for inf in infos if inf.get('equal_time')]
+    if eqs:
+        m_ = {'calls': sum(e.get('calls', 0) for e in eqs),
+              'grid_calls': sum(e.get('grid_calls', 0) for e in eqs)}
+        sx = [e for e in eqs if e.get('calls')]
+        if sx:
+            m_['max_rel_change'] = max(e['max_rel_change'] for e in sx)
+            m_['unconverged'] = sum(e['unconverged'] for e in sx)
+            m_['max_order'] = max(e['max_order'] for e in sx)
+        gn = [e for e in eqs if e.get('grid_calls')]
+        if gn:
+            m_['grid_note'] = gn[0]['grid_note']
+            m_['grid_sizes'] = sorted({g for e in gn for g in e['grid_sizes']})
+        info['equal_time'] = m_
+    das = [inf['derivative_accuracy'] for inf in infos
+           if inf.get('derivative_accuracy')]
+    if das:
+        d_ = dict(das[0])
+        sp = [x.get('coarse_spread') for x in das]
+        d_['coarse_spread'] = (None if any(v is None for v in sp)
+                               else max(sp))
+        info['derivative_accuracy'] = d_
+    if 'C_by_order' in info:
+        info['C_by_order'] = {
+            el: np.array([np.asarray(inf['C_by_order'][el])[0]
+                          for inf in infos])
+            for el in info['C_by_order']}
+    info['drift_velocity'] = v
+    return C, info
+
+
 # ── 1. per-mode (mu, D, kap) structure ───────────────────────────────
 def diagonal_modes_from_propagator(prop, ft, num_params, field_index):
     """Return ``[(mu, D, kap)]`` — the per-mode heat-kernel structure for the
@@ -173,6 +375,10 @@ def diagonal_modes_from_propagator(prop, ft, num_params, field_index):
     mu_expr = prop['ac_mass'][field_index]
     D_expr = prop['ac_diffusion'][field_index]
     mu = complex(SR(mu_expr).subs(nps_sr))
+    if mu.real < 0.0:
+        raise SpatialPropagatorError(
+            f'field index {field_index} has an UNSTABLE mass mu={mu} (Re mu < 0): '
+            f'no stationary correlator exists at the q = 0 mode.')
     Dsub = SR(D_expr).subs(nps_sr)
     D = float(Dsub.real() if hasattr(Dsub, 'real') else Dsub)
     if D <= 0.0:
@@ -325,10 +531,23 @@ def compute_spatial_correlator_via_pipeline(
     ``Σ_α free_two_point(μ_α, D_α, κ_α; x, τ)`` (exact at ``τ = 0``).
 
     Returns ``(C_tau_x, info)`` mirroring the bespoke API; ``info`` adds
-    ``pipeline_certified`` and ``certify_max_rel``.
+    ``pipeline_certified`` and ``certify_max_rel``.  ``q_cut`` / ``n_q`` are
+    unused since the d≥2 tree became the exact heat-kernel time integral
+    (kept for call compatibility).
     """
     if not prop.get('spatial_dim'):
         raise SpatialPropagatorError('propagator has no spatial block.')
+    # a constant drift: exact Galilean boost (certified once, τ-independent)
+    _bst = _boosted_k2(
+        compute_spatial_correlator_via_pipeline, ft, model, prop, num_params,
+        external_fields, tau_grid, spatial_grid,
+        dict(verbose=verbose, certify=certify, q_samples=q_samples,
+             tau_samples=tau_samples, certify_tol=certify_tol, q_cut=q_cut,
+             n_q=n_q, enum_verbose=enum_verbose, stage_headers=stage_headers),
+        per_tau_kw=lambda i: {} if i == 0 else {'certify': False,
+                                                'verbose': False})
+    if _bst is not None:
+        return _bst
     if prop.get('G_tx_sym') is None:
         # Diagonal Tier-1 heat-kernel block unavailable (e.g. off-diagonal
         # coupling).  If the inverse propagator is COUPLED but scalar-diffusion,
@@ -356,9 +575,9 @@ def compute_spatial_correlator_via_pipeline(
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
     ext_int = _legs_to_phys_idx(external_fields, phys_idx)
 
-    leg_names = [f[0] if isinstance(f, (tuple, list)) else f
-                 for f in ext_int]
-    fi = _field_index(prop, leg_names[0])
+    # the column of the leg's (name, population) key — never the name alone
+    # (a multi-population field's population 2 is its own column)
+    fi = int(phys_idx[ext_int[0]])
 
     # The diagonal per-mode form below is the AUTO-correlator ⟨φ_i φ_i⟩ of one
     # field.  A CROSS-correlator ⟨φ_i φ_j⟩ (external legs on two different
@@ -371,8 +590,8 @@ def compute_spatial_correlator_via_pipeline(
     # (C_ii = N_ii/2μ_i), and the diagonal path works at any d while the
     # coupled driver is d=1 only.  (Off-diagonal DRIFT already routes earlier
     # via ``prop['G_tx_sym'] is None``.)
-    _cross_legs = (len(leg_names) >= 2
-                   and _field_index(prop, leg_names[1]) != fi)
+    _cross_legs = (len(ext_int) >= 2
+                   and int(phys_idx[ext_int[1]]) != fi)
     if _cross_legs:
         return compute_coupled_tree_correlator(
             ft, model, prop, num_params, external_fields, tau_grid,
@@ -429,26 +648,22 @@ def compute_spatial_correlator_via_pipeline(
                                           bc_mode=bc_mode, L=L)
                 C[it, ix] = val
     else:
-        # d≥2: the radial/Hankel q→x transform of the momentum-space correlator
-        # Σ_modes kap/(mu+Dq²) e^{−(mu+Dq²)|τ|}, truncated at q_cut (Regime 1 — a
-        # physical cutoff; the continuum limit is q_cut→∞ with fine n_q).
+        # d≥2: the EXACT heat-kernel time integral
+        # κ∫_{|τ|}^∞ e^{−μs}(4πDs)^{−d/2}e^{−|x|²/4Ds}ds per mode (Bessel-K
+        # closed form at τ=0, adaptive quadrature with a checked error
+        # estimate at τ≠0) — no q-grid, no cutoff; a periodic box is its
+        # converged image sum.  The equal point x=τ=0 is UV-divergent for d≥2
+        # and refuses.
         from engine.integration.spatial.spatial_correlator import (
-            radial_inverse_ft, periodic_inverse_ft)
-        qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
-        xs = np.array([float(x) for x in spatial_grid])
-        m_modes = [(float(np.real(mu)), float(np.real(D)), float(np.real(kap)))
-                   for (mu, D, kap) in modes]
+            free_two_point_d, free_two_point_box)
         _periodic = bc_mode == 'periodic' and L
         for it, tau in enumerate(tau_grid):
-            at = abs(float(tau))
-            Cq = np.zeros_like(qg)
-            for (mu, D, kap) in m_modes:
-                m = mu + D * qg * qg
-                Cq += (kap / m) * np.exp(-m * at)
-            # periodic cubic box → discrete-momentum lattice sum; else the
-            # continuous radial/Hankel transform (infinite domain).
-            C[it, :] = (periodic_inverse_ft(qg, Cq, xs, d, float(L))
-                        if _periodic else radial_inverse_ft(qg, Cq, xs, d))
+            for ix, x in enumerate(spatial_grid):
+                C[it, ix] = sum(
+                    (free_two_point_box(mu, D, kap, float(x), float(tau), d,
+                                        float(L)) if _periodic else
+                     free_two_point_d(mu, D, kap, float(x), float(tau), d))
+                    for (mu, D, kap) in modes)
 
     info = {'field_index': fi, 'modes': modes, 'bc_mode': bc_mode, 'L': L,
             'spatial_dim': d,
@@ -484,6 +699,12 @@ def compute_coupled_tree_correlator(
     K_ft = prop.get('K_ft')
     if K_ft is None:
         raise SpatialPropagatorError('coupled tree correlator: prop has no K_ft.')
+    _bst = _boosted_k2(
+        compute_coupled_tree_correlator, ft, model, prop, num_params,
+        external_fields, tau_grid, spatial_grid,
+        dict(q_cut=q_cut, n_q=n_q, n_modes=n_modes, verbose=verbose))
+    if _bst is not None:
+        return _bst
     d = int(prop.get('spatial_dim', 1))
     if d not in (1, 2, 3):
         raise NotImplementedError(
@@ -493,7 +714,7 @@ def compute_coupled_tree_correlator(
     omega = prop['omega']
     k_var = SR.var('k')
     lap_sym = ns.Laplacian
-    grad_sym = getattr(ns, 'GradX', None)
+    grad_sym = getattr(ns, 'GradX', None) or SR.var('GradX')
     nps_sr = _norm_sr(num_params)
     nps_str = {str(kk): vv for kk, vv in num_params.items()}
 
@@ -504,11 +725,15 @@ def compute_coupled_tree_correlator(
         return np.array([[complex(SR(sm[a, b]).subs(nps_sr)).real for b in range(n)]
                          for a in range(n)], dtype=float)
 
-    M, Dm, Vm = _num(M_sr), _num(D_sr), _num(V_sr)
-    if not np.allclose(Vm, 0.0, atol=1e-9):
-        raise NotImplementedError(
-            'coupled tree correlator: drift (V≠0) not supported (scalar-diffusion '
-            'coupled v1).')
+    # (a drift was boosted away above: V is identically zero here)
+    M, Dm = _num(M_sr), _num(D_sr)
+    _re_min = float(np.min(np.linalg.eigvals(M).real))
+    if not _re_min > 0.0:
+        # q = 0 is the least stable mode (D ≥ 0): no stationary state
+        raise SpatialPropagatorError(
+            f'coupled tree correlator: the reaction matrix M is not stable '
+            f'(min Re eig = {_re_min:.4g} <= 0); the stationary correlator '
+            f'does not exist (unstable or critical mode at q = 0).')
     # Reference diffusion D₀: user override (.reference_diffusion(D0), stored
     # in the model) else trace/N (build_reference default).
     _ref_D0 = (model.get('spatial') or {}).get('reference_diffusion')
@@ -539,21 +764,16 @@ def compute_coupled_tree_correlator(
                   f'convergence; consider a larger truncation order.')
     N = extract_noise_matrix(ft, nps_str)
 
-    # External legs → physical field indices (i, j).  Robust to the
-    # 'd'-prefixed fluctuation names compute_cumulants passes (e.g. 'da'→'a').
-    phys_names = list(prop['ring_gen_names'][prop['nf']:])
+    # External legs → physical field indices (i, j), through the phys_idx
+    # (name, population) keys (the 'd'-prefixed fluctuation names
+    # compute_cumulants passes and the natural names both resolve; a wrong or
+    # ambiguous leg raises — a wrong index computes a different C_ij).
+    from engine.diagrams.type_assignment import build_field_index_map
+    _, _pidx = build_field_index_map(list(prop['ring_gen_names']),
+                                     int(prop['nf']))
 
     def _leg_idx(spec):
-        nm = str(spec[0] if isinstance(spec, (tuple, list)) else spec)
-        for cand in (nm, nm[1:] if nm.startswith('d') else 'd' + nm):
-            base = cand.rstrip('0123456789')
-            for idx, pn in enumerate(phys_names):
-                if cand == pn or base == pn.rstrip('0123456789'):
-                    return idx
-        # NEVER default silently — a wrong leg index computes a different C_ij
-        raise SpatialPropagatorError(
-            f'external leg {spec!r} does not name any physical field '
-            f'(available: {phys_names}).')
+        return int(_pidx[_legs_to_phys_idx([spec], _pidx)[0]])
 
     i = _leg_idx(external_fields[0])
     j = _leg_idx(external_fields[-1])
@@ -600,7 +820,20 @@ def compute_coupled_tree_correlator(
         def _Cq(q, tau):
             return coupled_two_point(ref, N, q * q, tau)[j, i]
 
-    if d >= 2:
+    # SPATIAL_FORCE_NUMERICAL_FT=1: the fixed q-grid / mode-sum cross-check
+    # (q_cut, n_q, n_modes); every default path below is exact in q
+    _numerical = os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1'
+    if dyson_order is not None and not _numerical:
+        # dressed (unequal-𝒟) tree: the exact Laguerre–Gaussian q→x transform
+        # of every Dyson term + an adaptive, error-checked s-integral (no
+        # q-grid, no q_cut, no fixed mode count; dyson_dressing)
+        from engine.integration.spatial.dyson_dressing import dressed_tree_C_x
+        _Lb = float(L) if (bc_mode == 'periodic' and L) else None
+        for it, tau in enumerate(taus):
+            C[it, :] = dressed_tree_C_x(xs, tau, M, ref.Dhat, ref.D0, N,
+                                        dyson_order, (i, j), spatial_dim=d,
+                                        L=_Lb)
+    elif _numerical and d >= 2:
         # d≥2: q→x transform of the ISOTROPIC coupled C_ij(q,τ).  ``_Cq`` is
         # dimension-agnostic (depends on |k|²=q²), so this covers the scalar-𝒟
         # case, the Dyson-dressed case, and any external (i,j).  Infinite domain
@@ -614,16 +847,16 @@ def compute_coupled_tree_correlator(
             Cq = np.array([_Cq(q, tau) for q in qg], dtype=complex)
             C[it, :] = (periodic_inverse_ft(qg, Cq, xs, d, float(L))
                         if _periodic else radial_inverse_ft(qg, Cq, xs, d))
-    elif bc_mode == 'periodic' and L:
+    elif _numerical and bc_mode == 'periodic' and L:
         Lf = float(L)
         qs = 2.0 * np.pi * np.arange(-n_modes, n_modes + 1) / Lf      # discrete modes
         for it, tau in enumerate(taus):
             Cq = np.array([_Cq(q, tau) for q in qs])
             for ix, x in enumerate(xs):
                 C[it, ix] = (1.0 / Lf) * np.sum(np.exp(1j * qs * x) * Cq)
-    elif dyson_order is not None or os.environ.get('SPATIAL_FORCE_NUMERICAL_FT'):
-        # dressed (unequal-𝒟) path, or the cross-check escape hatch: brute
-        # cosine-FT on a finite q-grid (q_cut truncation ~ N_ij/(π·D₀·q_cut))
+    elif _numerical:
+        # the cross-check escape hatch: brute cosine-FT on a finite q-grid
+        # (q_cut truncation ~ N_ij/(π·D₀·q_cut))
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)               # cosine FT
         dq = qg[1] - qg[0]
         for it, tau in enumerate(taus):
@@ -647,12 +880,19 @@ def compute_coupled_tree_correlator(
         PNP = {(a_, b_): proj[a_] @ np.asarray(N, float) @ proj[b_].T
                for a_ in range(nf) for b_ in range(nf)}
         _f2p_cache = {}
+        from engine.integration.spatial.spatial_correlator import (
+            free_two_point_d, free_two_point_box)
+        _per = bc_mode == 'periodic' and L
 
         def _f2p(mu_d, x, at):
+            # exact single-mode correlator: any d, infinite domain or the
+            # converged periodic image sum (no q-grid, no mode truncation)
             key = (complex(mu_d), float(x), float(at))
             if key not in _f2p_cache:
-                _f2p_cache[key] = free_two_point(mu_d, ref.D0, 0.5,
-                                                 float(x), float(at))
+                _f2p_cache[key] = (
+                    free_two_point_box(mu_d, ref.D0, 0.5, float(x), float(at),
+                                       d, float(L)) if _per else
+                    free_two_point_d(mu_d, ref.D0, 0.5, float(x), float(at), d))
             return _f2p_cache[key]
 
         for it, tau in enumerate(taus):
@@ -830,7 +1070,7 @@ def _isserlis(idx, Sget):
 
 def _build_wick_moment(Rcal, ls, qs):
     """Analytic spatial IFT of a derivative-vertex form factor by the **joint
-    `(ℓ,q)`-Gaussian moment** (Case C of docs/spatial_analytic_ift_plan.md) —
+    `(ℓ,q)`-Gaussian moment** (Case C of the internal design notes (not distributed)) —
     the principled one-pass route that replaces the `q_deg+1`-node polynomial
     fit.  Returns a numpy callable ``moment_x(a, S, Bcal, xs) → (P, n_x)`` complex.
 
@@ -1003,20 +1243,30 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         ff.moment_bessel = lambda a, S, Bcal, xs: (
             np.array([0.0]),
             np.zeros((1, a.shape[0], np.asarray(xs).shape[0]), dtype=complex))
+        ff.identically_zero = True
         return ff
 
+    if Rcal == 1:
+        # every node of this diagram is a plain vertex (a mixed model): it is
+        # a plain diagram (radial-simplex rule, plain sigma grid, no
+        # derivative-accuracy mark)
+        return None
     if d == 1:
         if Rcal == 0:
             return _zero_ff_with_moments(-1)
         ls = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'l'], key=str)
         qs = sorted([s for s in Rcal.free_symbols if str(s)[:1] == 'q'], key=str)
         fn = _sp.lambdify(tuple(ls) + tuple(qs), Rcal, 'numpy')
-        nl, nq = len(ls), len(qs)
+        nl = len(ls)
+        # each symbol by its OWN index (l_i -> ell[..., i], q_j -> q[j]); a
+        # form factor that uses only q1 must not read q[0]
+        lix = [int(str(sy)[1:]) for sy in ls]
+        qix = [int(str(sy)[1:]) for sy in qs]
 
         def ff(ell, q):
             qvec = np.atleast_1d(np.asarray(q, dtype=float))
-            args = ([ell[..., i] for i in range(nl)]
-                    + [float(qvec[j]) for j in range(nq)])
+            args = ([ell[..., i] for i in lix]
+                    + [float(qvec[j]) for j in qix])
             return fn(*args) * np.ones(ell.shape[:-1])   # complex if Rcal has i (∂_x)
         # Minimal EXACT Gauss–Hermite order: GH(n) integrates degree ≤ 2n−1
         # exactly.  Use the TOTAL degree of Rcal in the loop momenta (NOT max per-
@@ -1040,10 +1290,15 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
         # n_ext>=2 (k>=3): the multivariate joint-(ℓ,Q)-Gaussian moment
         # for the analytic IFT (vector complex Gaussian
         # Q ~ N((i/2)·Binv·X, Binv/2)).
+        # over ALL k-1 external momenta q0..q_{k-2} (a form factor that uses
+        # only some of them still needs the full Gaussian vector)
+        ff.rcal = Rcal                     # for the UV power count
         ff.moment_x_multi = None
-        if len(qs) >= 2:
+        n_ext = len(td.external_legs) - 1
+        if n_ext >= 2:
+            qs_full = [_sp.Symbol(f'q{j}') for j in range(n_ext)]
             try:
-                ff.moment_x_multi = _build_wick_moment_multi(Rcal, ls, qs)
+                ff.moment_x_multi = _build_wick_moment_multi(Rcal, ls, qs_full)
             except Exception:
                 ff.moment_x_multi = None
         return ff
@@ -1068,7 +1323,25 @@ def _formfactor_callable(td, vertex_terms, mode=None, d=1):
     # note): the d≥2 grid is gh_order^{L·d}, so this is a large saving.
     loopsyms = [s for (s, kind, _i, _a) in parsed if kind == 'l']
     ff.gh_order_needed = _min_gh_order(Rcal, loopsyms)
+    ff.rcal = Rcal                         # for the UV power count
     return ff
+
+
+def _edges_off_field(dd, field_idx, n_fields):
+    """True iff the C-stack descriptor ``dd`` has an edge whose propagator
+    indices (``CEdge.fpairs``) name a field other than ``field_idx`` — or,
+    in a multi-field model, an edge with no indices (field unknown).  The
+    single-field integrators give EVERY edge one (μ, D); such a diagram needs
+    per-edge masses (the coupled spectral-assignment drivers)."""
+    for e in dd.edges:
+        if not e.fpairs:
+            if n_fields > 1:
+                return True
+            continue
+        for pair in e.fpairs:
+            if any(int(ix) != int(field_idx) for ix in pair):
+                return True
+    return False
 
 
 def _prefactor_is_live(pre, num_params, tol=1e-12):
@@ -1164,6 +1437,64 @@ def _check_prefactor_resolved(pre, base_np_sr, model):
 # a single worker.  The spatial loop integral runs SERIALLY (see
 # compute_spatial_correlator_generic).  A safe speedup path (thread-based, or
 # batching the q-grid into the numpy ops) is future work — must NOT use fork.
+
+
+def _pf_labels(masses, mel, eig_scale):
+    """Generalized partial fractions of the n-fold Duhamel
+    convolution: time factor = L⁻¹[∏ᵢ 1/(s+mᵢ)](w) as labels
+    (μ_j, κ, coeff)·mel.  Masses closer than
+    ``δ = eig_scale·ε^{1/(n+2)}`` (``n+1`` masses) are grouped at their mean:
+    by symmetry that costs O(δ²), while separate poles would lose
+    ε/δⁿ to cancellation in 1/(m_i−m_j)ⁿ (so the error stays ≲ ε^{2/(n+2)};
+    a fixed 1e-8 threshold lost ~1e-2 at order 2).  A group of multiplicity m_j contributes
+    A_{jp}·w^{p−1}e^{−μ_j w}/(p−1)! for p = 1..m_j, with
+    A_{jp} = g_j^{(m_j−p)}(−μ_j)/(m_j−p)! and g_j(s) =
+    ∏_{l≠j}(s+μ_l)^{−m_l}; derivatives of g_j via the
+    log-derivative Bell expansion (g^{(p)}/g over set
+    partitions of h^{(q)} = −Σ m_l(−1)^{q−1}(q−1)!/(s+μ_l)^q)."""
+    from math import factorial as _fct
+    from engine.integration.spatial.full_integrator import (
+        _set_partitions)
+    _tol = float(eig_scale) * (2.220446049250313e-16
+                               ** (1.0 / (len(masses) + 1)))
+    groups = []                       # [mean, mult]
+    for m_ in masses:
+        for gr in groups:
+            if abs(m_ - gr[0]) <= _tol:
+                gr[0] = (gr[0] * gr[1] + m_) / (gr[1] + 1)
+                gr[1] += 1
+                break
+        else:
+            groups.append([complex(m_), 1])
+    out = []
+    for j, (mu_j, mj) in enumerate(groups):
+        s0 = -mu_j
+        others = [(mu_l, ml) for l, (mu_l, ml)
+                  in enumerate(groups) if l != j]
+        g0 = 1.0 + 0.0j
+        for mu_l, ml in others:
+            g0 = g0 / (s0 + mu_l) ** ml
+
+        def _hq(q):
+            return -sum(ml * ((-1.0) ** (q - 1)) * _fct(q - 1)
+                        / (s0 + mu_l) ** q for mu_l, ml in others)
+
+        def _gp(p):
+            if p == 0:
+                return g0
+            acc = 0.0 + 0.0j
+            for part in _set_partitions(list(range(p))):
+                t_ = 1.0 + 0.0j
+                for blk in part:
+                    t_ = t_ * _hq(len(blk))
+                acc = acc + t_
+            return g0 * acc
+
+        for p in range(1, mj + 1):
+            A = _gp(mj - p) / _fct(mj - p)
+            out.append((mu_j, float(p - 1),
+                        mel * A / _fct(p - 1)))
+    return out
 
 
 def compute_coupled_loop_correlator(
@@ -1314,59 +1645,6 @@ def compute_coupled_loop_correlator(
             # rows at n=1 each; the momentum insertions ride
             # diagram_kinematic_spectral(insert_rows=...).
             eig_scale = float(np.max(np.abs(eig))) or 1.0
-            _tol = 1e-8 * eig_scale
-
-            def _pf_labels(masses, mel):
-                """Generalized partial fractions of the n-fold Duhamel
-                convolution: time factor = L⁻¹[∏ᵢ 1/(s+mᵢ)](w) as labels
-                (μ_j, κ, coeff)·mel.  Masses are grouped by closeness
-                (``_tol``); a group of multiplicity m_j contributes
-                A_{jp}·w^{p−1}e^{−μ_j w}/(p−1)! for p = 1..m_j, with
-                A_{jp} = g_j^{(m_j−p)}(−μ_j)/(m_j−p)! and g_j(s) =
-                ∏_{l≠j}(s+μ_l)^{−m_l}; derivatives of g_j via the
-                log-derivative Bell expansion (g^{(p)}/g over set
-                partitions of h^{(q)} = −Σ m_l(−1)^{q−1}(q−1)!/(s+μ_l)^q)."""
-                from math import factorial as _fct
-                from engine.integration.spatial.full_integrator import (
-                    _set_partitions)
-                groups = []                       # [mean, mult]
-                for m_ in masses:
-                    for gr in groups:
-                        if abs(m_ - gr[0]) <= _tol:
-                            gr[0] = (gr[0] * gr[1] + m_) / (gr[1] + 1)
-                            gr[1] += 1
-                            break
-                    else:
-                        groups.append([complex(m_), 1])
-                out = []
-                for j, (mu_j, mj) in enumerate(groups):
-                    s0 = -mu_j
-                    others = [(mu_l, ml) for l, (mu_l, ml)
-                              in enumerate(groups) if l != j]
-                    g0 = 1.0 + 0.0j
-                    for mu_l, ml in others:
-                        g0 = g0 / (s0 + mu_l) ** ml
-
-                    def _hq(q):
-                        return -sum(ml * ((-1.0) ** (q - 1)) * _fct(q - 1)
-                                    / (s0 + mu_l) ** q for mu_l, ml in others)
-
-                    def _gp(p):
-                        if p == 0:
-                            return g0
-                        acc = 0.0 + 0.0j
-                        for part in _set_partitions(list(range(p))):
-                            t_ = 1.0 + 0.0j
-                            for blk in part:
-                                t_ = t_ * _hq(len(blk))
-                            acc = acc + t_
-                        return g0 * acc
-
-                    for p in range(1, mj + 1):
-                        A = _gp(mj - p) / _fct(mj - p)
-                        out.append((mu_j, float(p - 1),
-                                    mel * A / _fct(p - 1)))
-                return out
 
             def _hn_labels(r, n_r):
                 """𝓗_{n_r} labels for row r: mode strings (α₀..α_{n_r})
@@ -1381,7 +1659,8 @@ def compute_coupled_loop_correlator(
                     mel = Mstr[pi_r, ri_r]
                     if abs(mel) < 1e-300:
                         continue
-                    out.extend(_pf_labels([eig[al] for al in alphas], mel))
+                    out.extend(_pf_labels([eig[al] for al in alphas], mel,
+                                          eig_scale))
                 return out
 
             def _undressed(s):
@@ -1509,6 +1788,17 @@ def compute_coupled_loop_correlator(
     return np.real(C1).astype(float), info
 
 
+def _spatial_threads_gate(parallel, heavy, n_workers, n_tasks):
+    """Whether the numerical-FT spatial path fans (q, diagram) tasks out to
+    threads: ``parallel``, not turned off by ``DAEDALUS_PARALLEL=0``, a
+    loop-order >= 2 diagram present (threads pay only there, ~2.5x; L=1 is
+    dispatch-bound, 0.7x), more than one worker and enough tasks."""
+    from engine.fork_safety import parallel_disabled
+    if not parallel or parallel_disabled():
+        return False
+    return bool(heavy) and n_workers > 1 and n_tasks >= max(8, 2 * n_workers)
+
+
 def compute_spatial_correlator_generic(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=False, q_cut=30.0, n_q=64, max_ell=1,
@@ -1537,12 +1827,34 @@ def compute_spatial_correlator_generic(
     from engine.integration.spatial.full_integrator import (
         diagram_correlator, diagram_correlator_x)
 
+    # a constant drift: exact Galilean boost (one drift-free run per τ)
+    _bst = _boosted_k2(
+        compute_spatial_correlator_generic, ft, model, prop, num_params,
+        external_fields, tau_grid, spatial_grid,
+        dict(verbose=verbose, q_cut=q_cut, n_q=n_q, max_ell=max_ell,
+             parallel=parallel, n_workers=n_workers),
+        per_tau_kw=lambda i: {} if i == 0 else {'verbose': False})
+    if _bst is not None:
+        return _bst
+    from engine.integration.spatial.full_integrator import (
+        eqtime_ledger_reset, eqtime_ledger_collect)
+    eqtime_ledger_reset()
     if verbose:
         print('[5/7] (spatial) Certify tree modes (mu,D,kap) vs the shared-pipeline '
               'C(q,τ) at sample momenta (mode-structure check)...')
     C0, tree_info = compute_spatial_correlator_via_pipeline(
         ft, model, prop, num_params, external_fields, tau_grid, spatial_grid,
         verbose=verbose, certify=True, enum_verbose=False, stage_headers=False)
+    if tree_info.get('bc_mode') == 'periodic':
+        # The loop integrator uses the infinite-domain heat kernel and a
+        # continuous ∫dᵈℓ; on a ring/box that is wrong by O(e^{−L/ξ}) to
+        # O(1) (the tree alone carries the image sum).  Refuse rather than
+        # return C0(periodic) + δC(infinite).
+        raise NotImplementedError(
+            'spatial loop corrections: periodic boundary not supported (the '
+            'loop integral is the infinite-domain one; only the tree carries '
+            'the image sum).  Use max_ell=0, or the infinite domain when the '
+            'box is much larger than the correlation length.')
     if tree_info.get('coupled'):
         # Coupled (matrix-M) model: the tree routed to the spectral-Lyapunov
         # driver; loops go through the spectral-assignment path (Dyson 3c).
@@ -1607,30 +1919,8 @@ def compute_spatial_correlator_generic(
                'n_phys': t['n_phys'], 'chain': t['chain'], 'mode': t['mode']}
               for t in vterms_sym]
 
-    # ── Drift guard ───────────────────────────────────────────────────
-    # The bilinear-Dx cross-term of a gradient nonlinearity (Burgers
-    # ∂_x(φ²) → 2φ*∂_x(δφ)) has a coefficient ∝ φ*, so the propagator DRIFT
-    # V vanishes at the homogeneous saddle φ*=0 and the integrator's
-    # m_k = μ + D·k² is exact.  A *genuine* drift (a constant advection
-    # v·∂_xφ, with V≠0 at the saddle) would need the drifting propagator
-    # wired into the Symanzik momentum reduction — validated at the
-    # heat-kernel (oracle) level but NOT yet in the integrator.  Refuse it
-    # cleanly rather than silently dropping the drift.
-    _ac_drift = prop.get('ac_drift', {}) or {}
-    for _fi, _Vexpr in _ac_drift.items():
-        if SR(_Vexpr).is_zero():
-            continue
-        try:
-            _V0 = complex(SR(_Vexpr).subs(base_np_sr))
-        except (TypeError, ValueError):
-            continue                       # still symbolic ⇒ A,B (mass,diff) used
-        if abs(_V0) > 1e-9:
-            raise SpatialPropagatorError(
-                f'field {_fi}: propagator DRIFT V={_V0:.4g} ≠ 0 at the saddle '
-                f'(a genuine advection v·∂_xφ).  The drifting propagator is '
-                f'validated at the heat-kernel (oracle) level but is not yet '
-                f'wired into the momentum integrator (m_k=μ+D·k²); only φ*=0 '
-                f'gradient models (Burgers/KPZ, where V→0) run end-to-end.')
+    # (a constant drift was removed above by the exact Galilean boost; a
+    # drift with no such frame refused there, :func:`_drift_velocity`)
 
     if verbose:
         print(f'[6/7] (spatial) Enumerate prediagrams + typed diagrams → classify '
@@ -1665,6 +1955,36 @@ def compute_spatial_correlator_generic(
             f'bug worth reporting.)')
     live_td = [(dd, pv, ff, el, td) for dd, pv, ff, el, pn, td in descrs
                if not SR(pn).is_zero()]
+    # Multi-field model with a diagonal kinetic block (e.g. fields mixed
+    # only through the noise sector): a loop edge may carry ANOTHER field's
+    # propagator, whose (μ, D) differ from the external field's.  The
+    # single-field integrator below would give it the external (μ0, D0);
+    # route to the coupled spectral-assignment driver (per-edge masses).
+    _n_fields = int(prop.get('nf') or 1)
+    _ext_f = int(phys_idx[ext_int[0]])
+    if any(_edges_off_field(rec[0], _ext_f, _n_fields) for rec in live_td):
+        if vterms_sym:
+            raise NotImplementedError(
+                'spatial loops: a loop edge carries a field other than the '
+                'external one AND the model has derivative vertices; the '
+                'coupled spectral-assignment driver covers plain vertices '
+                'only.')
+        if verbose:
+            print('        loop edges carry other fields → coupled '
+                  'spectral-assignment driver (per-edge masses)')
+        try:
+            C0c, tinfo_c = compute_coupled_tree_correlator(
+                ft, model, prop, num_params, external_fields, tau_grid,
+                spatial_grid, verbose=verbose)
+        except (NotImplementedError, SpatialPropagatorError) as _e:
+            raise NotImplementedError(
+                'spatial loops: a loop edge carries a field other than the '
+                'external one, so the single-field integrator (one (mu, D) '
+                'for every edge) does not apply, and the coupled driver '
+                f'refused: {type(_e).__name__}: {_e}') from _e
+        return compute_coupled_loop_correlator(
+            ft, model, prop, num_params, external_fields, tau_grid,
+            spatial_grid, C0c, tinfo_c, max_ell=max_ell, verbose=verbose)
     live = [rec[:4] for rec in live_td]
     # k=2 ±τ completion = orbit–stabilizer index of the typed diagram (both
     # leaf→time assignments ÷ comp), the rule of the general-k driver
@@ -1717,6 +2037,16 @@ def compute_spatial_correlator_generic(
     import os as _osi
     _integrator = _osi.environ.get('SPATIAL_INTEGRATOR', 'grid').strip().lower()
     _mc_n = int(float(_osi.environ.get('SPATIAL_MC_N', '1000000')))
+    if _integrator not in ('grid', 'mc', 'bessel'):
+        raise ValueError(f"SPATIAL_INTEGRATOR={_integrator!r}: expected 'grid', "
+                         f"'mc' or 'bessel'.")
+    if _integrator == 'mc' and any(rec[2] is not None for rec in live_g):
+        import warnings as _wmc
+        _wmc.warn(
+            'SPATIAL_INTEGRATOR=mc with DERIVATIVE vertices: the Monte-Carlo '
+            'estimate is BIASED (det M -> 0 singularity, infinite variance; '
+            'tens of percent at N=1e6).  Use the grid backend, or '
+            'SPATIAL_INTEGRATOR=bessel at tau=0.', RuntimeWarning, stacklevel=2)
     if _integrator == 'mc' and verbose:
         _msg = ('plain vertices' if all(rec[2] is None for rec in live_g)
                 else 'WARNING — DERIVATIVE vertices are BIASED under MC (det M→0 '
@@ -1737,23 +2067,45 @@ def compute_spatial_correlator_generic(
     # kernel array alone is tens of GB → an OOM that crashes the kernel AND the OS.
     # Refuse up-front (vs silently thrashing/crashing) with the numbers + the knobs.
     _nx = max(1, len(np.asarray(spatial_grid, dtype=float)))
+    # the analytic x-path (plain vertices, or d = 1) holds (P, n_x) arrays;
+    # the q-path holds the form-factor Gauss–Hermite grid instead
+    _use_x_path = ((all(rec[2] is None for rec in live_g) or d == 1)
+                   and _osg.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') != '1')
     # unset: the RAM-aware default of the Phase J guard (at most 6 GB, less
     # on a small machine: final_integral.default_mem_budget); an explicit
-    # value is used as given
-    if 'SPATIAL_MEM_BUDGET_GB' in _osg.environ:
-        _budget_gb = float(_osg.environ['SPATIAL_MEM_BUDGET_GB'])
-        _budget_rule = f'SPATIAL_MEM_BUDGET_GB={_budget_gb:g}'
-    else:
-        from engine.integration.time_domain.final_integral import (
-            default_mem_budget as _dmb)
-        _b, _budget_rule = _dmb()
-        _budget_gb = _b / 1e9
+    # value is used as given (one parser: full_integrator._spatial_mem_budget)
+    from engine.integration.spatial.full_integrator import _spatial_mem_budget
+    _b, _budget_rule = _spatial_mem_budget()
+    _budget_gb = _b / 1e9
     _peak_gb, _worst = 0.0, None
+    from engine.integration.spatial.full_integrator import (
+        time_grid_split_factor, external_times_2pt, chamber_peak_bytes)
+    _tau_m = float(np.max(np.abs(taus))) if len(taus) else 0.0
+    from engine.integration.spatial.full_integrator import eqtime_eligible
     for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
+        if (_tau_m == 0.0 and _use_x_path
+                and eqtime_eligible(_dd, _ff, _integrator)):
+            continue                 # equal times: the radial-simplex rule
         _nV = len(_dd.internal_vertices)
         _nC = sum(1 for e in _dd.edges if e.kind == 'C')
-        _P = (_nt ** _nV) * (_ns ** _nC)
-        _gb = _P * _nx * 16.0 / 1e9                        # one (P, n_x) complex array
+        # the time grid splits at the external times inside each vertex's
+        # leaf bounds (worst lag sign of the largest |tau|)
+        _nshort = (_nt if _ff is not None else
+                   min(_nt, int(_osg.environ.get('SPATIAL_SEGMENT_NODES', 8))))
+        _split = max(time_grid_split_factor(_dd, external_times_2pt(_dd, t_),
+                                            _nt, _nshort)
+                     for t_ in ((0.0,) if _tau_m == 0.0 else (_tau_m, -_tau_m)))
+        _P = (_nt ** _nV) * (_ns ** _nC) * _split
+        # the calibrated per-chamber peak (full_integrator.chamber_peak_bytes:
+        # sample arrays + Symanzik blocks + the heat kernel / form factor),
+        # the same estimate diagram_kinematic enforces per chamber
+        _a = np.array([e.a for e in _dd.edges], dtype=float).reshape(
+            len(_dd.edges), -1)
+        _gb = chamber_peak_bytes(
+            _P, n_V=_nV, n_leaf=len(_dd.external_legs), n_C=_nC,
+            E=len(_dd.edges), L=_a.shape[1], n_ext=1,
+            n_x=(_nx if _use_x_path else 0), spatial_dim=d,
+            formfactor=_ff) / 1e9
         if _gb > _peak_gb:
             _peak_gb, _worst = _gb, (_el, _nV, _nC, _nt, _ns, _P)
     if _integrator not in ('mc', 'bessel') and _peak_gb > _budget_gb:
@@ -1825,7 +2177,7 @@ def compute_spatial_correlator_generic(
         # released — ~2.5×); L=1 is dispatch-bound (0.7×, slower).  Threads only
         # (no fork — safe in Jupyter/macOS); main-thread accumulate → bit-identical.
         _heavy = any(rec[3] >= 2 for rec in live_g)
-        if parallel and _heavy and _nw > 1 and _ntasks >= max(8, 2 * _nw):
+        if _spatial_threads_gate(parallel, _heavy, _nw, _ntasks):
             from concurrent.futures import ThreadPoolExecutor
 
             def _one(task):                           # one diagram's column at one q
@@ -1868,6 +2220,58 @@ def compute_spatial_correlator_generic(
         for el in ells:
             dCx_by_ell[el] = _ft_to_x(dC_by_ell[el])
 
+    # Derivative-vertex loops: the form factor makes the loop-shrink corner an
+    # integrable rho^(-1/2) singularity (UV power count with the form factor,
+    # full_integrator.uv_divergent_subgraphs), which the product grid
+    # resolves only algebraically (~n^-2; percent level at the default grid,
+    # at every tau).  Measure it: the derivative records again at a 0.7x
+    # coarser grid; the spread goes to info['derivative_accuracy'] and the
+    # result is marked approximate (api.compute).
+    deriv_acc = None
+    _ff_recs = [rec for rec in live_g if rec[2] is not None
+                and not getattr(rec[2], 'identically_zero', False)]
+    if _ff_recs:
+        def _cg(n_):
+            return max(6, int(round(0.7 * n_)))
+
+        def _ff_part(coarse):
+            out_ = np.zeros((len(taus), len(xg)), dtype=complex)
+            if _use_analytic:
+                for dd, pv, ff, el, nt, ns, cp in _ff_recs:
+                    ntu, nsu = (_cg(nt), _cg(ns)) if coarse else (nt, ns)
+                    for it, tau in enumerate(taus):
+                        out_[it, :] += diagram_correlator_x(
+                            dd, pv, xg, float(tau), mu0, D0, spatial_dim=d,
+                            comp=cp, n_t=ntu, n_s=nsu, formfactor=ff)
+                return out_
+            dq = np.zeros((len(qg), len(taus)), dtype=complex)
+            for iq, q in enumerate(qg):
+                for it, tau in enumerate(taus):
+                    for dd, pv, ff, el, nt, ns, cp in _ff_recs:
+                        ntu, nsu = (_cg(nt), _cg(ns)) if coarse else (nt, ns)
+                        dq[iq, it] += diagram_correlator(
+                            dd, pv, float(q), float(tau), mu0, D0,
+                            spatial_dim=d, comp=cp, n_t=ntu, n_s=nsu,
+                            formfactor=ff)
+            return _ft_to_x(dq)
+        deriv_acc = {
+            'note': ('derivative-vertex loop: integrable loop-shrink '
+                     'singularity, the product grid converges ~n^-2 '
+                     '(not certified)'),
+            'n_derivative_diagrams': len(_ff_recs),
+            'grid': sorted({(rec[4], rec[5]) for rec in _ff_recs}),
+            'coarse_grid': sorted({(_cg(rec[4]), _cg(rec[5]))
+                                   for rec in _ff_recs})}
+        if _integrator == 'grid':
+            _fine, _crs = _ff_part(False), _ff_part(True)
+            _tot = np.real(np.array(C0, dtype=np.complex128)) + sum(
+                np.real(v) for v in dCx_by_ell.values())
+            deriv_acc['coarse_spread'] = float(
+                np.max(np.abs(np.real(_fine - _crs)))
+                / max(float(np.max(np.abs(_tot))), 1e-300))
+        else:
+            deriv_acc['coarse_spread'] = None
+
     # cumulative correlator at each order: {0: tree, 1: tree+1-loop, …, L: total}
     C_by_order = {0: np.array(C0, dtype=np.complex128)}
     running = np.array(C0, dtype=np.complex128)
@@ -1898,7 +2302,32 @@ def compute_spatial_correlator_generic(
                  # cumulative C(x,τ) at each loop order {0: tree, 1: +1-loop, …}
                  # — the whole progression from ONE call (no per-ℓ re-runs).
                  'C_by_order': C_by_order})
+    _eq = eqtime_ledger_collect()
+    if _eq is not None:
+        info['equal_time'] = _eq
+    if deriv_acc is not None:
+        info['derivative_accuracy'] = deriv_acc
+    info['integrator'] = _integrator
     return C1, info
+
+
+def _boost_points(ft, prop, num_params, pts):
+    """k-point form of the Galilean boost (:func:`_drift_boost`): returns
+    ``(prop, num_params, pts, v)`` with each slot's offset ``x_j`` moved to
+    ``x_j − v·τ_j`` and the drift-free propagator (unchanged inputs and
+    ``v = 0`` without a drift)."""
+    b = _drift_boost(ft, prop, num_params)
+    if b is None:
+        return prop, num_params, pts, 0.0
+    v, prop0, nps0 = b
+    if v != 0.0:
+        if int(prop.get('spatial_dim', 1)) != 1:
+            raise NotImplementedError(
+                f'spatial drift v = {v:.6g} at d = '
+                f'{int(prop.get("spatial_dim"))}: supported at d = 1 only.')
+        pts = np.array(pts, dtype=float, copy=True)
+        pts[:, :, 0] = pts[:, :, 0] - v * pts[:, :, 1]
+    return prop0, nps0, pts, v
 
 
 def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
@@ -1940,6 +2369,8 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             f'compute_spatial_kpoint: points must be (n_pts, {k-1}, 2) '
             f'[(x_j, tau_j) offsets per non-anchor slot]; got {pts.shape}.')
     n_pts = pts.shape[0]
+    # a constant drift: exact Galilean boost of the event offsets
+    prop, num_params, pts, _v_drift = _boost_points(ft, prop, num_params, pts)
 
     # (mu, D) from the certified tree modes of the SAME field's 2-point
     # function — the same extraction the generic k=2 driver uses.
@@ -1956,16 +2387,60 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             'compute_spatial_kpoint: single-field (one tree mode) only; '
             f'got {len(modes) if modes else 0} modes.  Coupled-field '
             'k>=3 routes through compute_coupled_kpoint.')
+    if tree_info.get('bc_mode') == 'periodic':
+        raise NotImplementedError(
+            'compute_spatial_kpoint: periodic boundary not supported (the '
+            'k-point kinematic uses the infinite-domain heat kernel at every '
+            'loop order, the tree included).')
     mu0, D0, _kap0 = modes[0]
     mu0 = float(_np.real(mu0))
     D0 = float(_np.real(D0))
     spatial_dim = int(tree_info.get('spatial_dim', 1))
 
-    be = build_pipeline_records(ft, model, prop, external_fields,
+    # legs → phys_idx keys (as every other driver: a label like ('p', 2) on
+    # a single-population field is not a key and would enumerate nothing)
+    from engine.diagrams.type_assignment import build_field_index_map
+    _, _pidx = build_field_index_map(list(ft._ns._ring_var_names),
+                                     ft._n_tilde)
+    _ext = _legs_to_phys_idx(list(external_fields), _pidx)
+    be = build_pipeline_records(ft, model, prop, _ext,
                                 max_ell=max_ell, k=k, verbose=verbose)
-    slot_fields = list(external_fields)
+    # every edge must carry the field of the certified mode (else the
+    # single (mu0, D0) is wrong for it); the message routes the caller to
+    # the coupled k-point driver (api.compute catches 'single-field')
+    _fi = {int(_pidx[f]) for f in _ext}
+    _n_fields = int(prop.get('nf') or 1)
+    if len(_fi) != 1 or any(
+            _edges_off_field(diagram_to_cstack(td), next(iter(_fi)), _n_fields)
+            for recs in be.values() for td, _p in recs):
+        raise NotImplementedError(
+            'compute_spatial_kpoint: single-field only — an edge or an '
+            'external slot carries a field other than the certified mode '
+            '(one (mu, D) for every edge would be wrong).  Coupled-field '
+            'k>=3 routes through compute_coupled_kpoint.')
+    slot_fields = list(_ext)
+    nps_sr = _norm_sr(num_params)
+    base_np_sr = {kk: vv for kk, vv in nps_sr.items()
+                  if str(kk) != 'Laplacian'}
+    # derivative vertices (operator IR): each diagram's momentum form factor,
+    # as on the k=2 driver (it used to be dropped here: a KPZ / Model B
+    # vertex was integrated as a plain phi^2 vertex)
+    _vt_sym = getattr(ft._ns, '_operator_ir_vertex_terms', None) or []
+
+    def _num_w(w):
+        try:
+            return float(_np.real(complex(_SR(w).subs(base_np_sr))))
+        except (ValueError, ZeroDivisionError, TypeError):
+            return 0.0
+    _vterms = [{'weight': _num_w(t['weight']), 'n_phys': t['n_phys'],
+                'chain': t['chain'], 'mode': t['mode']} for t in _vt_sym]
+    from engine.integration.spatial.full_integrator import (
+        eqtime_ledger_reset, eqtime_ledger_collect)
+    eqtime_ledger_reset()
     per_ell = {}
     total = _np.zeros(n_pts)
+    _dspread = _np.zeros(n_pts)
+    _n_deriv = 0
     # group evaluation points by tau-configuration (slot 0 at tau=0)
     tau_groups = {}
     for ip in range(n_pts):
@@ -1975,16 +2450,28 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     for ell in sorted(be):
         acc = _np.zeros(n_pts)
         for td, p in be[ell]:
-            pv = float(_SR(p).subs(num_params))
-            if abs(pv) < 1e-14:
+            # liveness: exact symbolic zero test (an absolute float cut would
+            # drop a whole loop order — or the tree — for small-unit params)
+            pre_num = _SR(p).subs(base_np_sr)
+            if pre_num.is_zero():
                 continue
+            try:
+                pv = float(pre_num)
+            except (TypeError, ValueError):
+                _check_prefactor_resolved(p, base_np_sr, model)
+                raise
             d = diagram_to_cstack(td)
-            leaf_fields = slot_fields  # enumeration emits matching multiset
+            leaf_fields = [td.external_legs[leaf] for leaf in d.external_legs]
             maps = field_respecting_mappings(slot_fields, leaf_fields)
             comp = external_wick_compensation(td)
             n_V = len(d.internal_vertices)
             kw = {} if n_V < 3 else {'n_t': int(n_t_loop),
                                      'n_s': int(n_s_loop)}
+            if _vterms:
+                kw['formfactor'] = _formfactor_callable(td, _vterms,
+                                                        d=spatial_dim)
+            _deriv = (kw.get('formfactor') is not None and not getattr(
+                kw['formfactor'], 'identically_zero', False))
             for tkey, idxs in tau_groups.items():
                 x_pts = _np.zeros((len(idxs), k))
                 for col, j in enumerate(range(1, k)):
@@ -1995,6 +2482,17 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
                     spatial_dim=spatial_dim, mappings=maps, comp=comp,
                     **kw)
                 acc[idxs] += v
+                if _deriv:
+                    # the derivative loop's grid accuracy (api.compute marks
+                    # the result approximate): the same diagram 0.7x coarser
+                    kwc = dict(kw)
+                    kwc['n_t'] = max(6, int(round(0.7 * kw.get('n_t', 22))))
+                    kwc['n_s'] = max(6, int(round(0.7 * kw.get('n_s', 24))))
+                    _dspread[idxs] += v - diagram_correlator_pts(
+                        d, pv, x_pts, t_pts, mu0, D0,
+                        spatial_dim=spatial_dim, mappings=maps, comp=comp,
+                        **kwc)
+                    _n_deriv += 1
         per_ell[ell] = acc
         total = total + acc
         if verbose:
@@ -2003,6 +2501,19 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
 
     info = {'per_ell': per_ell, 'mu': mu0, 'D': D0,
             'spatial_dim': spatial_dim, 'k': k, 'max_ell': max_ell}
+    _eq = eqtime_ledger_collect()
+    if _eq is not None:
+        info['equal_time'] = _eq
+    if _n_deriv:
+        info['derivative_accuracy'] = {
+            'note': ('derivative-vertex diagram: the product grid converges '
+                     'algebraically (not certified)'),
+            'n_derivative_evaluations': _n_deriv,
+            'coarse_spread': float(_np.max(_np.abs(_dspread))
+                                   / max(float(_np.max(_np.abs(total))),
+                                         1e-300))}
+    if _v_drift:
+        info['drift_velocity'] = _v_drift
     return total, info
 
 
@@ -2179,6 +2690,8 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
         raise ValueError(
             f'points must be (n_pts, {k-1}, 2); got {pts.shape}.')
     n_pts = pts.shape[0]
+    # a constant drift: exact Galilean boost of the event offsets
+    prop, num_params, pts, _v_drift = _boost_points(ft, prop, num_params, pts)
 
     ring_var_names = list(ft._ns._ring_var_names)
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
@@ -2197,7 +2710,9 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
 
     per_ell = {}
     total = np.zeros(n_pts, dtype=complex)
-    slot_fields = [tuple(f) for f in external_fields]
+    # the resolved phys_idx keys (the leaves carry those keys; a raw leg like
+    # ('a', 2) on a one-population field would match no leaf)
+    slot_fields = [tuple(f) for f in ext_int]
     for el in sorted(be):
         acc = np.zeros(n_pts, dtype=complex)
         for td, pre in be.get(el, []):
@@ -2268,7 +2783,9 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
         if verbose:
             print(f'[coupled k={k}] ell={el}: summed')
 
-    info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k,
+    info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k, 'coupled': True,
             'max_ell': max_ell, 'n_modes': nf,
             'max_abs_imag': float(np.max(np.abs(np.imag(total))))}
+    if _v_drift:
+        info['drift_velocity'] = _v_drift
     return np.real(total).astype(float), info

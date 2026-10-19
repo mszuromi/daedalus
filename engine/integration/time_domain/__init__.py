@@ -16,8 +16,8 @@ works from:
      ``K(ω)`` via eigenvalue decomposition).
 
 No frequency-domain integral construction or loop-kernel grouping is
-used.  The frequency-domain code in ``engine.integration.symbolic`` is
-preserved for future extensions but is NOT called by this module.
+used.  (The old frequency-domain code is a test-only reference now:
+``tests/oracles/symbolic.py``.)
 
 Convention
 ----------
@@ -72,8 +72,6 @@ from engine.integration.time_domain.final_integral import (
     integrate_tree_diagram,  # backward-compat alias of integrate_diagram
     _loop_number_from_graph,
     format_td_integral_latex,
-    eval_delta_contributions_on_tau_grid,
-    eval_delta_contributions_on_2d_grid,
 )
 from engine.integration.time_domain.pipeline import (
     compute_correction_td,
@@ -90,8 +88,6 @@ __all__ = [
     'integrate_tree_diagram',
     '_loop_number_from_graph',
     'format_td_integral_latex',
-    'eval_delta_contributions_on_tau_grid',
-    'eval_delta_contributions_on_2d_grid',
     'compute_correction_td',
     'identify_loop_subgraphs',
 ]

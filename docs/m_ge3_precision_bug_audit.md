@@ -17,12 +17,13 @@ A regression fixture (``spike_reset_k2_ell1``) was added on
 2026-05-28 and is exercised by
 ``tests/test_grouped_vs_perdiag.py``; both default- and
 tight-quadrature variants pass.  The historical evidence chain
-below is preserved verbatim for future reference (and because it
-documents three flag-gated dead-code paths in
-``msrjd/integration/time_domain/final_integral.py`` —
-``USE_CHAIN_SIMPLEX_PRECISION_FIX``,
-``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY`` —
-that remain in the codebase, all defaulting to False).
+below is preserved verbatim for future reference.  (It documents three
+flag-gated paths of ``final_integral.py`` -- ``USE_CHAIN_SIMPLEX_PRECISION_FIX``,
+``USE_POSET_MPMATH_ACCUMULATION``, ``USE_POSET_CAP_MATCH_SCIPY``, all
+defaulting to False.  Audit W7 retired the chain-simplex routines
+(``_exp_over_chain_simplex`` and its fast / polynomial / mpmath variants)
+with the boxed routes, and ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` with them;
+the other two remain.)
 
 **Original status (as of 2026-05-16):** Diagnosed, not yet fixed.
 Workaround available (`USE_GROUPED_PHASE_J = True`).
@@ -30,7 +31,7 @@ Workaround available (`USE_GROUPED_PHASE_J = True`).
 ## Summary
 
 The per-diagram analytic m≥3 integrator (`_exp_over_chain_simplex` in
-`msrjd/integration/time_domain/final_integral.py:877`) suffers
+`engine/integration/time_domain/final_integral.py:877`) suffers
 systematic precision loss when the theory's propagator has close-paired
 poles. At `spike_reset` k=2 ell=1 with canonical fixture params, the
 per-diag analytic stack overestimates the 1-loop value by **4×**
@@ -136,7 +137,7 @@ This rules out "fall back to scipy.nquad per-subset" as a fix path.
 
 ## Root cause
 
-`_exp_over_chain_simplex` ([final_integral.py:877](msrjd/integration/time_domain/final_integral.py:877))
+`_exp_over_chain_simplex` ([final_integral.py:877](engine/integration/time_domain/final_integral.py:877))
 implements a recursive 2^N closed-form for the chain-simplex integral
 `∫dx_1∫dx_2…∫dx_N exp(α₁·x₁ + α₂·x₂ + …)`. The recursion produces
 2^(N-1) terms via repeated splitting:
@@ -146,7 +147,7 @@ Term A — upper-bound piece: coefficient C/b_inner, β = b_inner + β_outer
 Term B — lower-bound piece: coefficient −C · exp(b_inner · lower) / b_inner, β = β_outer
 ```
 
-The block comment at [final_integral.py:936-942](msrjd/integration/time_domain/final_integral.py:936)
+The block comment at [final_integral.py:936-942](engine/integration/time_domain/final_integral.py:936)
 explicitly warns:
 
 > "The TRUE integral is finite — the individual large terms cancel —
@@ -217,7 +218,7 @@ at all magnitudes/configs where per-diag is also correct.
 
 ## Recommended fix paths
 
-(See `docs/m_ge3_chain_simplex_fix_proposal.md` for the design
+(See the internal design notes (not distributed) for the design
 proposal once that lands.)
 
 1. **mpmath fallback**: detect close-pole condition (|b_inner| below
@@ -567,15 +568,15 @@ unless one of:
 B_alpha construction and the chain-simplex integration call,
 information from typed-diagrams j > first_j is being silently
 dropped or canceled. The bug requires deeper code reading of:
-- `pipeline/_grouped_phase_j.py:82-86` — group key uses
+- `api/_grouped_phase_j.py (retired in audit W7):82-86` — group key uses
   `(id(td.prediagram), external_legs_signature)`. May be too
   coarse if multiple distinct prediagrams share the same id (Python
   object identity is fragile across re-enumeration).
-- `msrjd/integration/time_domain/grouped_integral.py:609` —
+- `engine/integration/time_domain/grouped_integral.py (retired in audit W7):609` —
   `_lookup_prop_indices(td, ek)` per typed diagram. If different
   typed-diagrams in a group have aliased (ri, pi) values, they'd
   effectively yield the same residue array.
-- `msrjd/integration/time_domain/grouped_integral.py:911-924` — the
+- `engine/integration/time_domain/grouped_integral.py (retired in audit W7):911-924` — the
   B_alpha summation loop itself.
 
 **Key conclusion**:
@@ -674,7 +675,7 @@ investigation are kept as dead code (all default False)
 
 Although none of them was the actual fix, each addresses a real
 concern that may become relevant for future theories.  They are
-preserved in ``msrjd/integration/time_domain/final_integral.py``:
+preserved in ``engine/integration/time_domain/final_integral.py``:
 
 - ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` (line ~1081) — mpmath
   dispatch for close-paired-pole chain simplex calls.  Documented
@@ -715,10 +716,10 @@ upgrading per-diag m=1 to a closed-form analytic path would
 reduce this to true machine precision (~1e-16).  See memory note
 ``project_grouped_phase_j_precision.md``.
 
-### Companion: `docs/m_ge3_chain_simplex_fix_proposal.md`
+### Companion: the internal design notes (not distributed)
 
 The proposal at
-``docs/m_ge3_chain_simplex_fix_proposal.md`` (hybrid Taylor +
+the internal design notes (not distributed) (hybrid Taylor +
 mpmath fallback) was NOT implemented in this resolution path
 because the bug turned out not to be in the chain simplex itself.
 The proposal remains valid future work for the case where a

@@ -37,6 +37,7 @@ from typing import Iterable, Optional, Sequence
 
 from sage.all import SR, Integer, exp, log, sqrt, function, sage_eval
 from sage.all import gamma as _gamma, cos as _cos, matrix as _matrix
+from engine.errors import DaedalusError
 
 __all__ = [
     'NoiseError', 'NoiseSource',
@@ -53,7 +54,7 @@ __all__ = [
 ]
 
 
-class NoiseError(ValueError):
+class NoiseError(DaedalusError, ValueError):
     """Raised for an invalid noise declaration."""
 
 
@@ -96,8 +97,8 @@ def parse_expr(value, *, what: str = 'expression'):
 
     Indexed names become flat symbols (``x[i]`` -> ``x__i``); calls of
     unknown names become formal Sage functions (``phi[i](v[i])`` ->
-    ``phi__i(v__i)``).  Population sums (``sum(... for j in E)``) are
-    not supported inside noise parameters.
+    ``phi__i(v__i)``).  Population sums (``sum(... for j in E)``) cannot be
+    parsed here (noise parameters, separated drift terms).
     """
     if isinstance(value, str):
         txt = ' '.join(value.split())
@@ -105,8 +106,13 @@ def parse_expr(value, *, what: str = 'expression'):
             raise NoiseError(f'{what}: empty expression')
         if re.search(r'\bfor\b', txt):
             raise NoiseError(
-                f'{what}: population sums are not supported inside a noise '
-                f'parameter ({value!r}); declare a parameter or function '
+                f'{what}: population sums ("sum(... for j in pop)") cannot '
+                f'be split or parsed in this expression ({value!r}); they are '
+                f'accepted where the model is written as a whole (an '
+                f'equation(lhs=..., rhs=...) whose lhs carries the restoring '
+                f'term, a point_process rate), '
+                f'not as a noise parameter or a separated term.  Declare a '
+                f'parameter or function '
                 f'for the summed quantity instead (a spike train whose rate '
                 f'sums or filters fields: SDE.point_process).')
         txt = _flatten_indices(txt)
@@ -375,6 +381,8 @@ class NoiseSource:
                 raise NoiseError(
                     f'{type(self).__name__}: parameter {k} may not contain '
                     f'theta (reserved for the CGF variable).')
+        if self._k0_roundoff():
+            return
         K0 = self._value_at_zero()
         k0 = _numeric(K0)
         if k0 is not None:                              # float round-off at K(0), relative to the largest parameter
@@ -385,6 +393,11 @@ class NoiseSource:
             raise NoiseError(
                 f'{type(self).__name__}: K(0) = {K0} != 0; a per-unit-time '
                 f'CGF must vanish at theta = 0.')
+
+    def _k0_roundoff(self):
+        """True when ``K(0)`` is float round-off by a criterion of the
+        source's own (dimensionless) quantities; default False."""
+        return False
 
     def _value_at_zero(self):
         K = self._cgf()
@@ -524,11 +537,14 @@ class CGF(NoiseSource):
         self._K = parse_expr(expression, what='CGF(expression)')
         if THETA not in self._K.variables():
             raise NoiseError('CGF: the expression must depend on theta.')
-        super().__init__()
+        # Analyticity first: the generic K(0) check in the base constructor
+        # evaluates the expression at 0 and used to let the raw Sage error
+        # (e.g. 'division by zero' for CGF('1/theta')) escape unnamed.
         try:
             self._K.subs({THETA: 0})
         except Exception as exc:                       # noqa: BLE001
             raise NoiseError(f'CGF: not analytic at theta = 0 ({exc}).') from exc
+        super().__init__()
 
     def _cgf(self):
         return self._K
@@ -705,7 +721,13 @@ class FinitePMF(JumpDistribution):
         for j in range(self._n):
             self._require(f'p{j}', _nonneg, f'need probs[{j}] >= 0')
         total = sum(self.params[f'p{j}'] for j in range(self._n))
-        if total.is_numeric() or not total.variables():
+        x = _numeric(total)
+        if x is not None:
+            # the same round-off allowance as Hyperexponential: float
+            # probabilities that sum to 1 up to 1e-12 are a distribution
+            if abs(x - 1) > 1e-12:
+                raise NoiseError(f'FinitePMF: probabilities sum to {total}, not 1.')
+        elif not total.variables():
             if not (SR(total) - 1).simplify_full().is_zero():
                 raise NoiseError(f'FinitePMF: probabilities sum to {total}, not 1.')
 
@@ -749,11 +771,24 @@ class CompoundPoisson(NoiseSource):
                     f't; only time-independent sources are supported.')
         super()._check_common()
 
+    def _k0_roundoff(self):
+        """``K(0) = rate (M(0) - 1)``: round-off when the jump law's
+        dimensionless ``M(0)`` is 1 to 1e-12.  (The generic test needs a
+        numeric ``K(0)``: float probabilities summing to 1 - 1e-16 times a
+        symbolic rate were refused, and the rate's units entered the
+        tolerance -- audit UNIT-05.)"""
+        try:
+            m0 = _numeric(SR(self.jump.mgf()).subs({THETA: 0}))
+        except (ValueError, ZeroDivisionError, ArithmeticError, TypeError,
+                RuntimeError):
+            return False
+        return m0 is not None and abs(m0 - 1) <= 1e-12
+
     def __repr__(self):
         return f'CompoundPoisson(rate={expr_to_text(self.params["rate"])!r}, jump={self.jump!r})'
 
 
-# ═══ Round 2 (item 48): finite-moment Levy sources, jump laws, composites ═══
+# ═══ Round 2: finite-moment Levy sources, jump laws, composites ═══
 #
 # Every class below is a per-unit-time CGF like the rest of the module and
 # has an exact (or documented-approximate) sampler in api.noise_samplers.
@@ -804,10 +839,18 @@ class NormalInverseGaussian(NoiseSource):
                              f'(alpha={a:g}, beta={b:g}).')
 
     def _cgf(self):
+        # written with the one square root g = sqrt(alpha^2 - beta^2) and a
+        # series in theta around 1: K(0) is then 0 identically and every
+        # derivative carries the same branch of g.  (The form
+        # sqrt(a^2 - b^2) - sqrt(a^2 - (b + theta)^2) was expanded by Maxima
+        # into I*sqrt(b^2 - a^2) for the second root when alpha, beta are
+        # symbols, a nonzero K(0) the mean-field check refused: audit
+        # LOUD-01.)
         P = self.params
         a, b = P['alpha'], P['beta']
-        return P['mu'] * THETA + P['delta'] * (
-            sqrt(a ** 2 - b ** 2) - sqrt(a ** 2 - (b + THETA) ** 2))
+        g2 = a ** 2 - b ** 2
+        return P['mu'] * THETA + P['delta'] * sqrt(g2) * (
+            1 - sqrt(1 - (2 * b * THETA + THETA ** 2) / g2))
 
 
 class CGMY(NoiseSource):
@@ -1146,25 +1189,35 @@ class PhaseType(JumpDistribution):
                 raise NoiseError(f'PhaseType: T[{i}][{i}] must be negative.')
             if any(row[j] < 0 for j in range(n) if j != i):
                 raise NoiseError(f'PhaseType: off-diagonal entries of T must be >= 0 (row {i}).')
-            if sum(row) > 1e-12:
+            # round-off relative to the row (an absolute 1e-12 refused valid
+            # rows of rates ~1e6 whose float sum is +1e-10)
+            if sum(row) > 1e-12 * sum(abs(x) for x in row):
                 raise NoiseError(f'PhaseType: row {i} of T sums to {sum(row):g} > 0 '
                                  f'(rows of a sub-generator sum to <= 0).')
         Tn = [[_numeric(self.params[f'T{i}_{j}']) for j in range(n)] for i in range(n)]
         if all(x is not None for r in Tn for x in r):
             import numpy as _np
             Tm = _np.array(Tn)
-            if abs(_np.linalg.det(Tm)) <= 1e-12 * max(1.0, float(_np.abs(Tm).max())) ** n:
+            # relative to the matrix's own scale (the floor max(1, |T|)^n
+            # refused every sub-generator with rates below ~1e-4: UNIT-05)
+            if abs(_np.linalg.det(Tm)) <= 1e-12 * float(_np.abs(Tm).max()) ** n:
                 raise NoiseError('PhaseType: T is singular, so the chain never absorbs '
                                  '(a sub-generator must be invertible).')
 
     def _mgf(self):
+        # M = 1 - sum(alpha) + alpha (-theta I - T)^(-1) t, t = -T 1, written
+        # as 1 + theta alpha (-theta I - T)^(-1) 1 (the same function): exactly
+        # 1 at theta = 0 whatever the float round-off of alpha and T (a
+        # residual 2e-16 * rate was refused as K(0) != 0), and formed from the
+        # adjugate and the determinant (Maxima's rational simplification
+        # overflowed on float rates ~1e6).
         n = self._n
         T = self._matrix()
         al = _matrix(SR, 1, n, [self.params[f'a{i}'] for i in range(n)])
-        t = -T * _matrix(SR, n, 1, [1] * n)
-        R = (-THETA * _matrix(SR, n, n, lambda i, j: 1 if i == j else 0) - T).inverse()
-        return SR(1 - sum(self.params[f'a{i}'] for i in range(n))
-                  + (al * R * t)[0, 0]).simplify_rational()
+        A = -THETA * _matrix(SR, n, n, lambda i, j: 1 if i == j else 0) - T
+        num = SR((al * A.adjugate() * _matrix(SR, n, 1, [1] * n))[0, 0]).expand()
+        den = SR(A.det()).expand()
+        return 1 + THETA * num / den
 
 
 class ChiSquared(Gamma):

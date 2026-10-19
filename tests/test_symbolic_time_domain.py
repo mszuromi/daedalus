@@ -220,7 +220,7 @@ def test_oracle_underdamped_spectrum_2p39(domains):
         for t in (0.3, 1.7, 6.0, -2.2):
             q = so.numeric_inverse_transform(lambda x: c(x, **ref), t)
             got = complex(ms.evaluate(np.array([t]), ref)[0])
-            assert abs(q.value - got) < 1e-9
+            assert abs(q.value - got) < 1e-12
         v03 = complex(ms.evaluate(np.array([0.3]), ref)[0]).real
         assert abs(v03 - 2.39) < 0.005           # not 2.06
         # the SR view agrees with the numeric view
@@ -367,7 +367,7 @@ def test_coincident_poles_refused_then_exact_with_values():
     # near (not at) the coincidence the generic modes are still accurate
     near = {'a': 1.0, 'b': 1.0 + 1e-6, 'D': 1.0}
     refn, _ = _pipeline(m, [('y', 1), ('y', 1)], near)
-    assert _max_rel(ms.evaluate(TAUS, near), refn) < 1e-8
+    assert _max_rel(ms.evaluate(TAUS, near), refn) < 1e-12
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -488,7 +488,7 @@ def test_kernel_cubic_two_sided_time_equals_fourier(chain_ref, domains):
                                     values=vals, any_degree=False)
             assert not q.exact and 'degree' in q.reason
             kv = ms.integrate_against(L, values=vals).value
-            assert abs(q.value - kv) < 1e-9
+            assert abs(q.value - kv) < 1e-12
             qd = so.pair_with_kernel(C0, L.fourier(w).subs({w: -w}), w,
                                      values=vals)
             assert qd.exact and abs(qd.value - kv) < 1e-12
@@ -527,7 +527,7 @@ def test_kernel_poly_exp_on_double_pole_vs_fourier_and_quadrature(
         np.exp(s / 0.6) / 0.6
     td = quad(lambda s: Lf(s) * f(s), 0, np.inf, epsabs=1e-13)[0] + \
         quad(lambda s: Lf(s) * f(s), -np.inf, 0, epsabs=1e-13)[0]
-    assert abs(ms.integrate_against(L, values=vals).value - td) < 1e-10
+    assert abs(ms.integrate_against(L, values=vals).value - td) < 1e-12
 
 
 def test_kernel_contact_rules_hawkes(hawkes1_ref):
@@ -633,7 +633,7 @@ def test_even_factor_sturm_and_any_degree_pairing():
     for t in (0.5, 2.0, -1.0):
         q = so.numeric_inverse_transform(lambda x: c(x), t)
         assert abs(q.value - complex(ms.evaluate(np.array([t]), {})[0])) \
-            < 1e-9
+            < 1e-12
     # a pole on the real omega axis is refused, not mis-assigned
     with pytest.raises(so.ClosedFormUnavailable, match='real omega axis'):
         so.tree_modes(1 / ((w ** 2 - 1) * (w ** 2 + 4)), w)
@@ -651,7 +651,7 @@ def test_mixed_quadratic_factor_split_and_sign_of_leading_coeff():
     for t in (0.4, 2.5, -0.7):
         q = so.numeric_inverse_transform(lambda x: cal(x), t)
         assert abs(q.value - complex(ms.evaluate(np.array([t]), {})[0])) \
-            < 1e-9
+            < 1e-12
     # symbolic scale: 1/((c s^2 + s - 1)(c s^2 - s - 1)) in s = i w
     s = I * w
     C2 = 1 / ((c * s ** 2 + s - 1) * (c * s ** 2 - s - 1))
@@ -725,8 +725,9 @@ def test_mean_field_symbols_follow_the_model_declarations():
             SR.var('mu'): 1.0}
     assert _mf_symbols_only(model, npar) == {'msad1': 0.25}
     assert not _is_saddle_symbol('msadx', model)
-    # models without declarations: the '<base>star' naming rule
-    assert _is_saddle_symbol('xstar1', None)
+    # no declarations, no saddle: the '<base>star' naming rule is retired
+    # (audit W6 / GEN-03: a real parameter 'tstar' was taken for a saddle)
+    assert not _is_saddle_symbol('xstar1', None)
     assert not _is_saddle_symbol('kstar_gain', None)
     # 'solve' substitutes exactly the declared saddles (here nstar1, vstar1)
     m = _hawkes_1pop()
@@ -754,7 +755,7 @@ def test_split_cubic_and_repeated_cubic_vs_quadrature():
     for t in (0.6, 2.0, -0.9, -3.0):
         q = so.numeric_inverse_transform(lambda x: cal(x, b=2.0), t)
         assert abs(q.value - complex(ms.evaluate(np.array([t]), ref)[0])) \
-            < 1e-9
+            < 1e-12
     L = so.Kernel.exponential(1, -1, 'positive') + \
         so.Kernel.exponential(-0.5, 2, 'negative')
     ki = ms.integrate_against(L, values=ref)
@@ -765,7 +766,7 @@ def test_split_cubic_and_repeated_cubic_vs_quadrature():
     td = quad(lambda x: np.exp(-x) * f(x), 0, np.inf, epsabs=1e-13)[0] + \
         quad(lambda x: -0.5 * np.exp(2 * x) * f(x), -np.inf, 0,
              epsabs=1e-13)[0]
-    assert abs(ki.value - td) < 1e-10
+    assert abs(ki.value - td) < 1e-12
     # squared cubic: (s + a)^3 + 2 and its mirror, each twice
     a = var('a')
     P = ((s + a) ** 3 + 2) * ((a - s) ** 3 + 2)
@@ -777,7 +778,7 @@ def test_split_cubic_and_repeated_cubic_vs_quadrature():
     for t in (0.4, 1.5, -2.0):
         q = so.numeric_inverse_transform(lambda x: cal2(x, a=1.0), t)
         assert abs(q.value - complex(ms2.evaluate(np.array([t]),
-                                                  {'a': 1.0})[0])) < 1e-9
+                                                  {'a': 1.0})[0])) < 1e-12
 
 
 # ═════════════════════════════════════════════════════════════════════════════

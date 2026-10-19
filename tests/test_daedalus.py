@@ -99,7 +99,7 @@ def test_kpoint_base_lags_and_full_grid():
     ia = int(np.argmin(np.abs(ax - 1.0)))
     rb = dd.run(m, dd.Config(k=3, max_ell=0, kpoint_base_lags=[1.0, 0.0], **T), mod)
     assert np.allclose(np.real(rb['C_tau_slices'][2]),
-                       np.real(rg['C_tau_grid'])[ia, :], atol=1e-9)
+                       np.real(rg['C_tau_grid'])[ia, :], rtol=1e-12, atol=1e-12)
 
 
 def test_config_grid_resolution():
@@ -113,9 +113,9 @@ def test_cumulative_curves():
     by_ell = {0: np.array([1.0, 2.0]), 1: np.array([0.1, 0.2]),
               2: np.array([0.01, 0.02])}
     cum = dd.cumulative_curves(by_ell)
-    assert np.allclose(cum[0], [1.0, 2.0])
-    assert np.allclose(cum[1], [1.1, 2.2])
-    assert np.allclose(cum[2], [1.11, 2.22])
+    assert np.allclose(cum[0], [1.0, 2.0], rtol=1e-12, atol=1e-12)
+    assert np.allclose(cum[1], [1.1, 2.2], rtol=1e-12, atol=1e-12)
+    assert np.allclose(cum[2], [1.11, 2.22], rtol=1e-12, atol=1e-12)
 
 
 def test_plotters_run_on_synthetic():

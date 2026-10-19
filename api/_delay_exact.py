@@ -47,7 +47,7 @@ is ``E[u(t + tau) u(t)^T] = C_z C(tau) C_z^T + C_z R(tau) N D0^T``
 (``tau > 0``; the ``D0 N D0^T delta(tau)`` part is the delta record).
 
 The scalar delayed OU (``A = -a, A_d = c, B = 1, B_d = 0``) reduces to the
-2 x 2 problem of item 29's reference (spectral cross-check 1.6e-10).
+2 x 2 problem of the exact-delay reference (spectral cross-check 1.6e-10).
 """
 from __future__ import annotations
 
@@ -55,12 +55,13 @@ import math
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = ['ExactTree', 'ExactTreeUnavailable', 'delayed_state_space',
            'DelayedStateSpace']
 
 
-class ExactTreeUnavailable(ValueError):
+class ExactTreeUnavailable(DaedalusError, ValueError):
     """The exact tree does not apply (several delays, a neutral term, a
     singular instantaneous part, ...); the Pade tree is used instead."""
 
@@ -512,8 +513,8 @@ class ExactTree:
     def callable(self):
         """``f(t0, t1)``: the pipeline's k = 2 callable convention (leg 0 at
         ``t0``, leg 1 at ``t1``, ``tau = t1 - t0``; equal times are evaluated
-        at the pipeline's Ito left limit: exactly, or at ``tau = -_ITO_EPS``
-        under DAEDALUS_TAU0=nudge)."""
+        at the pipeline's Ito left limit: exactly (default), or at
+        ``tau = -_ITO_EPS`` under DAEDALUS_TAU0=nudge)."""
         from api.compute import _tau0_lag
         lag = _tau0_lag()
 

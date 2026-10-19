@@ -1,7 +1,7 @@
 """
 tests/test_model_builder_split.py
 ==================================
-Pins the ModelBuilder split (docs/model_builder_split_plan.md, step 1):
+Pins the ModelBuilder split (the internal design notes (not distributed), step 1):
 
   * the forward builders ``TemporalModelBuilder`` / ``SpatialModelBuilder``
     produce model dicts IDENTICAL (on the structured keys) to the back-compat

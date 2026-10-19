@@ -77,7 +77,7 @@ Not covered (clear errors, never a silently wrong result)
 * Non-local noise left as a cumulant kernel (not Markov-embedded):
   ``UnsupportedModelError``.
 * ``inverse_transform`` and ``pair_with_kernel`` run on the stage-C2 engine
-  below (item 40): no degree limit, the half-plane split stated as
+  below: no degree limit, the half-plane split stated as
   assumptions.  Their pre-C2 routes (every irreducible factor of degree <= 2
   in omega, split sampled around ``reference``, ``ClosedFormUnavailable``
   otherwise) remain behind ``legacy=True`` / ``any_degree=False``.
@@ -92,12 +92,12 @@ are ``RootOf`` symbols (root ``index`` of a polynomial, roots ordered by real
 part); coefficients are polynomials in them with coefficients rational in the
 parameters.  Each result lists the ``assumptions`` it needs (Routh/Sturm sign
 conditions, distinct poles) and refuses (``AssumptionViolation``) at values
-that violate them.  ``integrate_against`` with a ``Kernel`` (exponential,
+that violate them.  ``integrate_against`` with a ``PairingKernel`` (exponential,
 polynomial x exponential, two-sided exponential) gives ``int L(s) C(s) ds`` exactly;
 it equals the Fourier route ``pair_with_kernel(C0, L~(-omega))`` on the
 smooth part.  The numeric twin for a computed cumulant at any loop order
 (matrix-exponential triples of the state-space route, no poles) is
-``api.me_output`` / ``Cumulant.integrate_against`` (item 40).
+``api.me_output`` / ``Cumulant.integrate_against``.
 """
 from __future__ import annotations
 
@@ -116,6 +116,7 @@ from sage.all import (
 from sage.rings.rational import Rational as _Rational
 from sage.rings.integer import Integer as _Integer
 from sage.rings.real_mpfr import RealNumber as _RealNumber
+from engine.errors import DaedalusError
 
 __all__ = [
     'SymbolicOutError', 'UnsupportedModelError', 'NonRationalPropagatorError',
@@ -127,7 +128,7 @@ __all__ = [
     'from_sympy', 'to_latex', 'to_callable', 'to_json', 'from_json',
     # stage C2
     'AssumptionViolation', 'Mode', 'RootOf', 'Assumption', 'ModeSum',
-    'Kernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
+    'PairingKernel', 'Kernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
     # stage C3 (api.symbolic_loop; resolved lazily, see __getattr__)
     'symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
     'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning',
@@ -164,7 +165,7 @@ _REAL_AXIS_TOL = 1e-9
 # Errors
 # ═════════════════════════════════════════════════════════════════════════════
 
-class SymbolicOutError(ValueError):
+class SymbolicOutError(DaedalusError, ValueError):
     """Base class of every error raised by this module."""
 
 
@@ -222,6 +223,46 @@ def _qq_from_numeric(e) -> Any:
         f'parameters).')
 
 
+def _integral_exponent(ex):
+    """The integer value of a numeric exponent that is an integer, also
+    when float-typed (a float model's ``x^1.000``, audit GEN-08); else
+    ``None``."""
+    if ex.is_integer():
+        return int(ex)
+    try:
+        x = complex(ex)
+    except (TypeError, ValueError):
+        return None
+    if x.imag == 0 and float(x.real).is_integer():
+        return int(x.real)
+    return None
+
+
+def _exact_exponent(ex):
+    """An SR numeric exponent as an exact rational, or None.
+
+    Rationals pass; a float such as ``0.5`` is accepted when it IS a small
+    rational exactly (denominator <= 64: ``0.5``, ``0.25``, ``1.5``) so the
+    scan and the conversion agree -- they used to disagree on floats, which
+    refused ``D**0.5`` with a message about omega.  Anything else
+    (``0.3``, an irrational) is None."""
+    x = ex.pyobject()
+    if isinstance(x, _Rational):
+        return QQ(x)
+    try:
+        q = QQ(x)
+    except (TypeError, ValueError):
+        return None
+    if q.denominator() <= 64 and float(q) == float(x):
+        return q
+    return None
+
+
+def _power_name(base, x):
+    return (f'pw__{base}__{"m" if x < 0 else "p"}'
+            f'{abs(x.numerator())}_{x.denominator()}')
+
+
 class _Bridge:
     """Conversion between Sage SR expressions in ``omega`` and the field
     ``QQ(s, params...)``."""
@@ -266,11 +307,10 @@ class _Bridge:
         if _opname(op) == 'pow':
             base, ex = e.operands()
             if base.is_symbol() and ex.is_numeric():
-                x = ex.pyobject()
-                if isinstance(x, _Rational) and x.denominator() != 1:
-                    nm = (f'pw__{base}__{"m" if x < 0 else "p"}'
-                          f'{abs(x.numerator())}_{x.denominator()}')
-                    pows[nm] = (base, QQ(x))
+                x = _exact_exponent(ex)
+                if x is not None and x.denominator() != 1:
+                    nm = _power_name(base, x)
+                    pows[nm] = (base, x)
         for o in e.operands():
             self._scan(o, syms, pows, seen)
 
@@ -305,12 +345,17 @@ class _Bridge:
                 out *= self._conv(o, memo)
         elif _opname(op) == 'pow':
             base, ex = e.operands()
-            if ex.is_numeric() and ex.is_integer():
-                out = self._conv(base, memo) ** int(ex)
+            if ex.is_numeric() and _integral_exponent(ex) is not None:
+                out = self._conv(base, memo) ** _integral_exponent(ex)
             elif ex.is_numeric() and base.is_symbol():
-                x = QQ(ex.pyobject())
-                nm = (f'pw__{base}__{"m" if x < 0 else "p"}'
-                      f'{abs(x.numerator())}_{x.denominator()}')
+                x = _exact_exponent(ex)
+                if x is None:
+                    raise NonRationalPropagatorError(
+                        f'power {e!r}: the exponent {ex!r} is not an exact '
+                        f'rational number (write 1/2, not an irrational or '
+                        f'long decimal); only rational powers of a '
+                        f'parameter symbol are supported.')
+                nm = _power_name(base, x)
                 if nm not in self._names:
                     raise NonRationalPropagatorError(
                         f'non-rational power {e!r} of omega (or of a '
@@ -319,9 +364,11 @@ class _Bridge:
                 out = self.F(self.R(nm))
             else:
                 raise NonRationalPropagatorError(
-                    f'non-rational power {e!r}: the covariance requires a '
-                    f'rational function of omega (e.g. no square roots of '
-                    f'omega-dependent terms).')
+                    f'non-rational power {e!r}: only integer powers of '
+                    f'anything, and rational powers (1/2, 3/2, ...) of a '
+                    f'plain parameter symbol, are allowed; the covariance '
+                    f'requires a rational function of omega (e.g. no square '
+                    f'roots of omega-dependent terms).')
         else:
             raise NonRationalPropagatorError(
                 f'non-rational function {op} in {e!r}: the propagator must '
@@ -479,15 +526,8 @@ def _model_fundamental(model: dict, parameters: Optional[dict]) -> dict:
 
 def _solve_mean_field(ft, model: dict, fundamental: dict) -> dict:
     """``num_params`` of the pipeline's MF solve ({SR symbol: float})."""
-    if model.get('equations'):
-        from api._mean_field_dae import solve_mean_field_dae_compat
-        mf = solve_mean_field_dae_compat(ft, model, fundamental,
-                                         fixed_point_index=0, n_starts=64,
-                                         seed_box=None, verbose=False)
-    else:
-        from api._mean_field import solve_mean_field
-        mf = solve_mean_field(ft, model, fundamental, verbose=False)
-    return mf['num_params']
+    from api._mean_field import solve_mean_field
+    return solve_mean_field(ft, model, fundamental, verbose=False)['num_params']
 
 
 def _clean_float(x: float, scale: float = 1.0):
@@ -506,6 +546,54 @@ def _as_name_dict(d: Optional[dict]) -> dict:
     return out
 
 
+def _check_supplied_inverse(Gs, Gf, bridge, omega):
+    """Raise when the supplied ``G`` (SR) is not ``K^-1`` (``Gf``, exact)
+    at two numeric points (``omega`` real, every other symbol a fixed value
+    in [0.5, 1.5]): a row / column convention mismatch differs at O(1); the
+    float round-off of a pipeline ``G`` is ~1e-16.  An entry that does not
+    evaluate to a number falls back to the exact test in the field."""
+    import itertools
+    om = str(omega)
+    other = [SR(bridge.frac_to_sr(Gf[i, j]))
+             for i in range(Gf.nrows()) for j in range(Gf.ncols())]
+    free = sorted({v for e in list(Gs.list()) + other
+                   for v in SR(e).variables() if str(v) != om}, key=str)
+    for w0, shift in ((0.731, 0.0), (1.913, 0.29)):
+        pt = {omega: SR(w0)}
+        pt.update({v: SR(0.5 + ((0.618034 * (k + 1) + shift) % 1.0))
+                   for k, v in enumerate(free)})
+        diff = scale = 0.0
+        for i, j in itertools.product(range(Gs.nrows()), range(Gs.ncols())):
+            try:
+                a = complex(SR(Gs[i, j]).subs(pt))
+                b = complex(other[i * Gf.ncols() + j].subs(pt))
+            except (TypeError, ValueError, ZeroDivisionError):
+                _check_supplied_inverse_exact(Gs, Gf, bridge)
+                return
+            if not (math.isfinite(abs(a)) and math.isfinite(abs(b))):
+                _check_supplied_inverse_exact(Gs, Gf, bridge)
+                return
+            diff, scale = max(diff, abs(a - b)), max(scale, abs(a), abs(b))
+        if diff > 1e-9 * max(scale, 1e-300):
+            raise SymbolicOutError(
+                'K * G != identity: the supplied G is not the inverse of '
+                'K (row/column convention mismatch?)')
+
+
+def _check_supplied_inverse_exact(Gs, Gf, bridge):
+    try:
+        Gg = matrix(bridge.F, [[bridge.to_field(Gs[i, j])
+                                for j in range(Gs.ncols())]
+                               for i in range(Gs.nrows())])
+    except (NonRationalPropagatorError, ArithmeticError) as exc:
+        raise SymbolicOutError(
+            f'the supplied G cannot be checked against K^-1: {exc}') from exc
+    if Gg != Gf:
+        raise SymbolicOutError(
+            'K * G != identity: the supplied G is not the inverse of '
+            'K (row/column convention mismatch?)')
+
+
 def tree_covariance_from_matrices(G, D, omega, *, K=None,
                                   phys_names: Sequence[str] | None = None,
                                   resp_names: Sequence[str] | None = None,
@@ -514,8 +602,9 @@ def tree_covariance_from_matrices(G, D, omega, *, K=None,
                                   reference: Optional[dict] = None
                                   ) -> 'TreeCovariance':
     """Core constructor: ``G`` (phys x resp), ``D`` (resp x resp) and
-    ``omega``, all Sage SR.  If ``G`` is ``None`` it is ``K^{-1}``.  When both
-    are given the identity ``K G = 1`` is verified in the rational field."""
+    ``omega``, all Sage SR.  With ``K`` given, ``G = K^{-1}`` exactly in the
+    rational field (a supplied ``G`` is checked against it numerically);
+    without, the supplied ``G`` is used."""
     if G is None and K is None:
         raise SymbolicOutError('need G or K')
     omega = SR(omega)
@@ -566,20 +655,21 @@ def tree_covariance_from_matrices(G, D, omega, *, K=None,
         return matrix(F, rows)
 
     Df = to_F(Ds, 'noise matrix D')
-    if Gs is not None:
-        Gf = to_F(Gs, 'G')
-        if Ks is not None:
-            Kf = to_F(Ks, 'K')
-            if Kf * Gf != matrix(F, n, n, 1):
-                raise SymbolicOutError(
-                    'K * G != identity: the supplied G is not the inverse of '
-                    'K (row/column convention mismatch?)')
-    else:
+    if Ks is not None:
+        # G = K^-1 exactly in the rational field.  A supplied G (the
+        # pipeline's, inverted in floats for a float model) is only checked
+        # against it numerically: its rationalized float coefficients are
+        # not the exact inverse (audit GEN-08: 'K * G != identity' on a fully
+        # coupled float model).
         Kf = to_F(Ks, 'K')
         try:
             Gf = Kf.inverse()
         except ZeroDivisionError as exc:
             raise SymbolicOutError('kernel matrix K is singular') from exc
+        if Gs is not None:
+            _check_supplied_inverse(Gs, Gf, bridge, omega)
+    else:
+        Gf = to_F(Gs, 'G')
     if Df.nrows() != Gf.ncols() or Df != Df.transpose():
         raise SymbolicOutError(
             'the noise matrix must be symmetric with the size of the '
@@ -743,29 +833,13 @@ def _expand_param_names(d: Optional[dict]) -> dict:
     return out
 
 
-def _saddle_bases(model: Optional[dict]) -> Optional[list]:
-    """Names of the model's mean-field (saddle) parameters, the ones
-    declared with ``mean_field=True`` (``xstar``, ``nEstar`` ...); ``None``
-    if the model declares none (then the ``<base>star`` naming rule
-    applies)."""
-    if not model:
-        return None
-    bases = [str(p.get('name')) for p in (model.get('parameters') or [])
-             if p.get('mean_field')]
-    return bases or None
-
-
 def _is_saddle_symbol(name: str, model: Optional[dict]) -> bool:
     """Whether the symbol ``name`` is a mean-field value: a declared saddle
-    parameter, plain or with a population index (``xstar`` / ``xstar1`` /
-    ``nEstar2``), or, for models that declare none, a name ending in
-    ``star`` plus an optional index -- the convention of
-    ``describe_model``."""
-    import re
-    bases = _saddle_bases(model)
-    if bases is None:
-        return re.fullmatch(r'.*star\d*', name) is not None
-    return any(re.fullmatch(re.escape(b) + r'\d*', name) for b in bases)
+    (``mean_field=True``), plain or with a population index (``xstar`` /
+    ``xstar1`` / ``nEstar2``); ``api.naming``, no spelling rule (a
+    parameter named ``tstar`` is a parameter, audit GEN-03)."""
+    from api.naming import is_saddle_symbol
+    return is_saddle_symbol(name, model)
 
 
 def _mf_symbols_only(model: Optional[dict], num_params) -> dict:
@@ -972,13 +1046,14 @@ class TreeCovariance:
         if isinstance(field_, (int, np.integer)):
             return int(field_)
         if isinstance(field_, (tuple, list)) and len(field_) == 2:
+            from engine.core.vertices import field_symbol_name
             nm, pop = field_
-            cands = [f'{nm}{pop}']
+            cands = [field_symbol_name(nm, int(pop))]
             conv = (self._model or {}).get('naming_convention')
             if conv is not None:
                 from api.access import normalize_external_fields
-                cands.append('%s%d' % normalize_external_fields(
-                    [field_], naming_convention=conv)[0])
+                cands.append(field_symbol_name(*normalize_external_fields(
+                    [field_], naming_convention=conv)[0]))
             for c in cands:
                 if c in self.phys_names:
                     return self.phys_names.index(c)
@@ -1017,7 +1092,14 @@ class TreeCovariance:
                 npar = _solve_mean_field(self._ft, self._model, fund)
                 out = {str(k): float(v) for k, v in npar.items()
                        if isinstance(v, (int, float, np.floating))}
-            except Exception:
+            except Exception as exc:
+                warnings.warn(
+                    'TreeCovariance.default_values: the mean-field solve for '
+                    f'the reference values failed ({type(exc).__name__}: '
+                    f'{exc}); returning no defaults, so symbols without a '
+                    'value are treated as 1.0 (assumed positive).  Pass '
+                    'reference=/values= explicitly.', RuntimeWarning,
+                    stacklevel=2)
                 out = {}
         self._cache['defaults'] = out
         return dict(out)
@@ -1073,7 +1155,7 @@ class TreeCovariance:
         ms._fixed.update(_expand_param_names(self.values))
         return ms
 
-    def integrate_against(self, a, b, kernel: 'Kernel', *,
+    def integrate_against(self, a, b, kernel: 'PairingKernel', *,
                           values: Optional[dict] = None,
                           reference: Optional[dict] = None,
                           contact: Optional[str] = None) -> 'KernelIntegral':
@@ -1347,7 +1429,7 @@ class KernelPairing:
         return float(np.real(self.value))
 
 
-def _conjugate_real(L_tilde, omega, bridge_hint=None):
+def _conjugate_real(L_tilde, omega):
     """conj(L(omega)) for real omega and real parameters: s -> -s."""
     L = SR(L_tilde)
     b = _Bridge([L], omega)
@@ -1366,7 +1448,7 @@ def pair_with_kernel(C0_entry, L_tilde, omega=None, *,
     This is ``int dt L(t) C(-t)`` for a real kernel ``L`` with
     ``L_tilde(omega) = int dt L(t) exp(-i omega t)``.
 
-    Default (since item 40, C2 decision (a)): the stage-C2 engine,
+    Default (, C2 decision (a)): the stage-C2 engine,
     ``any_degree=True``: residues are taken in K[x]/(p) for every
     irreducible factor p of the denominator (any degree), summed by traces,
     and the half-plane split is stated as conditions on the parameters
@@ -1555,7 +1637,7 @@ def inverse_transform(C0_entry, omega=None, tau=None, *,
     r"""Exact inverse transform ``C(tau) = (1/2 pi) int d omega C0(omega)
     exp(-i omega tau)`` (any denominator degree).
 
-    Since item 40 this runs on the stage-C2 engine (:func:`tree_modes`): the
+    This runs on the stage-C2 engine (:func:`tree_modes`): the
     residues are taken per irreducible factor in ``K[x]/(p)``, roots of
     factors of degree >= 3 are :class:`RootOf` symbols, and the half-plane
     split is stated as conditions on the parameters (``'assumptions'``)
@@ -1780,26 +1862,84 @@ Quadrature.__doc__ = (
     "looser tolerance implied by ``error``).")
 
 
+def _even_part(scalar, w):
+    """``(f(w) + f(-w)) / 2`` or ``None`` (not finite / not evaluable)."""
+    try:
+        g = 0.5 * (scalar(w) + scalar(-w))
+    except (OverflowError, ZeroDivisionError, ValueError, FloatingPointError,
+            ArithmeticError, TypeError):
+        return None
+    return g if np.isfinite(g) else None
+
+
+def _spectrum_profile(scalar):
+    """``[(omega, even part)]`` on the decades ``1e-30 .. 1e60`` and at 0
+    (where finite): the frequency scale of ``f`` is read off it, whatever
+    the time unit."""
+    out = []
+    g0 = _even_part(scalar, 0.0)
+    if g0 is not None:
+        out.append((0.0, g0))
+    for k in range(-30, 61):
+        g = _even_part(scalar, 10.0 ** k)
+        if g is not None:
+            out.append((10.0 ** k, g))
+    return out
+
+
 def numeric_inverse_transform(f: Callable, tau: float, *,
                               contact: Optional[complex] = None,
-                              epsabs: float = 1e-12, epsrel: float = 1e-10,
+                              epsabs: Optional[float] = None,
+                              epsrel: float = 1e-10,
                               limit: int = 500) -> Quadrature:
     r"""``(1/2 pi) int_{-inf}^{inf} f(omega) exp(-i omega tau) d omega`` by
     adaptive quadrature (scipy ``quad`` with the QAWF cos/sin weights for
     ``tau != 0``) of the smooth part: the constant ``contact`` =
-    ``f(inf)`` is subtracted first (estimated from ``f`` at very large omega
-    if ``None``).  ``f(omega)`` is a scalar function ``omega -> complex``
-    (e.g. a :class:`SymbolicCallable` with its parameters bound).
+    ``f(inf)`` is subtracted first (if ``None``: the limit of
+    ``(f(omega) + f(-omega))/2`` along the decades up to 1e60, or its value
+    at 1e9 when that does not settle).  ``f(omega)`` is a scalar function
+    ``omega -> complex`` (e.g. a :class:`SymbolicCallable` with its
+    parameters bound).
 
-    Tolerances: ``epsabs`` / ``epsrel`` per quad call; the result carries the
-    summed error estimate.  This is the SMOOTH part, i.e. the delta(tau)
-    contribution of ``contact`` is not included (pipeline convention)."""
+    The integral runs in ``v = omega / omega_s`` with ``omega_s`` the
+    half-width of ``|f - contact|`` (read off the decades), so the quadrature
+    sees the same integrand in any time unit (an absolute ``omega`` lost the
+    result for spectra much narrower or wider than 1: audit UNIT-06).
+
+    Tolerances: ``epsrel`` per quad call; ``epsabs`` absolute on the
+    integral over ``omega`` (default ``None``: 1e-12 of the integrand's
+    natural size ``omega_s * max|f - contact|``, unit free).  The result
+    carries the summed error estimate and the absolute ``epsabs`` used.
+    This is the SMOOTH part, i.e. the delta(tau) contribution of
+    ``contact`` is not included (pipeline convention)."""
     from scipy.integrate import quad
     scalar = lambda w: complex(np.asarray(f(w)).reshape(-1)[0]) \
         if not np.isscalar(w) else complex(np.asarray(f(w)).reshape(-1)[0])
+    prof = _spectrum_profile(scalar)
     if contact is None:
-        contact = 0.5 * (scalar(1e9) + scalar(-1e9))
-    h = lambda w: scalar(w) - contact
+        tail = [g for w, g in prof if w > 0][-4:]
+        scale = max([abs(g) for _, g in prof] + [0.0])
+        if len(tail) == 4 and max(abs(g - tail[-1]) for g in tail) \
+                <= 1e-12 * scale:
+            contact = tail[-1]
+        else:
+            contact = 0.5 * (scalar(1e9) + scalar(-1e9))
+    contact = complex(contact)
+    dev = [(w, abs(g - contact)) for w, g in prof]
+    peak = max([d for _, d in dev] + [0.0])
+    tau = float(tau)
+    if peak == 0.0:
+        return Quadrature(0j, 0.0, 0.0 if epsabs is None else epsabs, epsrel,
+                          contact, True, True)
+    # half-width: the first decade beyond the peak where |f - contact| has
+    # fallen to half of it
+    w_peak = max(dev, key=lambda t: t[1])[0]
+    w_s = next((w for w, d in dev if w > w_peak and d <= 0.5 * peak), None)
+    if not w_s:
+        w_s = w_peak if w_peak > 0 else 1.0
+    norm = w_s * peak                    # natural size of the omega integral
+    eps_n = 1e-12 if epsabs is None else float(epsabs) / norm
+    h = lambda v: (scalar(w_s * v) - contact) / peak
     err = 0.0
 
     converged = True
@@ -1808,14 +1948,13 @@ def numeric_inverse_transform(f: Callable, tau: float, *,
         nonlocal err, converged
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            v, e = quad(fun, 0, np.inf, epsabs=epsabs, epsrel=epsrel,
+            v, e = quad(fun, 0, np.inf, epsabs=eps_n, epsrel=epsrel,
                         limit=limit, **kw)
         if caught:
             converged = False
         err += e
         return v
 
-    tau = float(tau)
     if tau == 0.0:
         re = part(lambda u: (h(u) + h(-u)).real)
         im = part(lambda u: (h(u) + h(-u)).imag)
@@ -1823,7 +1962,7 @@ def numeric_inverse_transform(f: Callable, tau: float, *,
         # f(u) e^{-iut} + f(-u) e^{iut},  integrate over u in (0, inf)
         a = lambda u: h(u)
         c = lambda u: h(-u)
-        w = abs(tau)
+        w = abs(tau) * w_s
         sg = 1.0 if tau > 0 else -1.0       # e^{-iut} = cos(ut) - i sg sin(|t|u)
         re = (part(lambda u: (a(u) + c(u)).real, weight='cos', wvar=w)
               + sg * part(lambda u: (a(u) - c(u)).imag, weight='sin',
@@ -1831,8 +1970,9 @@ def numeric_inverse_transform(f: Callable, tau: float, *,
         im = (part(lambda u: (a(u) + c(u)).imag, weight='cos', wvar=w)
               - sg * part(lambda u: (a(u) - c(u)).real, weight='sin',
                           wvar=w))
-    return Quadrature(complex(re, im) / (2 * np.pi), err / (2 * np.pi),
-                      epsabs, epsrel, contact, True, converged)
+    return Quadrature(complex(re, im) * norm / (2 * np.pi),
+                      err * norm / (2 * np.pi), eps_n * norm, epsrel,
+                      contact, True, converged)
 
 
 def numeric_pair_with_kernel(C0_entry, L_tilde, omega=None, *,
@@ -2362,8 +2502,7 @@ class _ModeData:
     """Families, assumptions and root presentation of a rational function
     of s (a bridge field element) at a reference point."""
 
-    def __init__(self, f, bridge: _Bridge, ctx: _AlgCtx, ref_pt,
-                 laurent_order: Optional[int] = None):
+    def __init__(self, f, bridge: _Bridge, ctx: _AlgCtx, ref_pt):
         self.bridge, self.ctx = bridge, ctx
         num, den = f.numerator(), f.denominator()
         N, Dn = ctx.from_R(num), ctx.from_R(den)
@@ -2743,7 +2882,7 @@ class ModeSum:
         return out
 
     # ── kernel integrals ────────────────────────────────────────────────
-    def integrate_against(self, kernel: 'Kernel', values: Optional[dict]
+    def integrate_against(self, kernel: 'PairingKernel', values: Optional[dict]
                           = None, contact: Optional[str] = None
                           ) -> 'KernelIntegral':
         """``int L(s) C(s) ds`` in closed form from the modes; see
@@ -2874,7 +3013,7 @@ def tree_modes(C0_entry, omega=None, *, values: Optional[dict] = None,
 # ── kernels and time-domain kernel integrals ────────────────────────────────
 
 @dataclass(frozen=True)
-class Kernel:
+class PairingKernel:
     """A kernel ``L(s) = sum coeff * s**power * exp(rate * s)`` over its
     terms, each on ``side`` 'positive' (s > 0) or 'negative' (s < 0).
     Terms are :class:`Mode` objects; coefficients and rates are real Sage
@@ -2890,21 +3029,21 @@ class Kernel:
 
     @classmethod
     def exponential(cls, amplitude, rate, side: str = 'positive',
-                    power: int = 0) -> 'Kernel':
+                    power: int = 0) -> 'PairingKernel':
         """``amplitude * s**power * exp(rate * s)`` on one side."""
         return cls((Mode(SR(amplitude), SR(rate), int(power), side),),
                    'exponential')
 
     @classmethod
-    def two_sided_exponential(cls, a_pos, tau_pos, a_neg, tau_neg) -> 'Kernel':
+    def two_sided_exponential(cls, a_pos, tau_pos, a_neg, tau_neg) -> 'PairingKernel':
         """``L(s) = a_pos e^{-s/tau_pos}`` (s > 0),
         ``a_neg e^{s/tau_neg}`` (s < 0)."""
         return cls((Mode(SR(a_pos), -1 / SR(tau_pos), 0, 'positive'),
                     Mode(SR(a_neg), 1 / SR(tau_neg), 0, 'negative')),
                    'two_sided_exponential')
 
-    def __add__(self, other: 'Kernel') -> 'Kernel':
-        return Kernel(tuple(self.terms) + tuple(other.terms),
+    def __add__(self, other: 'PairingKernel') -> 'PairingKernel':
+        return PairingKernel(tuple(self.terms) + tuple(other.terms),
                       self.name or other.name)
 
     def at_zero(self, side: str):
@@ -2929,6 +3068,11 @@ class Kernel:
     def expressions(self) -> list:
         return [SR(x) for t in self.terms for x in (t.coeff, t.rate)]
 
+
+
+#: Deprecated alias of :class:`PairingKernel` (renamed in audit W9: ``api.delay.Kernel`` is a
+#: different class, a delay/kernel *image* builder).  Kept so existing code works.
+Kernel = PairingKernel
 
 @dataclass
 class KernelIntegral:
@@ -2965,10 +3109,10 @@ def _kernel_assumption_items(kterms, ctx, ref_pt):
     return items
 
 
-def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
-    if not isinstance(kernel, Kernel):
-        raise SymbolicOutError('kernel must be a Kernel (Kernel.two_sided_exponential, '
-                               'Kernel.exponential, ...)')
+def _integrate_modes(ms: ModeSum, kernel: PairingKernel, values, contact):
+    if not isinstance(kernel, PairingKernel):
+        raise SymbolicOutError('kernel must be a PairingKernel (PairingKernel.two_sided_exponential, '
+                               'PairingKernel.exponential, ...)')
     if contact not in (None, 'exclude', 'positive', 'negative', 'mid'):
         raise SymbolicOutError(
             "contact must be None, 'exclude', 'positive', 'negative' or "
@@ -3116,7 +3260,7 @@ def _integrate_modes(ms: ModeSum, kernel: Kernel, values, contact):
                           roots=roots)
 
 
-def integrate_against(C0_entry, kernel: Kernel, omega=None, *,
+def integrate_against(C0_entry, kernel: PairingKernel, omega=None, *,
                       values: Optional[dict] = None,
                       reference: Optional[dict] = None,
                       contact: Optional[str] = None) -> KernelIntegral:

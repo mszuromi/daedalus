@@ -1,27 +1,28 @@
 """
 engine.integration.time_domain.pipeline
 ======================================
-Time-domain tree-level correlator evaluation.
+Time-domain correlator evaluation (tree and loop diagrams).
 
-Evaluates each typed diagram directly in the time domain via explicit
-numerical quadrature of vertex-time integrals.  No frequency-domain
-integral construction or loop-kernel grouping is needed — the pipeline
-works directly from:
+Evaluates each typed diagram directly in the time domain, vertex time
+integrals done in closed form (state-space route or pole-residue modesum;
+numerical quadrature only as a fallback).  No frequency-domain integral
+construction or loop-kernel grouping is needed — the pipeline works
+directly from:
 
   1. A list of typed diagrams (from the enumeration pipeline)
   2. Their scalar prefactors (from ``classify_coefficient_factors``)
   3. The retarded propagator in pole-residue form (``pole_vals``,
      ``C_mats``, ``D_delta``)
 
-For tree-level diagrams (loop_number == 0), each diagram is evaluated
-independently via ``integrate_tree_diagram``.  Loop diagrams
-(loop_number > 0) are marked as skipped — loop-kernel reduction is
-deferred to a future extension.
+Every diagram, tree (loop_number == 0) or loop (loop_number > 0), is
+evaluated independently by ``integrate_diagram`` and the contributions are
+summed per loop order; a diagram that cannot be evaluated is reported in the
+result (``status = 'incomplete'``), never dropped silently.
 
 Convention
 ----------
-``total_C(t_1, t_2, ..., t_k)`` returns the sum of all tree-level
-diagram contributions.  Position i is ALWAYS the time of
+``total_C(t_1, t_2, ..., t_k)`` returns the sum of all diagram
+contributions.  Position i is ALWAYS the time of
 ``external_fields[i]``:
 
   - ``external_fields[0]`` → ``t_1`` (base time, pinned to 0)
@@ -29,176 +30,414 @@ diagram contributions.  Position i is ALWAYS the time of
   - ``external_fields[2]`` → ``t_3``, ``τ_2 = t_3 - t_1``
 
 This is enforced by the canonical time remapping in
-``integrate_tree_diagram``.
+``integrate_diagram``.
 """
 
 from sage.all import SR
 
-import sys
-import warnings
 
 from engine.integration.time_domain.final_integral import (
     integrate_diagram,
     PropagatorTD,
     _loop_number_from_graph,
-    _setup_lever_on,
 )
+from engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Parallel-evaluation support (2026-04-21, parallel-eval branch)
+# Parallel evaluation of a τ batch (W8p S1)
 # ───────────────────────────────────────────────────────────────────────
 #
-# ``compute_correction_td`` returns both a scalar ``total_C(*tau)`` (the
-# serial, always-available entry point) and ``total_C_batch(tau_list,
-# parallel=...)`` for fan-out over a τ grid.
+# ``compute_correction_td`` returns a scalar ``total_C(*tau)`` (the serial,
+# always-available entry point) and ``total_C_batch(tau_list, parallel=...)``
+# / ``eval_per_diagram_batch`` for a τ grid.
 #
-# Parallelism uses ``multiprocessing.Pool`` with the ``fork`` start method.
-# Fork is chosen because:
+# **Partition by diagram only.**  A worker evaluates WHOLE diagrams on the
+# WHOLE grid, inside its own ``_ss_grid`` (the state-space prefetch steps the
+# last segment from one grid length to the next, so splitting the grid would
+# change rounding), and the parent sums the diagram values of each point in
+# diagram order, exactly as ``total_C`` does.  The result is bit-identical
+# to the serial batch for any worker count and either method:
 #
-#   - The per-diagram ``contribution`` callables returned by
-#     ``integrate_diagram`` are nested closures (inside
-#     ``integrate_diagram.<locals>.contribution``) that standard
-#     ``pickle`` cannot serialise.  With ``fork``, workers inherit the
-#     parent's full memory at fork time — closures, captured state, and
-#     all — without pickling functions.  The only objects crossing the
-#     fork boundary via pickle are the τ-tuple inputs (``tuple[float]``)
-#     and the complex-scalar outputs.
-#   - On Linux ``fork`` is the default.  On macOS Python 3.8+ switched
-#     to ``spawn`` by default to avoid Objective-C fork-after-init
-#     crashes; we explicitly set ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY``
-#     and request ``mp.get_context('fork')``.  This has been tested with
-#     Sage 10.8 + CPython 3.13 on macOS and reproduces bit-identical
-#     output to the serial path (measured max |parallel − serial| = 0.0).
+# * **threads** (every platform, notebooks included: nothing forks).  Only a
+#   diagram whose largest stationary state block has at least
+#   ``THREAD_BLOCK_MIN`` entries goes to the pool: its Kronecker / BLAS work
+#   releases the GIL (measured 2.7-3.0x at 4 threads), while small diagrams
+#   are dispatch-bound and slower on threads (0.75-0.86x measured), so the
+#   main thread evaluates those meanwhile.  Largest blocks first.
+# * **fork** (Linux only; ``engine.fork_safety.fork_unsafe``).  The workers
+#   inherit the per-diagram closures (nested functions that ``pickle``
+#   cannot serialise) through ``_FANOUT``; each returns its diagrams' values
+#   and its ``_RUNTIME_COUNTERS`` delta.  Used when the batch has enough
+#   diagrams to amortise the pool, capped by the memory budget (per-worker
+#   budget shares).
 #
-# ─── Windows support: DEFERRED ─────────────────────────────────────────
-# Windows does NOT support the ``fork`` start method at all — Python's
-# ``multiprocessing`` on Windows is always ``spawn``, which re-imports
-# the parent module in a fresh interpreter and then pickles arguments
-# across the boundary.  Because our per-diagram closures are not
-# picklable (see above), ``total_C_batch(parallel=True)`` will raise
-# ``ValueError: cannot find context for 'fork'`` if invoked on Windows.
-#
-# When we revisit Windows support the two viable options are:
-#
-#   1. Add ``cloudpickle`` as an optional dependency and route closure
-#      serialisation through it.  ``cloudpickle`` handles nested
-#      functions, lambdas, and Sage objects that stdlib ``pickle``
-#      rejects.  Would let us switch ``total_C_batch`` to ``spawn`` on
-#      Windows transparently while leaving fork as the fast path on
-#      POSIX.
-#   2. Refactor the per-diagram / per-subset closures into top-level
-#      ``pickle``-compatible classes (e.g. ``FastSubsetEvaluator`` and
-#      ``DiagramContribution`` as module-level ``class``es with
-#      explicit ``__init__`` / ``__call__`` / ``__getstate__``).
-#      More invasive but no new runtime dependency.
-#
-# For now, POSIX-only is fine for the current user base (macOS / Linux
-# lab machines).  Windows users get a clear error at runtime rather
-# than silent non-determinism.
-#
-# ``_WORKER_STATE`` is a module-level dict that lets ``_worker_eval``
-# (a picklable top-level function) reach the parent's ``total_C``
-# callable after fork.  ``total_C_batch`` writes the current ``total_C``
-# into ``_WORKER_STATE`` *before* creating the Pool; fork copies the
-# dict into every worker, and each worker's ``_worker_eval`` looks it up
-# from its own (inherited) module globals.  Because the Pool is
-# created-and-destroyed per batch call, there is no stale-state risk
-# across calls — subsequent calls overwrite the entry before forking a
-# fresh set of workers.
-#
-# NOTE: the 2026-04-20 thread-pool attempt (see CHANGELOG) was reverted
-# after a coincident ``_to_sr_ab`` precision regression confused the
-# debugging — the parallelism itself was measured bit-identical at that
-# time.  The current design: (a) uses process-based not thread-based
-# parallelism, so there is no ECL/GIL contention; (b) pins bit-identity
-# as a regression test so any drift is caught at the right layer; (c)
-# keeps the serial ``total_C`` unchanged and purely additive, so a
-# simple rollback of the batch API is always available.
+# **macOS never forks** (a fork after Cocoa/BLAS/ECL initialisation has
+# hard-crashed a Jupyter kernel and the OS; a Sage process is multithreaded
+# after its first symbolic step), and the package never sets
+# ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY``.  ``DAEDALUS_PARALLEL=0`` turns
+# every pool off.  Worker threads collect their counter increments in a
+# thread-local overlay (``final_integral.counter_delta``) that the parent
+# merges in diagram order, so no increment is lost to a race.
 
+#: Smallest largest-stationary-block size (entries) of a diagram's
+#: state-space subsets for which a worker thread pays (S1 calibration:
+#: blocks >= 256 gave 2.7x at 4 threads, blocks <= 81 ran 0.75-0.86x).
+THREAD_BLOCK_MIN = 256
+#: Default thread count of the fan-out (``n_workers`` overrides).
+DEFAULT_THREADS = 8
+#: Automatic spawned workers (macOS / Windows, outside a Jupyter kernel):
+#: only when a timing sample of the batch predicts at least this many
+#: seconds of serial work (a worker starts in ~0.3 s; S2 measurements).
+SPAWN_MIN_SECONDS = 3.0
+#: Default spawned worker count (``n_workers`` overrides).
+DEFAULT_SPAWN_WORKERS = 4
+#: Opt-in for automatic spawned workers inside a Jupyter kernel (explicit
+#: ``start_method='spawn'`` is the other opt-in).  Off until the manual
+#: notebook checklist has passed on the user's machine.
+SPAWN_KERNEL_ENV = 'DAEDALUS_SPAWN_IN_KERNEL'
+
+#: Fork workers' view of the batch (set before the pool forks).
+_FANOUT = {}
+#: Kept for ``api.compute._counter_snapshot`` (identity check); the fork
+#: workers now return their counters, so it no longer changes.
 _WORKER_STATE = {}
 
-# ───────────────────────────────────────────────────────────────────────
-# Fork-in-notebook safety guard (2026-06, spatial→temporal lesson)
-# ───────────────────────────────────────────────────────────────────────
-# Forking a process AFTER an Objective-C framework (Cocoa via matplotlib),
-# the Accelerate/BLAS pools, or any other init has run can HARD-CRASH the
-# Jupyter kernel *and* macOS itself — intermittently, depending on what was
-# initialised in the parent before the fork.  This is the exact failure mode
-# that crashed the user's machine twice (June 2026) and was removed from the
-# spatial integrator (now thread-based / serial-gated, commit fd3af81).
-#
-# Setting ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` (as the batch helpers do
-# to silence the runtime's own fork-after-init *warning*) makes the actual
-# crash MORE likely, not less — it removes the guard rail without removing the
-# hazard.  The ``test_phase_J_total_C_batch_*`` bit-identity tests pass only
-# because pytest runs in a plain interpreter (never a ZMQ kernel) where Cocoa
-# was never initialised — they certify *numerical* determinism, NOT notebook
-# crash-safety.
-#
-# This guard is deliberately NARROW: it trips ONLY in the genuinely dangerous
-# context — macOS + a live Jupyter/ZMQ kernel + the ``fork`` start method —
-# and silently degrades that one case to the (always-correct) serial path with
-# a one-time warning.  Linux, terminal IPython, plain ``sage -python`` scripts,
-# and the test suite are all unaffected and keep the fast fork path.
 
-_FORK_GUARD_WARNED = False
+def _fork_unsafe(start_method):
+    """Return True iff this batch must not fork: ``fork`` on macOS
+    (:func:`engine.fork_safety.fork_unsafe`, one source of truth)."""
+    from engine.fork_safety import fork_unsafe
+    return fork_unsafe(start_method)
 
 
-def _fork_unsafe_in_notebook(start_method):
-    """Return True iff a ``fork`` here risks crashing a macOS Jupyter kernel.
-
-    Thin local alias for the canonical
-    :func:`engine.fork_safety.fork_unsafe_in_notebook` (kept so the existing
-    Phase-J call sites read unchanged; one source of truth for the logic)."""
-    from engine.fork_safety import fork_unsafe_in_notebook
-    return fork_unsafe_in_notebook(start_method)
+def _parallel_off():
+    """``DAEDALUS_PARALLEL=0``: every batch serial, silently."""
+    from engine.fork_safety import parallel_disabled
+    return parallel_disabled()
 
 
 def _warn_fork_guard_once():
-    """Emit the fork-in-notebook fallback warning at most once per process."""
-    global _FORK_GUARD_WARNED
-    if _FORK_GUARD_WARNED:
-        return
-    _FORK_GUARD_WARNED = True
-    warnings.warn(
-        "Phase-J parallel batch: fork-based multiprocessing is UNSAFE inside "
-        "a Jupyter kernel on macOS — forking after Cocoa/BLAS init can hard-"
-        "crash the kernel and the OS.  Automatically falling back to SERIAL "
-        "evaluation.  To parallelise the τ sweep, run as a plain script "
-        "(`sage -python run.py`, not a notebook) where fork-after-init is "
-        "safe.  (Mirrors the fork removal already done on the spatial path.)",
-        RuntimeWarning,
-        stacklevel=3,
-    )
+    """The fork -> serial fallback warning, once per process."""
+    from engine.fork_safety import warn_fork_fallback_once
+    warn_fork_fallback_once('Phase J parallel batch')
 
 
-def _worker_eval_total_C(tau_tuple):
-    """Worker entry point for ``total_C_batch``'s fork-based Pool.
+def _diagram_block(fn):
+    """The largest stationary-state block (entries) over the state-space
+    subsets of one diagram's contribution (0: none on the route)."""
+    parts = getattr(fn, 'phase_j_parts', None) or {}
+    b = 0
+    for s in parts.get('subsets', ()):
+        sub = getattr(s, 'ss_subset', None)
+        if sub is not None and not getattr(sub, 'empty', False):
+            b = max(b, sub.max_width()[1])
+    return b
 
-    Must be a module-level function so it can be pickled by
-    ``multiprocessing``.  The actual ``total_C`` callable lives in
-    ``_WORKER_STATE['total_C']`` and is inherited via fork (not via
-    ``initargs`` pickling).
-    """
-    fn = _WORKER_STATE['total_C']
-    return complex(fn(*tau_tuple))
+
+def _eval_diagram(fn, tau_list):
+    """One diagram on the whole grid, in its own prefetch context."""
+    with _ss_grid(tau_list):
+        return [complex(fn(*pt)) for pt in tau_list]
 
 
-def _worker_eval_one_diagram(task):
-    """Worker entry point for the nested-parallel small-batch path:
-    evaluate ONE diagram's contribution at ONE τ tuple.
+def _thread_task(fn, tau_list):
+    from engine.integration.time_domain import final_integral as _fi
+    with _fi.counter_delta() as cd:
+        vals = _eval_diagram(fn, tau_list)
+    return vals, cd.delta
 
-    Task format: ``(tau_idx, diagram_idx, tau_tuple)``.
 
-    The per-diagram ``contribution`` callables live in
-    ``_WORKER_STATE['tree_callables']`` (inherited via fork).  Returns
-    ``(tau_idx, diagram_idx, complex_value)`` so the parent can
-    aggregate deterministically.
-    """
-    tau_idx, diagram_idx, tau_tuple = task
-    fn = _WORKER_STATE['tree_callables'][diagram_idx]
-    return (tau_idx, diagram_idx, complex(fn(*tau_tuple)))
+def _fork_task(chunk):
+    """Fork worker: the diagrams ``chunk`` (indices) on the batch's grid."""
+    from engine.integration.time_domain import final_integral as _fi
+    fns, tau_list = _FANOUT['fns'], _FANOUT['tau_list']
+    with _fi.counter_delta() as cd:
+        out = [(d, _eval_diagram(fns[d], tau_list)) for d in chunk]
+    return out, cd.delta
+
+
+def _switch_on_now():
+    from engine import _env
+    if _env.phase_j_engine() == 'poles':
+        return False
+    from engine.integration.time_domain import statespace as _ss
+    return _ss.switch_on_active()
+
+
+def _fan_out(fns, tau_list, parallel, n_workers, start_method):
+    """``vals[d][p]`` (complex) of every diagram ``d`` at every point ``p``,
+    computed with a worker pool, or ``None`` when the batch should run
+    serially (no parallelism asked or allowed, or nothing a pool would
+    speed up).  See the module notes above for the methods."""
+    n = len(fns)
+    if not parallel or n == 0 or not tau_list or _parallel_off():
+        return None
+    if start_method not in (None, 'fork', 'threads', 'spawn'):
+        raise ValueError(
+            f'start_method={start_method!r}: a Phase J batch runs on threads, '
+            f"spawned workers or (Linux) fork; expected None, 'threads', "
+            f"'spawn' or 'fork'.")
+    if _switch_on_now():
+        return None             # a switch-on scope is per thread: stay here
+    import os
+    want = int(n_workers) if n_workers is not None else None
+    fork_ok = start_method in (None, 'fork') and not _fork_unsafe('fork')
+    if start_method == 'fork' and not fork_ok:
+        _warn_fork_guard_once()
+    if fork_ok:
+        n_w = _workers_within_budget(want or (os.cpu_count() or 4))
+        if n_w > 1 and n >= max(4, 2 * n_w):
+            return _fork_fan_out(fns, tau_list, n_w)
+    vals = [None] * n
+    if _spawn_allowed(start_method, fork_ok):
+        done = _spawn_fan_out(fns, tau_list, want or DEFAULT_SPAWN_WORKERS,
+                              explicit=start_method == 'spawn', vals=vals)
+        if done:
+            return vals
+    # threads; diagrams a declined spawn sample already evaluated keep
+    # their values
+    blocks = [_diagram_block(fn) for fn in fns]
+    heavy = [d for d in range(n)
+             if blocks[d] >= THREAD_BLOCK_MIN and vals[d] is None]
+    n_t = min(want or DEFAULT_THREADS, os.cpu_count() or 4, len(heavy))
+    if n_t >= 2:
+        # S4: a thread's own memory is its segment work (the states are
+        # shared and already charged): a few vectors of the largest block
+        from engine import worker_budget as _wb
+        n_t, _share = _wb.workers_that_fit(
+            n_t, 2**20 + 64 * max(blocks[d] for d in heavy),
+            'parallel_workers_capped_by_budget')
+    if n_t < 2:
+        if all(v is None for v in vals):
+            return None
+        _fill_serial(fns, tau_list, vals)
+        return vals
+    return _thread_fan_out(fns, tau_list, heavy, blocks, n_t, vals)
+
+
+def _fill_serial(fns, tau_list, vals, which=None):
+    """Evaluate here, in one prefetch context, every diagram of ``which``
+    (default: every one) whose ``vals`` entry is still ``None``."""
+    with _ss_grid(tau_list):
+        for d in (range(len(fns)) if which is None else which):
+            if vals[d] is None:
+                vals[d] = [complex(fns[d](*pt)) for pt in tau_list]
+
+
+def _spawn_allowed(start_method, fork_ok):
+    """Spawned workers: asked for explicitly, or automatically where fork
+    is not available (macOS, Windows) outside a Jupyter kernel (inside one
+    only with ``DAEDALUS_SPAWN_IN_KERNEL=1``)."""
+    if start_method == 'spawn':
+        return True
+    if start_method is not None or fork_ok:
+        return False
+    from engine import _env
+    from engine.fork_safety import in_jupyter_kernel
+    return (not in_jupyter_kernel()) or _env.flag(SPAWN_KERNEL_ENV, False)
+
+
+def _spawn_tasks(order, payloads, costs, n_w):
+    """Chunks of ``(index, payload)`` (largest first), about
+    ``1 / (8 n_w)`` of the total cost each, so small diagrams travel
+    together and the large ones balance."""
+    total = sum(costs[d] for d in order) or 1
+    target = total / (8 * n_w)
+    tasks, cur, acc = [], [], 0
+    for d in order:
+        cur.append((d, payloads[d]))
+        acc += costs[d]
+        if acc >= target or len(cur) >= 256:
+            tasks.append(cur)
+            cur, acc = [], 0
+    if cur:
+        tasks.append(cur)
+    return tasks
+
+
+def _plain_times(tau_list):
+    """Whether every external time is a plain number (a spawned worker gets
+    exactly these values; a symbolic time would make it import Sage)."""
+    import numbers
+    return all(isinstance(t, numbers.Real) and not isinstance(t, bool)
+               and type(t).__module__ in ('builtins', 'numpy')
+               for pt in tau_list for t in pt)
+
+
+def _spawn_settings():
+    """What a spawned worker takes over from this process: the running
+    Phase J budget (its segment checks then decide as here) and the module
+    settings of ``statespace`` / ``_light``."""
+    from engine import _spawn_worker as _sw
+    from engine.integration.time_domain import _light
+    from engine.integration.time_domain import statespace as _ss
+    return {'budget': tuple(_ss.budget_view()),
+            'statespace': _sw.module_settings(_ss),
+            'light': _sw.module_settings(_light)}
+
+
+def _spawn_fan_out(fns, tau_list, n_w, explicit, vals):
+    """Spawned-worker fan-out (``engine.spawn_pool``) into ``vals``: every
+    diagram whose numeric task can leave this process
+    (``statespace.diagram_payload``) goes to the pool; the rest, and any
+    diagram a worker could not evaluate, are evaluated here.  Automatic mode
+    first times a sample of diagrams here (their values are final) and
+    spawns only when the rest is predicted to take at least
+    ``SPAWN_MIN_SECONDS``.  Returns True when ``vals`` is complete; False:
+    nothing more was done (the caller goes on with threads or serially).
+    Explicit ``'spawn'`` raises when the pool cannot start; automatic mode
+    falls back."""
+    import threading
+    import time
+    from engine import spawn_pool as _sp
+    from engine import worker_budget as _wb
+    from engine.integration.time_domain import final_integral as _fi
+    from engine.integration.time_domain import statespace as _ss
+    n = len(fns)
+    if not _plain_times(tau_list):
+        return False
+    payloads = [_ss.diagram_payload(fn) for fn in fns]
+    elig = [d for d in range(n) if payloads[d] is not None]
+    n_w = min(int(n_w), len(elig))
+    if n_w < 2 or len(elig) < 2 * n_w:
+        return False
+    costs = {d: (_diagram_block(fns[d]) + 1) * len(payloads[d]['subsets'])
+             for d in elig}
+    if not explicit:
+        step = max(1, len(elig) // 8)
+        sample = elig[::step][:8]
+        t0 = time.perf_counter()
+        for d in sample:
+            vals[d] = _eval_diagram(fns[d], tau_list)
+        per = (time.perf_counter() - t0) / len(sample)
+        elig = [d for d in elig if vals[d] is None]
+        if per * len(elig) < SPAWN_MIN_SECONDS or len(elig) < 2 * n_w:
+            return False
+    order = sorted(elig, key=lambda d: (-costs[d], d))
+    tasks = _spawn_tasks(order, payloads, costs, n_w)
+    # S4: a worker holds one task's states, programs and work at a time
+    task_bytes = max(sum(sub.state_bytes() for i, pl in t
+                         for sub, _p, _e in pl['subsets']) for t in tasks)
+    n_fit, share = _wb.workers_that_fit(
+        n_w, _wb.SPAWN_WORKER_BASE + 3 * task_bytes,
+        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        return False
+    if n_fit < n_w:
+        n_w = n_fit
+        tasks = _spawn_tasks(order, payloads, costs, n_w)
+    shared = _ss.payload_shared([payloads[d] for d in elig])
+    try:
+        pool = _sp.SpawnPool(n_w, shared, _spawn_settings())
+    except Exception:
+        if explicit:
+            raise
+        _fi._RUNTIME_COUNTERS['parallel_spawn_start_failed'] = (
+            _fi._RUNTIME_COUNTERS.get('parallel_spawn_start_failed', 0) + 1)
+        return False
+    elig_set = set(elig)
+    box = {}
+    try:
+        blobs = pool.encode(tasks)
+
+        def run():
+            try:
+                box['out'] = pool.map(tasks, tau_list, blobs=blobs)
+            except BaseException as exc:            # pragma: no cover
+                box['err'] = exc
+        th = threading.Thread(target=run, daemon=True,
+                              name='daedalus-spawn-map')
+        with _wb.FootprintWatch(pool.pids, share, _wb.kill_pid):
+            th.start()
+            # the diagrams that stay here, meanwhile
+            _fill_serial(fns, tau_list, vals,
+                         [d for d in range(n) if d not in elig_set])
+            th.join()
+    finally:
+        pool.close()
+    if 'err' in box:
+        raise box['err']
+    got, states, counters, lost = box['out']
+    for d, v in got.items():
+        vals[d] = v
+    for d, st in states.items():       # keep the states built in the workers
+        subs = payloads[d]['subsets']
+        for j, stat, rho in st:
+            sub = subs[j][0]
+            with sub._lock:
+                if sub._stat is None:
+                    sub._stat = stat
+                    sub.rho = max(sub.rho, rho)
+    for delta in counters:
+        _fi.merge_counter_delta(delta)
+    if pool.sage_loaded:                            # never expected
+        _fi._RUNTIME_COUNTERS['parallel_spawn_sage_loaded'] = (
+            _fi._RUNTIME_COUNTERS.get('parallel_spawn_sage_loaded', 0) + 1)
+    if lost:
+        _fi._RUNTIME_COUNTERS['parallel_spawn_diagrams_here'] = (
+            _fi._RUNTIME_COUNTERS.get('parallel_spawn_diagrams_here', 0)
+            + len(lost))
+        _fill_serial(fns, tau_list, vals, lost)
+    _fi._RUNTIME_COUNTERS['parallel_spawn_batches'] = (
+        _fi._RUNTIME_COUNTERS.get('parallel_spawn_batches', 0) + 1)
+    return True
+
+
+def _thread_fan_out(fns, tau_list, heavy, blocks, n_t, vals):
+    from concurrent.futures import ThreadPoolExecutor
+    from engine.integration.time_domain import final_integral as _fi
+    heavy_set = set(heavy)
+    ex = ThreadPoolExecutor(max_workers=n_t,
+                            thread_name_prefix='daedalus-phase-j')
+    try:
+        futs = {d: ex.submit(_thread_task, fns[d], tau_list)
+                for d in sorted(heavy, key=lambda d: (-blocks[d], d))}
+        # the small diagrams, meanwhile (here)
+        _fill_serial(fns, tau_list, vals,
+                     [d for d in range(len(fns)) if d not in heavy_set])
+        for d in sorted(heavy):
+            vals[d], delta = futs[d].result()
+            _fi.merge_counter_delta(delta)
+    finally:
+        ex.shutdown(wait=True, cancel_futures=True)
+    _fi._RUNTIME_COUNTERS['parallel_thread_batches'] = (
+        _fi._RUNTIME_COUNTERS.get('parallel_thread_batches', 0) + 1)
+    return vals
+
+
+def _fork_fan_out(fns, tau_list, n_w):
+    import multiprocessing as mp
+    from engine.integration.time_domain import final_integral as _fi
+    n = len(fns)
+    size = max(1, -(-n // (4 * n_w)))
+    chunks = [list(range(a, min(n, a + size))) for a in range(0, n, size)]
+    from engine import worker_budget as _wb
+    n_fit, share = _wb.workers_that_fit(n_w, _wb.FORK_WORKER_FLOOR,
+                                        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        return None
+    if n_fit < n_w:
+        n_w = n_fit
+        size = max(1, -(-n // (4 * n_w)))
+        chunks = [list(range(a, min(n, a + size))) for a in range(0, n, size)]
+    _FANOUT['fns'], _FANOUT['tau_list'] = fns, tau_list
+    try:
+        ctx = mp.get_context('fork')
+        with ctx.Pool(processes=n_w, **_worker_share(n_w)) as pool:
+            parts = _wb.watched_map(pool, _fork_task, chunks, share)
+    finally:
+        _FANOUT.clear()
+    if parts is None:               # a worker outgrew its share: serial
+        return None
+    vals = [None] * n
+    for out, delta in parts:
+        for d, v in out:
+            vals[d] = v
+        _fi.merge_counter_delta(delta)
+    _fi._RUNTIME_COUNTERS['parallel_fork_batches'] = (
+        _fi._RUNTIME_COUNTERS.get('parallel_fork_batches', 0) + 1)
+    return vals
 
 
 def _ss_grid(points):
@@ -208,19 +447,16 @@ def _ss_grid(points):
     imported).  Only the serial evaluation paths use it (a forked worker
     would evaluate the whole grid for its share of it)."""
     import contextlib
-    import os
-    raw = os.environ.get('DAEDALUS_PHASE_J_ENGINE')
-    if raw is not None and raw.strip().lower() == 'poles':
+    from engine import _env
+    if _env.phase_j_engine() == 'poles':
         return contextlib.nullcontext()
     from engine.integration.time_domain import statespace as _ss
-    if not _ss.engine_requested():
-        return contextlib.nullcontext()
     return _ss.tau_grid_prefetch(points)
 
 
 def _workers_within_budget(n_w):
     """The worker count a forked τ batch may use within the running Phase J
-    memory budget (item 61): a worker builds its own copy of the lazily
+    memory budget: a worker builds its own copy of the lazily
     built stationary states and dirties the plans it reads, so a run that
     has charged ``used`` bytes holds up to ``(1 + n_w) x used`` with ``n_w``
     workers.  Outside a ``phase_j_memory_scope``, without a budget or with
@@ -243,8 +479,39 @@ def _workers_within_budget(n_w):
     return max(1, min(n_w, fit))
 
 
-class DiscardedDiagramsError(RuntimeError):
-    """A callable of a Phase J run made with ``discard=True`` (item 61) was
+def _worker_budget_init(share):
+    """Pool initializer of a forked Phase J batch: the worker's running
+    total may grow by its ``share`` of what the parent's budget had left
+    (each worker builds its own lazily built states and charges them to its
+    own copy of the total; with the full budget each, n workers could
+    together use n times it)."""
+    from engine.integration.time_domain import final_integral as _fi
+    lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
+    if lock is None or share is None:
+        return
+    with lock:
+        if _fi._PLAN_MEM['active'] > 0 and _fi._PLAN_MEM['budget'] is not None:
+            _fi._PLAN_MEM['budget'] = _fi._PLAN_MEM['used'] + share
+
+
+def _worker_share(n_w):
+    """``(initializer, initargs)`` giving each of ``n_w`` forked workers an
+    equal share of the running budget's remainder (no limit: no
+    initializer)."""
+    from engine.integration.time_domain import final_integral as _fi
+    lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
+    if lock is None:
+        return {}
+    with lock:
+        if _fi._PLAN_MEM['active'] <= 0 or _fi._PLAN_MEM['budget'] is None:
+            return {}
+        left = max(0, _fi._PLAN_MEM['budget'] - _fi._PLAN_MEM['used'])
+    return {'initializer': _worker_budget_init,
+            'initargs': (left // max(1, int(n_w)),)}
+
+
+class DiscardedDiagramsError(DaedalusError, RuntimeError):
+    """A callable of a Phase J run made with ``discard=True`` was
     asked for a point it was not evaluated on, or for a diagram it
     released."""
 
@@ -271,7 +538,7 @@ def _mem_mark():
 def _mem_release(mark, refund=True):
     """The bytes charged since ``mark`` (one diagram's plans and stationary
     states); with ``refund`` they are taken back from the running total
-    (the diagram's closure has been dropped; item 61)."""
+    (the diagram's closure has been dropped)."""
     from engine.integration.time_domain import final_integral as _fi
     scoped, used0, tuples0, plans0 = mark
     with _fi._PLAN_MEM_LOCK:
@@ -295,11 +562,11 @@ def compute_correction_td(
     external_fields=None,
     # Spatial loop integrator (Stage C.5): td -> per-edge EdgeModeSum builder.
     edge_mode_sums_builder_fn=None,
-    # Legacy support: accept kernel_groups as first arg
+    # retired (audit W7, ACC-67): raises; pass typed_diagrams + prefactors
     kernel_groups=None,
     # M8: divergence policy of the box-free routes (``integrate_diagram``)
     on_divergence=None,
-    # item 61: evaluate each diagram on these points right after it is
+    # evaluate each diagram on these points right after it is
     # built, keep the values, release it (``discard``)
     discard_points=None,
 ):
@@ -308,9 +575,10 @@ def compute_correction_td(
     integration (closed forms on numeric poles; see
     ``final_integral.integrate_diagram``).
 
-    Accepts EITHER:
-    - ``typed_diagrams`` + ``prefactors``: direct diagram list (preferred)
-    - ``kernel_groups``: legacy format from ``group_diagrams_by_kernel``
+    Takes ``typed_diagrams`` + ``prefactors`` (one prefactor per diagram).
+    The legacy ``kernel_groups=`` input is retired: it integrated every
+    diagram of a group with the group's summed prefactor (audit ACC-67) and
+    now raises ``TypeError``.
 
     For each tree-level diagram, calls ``integrate_tree_diagram``
     directly.  Loop diagrams are marked as skipped.
@@ -335,7 +603,7 @@ def compute_correction_td(
         External time symbols in canonical order.  Defaults to
         ``[t_1, ..., t_k]``.
     discard_points : list of tuple or None
-        Item 61, evaluate-and-discard: each diagram is evaluated on these
+        evaluate-and-discard: each diagram is evaluated on these
         points (``total_C``'s arguments, under the state-space τ batch)
         right after ``integrate_diagram`` builds it; the values are kept
         and the diagram's callable, plans and stationary states are
@@ -381,15 +649,14 @@ def compute_correction_td(
         from engine.integration.time_domain.final_integral import (
             _divergence_policy)
         _divergence_policy(on_divergence)               # validate early
-    # ── Legacy support: unpack kernel_groups format ──
-    if typed_diagrams is None and kernel_groups is not None:
-        typed_diagrams = []
-        prefactors = []
-        for g in kernel_groups:
-            for td in g.get('diagrams', []):
-                typed_diagrams.append(td)
-                prefactors.append(g.get('combined_prefactor'))
-    elif typed_diagrams is None:
+    from engine.integration.time_domain.final_integral import (
+        _warn_retired_env)
+    _warn_retired_env()
+    if kernel_groups is not None:
+        raise TypeError(
+            'compute_correction_td(kernel_groups=...) is retired: pass '
+            'typed_diagrams= and prefactors= (one prefactor per diagram)')
+    if typed_diagrams is None:
         typed_diagrams = []
         prefactors = []
 
@@ -403,8 +670,8 @@ def compute_correction_td(
     # G(t) matrix, the poles and residues); it dies with the call, so the
     # spatial bridge's per-q re-solve of the poles cannot be served stale.
     prop_td = (PropagatorTD(propagator_data, num_params)
-               if (typed_diagrams and hasattr(propagator_data, 'get')
-                   and _setup_lever_on('USE_SETUP_PROP_TD')) else None)
+               if (typed_diagrams and hasattr(propagator_data, 'get'))
+               else None)
 
     tree_callables = []
     groups_out = []
@@ -420,8 +687,12 @@ def compute_correction_td(
                     'kept_for_delta': 0, 'built_bytes': 0,
                     'max_diagram_bytes': 0}
 
+    from engine.integration.time_domain import final_integral as _fi_g
+    _growth = getattr(_fi_g, 'growth_guard', None)
     for idx, (td, pf) in enumerate(zip(typed_diagrams, prefactors)):
         loop_number = _loop_number_from_graph(td)
+        if _growth is not None:
+            _growth(f'diagram #{idx} of {len(typed_diagrams)}')
         mark = _mem_mark() if discard_points is not None else None
 
         # ``integrate_diagram`` handles every loop order -- tree and
@@ -550,11 +821,11 @@ def compute_correction_td(
             return _lookup(ext_time_values)[1]
 
         def total_C_batch(tau_points, parallel=True, n_workers=None,
-                          start_method='fork'):
+                          start_method=None):
             return [total_C(*pt) for pt in tau_points]
 
         def eval_per_diagram_batch(tau_points, parallel=True, n_workers=None,
-                                   start_method='fork'):
+                                   start_method=None):
             loop_nums = [g['loop_number'] for g in groups_out
                          if g.get('contribution') is not None]
             return ([[vals[_lookup(pt)[0]] for vals in discard_vals]
@@ -575,145 +846,39 @@ def compute_correction_td(
         return total
 
     def total_C_batch(tau_points, parallel=True, n_workers=None,
-                      start_method='fork'):
-        """Evaluate ``total_C`` on a list of τ points, optionally in
-        parallel across processes.
+                      start_method=None):
+        """``total_C`` on a list of τ points, in input order.
 
-        Two parallelism strategies, auto-selected by batch shape:
-
-        * **Per-τ parallelism** — each worker evaluates the FULL
-          ``total_C(τ_i)`` (summing all diagrams serially inside the
-          worker).  Used when ``len(tau_points) >= n_workers`` — the
-          simpler, cheaper coordination path.  Matches the 2026-04-21
-          initial design.
-
-        * **Per-(τ, diagram) nested parallelism** — each worker
-          evaluates ONE diagram's contribution at ONE τ tuple; the
-          parent aggregates.  Used when ``len(tau_points) <
-          n_workers`` so even a single-τ call can still use many cores.
-          Essential for ``SIM_MODE='point'`` where the batch is 1-4 τ
-          points — the old code ran serial on those, wasting all
-          available parallelism.
-
-        The decision is made once per call based on total task count.
-
-        Parameters
-        ----------
-        tau_points : iterable of tuples
-            Each element is a k-tuple passed through as
-            ``total_C(*tau_tuple)``.  Order is preserved in the output.
-        parallel : bool, default True
-            If True, fan the evaluations out across worker processes.
-            If False, run serial (equivalent to
-            ``[total_C(*pt) for pt in tau_points]``).
-        n_workers : int or None, default None
-            Worker process count.  ``None`` picks
-            ``min(os.cpu_count(), total_tasks)``.
-        start_method : {'fork', 'spawn', 'forkserver'}, default 'fork'
-            Multiprocessing start method.  ``'fork'`` is required for
-            the current design because the per-diagram ``contribution``
-            closures are unpicklable (nested functions); fork inherits
-            them via process memory.  ``'spawn'`` and ``'forkserver'``
-            will raise a pickling error in the current implementation.
-
-        Returns
-        -------
-        list of complex
-            ``total_C`` evaluated at each input point, in input order.
-
-        Notes
-        -----
-        On macOS the function sets
-        ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES`` automatically to
-        defuse Objective-C fork-after-init crashes.  Bit-identity with
-        the serial path is pinned by
-        ``test_phase_J_total_C_batch_parallel_matches_serial`` (per-τ)
-        and ``test_phase_J_total_C_batch_nested_matches_serial``
-        (nested).
+        ``parallel=True`` fans the diagrams out to a worker pool when one
+        helps (module notes: threads for diagrams with large state blocks,
+        on every platform; fork on Linux; never fork on macOS) and sums each
+        point's diagram values in diagram order, so the result is
+        bit-identical to ``parallel=False`` for any ``n_workers``.
+        ``n_workers``: pool size (default: up to ``DEFAULT_THREADS``
+        threads, ``os.cpu_count()`` fork workers, within the memory budget).
+        ``start_method``: ``None`` (auto), ``'threads'`` or ``'fork'``
+        (Linux; on macOS it falls back with one warning).
+        ``DAEDALUS_PARALLEL=0`` makes every batch serial.
         """
         tau_list = [tuple(pt) for pt in tau_points]
-        # Fork-in-notebook crash guard (see module header): degrade to
-        # serial in the one dangerous context rather than risk a kernel/OS
-        # crash.  No-op under pytest, Linux, terminal IPython, and scripts.
-        if parallel and _fork_unsafe_in_notebook(start_method):
-            _warn_fork_guard_once()
-            parallel = False
-        if not parallel or len(tau_list) == 0:
+        vals = _fan_out(tree_callables, tau_list, parallel, n_workers,
+                        start_method)
+        if vals is None:
             with _ss_grid(tau_list):
                 return [total_C(*pt) for pt in tau_list]
-
-        import multiprocessing as mp
-        import os
-        # Fork-after-init safety on macOS + Sage + any Objective-C
-        # framework in the dep chain.  Must be set BEFORE the first
-        # fork in this process.  Idempotent (setdefault).
-        os.environ.setdefault(
-            'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
-        )
-
-        n_diag = len(tree_callables)
-        if n_diag == 0:
-            return [0.0 + 0.0j] * len(tau_list)
-
-        n_w_cap = _workers_within_budget(
-            n_workers if n_workers is not None else (os.cpu_count() or 4))
-        total_tasks = len(tau_list) * n_diag
-
-        # Serial fast path: not enough work to amortise pool setup.
-        # A fork+join costs ~50-200 ms on macOS/Linux; require at least
-        # a handful of tasks per worker before it pays off.
-        if n_w_cap <= 1 or total_tasks < max(4, 2 * n_w_cap):
-            with _ss_grid(tau_list):
-                return [total_C(*pt) for pt in tau_list]
-
-        ctx = mp.get_context(start_method)
-
-        if len(tau_list) >= n_w_cap:
-            # ── Per-τ parallel path (original design) ────────────────
-            # Enough τ points to fill the worker pool.  Each worker
-            # handles its share of τ's and sums all diagrams serially
-            # within the worker.  Simpler coordination, same bit-
-            # identity as serial.
-            _WORKER_STATE['total_C'] = total_C
-            n_w = min(n_w_cap, len(tau_list))
-            with ctx.Pool(processes=n_w) as pool:
-                return pool.map(_worker_eval_total_C, tau_list)
-
-        # ── Per-(τ, diagram) nested parallel path (small-batch) ──
-        # Fewer τ points than workers.  Spread ALL (τ, diagram) pairs
-        # across workers and aggregate in the parent.  This is the
-        # right strategy for SIM_MODE='point' (1-4 τ points).
-        _WORKER_STATE['tree_callables'] = tree_callables
-        tasks = [(p_idx, d_idx, pt)
-                 for p_idx, pt in enumerate(tau_list)
-                 for d_idx in range(n_diag)]
-        n_w = min(n_w_cap, len(tasks))
-        with ctx.Pool(processes=n_w) as pool:
-            partial = pool.map(_worker_eval_one_diagram, tasks)
-        # Aggregate into (n_tau,) complex array.  Sum per τ in the
-        # SAME diagram order as serial ``total_C`` (ascending d_idx),
-        # so floating-point accumulation is bit-identical.
-        out = [0.0 + 0.0j] * len(tau_list)
-        buckets = [[None] * n_diag for _ in tau_list]
-        for (p_idx, d_idx, val) in partial:
-            buckets[p_idx][d_idx] = val
+        out = []
         for p_idx in range(len(tau_list)):
             s = 0.0 + 0.0j
-            for d_idx in range(n_diag):
-                s = s + buckets[p_idx][d_idx]
-            out[p_idx] = s
+            for v in vals:
+                s = s + v[p_idx]
+            out.append(s)
         return out
 
     def eval_per_diagram_batch(tau_points, parallel=True, n_workers=None,
-                                start_method='fork'):
-        """Evaluate EACH diagram's contribution at EACH τ point, in
-        parallel, returning the full (n_tau, n_diagram) grid.
-
-        Useful when downstream code needs BOTH the per-diagram breakdown
-        AND the total: call this once, then aggregate in the caller.
-        Without this helper, cell 31-style workflows would run scipy
-        serially for every (τ, diagram) pair — prohibitive at k=2
-        ell=1 (100+ diagrams) and painful at k=3.
+                                start_method=None):
+        """Evaluate EACH diagram's contribution at EACH τ point, returning
+        the full (n_tau, n_diagram) grid (same parallelism as
+        ``total_C_batch``).
 
         Returns
         -------
@@ -728,51 +893,20 @@ def compute_correction_td(
             ``loop_number`` per diagram, same order as the inner lists.
         """
         tau_list = [tuple(pt) for pt in tau_points]
-        n_diag = len(tree_callables)
         loop_nums = [g.get('loop_number', 0) for g in groups_out
                      if g.get('contribution') is not None]
-        if n_diag == 0 or len(tau_list) == 0:
+        if not tree_callables or not tau_list:
             return [[] for _ in tau_list], loop_nums
-
-        total_tasks = len(tau_list) * n_diag
-        n_w_cap = _workers_within_budget(
-            n_workers if n_workers is not None
-            else (__import__('os').cpu_count() or 4))
-
-        # Fork-in-notebook crash guard (see module header).
-        if parallel and _fork_unsafe_in_notebook(start_method):
-            _warn_fork_guard_once()
-            parallel = False
-
-        if (not parallel) or n_w_cap <= 1 or total_tasks < max(
-                4, 2 * n_w_cap):
-            # Serial path.  Still honours original diagram order.
-            vals = []
+        vals = _fan_out(tree_callables, tau_list, parallel, n_workers,
+                        start_method)
+        if vals is None:
+            rows = []
             with _ss_grid(tau_list):
                 for pt in tau_list:
-                    row = []
-                    for fn in tree_callables:
-                        row.append(complex(fn(*pt)))
-                    vals.append(row)
-            return vals, loop_nums
-
-        import multiprocessing as mp
-        import os
-        os.environ.setdefault(
-            'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
-        )
-        _WORKER_STATE['tree_callables'] = tree_callables
-        tasks = [(p_idx, d_idx, pt)
-                 for p_idx, pt in enumerate(tau_list)
-                 for d_idx in range(n_diag)]
-        ctx = mp.get_context(start_method)
-        n_w = min(n_w_cap, len(tasks))
-        with ctx.Pool(processes=n_w) as pool:
-            partial = pool.map(_worker_eval_one_diagram, tasks)
-        vals = [[0.0 + 0.0j] * n_diag for _ in tau_list]
-        for (p_idx, d_idx, val) in partial:
-            vals[p_idx][d_idx] = val
-        return vals, loop_nums
+                    rows.append([complex(fn(*pt)) for fn in tree_callables])
+            return rows, loop_nums
+        return ([[v[p_idx] for v in vals] for p_idx in range(len(tau_list))],
+                loop_nums)
 
     return _td_result(total_C, total_C_batch, eval_per_diagram_batch,
                       all_delta_contributions, n_delta_subsets_dropped,

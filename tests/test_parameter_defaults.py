@@ -31,20 +31,20 @@ def _tree_C0(model, **kw):
 def test_omitted_parameters_use_declared_defaults():
     """mu=D=1 by declaration, so the tree cumulant is D/mu = 1."""
     model = _load('ou_quartic').build()
-    assert _tree_C0(model) == pytest.approx(1.0, rel=1e-5)
+    assert _tree_C0(model) == pytest.approx(1.0, rel=1e-12)
 
 
 def test_empty_parameters_are_treated_as_omitted():
     """Several models ship DEFAULT_FUNDAMENTAL = {}; forwarding it verbatim
     must not sail past the fallback and fail inside the mean-field solve."""
     model = _load('ou_quartic').build()
-    assert _tree_C0(model, parameters={}) == pytest.approx(1.0, rel=1e-5)
+    assert _tree_C0(model, parameters={}) == pytest.approx(1.0, rel=1e-12)
 
 
 def test_explicit_parameters_still_win():
     model = _load('ou_quartic').build()
     got = _tree_C0(model, parameters={'mu': 2.0, 'eps': 0.02, 'D': 1.0})
-    assert got == pytest.approx(0.5, rel=1e-5), 'D/mu with mu=2'
+    assert got == pytest.approx(0.5, rel=1e-12), 'D/mu with mu=2'
 
 
 def _model_without_defaults():

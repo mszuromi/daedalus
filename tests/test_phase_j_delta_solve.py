@@ -1,12 +1,16 @@
 """M10 (L4a): the δ-edge elimination of ``integrate_diagram`` by exact
-rational linear algebra (``USE_SETUP_DELTA_SOLVE``) instead of Maxima
-(``sage_solve``) and SR ``==`` tests.
+rational linear algebra instead of Maxima (``sage_solve``) and SR ``==``
+tests.
 
-The lever must not move any number: the substitutions are the same
-polynomials (and the same SR trees), every constraint row is ``==`` equal,
-exact zeros stay exactly ``0.0``, and every result is ``np.array_equal`` to
-the lever off.  ``VALIDATE_DELTA`` / ``DAEDALUS_PHASE_J_VALIDATE_DELTA=1``
-runs both solves and raises ``DeltaSolveValidationError`` on any difference.
+It must not move any number: the substitutions are the same polynomials
+(and the same SR trees) as ``sage_solve``'s, every constraint row is ``==``
+equal, exact zeros stay exactly ``0.0``.  ``VALIDATE_DELTA`` /
+``DAEDALUS_PHASE_J_VALIDATE_DELTA=1`` runs both solves and raises
+``DeltaSolveValidationError`` on any difference.  (The switch back to the
+``sage_solve`` path, ``USE_SETUP_DELTA_SOLVE`` / ``DAEDALUS_SETUP_DELTA_SOLVE``
+and the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP``, was retired in audit W7
+after every result had been ``np.array_equal`` to it; the validate mode
+keeps the comparison with ``sage_solve`` subset by subset.)
 
 Run with::
 
@@ -40,11 +44,8 @@ _P = SR.var('m10_p')                                 # a model parameter
 
 @pytest.fixture(autouse=True)
 def _flags(monkeypatch):
-    """Lever on, validation off, both umbrellas / env switches unset."""
-    for env in ('DAEDALUS_PHASE_J_LEGACY_SETUP',
-                'DAEDALUS_PHASE_J_VALIDATE_DELTA'):
-        monkeypatch.delenv(env, raising=False)
-    monkeypatch.setattr(FI, 'USE_SETUP_DELTA_SOLVE', True)
+    """Validation off (its env switch unset)."""
+    monkeypatch.delenv('DAEDALUS_PHASE_J_VALIDATE_DELTA', raising=False)
     monkeypatch.setattr(FI, 'VALIDATE_DELTA', False)
     FI._reset_runtime_counters()
     yield
@@ -279,7 +280,7 @@ def test_linear_form_parser():
     assert mine.is_trivially_equal(ref)
 
 
-# ── integrate_diagram: flag, umbrella, validate mode ───────────────────────
+# ── integrate_diagram: the validate mode ───────────────────────────────────
 _PTS = [(0.0, 0.7, 1.3), (0.0, -0.4, 0.9), (0.0, 0.0, 0.0)]
 
 
@@ -287,11 +288,7 @@ def _star_values():
     return _delta_values(FI.integrate_diagram(**_pair_tree()), _PTS)
 
 
-def test_star_tree_on_off_validate_array_equal(monkeypatch):
-    monkeypatch.setattr(FI, 'USE_SETUP_DELTA_SOLVE', False)
-    off = _star_values()
-    assert FI._RUNTIME_COUNTERS['setup_delta_solve_fast'] == 0
-    monkeypatch.setattr(FI, 'USE_SETUP_DELTA_SOLVE', True)
+def test_star_tree_validate_array_equal(monkeypatch):
     on = _star_values()
     n_fast = FI._RUNTIME_COUNTERS['setup_delta_solve_fast']
     assert n_fast > 0
@@ -300,19 +297,7 @@ def test_star_tree_on_off_validate_array_equal(monkeypatch):
     monkeypatch.setenv('DAEDALUS_PHASE_J_VALIDATE_DELTA', '1')
     val = _star_values()
     assert FI._RUNTIME_COUNTERS['setup_delta_validated'] == n_fast
-    assert np.array_equal(off, on) and np.array_equal(off, val)
-
-
-def test_umbrella_forces_the_lever_off(monkeypatch):
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
-    monkeypatch.setenv('DAEDALUS_PHASE_J_VALIDATE_DELTA', '1')
-    _star_values()
-    c = FI._RUNTIME_COUNTERS
-    assert c['setup_delta_solve_fast'] == c['setup_delta_solve_fallback'] == 0
-    assert c['setup_delta_validated'] == 0
-    assert FI._setup_lever_on('USE_SETUP_DELTA_SOLVE') is False
-    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP')
-    assert FI._setup_lever_on('USE_SETUP_DELTA_SOLVE') is True
+    assert np.array_equal(on, val)
 
 
 def test_flags_are_validated_and_read_at_call_time(monkeypatch):
@@ -328,12 +313,6 @@ def test_flags_are_validated_and_read_at_call_time(monkeypatch):
     with pytest.raises(ValueError):
         FI._validate_delta_on()
     monkeypatch.setattr(FI, 'VALIDATE_DELTA', False)
-    monkeypatch.setattr(FI, 'USE_SETUP_DELTA_SOLVE', 'yes')
-    with pytest.raises(ValueError):
-        FI._setup_lever_on('USE_SETUP_DELTA_SOLVE')
-    assert FI._initial_setup_flag('DAEDALUS_SETUP_DELTA_SOLVE', {}) is True
-    assert FI._initial_setup_flag('DAEDALUS_SETUP_DELTA_SOLVE',
-                                  {'DAEDALUS_SETUP_DELTA_SOLVE': '0'}) is False
 
 
 @pytest.mark.parametrize('how', ['shift', 'scale'])
@@ -372,8 +351,7 @@ _P_SPIKE = {'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
             'w': [[0.55, 0.65], [0.7, 0.8]]}
 
 
-def _spike_reset_k1(monkeypatch, *, on, validate=False):
-    monkeypatch.setattr(FI, 'USE_SETUP_DELTA_SOLVE', on)
+def _spike_reset_k1(monkeypatch, *, validate=False):
     monkeypatch.setattr(FI, 'VALIDATE_DELTA', validate)
     FI._reset_runtime_counters()
     model = dd.load_model('single_population_spike_reset_test')[0]
@@ -390,10 +368,10 @@ def _spike_reset_k1(monkeypatch, *, on, validate=False):
 
 
 def test_fast_path_fires_on_spike_reset_ell1(monkeypatch):
-    off, c_off = _spike_reset_k1(monkeypatch, on=False)
-    assert c_off['setup_delta_solve_fast'] == 0
-    on, c_on = _spike_reset_k1(monkeypatch, on=True, validate=True)
+    plain, c_plain = _spike_reset_k1(monkeypatch)
+    assert c_plain['setup_delta_validated'] == 0
+    on, c_on = _spike_reset_k1(monkeypatch, validate=True)
     assert c_on['setup_delta_solve_fast'] > 0
     assert c_on['setup_delta_solve_fallback'] == 0
     assert c_on['setup_delta_validated'] == c_on['setup_delta_solve_fast']
-    assert np.array_equal(off, on)
+    assert np.array_equal(plain, on)

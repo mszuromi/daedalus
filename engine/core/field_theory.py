@@ -21,13 +21,14 @@ Usage
     ft.summary()
 """
 
+import sys
 import warnings
 
 from sage.all import (
-    SR, PolynomialRing, factorial, QQ, latex, LatexExpr,
+    SR, PolynomialRing, factorial, QQ, latex,
     diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
 )
-from IPython.display import display, Math as _Math
+from engine.errors import DaedalusError
 
 
 def fourier_transform(f, t, s):
@@ -72,28 +73,9 @@ def fourier_transform(f, t, s):
     return integrate(integrand, t, a, b)
 
 
-def inverse_fourier_transform(F, s, t):
-    r"""
-    Inverse Fourier transform (angular-frequency convention):
-
-        f(t) = \frac{1}{2\pi} \int_{-\infty}^{\infty} F(s) e^{i s t} ds
-
-    Paired with fourier_transform():  FT uses e^{-ist}, IFT uses e^{+ist}/(2π).
-    Tries SymPy backend first (handles symbolic parameters without asking for
-    assumptions), falls back to Maxima.
-    """
-    integrand = F * exp(I * s * t)
-    for algo in ('sympy', 'maxima'):
-        try:
-            return integrate(integrand, s, -oo, oo, algorithm=algo) / (2 * pi)
-        except (ValueError, RuntimeError):
-            continue
-    # Last resort: return unevaluated integral
-    return integrate(integrand, s, -oo, oo) / (2 * pi)
-
-
 def _show(expr):
     """Display a SageMath expression or Conv/IP object as rendered LaTeX."""
+    from IPython.display import display, Math as _Math   # on use (SPD-06)
     display(_Math(latex(expr)))
 
 
@@ -265,15 +247,16 @@ _EXPAND_LEGACY_ENV = 'DAEDALUS_EXPAND_LEGACY'
 
 
 def _expand_legacy_requested() -> bool:
-    """``DAEDALUS_EXPAND_LEGACY=1`` restores the 0.2.1 expansion: one
-    multivariate ``taylor()`` of the whole action and Sage's own zero test
-    on every polynomial-ring coefficient (kept for A/B checks)."""
-    import os
-    v = os.environ.get(_EXPAND_LEGACY_ENV, '').strip().lower()
-    return v not in ('', '0', 'false', 'no', 'off')
+    """Always ``False``: ``DAEDALUS_EXPAND_LEGACY`` (the 0.2.1 expansion, one
+    multivariate ``taylor()`` of the whole action, which dropped degree-3
+    terms) is retired (audit W7); setting it only warns."""
+    from engine import _env
+    _env.retired(_EXPAND_LEGACY_ENV,
+                 'the per-atom truncated Taylor expansion is the only route')
+    return False
 
 
-class DerivativeAtomTaylorError(Exception):
+class DerivativeAtomTaylorError(DaedalusError, Exception):
     """A derivative of an abstract function (``D[0](f)(x)``) in the action,
     in a place where Maxima's multivariate ``taylor()`` would truncate it
     (it stops ``k`` orders early on a ``k``-th derivative atom: ``taylor(
@@ -425,11 +408,11 @@ def _taylor_action(S_sr, field_vars, order: int):
     """Truncated multivariate Taylor of the action in ``field_vars`` around
     0 (total degree <= ``order``), as an SR expression.
 
-    Uses :func:`_truncated_taylor` unless ``DAEDALUS_EXPAND_LEGACY`` is set
-    or an atom has no polynomial expansion at 0; then one ``taylor()`` of the
-    whole action (the legacy route, which then succeeds or fails as before).
+    Uses :func:`_truncated_taylor` unless an atom has no polynomial
+    expansion at 0; then one ``taylor()`` of the whole action (which then
+    succeeds or fails as before).
     """
-    if not _expand_legacy_requested():
+    if not _expand_legacy_requested():         # (warns on the retired switch)
         try:
             poly = _truncated_taylor(S_sr, field_vars, order)
         except (_TruncatedTaylorUnsupported, ArithmeticError, ValueError,
@@ -448,8 +431,8 @@ def _taylor_action(S_sr, field_vars, order: int):
         raise DerivativeAtomTaylorError(
             'the action contains a derivative of an abstract function '
             '(D[...](f)(...)) and the expansion would take the multivariate '
-            'taylor() route (DAEDALUS_EXPAND_LEGACY, or an atom without a '
-            'polynomial expansion), which truncates such atoms early; give '
+            'taylor() route (an atom without a polynomial expansion), which '
+            'truncates such atoms early; give '
             'the function an expression')
     return taylor(S_sr, *[(v, 0) for v in field_vars], order)
 
@@ -480,10 +463,14 @@ _NONZERO_PROBE_OPERATORS = frozenset({
 
 
 def _is_float_literal(po) -> bool:
-    """A real floating-point constant (Python ``float`` or Sage real number)."""
+    """A floating-point constant: Python ``float`` / ``complex`` or a Sage
+    real or complex number (``0.5*I`` folds into one complex float)."""
     from sage.rings.real_double import RealDoubleElement
     from sage.rings.real_mpfr import RealNumber
-    return isinstance(po, (float, RealNumber, RealDoubleElement))
+    from sage.rings.complex_double import ComplexDoubleElement
+    from sage.rings.complex_mpfr import ComplexNumber
+    return isinstance(po, (float, complex, RealNumber, RealDoubleElement,
+                           ComplexNumber, ComplexDoubleElement))
 
 
 def _interval_safe(c, floats_ok: bool = False) -> bool:
@@ -505,6 +492,30 @@ def _interval_safe(c, floats_ok: bool = False) -> bool:
     if _sr_op_name(op) not in _NONZERO_PROBE_OPERATORS:
         return False
     return all(_interval_safe(o, floats_ok) for o in c.operands())
+
+
+# Complex interval arithmetic is rigorous for these without a branch cut
+# (log, arctan and fractional powers are left to ``bool(c)``).
+_NONZERO_PROBE_OPERATORS_COMPLEX = frozenset({
+    'add_vararg', 'mul_vararg', 'pow', 'exp', 'sin', 'cos', 'tan',
+    'sinh', 'cosh', 'tanh',
+})
+
+
+def _complex_interval_safe(c) -> bool:
+    """Operators whose complex interval extension has no branch cut, and
+    integer powers only (the constants were checked by ``_interval_safe``)."""
+    op = c.operator()
+    if op is None:
+        return True
+    name = _sr_op_name(op)
+    if name not in _NONZERO_PROBE_OPERATORS_COMPLEX:
+        return False
+    if name == 'pow':
+        ex = c.operands()[1]
+        if not (ex.is_numeric() and ex.is_integer()):
+            return False
+    return all(_complex_interval_safe(o) for o in c.operands())
 
 
 def _probe_value(k: int):
@@ -563,7 +574,8 @@ _FLOAT_MARGIN = SR(1) / 10 ** 8
 _FLOAT_PATTERNS = ((1,), (-1,), (1, -1), (-1, 1))
 
 
-def _proved_nonzero(c, floats_ok: bool = False) -> bool:
+def _proved_nonzero(c, floats_ok: bool = False,
+                    above_float_dust: bool = False) -> bool:
     """True only if ``c`` is shown to be a nonzero function on its
     assumption domain: interval arithmetic (128 bits) at a probe point that
     satisfies every assumption excludes 0.  Never raises; False means "not
@@ -575,6 +587,12 @@ def _proved_nonzero(c, floats_ok: bool = False) -> bool:
     expression that cancels to float dust (``exp(-0.3*x)*exp(0.1*x) -
     exp(-0.2*x)``, floats an ulp apart) is not claimed nonzero: Sage and
     Maxima call it zero.
+
+    ``above_float_dust`` (with ``floats_ok``, when ``c`` has float
+    literals): also require ``|c| > 2^-30`` times the magnitude of its terms
+    at the point (:func:`_term_magnitude`).  A float expression whose exact
+    value is below the double-precision rounding of its own terms (an
+    ``(a+b)^2 - a^2 - 2ab - b^2`` of complex floats) is zero to ``bool``.
     """
     try:
         from sage.ext.fast_callable import fast_callable
@@ -592,16 +610,81 @@ def _proved_nonzero(c, floats_ok: bool = False) -> bool:
                 return 0
             return 1 if val.lower() > 0 else -1
 
-        sg = sign_of(c)
+        try:
+            sg = sign_of(c)
+        except (TypeError, ValueError, ArithmeticError):
+            # a complex constant (``I*omega`` of a Fourier image): the same
+            # proof in complex interval arithmetic, entire functions only
+            if not _complex_interval_safe(c):
+                return False
+            from sage.rings.complex_interval_field import (
+                ComplexIntervalField)
+            CIF128 = ComplexIntervalField(128)
+            cargs = [CIF128(val_of[repr(v)]) for v in vs]
+
+            def sign_of(expr):
+                val = fast_callable(expr, vars=vs, domain=CIF128)(*cargs)
+                re, im = val.real(), val.imag()
+                out = (0 if re.contains_zero() else (1 if re.lower() > 0
+                                                     else -1),
+                       0 if im.contains_zero() else (1 if im.lower() > 0
+                                                     else -1))
+                return 0 if out == (0, 0) else out
+
+            sg = sign_of(c)
         if sg == 0:
             return False
         if floats_ok and not _interval_safe(c, False):
             for pat in _FLOAT_PATTERNS:
                 if sign_of(_perturb_floats(c, pat, _FLOAT_MARGIN)) != sg:
                     return False
+            if above_float_dust:
+                from sage.rings.complex_interval_field import (
+                    ComplexIntervalField)
+                CIF128 = ComplexIntervalField(128)
+                cargs = [CIF128(val_of[repr(v)]) for v in vs]
+                mag = fast_callable(c, vars=vs, domain=CIF128)(*cargs).abs()
+                scale = _term_magnitude(c, vs, cargs, CIF128)
+                if not mag.lower() > _FLOAT_DUST_REL * scale.upper():
+                    return False
         return True
     except Exception:
         return False
+
+
+# A float expression is not claimed nonzero below this fraction of the
+# magnitude of its terms (double rounding is ~1e-16 of it per operation).
+_FLOAT_DUST_REL = 2.0 ** -30
+
+
+def _term_magnitude(c, vs, cargs, CIF):
+    """Upper magnitude of ``c`` with every sum replaced by the sum of the
+    magnitudes of its terms (products and integer powers of term
+    magnitudes; any other operator is the magnitude of its own value), at
+    the point ``cargs``: the scale its float rounding is relative to."""
+    from sage.ext.fast_callable import fast_callable
+    memo = {}
+
+    def mag(e):
+        key = repr(e)
+        if key in memo:
+            return memo[key]
+        op = e.operator()
+        name = _sr_op_name(op) if op is not None else None
+        if name == 'add_vararg':
+            r = sum(mag(o) for o in e.operands())
+        elif name == 'mul_vararg':
+            r = 1
+            for o in e.operands():
+                r = r * mag(o)
+        elif (name == 'pow' and e.operands()[1].is_numeric()
+              and e.operands()[1].is_integer() and e.operands()[1] >= 0):
+            r = mag(e.operands()[0]) ** int(e.operands()[1])
+        else:
+            r = fast_callable(e, vars=vs, domain=CIF)(*cargs).abs()
+        memo[key] = r
+        return r
+    return mag(SR(c))
 
 
 def _sr_nonzero(c) -> bool:
@@ -618,9 +701,38 @@ def _sr_nonzero(c) -> bool:
     c = SR(c)
     if c.is_trivial_zero():
         return False
+    # the same large coefficient is tested once per typed diagram
+    # (``classify_coefficient_factors``): the verdict is memoised on its
+    # GiNaC hash (exact float bits), a digest of its ``repr`` and the
+    # assumptions in force (never ``==`` on SR, which can itself go to
+    # Maxima)
+    import hashlib
+    from sage.symbolic.assumptions import assumptions
+    key = (hash(c), hashlib.sha1(repr(c).encode()).digest(),
+           repr(assumptions()))
+    hit = _NONZERO_MEMO.get(key)
+    if hit is not None:
+        return hit
     if _proved_nonzero(c):
-        return True
-    return bool(c)
+        out = True
+    # Float coefficients (numeric rates baked into the action): Sage's
+    # random-point test cannot certify a float expression, so ``bool(c)``
+    # always asks Maxima, seconds per large coefficient (and an ECL stack
+    # overflow on a whole multi-field action).  A proof that survives
+    # perturbing every float by 1e-8 (``floats_ok``) is one ``bool(c)``
+    # reaches too: a float expression that cancels to dust fails it.
+    elif _proved_nonzero(c, floats_ok=True, above_float_dust=True):
+        out = True
+    else:
+        out = bool(c)
+    if len(_NONZERO_MEMO) >= _NONZERO_MEMO_MAX:
+        _NONZERO_MEMO.clear()
+    _NONZERO_MEMO[key] = out
+    return out
+
+
+_NONZERO_MEMO: dict = {}
+_NONZERO_MEMO_MAX = 4096
 
 
 def _ring_from_nonzero_dict(R, d: dict):
@@ -684,12 +796,12 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
     result = R.zero()
 
     expanded = SR(sr_expr).expand()
-    if _expand_legacy_requested():
-        if expanded.is_zero():
-            return result
-    elif not _sr_nonzero(expanded):
-        # same verdict as ``is_zero()``; the fast path avoids one Maxima
-        # call on the whole action
+    if expanded.is_trivial_zero():
+        # The whole-action zero test is not needed: the ring monomials are
+        # independent, so the action is zero exactly when every coefficient
+        # is, and each coefficient is tested below.  (Testing the whole
+        # expanded action sent one huge expression to Maxima: an ECL
+        # BINDING-STACK overflow on a three-field jump model.)
         return result
 
     # Collect summands.  For a sum, .operands() gives the addends correctly.
@@ -724,8 +836,6 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
         acc[key] = (acc[key] + SR(coeff)) if key in acc else SR(coeff)
     if not acc:
         return result
-    if _expand_legacy_requested():
-        return R(acc)
     # Same zero decisions as ``R(acc)``, one (fast-path) test per coefficient.
     return _ring_from_nonzero_dict(
         R, {k: c for k, c in acc.items() if _sr_nonzero(c)})
@@ -739,6 +849,34 @@ def _sr_to_ring(sr_expr, R, ring_var_names: list):
 # Correlated-noise cumulant injection  (Option A: read declarative
 # ``correlated_noises`` block, append -W_m[mt] to the action symbolically)
 # ---------------------------------------------------------------------------
+
+class _PermutedKernel:
+    """A cumulant kernel read for a reconstructed leg-field permutation
+    ``perm`` of its row (``perm[k]``: the row's leg sitting at position
+    ``k``): the leg indices are put back in the row's own order, and at
+    order 2 the swapped pair reads ``K(j, i, -tau)`` (``tau = t_first -
+    t_second``; a delta of ``-tau`` written back as one of ``tau``, the form
+    the delta extraction matches).  At order >= 3 only the fully local
+    (delta-product) part is used, which no permutation of the times
+    changes.  Module level so it pickles like the kernel it wraps."""
+    __slots__ = ('inner', 'perm')
+
+    def __init__(self, inner, perm):
+        self.inner = inner
+        self.perm = tuple(perm)
+
+    def __call__(self, ns, *args):
+        n = len(self.perm)
+        idx, taus = args[:n], list(args[n:])
+        canon = [None] * n
+        for k, p in enumerate(self.perm):
+            canon[p] = idx[k]
+        if n == 2 and self.perm == (1, 0) and len(taus) == 1:
+            t = SR(taus[0])
+            K = SR(self.inner(ns, *canon, -t))
+            return K.subs({dirac_delta(-t): dirac_delta(t)})
+        return self.inner(ns, *canon, *taus)
+
 
 def _build_cumulant_action(ns, model):
     r"""
@@ -884,22 +1022,30 @@ def _build_cumulant_action(ns, model):
                     'fields': perm_fields,
                     'arrays': perm_arrays,
                     'ranges': perm_ranges,
+                    'perm': tuple(perm_indices),
                 })
 
             for perm_spec in distinct_field_perms:
               perm_leg_arrays = perm_spec['arrays']
               perm_leg_ranges = perm_spec['ranges']
               perm_leg_fields = list(perm_spec['fields'])
+              # The row's kernel K(i, j, tau) is written for its own leg
+              # order (tau = t_first - t_second); a reconstructed order is
+              # read with the indices put back (order 2: K(j, i, -tau)), so
+              # every registered spec carries its own orientation (Phase J
+              # evaluates each spec in it; audit W6).
+              kfn = (kernel_fn if perm_spec['perm'] == tuple(range(order))
+                     else _PermutedKernel(kernel_fn, perm_spec['perm']))
               for idx_tuple in _iter_product(*perm_leg_ranges):
                 # Evaluate the kernel at placeholder τ symbols.
                 try:
-                    K = SR(kernel_fn(ns, *idx_tuple, *tau_syms))
+                    K = SR(kfn(ns, *idx_tuple, *tau_syms))
                 except TypeError:
                     # Backward-compat: order 2 callers may use the old
                     # (ns, i, j, tau) signature with a single τ; expand.
                     if order == 2 and len(tau_syms) == 1:
-                        K = SR(kernel_fn(ns, idx_tuple[0], idx_tuple[1],
-                                         tau_syms[0]))
+                        K = SR(kfn(ns, idx_tuple[0], idx_tuple[1],
+                                   tau_syms[0]))
                     else:
                         raise
                 K = K.expand()
@@ -992,7 +1138,7 @@ def _build_cumulant_action(ns, model):
                              tuple(zip(perm_leg_fields, idx_tuple)))
                         ] = {
                             'symbol':    sym,
-                            'kernel_fn': kernel_fn,
+                            'kernel_fn': kfn,
                             'legs':      tuple(idx_tuple),
                             'leg_fields': tuple(perm_leg_fields),
                             'tau_var':   tau_syms[0],
@@ -1024,14 +1170,6 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
     """
     R = poly.parent()
     sectors: dict = {}
-    if _expand_legacy_requested():
-        for exp_vec, coeff in poly.dict().items():
-            n_t = int(sum(exp_vec[:n_tilde]))
-            n_p = int(sum(exp_vec[n_tilde:]))
-            key = (n_t, n_p)
-            sectors[key] = (sectors.get(key, R.zero())
-                            + SR(coeff) * R.monomial(*exp_vec))
-        return sectors
     # The coefficients of a ring element are nonzero already: split the
     # dict and build each sector once (the incremental ``+`` re-tested every
     # coefficient of the growing sector at each step).
@@ -1044,9 +1182,110 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
     return sectors
 
 
+#: Relative tolerance of the mean-field sector checks (expand time, and the
+#: selected root in ``api._mean_field_dae._check_selected_root``): a wrong
+#: equation leaves a residual of the size of its own terms, a converged
+#: saddle ~1e-16 of it.  (Was an absolute 1e-9 at expand time: valid models
+#: in large field units or fast time units were refused -- audit UNIT-01.)
+MF_SECTOR_RTOL = 1e-6
+
+
+#: Round-off allowance of the sector checks: this many ulps of the largest
+#: term scale of the whole mean-field sector (a float residue such as a
+#: noise source's K(0) = 3e-17, collapsed to a bare number, has no terms of
+#: its own to be judged against).
+MF_SECTOR_ULPS = 64
+
+
+def _terms_scale(expr, num_subs, unbound=None):
+    """Sum of the magnitudes of the expanded terms of ``expr`` at
+    ``num_subs`` (0 when it cannot be evaluated)."""
+    try:
+        terms = SR(expr).expand()
+        ops = (terms.operands()
+               if getattr(terms.operator(), '__name__', '') == 'add_vararg'
+               else [terms])
+        tot = 0.0
+        for t in ops:
+            v = SR(t).subs(num_subs)
+            if v.free_variables():
+                if unbound is None:
+                    return 0.0
+                v = v.subs({f: unbound for f in v.free_variables()})
+            tot += abs(complex(v))
+        return tot
+    except Exception:                                   # noqa: BLE001
+        return 0.0
+
+
+def mf_sector_residual(expr, num_subs, errs=None, unbound=None,
+                       raw=None, floor=0.0):
+    """``(resid, tol, scale)`` of a mean-field sector coefficient at a
+    numerical point, or ``None`` when it cannot be evaluated.
+
+    ``resid = |sum of the terms|`` and ``scale = sum of |terms|`` (the terms
+    of the expanded coefficient, each evaluated at ``num_subs``);
+    ``tol = MF_SECTOR_RTOL * scale + 10 * sum_v |d expr / d v| err_v`` over
+    the saddle values with an error estimate ``errs = {symbol: err}`` (a
+    root at 0 is known to ~its own size only: its terms vanish with it).
+    Every part scales with the coefficient, so the verdict does not depend
+    on the units.  ``unbound``: the value given to a symbol ``num_subs``
+    does not bind (``None``: such a coefficient is not evaluated).  ``raw``:
+    the coefficient before the saddle substitution (its terms set the scale
+    too: a closed-form saddle collapses ``-mu x* + m`` to a bare float);
+    ``floor``: an absolute round-off allowance added to ``tol``."""
+    c = SR(expr)
+    try:
+        # exactly zero at the point: no scale needed (and no expansion)
+        whole = c.subs(num_subs)
+        if unbound is not None and whole.free_variables():
+            whole = whole.subs({f: unbound for f in whole.free_variables()})
+        if not whole.free_variables() and complex(whole) == 0:
+            return 0.0, floor, 0.0
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        terms = c.expand()
+        ops = (terms.operands()
+               if getattr(terms.operator(), '__name__', '') == 'add_vararg'
+               else [terms])
+        vals = [SR(t).subs(num_subs) for t in ops]
+        free = set()
+        for v in vals:
+            free.update(v.free_variables())
+        if free:
+            if unbound is None:
+                return None
+            fill = {f: unbound for f in free}
+            vals = [v.subs(fill) for v in vals]
+        vals = [complex(v) for v in vals]
+    except Exception:                                   # noqa: BLE001
+        return None
+    resid = abs(sum(vals))
+    scale = sum(abs(v) for v in vals)
+    if raw is not None:
+        scale = max(scale, _terms_scale(raw, num_subs, unbound))
+    tol = MF_SECTOR_RTOL * scale + floor
+    if not resid <= tol and errs:
+        sens = 0.0
+        for sym, e in errs.items():
+            if not e:
+                continue
+            try:
+                if not c.has(sym):
+                    continue
+                d = SR(c.diff(sym)).subs(num_subs)
+                if unbound is not None and d.free_variables():
+                    d = d.subs({f: unbound for f in d.free_variables()})
+                sens += abs(complex(d)) * float(e)
+            except Exception:                           # noqa: BLE001
+                continue
+        tol += 10.0 * sens
+    return resid, tol, scale
+
+
 def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
-                               mf_sector_keys=((0, 0), (1, 0), (0, 1)),
-                               num_tol=1e-9):
+                               mf_sector_keys=((0, 0), (1, 0), (0, 1))):
     """Apply ``mf_subs`` to the saddle-eq (MF) sector and verify it
     vanishes.  After verification each MF sector entry is replaced by
     ``R.zero()`` in-place — at the saddle the sector is zero by
@@ -1059,7 +1298,8 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
          Cheap and complete for closed-form saddles.
       2. **Numerical fallback** (only when symbolic fails): bind every
          remaining free symbol to a numerical saddle from the model's
-         own MF solver and check ``|residual| < num_tol``.  Catches the
+         own MF solver and check the residual RELATIVE to the size of the
+         coefficient's terms (:func:`mf_sector_residual`).  Catches the
          case where the MF equation is solved iteratively rather than
          in closed form, so ``simplify_full`` can't see the
          cancellation but the numerics confirm it.
@@ -1074,6 +1314,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
     soft_passes: list = []
     mf_memo: dict = {}      # the saddle solve is the same for every coefficient
     dc_gains = getattr(ns, '_kernel_dc_gains', None)
+    pending: list = []      # numerically checked, judged after the sector scale
 
     for key in mf_sector_keys:
         sector_poly = by_tp.get(key)
@@ -1090,8 +1331,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 k_subs = dc_gains.subs_dict(c_subbed)
                 if k_subs:
                     c_subbed = c_subbed.subs(k_subs)
-            if _expand_legacy_requested() or not _proved_nonzero(
-                    c_subbed, floats_ok=True):
+            if not _proved_nonzero(c_subbed, floats_ok=True):
                 try:
                     c_simpl = c_subbed.simplify_full()
                     if c_simpl == 0:
@@ -1103,16 +1343,30 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 # ``simplify_full`` cannot reach 0 and is skipped; it is
                 # only run to word a failure (below).
                 c_simpl = None
-            num_resid = _mf_numerical_residual(c_subbed, ns, model, mf_memo)
-            if num_resid is not None and abs(num_resid) < num_tol:
-                soft_passes.append((key, exp_vec, c_simpl, num_resid))
-            else:
-                if c_simpl is None:
-                    try:
-                        c_simpl = c_subbed.simplify_full()
-                    except Exception:
-                        c_simpl = c_subbed
-                failures.append((key, exp_vec, c_simpl, num_resid))
+            raw = SR(coeff)
+            if dc_gains is not None:
+                k_raw = dc_gains.subs_dict(raw)
+                if k_raw:
+                    raw = raw.subs(k_raw)
+            num = _mf_numerical_residual(c_subbed, ns, model, mf_memo, raw)
+            pending.append((key, exp_vec, c_simpl, c_subbed, num))
+
+    # round-off allowance: MF_SECTOR_ULPS ulps of the largest term scale of
+    # the sector (a float residue collapsed to a bare number has none)
+    sector_scale = max([0.0] + [num[2] for *_, num in pending
+                                if num is not None])
+    floor = MF_SECTOR_ULPS * sys.float_info.epsilon * sector_scale
+    for key, exp_vec, c_simpl, c_subbed, num in pending:
+        num_resid = None if num is None else num[0]
+        if num is not None and num[0] <= num[1] + floor:
+            soft_passes.append((key, exp_vec, c_simpl, num_resid))
+        else:
+            if c_simpl is None:
+                try:
+                    c_simpl = c_subbed.simplify_full()
+                except Exception:
+                    c_simpl = c_subbed
+            failures.append((key, exp_vec, c_simpl, num_resid))
 
     if failures:
         lines = [
@@ -1134,6 +1388,15 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
                 f"  bigrade={key}  monomial_exponents={exp_vec}\n"
                 f"    symbolic residual: {c_simpl}\n"
                 f"    numerical residual: {num_str}")
+        solve_exc = mf_memo.get('num_params')
+        if isinstance(solve_exc, Exception):
+            # the numerical check could not run: say why (it was swallowed
+            # into a bare 'N/A' before, audit GEN-01)
+            lines.append(
+                f"  the numerical check could not run: the mean-field solve "
+                f"at the model's default parameter point raised "
+                f"{type(solve_exc).__name__}: {solve_exc}")
+            raise AssertionError('\n'.join(lines)) from solve_exc
         raise AssertionError('\n'.join(lines))
 
     if soft_passes:
@@ -1166,94 +1429,51 @@ def kernel_dc_gains_of(ns, model):
     return gains
 
 
-def _mf_numerical_residual(expr, ns, model, memo=None):
-    """Numerical residual of an SR expression at the MF saddle.
+def _mf_numerical_residual(expr, ns, model, memo=None, raw=None):
+    """``(residual, tolerance, scale)`` of an SR expression at the MF saddle
+    (:func:`mf_sector_residual`; a symbol the saddle point does not bind
+    is set to 1.0).
 
-    Returns the magnitude of ``expr`` after binding every free symbol
-    to its numerical value at the saddle for a representative
-    parameter point (``model['fundamental_defaults']`` if provided,
-    else all-ones).  Returns ``None`` if the residual can't be built
-    (no MF solver, fundamental incomplete, etc.) — the caller falls
+    Binds every free symbol to its numerical value at the saddle for a
+    representative parameter point (``model['fundamental_defaults']`` if
+    provided, else all-ones).  Returns ``None`` if the residual can't be
+    built (no MF solver, fundamental incomplete, etc.) — the caller falls
     back to ``failures`` rather than ``soft_passes`` in that case.
     """
     if memo is not None and 'num_params' in memo:
         # The solve below does not depend on ``expr`` (deterministic: fixed
         # seed), so one verification solves once, not once per coefficient.
         num_params = memo['num_params']
-        if num_params is None:
-            return None
-        return _residual_at(expr, num_params)
-    num_params = _mf_saddle_values(ns, model)
-    if memo is not None:
-        memo['num_params'] = num_params
-    if num_params is None:
+    else:
+        num_params = _mf_saddle_values(ns, model)
+        if memo is not None:
+            memo['num_params'] = num_params
+    if num_params is None or isinstance(num_params, Exception):
         return None
-    return _residual_at(expr, num_params)
+    vals, errs = num_params
+    return mf_sector_residual(expr, vals, errs, unbound=1.0, raw=raw)
 
 
 def _mf_saddle_values(ns, model):
-    """The numerical saddle (``num_params``) used by the residual check, or
-    ``None`` when none can be built."""
+    """``(num_params, errors)``: the numerical saddle used by the residual
+    check and the error estimates of its values (``{}`` when the solver
+    gives none); ``None`` without a parameter point, the solver's exception
+    when the solve fails."""
     fundamental = (model.get('fundamental_defaults') or
                    _default_fundamental_point(ns, model))
     if fundamental is None:
         return None
 
-    # Prefer the DAE-based solver when the model has declared
-    # ``.equation(...)``-style residuals — the legacy iterative
-    # solver doesn't know how to iterate self-referential
-    # implicit equations (e.g. ``xstar = -eps*xstar^3``), so it
-    # returns no saddle values and the residual check would default
-    # to xstar=1.0 from the all-ones fallback (wildly wrong).
-    mf = None
-    if model.get('equations'):
-        try:
-            from api._mean_field_dae import solve_mean_field_dae_compat
-            ft_proxy = _MFProxyForSolver(
-                ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
-            mf = solve_mean_field_dae_compat(
-                ft_proxy, model, fundamental, verbose=False)
-        except Exception:
-            mf = None
-
-    if mf is None:
-        try:
-            from api._mean_field import solve_mean_field
-        except ImportError:
-            return None
-        try:
-            ft_proxy = _MFProxyForSolver(
-                ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
-            mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
-        except Exception:
-            return None
-
-    return dict(mf.get('num_params', {}))
-
-
-def _residual_at(expr, num_params):
-    num_subs = dict(num_params)
+    # the one multi-root solver (``.equation`` rows or saddle equations);
+    # a failure is recorded, not swallowed: the sector check names it
     try:
-        bound = SR(expr).subs(num_subs)
-        free_syms = list(bound.free_variables())
-    except Exception:
-        return None
-
-    if free_syms:
-        for sym in free_syms:
-            num_subs[sym] = 1.0
-        try:
-            bound = SR(expr).subs(num_subs)
-        except Exception:
-            return None
-
-    try:
-        return abs(complex(bound))
-    except Exception:
-        try:
-            return abs(float(bound))
-        except Exception:
-            return None
+        from api._mean_field import solve_mean_field
+        ft_proxy = _MFProxyForSolver(
+            ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
+        mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
+    except Exception as exc:                            # noqa: BLE001
+        return exc
+    return dict(mf.get('num_params', {})), dict(mf.get('num_params_err') or {})
 
 
 def _default_fundamental_point(ns, model):
@@ -1342,6 +1562,9 @@ class FieldTheory:
         self._S_raw   = None
         self._by_tp   = None
         self._mf_sector_raw = None
+        # Interaction sectors written with per-field kernel aliases (see
+        # ``expand``); ``None`` when no kernel convolves several fields.
+        self._vertex_alias_by_tp = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -1383,6 +1606,8 @@ class FieldTheory:
         # ``g·nstar`` bilinear coefficient on the dv side.
         from engine.core.convolution import reduce_conv_in_action
         dc_gains = kernel_dc_gains_of(ns, self.model)
+        S_alias = None
+        self._vertex_alias_by_tp = None
         try:
             fluct_vars = set(ns._all_field_sr_vars)
             # Pass taylor_order so nonlinear Conv arguments
@@ -1401,11 +1626,31 @@ class FieldTheory:
             # coefficient is attached to — needed for the time-domain
             # Phase J integrator's per-leg τ scaffolding.
             attachments = {}
+            S_conv = S_sr
             S_sr = reduce_conv_in_action(
-                S_sr, fluct_vars, taylor_order=self.taylor_order,
+                S_conv, fluct_vars, taylor_order=self.taylor_order,
                 attachments_out=attachments, dc_gains=dc_gains,
             )
             ns._kernel_attachments = attachments
+            # A kernel convolving several fields (``Conv(g, x)`` and
+            # ``Conv(g, y)``, or a shared ``Conv(r, n[j])`` over a
+            # population) leaves vertex coefficients that cannot say which
+            # leg each factor of ``g`` came from.  Reduce once more with one
+            # alias per (kernel, field) emission; its interaction sectors
+            # (below) feed vertex extraction only, every other consumer
+            # keeps the sectors written with ``g``.
+            shared = [g for g, fs in attachments.items() if len(fs) > 1]
+            if shared:
+                aliases = {}
+                S_alias = reduce_conv_in_action(
+                    S_conv, fluct_vars, taylor_order=self.taylor_order,
+                    dc_gains=dc_gains, alias_kernels=shared,
+                    aliases_out=aliases,
+                )
+                if aliases:
+                    ns._kernel_aliases = aliases
+                else:
+                    S_alias = None
         except (AttributeError, TypeError):
             # No Conv atoms / non-SR action / missing ns attribute —
             # treat as identity transformation.
@@ -1416,50 +1661,15 @@ class FieldTheory:
         # framework appends the non-local cumulant terms here from the
         # declarative spec).  Returns SR(0) when the model has no
         # correlated_noises block, so existing models are untouched.
-        S_sr = S_sr + _build_cumulant_action(ns, self.model)
-
-        # Multivariate Taylor in all field variables around 0 (one-shot).
-        # Truncates at TOTAL degree taylor_order, which matches the
-        # diagrammatic vertex-leg-count interpretation.  Replaces the
-        # previous sequential single-variable loop, which broke for
-        # multi-arg formal functions (chained .taylor() doesn't compose
-        # at non-zero expansion points — the inner-arg substructures
-        # get frozen by the outer call).  For single-arg formal
-        # functions, the result is identical to the old sequential
-        # loop (since each formal call only depends on one fluctuation
-        # variable, multivariate Taylor at total order N produces the
-        # same monomials as per-variable order N).
-        #
-        # ``_taylor_action`` builds that polynomial atom by atom with
-        # truncation at every product (see ``_truncated_taylor``);
-        # ``DAEDALUS_EXPAND_LEGACY=1`` restores the single ``taylor()``.
-        if ns._all_field_sr_vars:
-            S_sr = _taylor_action(
-                S_sr, ns._all_field_sr_vars, self.taylor_order)
-
-        # Rename formal function derivative symbols to clean SR names
-        # e.g. D[0](phi_1)(0) → phi1_1,  phi_1(0) → phi0_1
-        if ns._deriv_rename_subs:
-            S_sr = S_sr.subs(ns._deriv_rename_subs)
-
-        # Apply specializations (e.g. phi0_<i+1> → a*vstar_<i+1>,
-        # phi1_<i+1> → a, quadratic phi, delta g).  These are pure
-        # closure renames and are safe to apply to every sector — they
-        # do not introduce parameter dependence that should be confined
-        # to the saddle-eq sector.
-        if 'specializations' in self.model:
-            S_sr = S_sr.subs(self.model['specializations'](ns))
-
-        # Coerce to polynomial ring and bigrade-classify FIRST, BEFORE
-        # applying MF saddle substitutions.  This is critical: MF subs
-        # of the form ``vstar → (Em + Σwg·nstar)/(1+τ·nstar)`` rewrites
-        # ``vstar`` everywhere it appears, which would otherwise inject
-        # Em-dependence (and other saddle-eq algebra) into the (1,1)
-        # bilinear propagator kernel and the ≥2 interaction vertices,
-        # where ``vstar``/``nstar`` should remain as free symbolic
-        # parameters bound numerically downstream via num_params.
-        S_poly = _sr_to_ring(S_sr.expand(), R, ns._ring_var_names)
-        by_tp = _collect_bigrade(S_poly, n_tilde)
+        S_cum = _build_cumulant_action(ns, self.model)
+        S_sr = S_sr + S_cum
+        by_tp = self._sr_to_bigrade(S_sr, ns, R, n_tilde)
+        if S_alias is not None:
+            self._vertex_alias_by_tp = {
+                key: poly for key, poly in self._sr_to_bigrade(
+                    S_alias + S_cum, ns, R, n_tilde).items()
+                if key[0] + key[1] >= 3 and key[1] >= 1
+                and poly != R.zero()}
 
         # Apply MF background conditions ONLY to the MF sector — the
         # bigrade-≤1-in-each-index slots (0,0), (1,0), (0,1) that hold
@@ -1496,14 +1706,9 @@ class FieldTheory:
         # Rebuild S_poly from by_tp (MF sector now zeroed) so
         # downstream consumers that read self._S_raw see a consistent
         # action whose (≤1, ≤1) sectors are exactly zero.
-        if _expand_legacy_requested():
-            S_raw = R.zero()
-            for poly in by_tp.values():
-                S_raw = S_raw + poly
-        else:
-            # The sectors partition the monomials (the running ``+``
-            # re-tested every coefficient at each step).
-            S_raw = _sum_of_polys(R, list(by_tp.values()))
+        # The sectors partition the monomials (the running ``+`` re-tested
+        # every coefficient at each step).
+        S_raw = _sum_of_polys(R, list(by_tp.values()))
 
         self._S_raw = S_raw
         self._by_tp = by_tp
@@ -1515,6 +1720,53 @@ class FieldTheory:
         # linearization instead of being rejected.  Check once, here,
         # where the whole action is in hand.
         self.check_first_order_in_dt()
+
+    def _sr_to_bigrade(self, S_sr, ns, R, n_tilde):
+        """Taylor-expand the reduced action ``S_sr`` (Conv atoms resolved,
+        cumulant terms added), rename and specialise, and classify it by
+        bigrade: ``{(n_tilde, n_phys): polynomial}`` (MF sector untouched)."""
+        # Multivariate Taylor in all field variables around 0 (one-shot).
+        # Truncates at TOTAL degree taylor_order, which matches the
+        # diagrammatic vertex-leg-count interpretation.  Replaces the
+        # previous sequential single-variable loop, which broke for
+        # multi-arg formal functions (chained .taylor() doesn't compose
+        # at non-zero expansion points — the inner-arg substructures
+        # get frozen by the outer call).  For single-arg formal
+        # functions, the result is identical to the old sequential
+        # loop (since each formal call only depends on one fluctuation
+        # variable, multivariate Taylor at total order N produces the
+        # same monomials as per-variable order N).
+        #
+        # ``_taylor_action`` builds that polynomial atom by atom with
+        # truncation at every product (see ``_truncated_taylor``).
+        if ns._all_field_sr_vars:
+            S_sr = _taylor_action(
+                S_sr, ns._all_field_sr_vars, self.taylor_order)
+
+        # Rename formal function derivative symbols to clean SR names
+        # e.g. D[0](phi_1)(0) → phi1_1,  phi_1(0) → phi0_1
+        if ns._deriv_rename_subs:
+            S_sr = S_sr.subs(ns._deriv_rename_subs)
+
+        # Apply specializations (e.g. phi0_<i+1> → a*vstar_<i+1>,
+        # phi1_<i+1> → a, quadratic phi, delta g).  These are pure
+        # closure renames and are safe to apply to every sector — they
+        # do not introduce parameter dependence that should be confined
+        # to the saddle-eq sector.
+        if 'specializations' in self.model:
+            S_sr = S_sr.subs(self.model['specializations'](ns))
+
+        # Coerce to polynomial ring and bigrade-classify FIRST, BEFORE
+        # applying MF saddle substitutions.  This is critical: MF subs
+        # of the form ``vstar → (Em + Σwg·nstar)/(1+τ·nstar)`` rewrites
+        # ``vstar`` everywhere it appears, which would otherwise inject
+        # Em-dependence (and other saddle-eq algebra) into the (1,1)
+        # bilinear propagator kernel and the ≥2 interaction vertices,
+        # where ``vstar``/``nstar`` should remain as free symbolic
+        # parameters bound numerically downstream via num_params.
+        S_poly = _sr_to_ring(S_sr.expand(), R, ns._ring_var_names)
+        by_tp = _collect_bigrade(S_poly, n_tilde)
+        return by_tp
 
     def check_first_order_in_dt(self) -> None:
         """Reject an action with any term of ``Dt``-degree ≥ 2.
@@ -1686,6 +1938,7 @@ class FieldTheory:
         ns._entity_axis_sizes = _entity_axis_sizes
 
         # ---- Field variables as SR symbols ----
+        from engine.core.vertices import field_symbol_name
         tilde_sr_vars: list = []
         phys_sr_vars:  list = []
         tilde_names:   list = []
@@ -1697,16 +1950,18 @@ class FieldTheory:
             lx      = fspec.get('latex', fname)
             if indexed:
                 idx_list = _field_indices(fspec)
-                arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
+                arr = [SR.var(field_symbol_name(fname, i + 1),
+                              latex_name=f'{lx}_{{{i+1}}}')
                        for i in idx_list]
                 setattr(ns, fname, arr)
                 tilde_sr_vars.extend(arr)
-                tilde_names.extend(f"{fname}{i+1}" for i in idx_list)
+                tilde_names.extend(field_symbol_name(fname, i + 1)
+                                  for i in idx_list)
             else:
-                v = SR.var(fname, latex_name=lx)
+                v = SR.var(field_symbol_name(fname), latex_name=lx)
                 setattr(ns, fname, v)
                 tilde_sr_vars.append(v)
-                tilde_names.append(fname)
+                tilde_names.append(field_symbol_name(fname))
 
         for fspec in m['physical_fields']:
             fname   = fspec['name']
@@ -1714,16 +1969,18 @@ class FieldTheory:
             lx      = fspec.get('latex', fname)
             if indexed:
                 idx_list = _field_indices(fspec)
-                arr = [SR.var(f"{fname}{i+1}", latex_name=f'{lx}_{{{i+1}}}')
+                arr = [SR.var(field_symbol_name(fname, i + 1),
+                              latex_name=f'{lx}_{{{i+1}}}')
                        for i in idx_list]
                 setattr(ns, fname, arr)
                 phys_sr_vars.extend(arr)
-                phys_names.extend(f"{fname}{i+1}" for i in idx_list)
+                phys_names.extend(field_symbol_name(fname, i + 1)
+                                  for i in idx_list)
             else:
-                v = SR.var(fname, latex_name=lx)
+                v = SR.var(field_symbol_name(fname), latex_name=lx)
                 setattr(ns, fname, v)
                 phys_sr_vars.append(v)
-                phys_names.append(fname)
+                phys_names.append(field_symbol_name(fname))
 
         ns._tilde_sr_vars    = tilde_sr_vars
         ns._phys_sr_vars     = phys_sr_vars
@@ -1951,7 +2208,8 @@ class FieldTheory:
 
     def _require_expanded(self):
         if self._by_tp is None:
-            raise RuntimeError("Call expand() first.")
+            raise RuntimeError(
+                "FieldTheory.expand() has not been run yet: the sectors, vertices and propagators are built by expand(); call it before reading them.")
 
     @staticmethod
     def _sector_label(n_t: int, n_p: int) -> str:

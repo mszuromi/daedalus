@@ -37,14 +37,13 @@ import daedalus as dd                                                # noqa: E40
 from api import compute_cumulants                                    # noqa: E402
 from api import me_output as ME                                      # noqa: E402
 from api import symbolic_out as so                                   # noqa: E402
-from api.compute import _ITO_EPS                                     # noqa: E402
 from api.cumulant import Cumulant                                    # noqa: E402
 from api.noise import Gaussian, Poisson                              # noqa: E402
 from api.sde import SDE                                              # noqa: E402
 import engine.integration.time_domain.statespace as SS               # noqa: E402
 
 TAUS = np.linspace(-5.0, 5.0, 201)
-TT = np.where(TAUS == 0, -_ITO_EPS, TAUS)     # C_tau's τ = 0 sample
+TT = TAUS.copy()     # C_tau's τ = 0 point: the exact Itô left limit (the triple's at_zero='-')
 
 
 def _ss_models():
@@ -276,7 +275,7 @@ def test_integrate_against_vs_quadrature(ouq, kname):
     ex = c.integrate_against(kern, method='exact')
     q = c.integrate_against(kern, method='quad')
     assert ex.method == 'exact' and q.method == 'quad'
-    assert abs(ex.value - q.value) <= 1e-10
+    assert abs(ex.value - q.value) <= 1e-12
     assert ex.contact == 0                       # no δ component here
     # 'auto' takes the exact route
     assert c.integrate_against(kern).method == 'exact'
@@ -301,7 +300,7 @@ def test_contact_rule_with_a_jump_at_zero(hawkes):
         c.integrate_against(L)
     ex = c.integrate_against(L, contact='mid')
     q = c.integrate_against(L, contact='mid', method='quad')
-    assert abs(ex.smooth - q.smooth) <= 1e-10
+    assert abs(ex.smooth - q.smooth) <= 1e-12
     assert abs(ex.contact - w0 * 0.25) <= 1e-14
     for rule, l0 in (('positive', 1.0), ('negative', -0.5), ('exclude', 0.0)):
         p = c.integrate_against(L, contact=rule)

@@ -71,9 +71,9 @@ def _simplex_oracle(t, nus):
 def test_phi_0_is_one():
     """Empty node list ⇒ Φ_0 = 1 (scalar and batch)."""
     for t in (0.0, 0.3, 2.7):
-        assert phi_n(t, []) == pytest.approx(1.0)
+        assert phi_n(t, []) == pytest.approx(1.0, rel=1e-12)
     out = phi_n_batch(np.array([0.0, 0.5, 1.0]), [])
-    assert out.shape == (3,) and np.allclose(out, 1.0)
+    assert out.shape == (3,) and np.allclose(out, 1.0, rtol=1e-12, atol=1e-12)
 
 
 @pytest.mark.parametrize('t,nu', [
@@ -131,21 +131,21 @@ def test_confluent_limit(t, nu, n):
         0.0, 1.0)
     want = t ** n * radial
     got = phi_n(t, [nu] * n)
-    assert got.real == pytest.approx(want.real, rel=1e-10, abs=1e-12)
-    assert got.imag == pytest.approx(want.imag, rel=1e-10, abs=1e-12)
+    assert got.real == pytest.approx(want.real, rel=1e-12, abs=1e-12)
+    assert got.imag == pytest.approx(want.imag, rel=1e-12, abs=1e-12)
     # ν = 0 (confluent at zero): Z nilpotent ⇒ Φ_n = tⁿ/n! exactly.
-    assert phi_n(t, [0.0] * n) == pytest.approx(t ** n / math.factorial(n))
+    assert phi_n(t, [0.0] * n) == pytest.approx(t ** n / math.factorial(n), rel=1e-12)
 
 
 @pytest.mark.parametrize('nu', [1.3, 0.5 + 0.9j])
 def test_near_confluent_stability(nu):
     """ν_i = ν + i·1e−13: a naive divided-difference table 0/0-blows-up on
     such close-paired nodes; the Opitz expm form must agree with the exactly
-    confluent value to 1e-9."""
+    confluent value to 1e-12."""
     t, n = 0.9, 3
     exact = phi_n(t, [nu] * n)
     perturbed = phi_n(t, [nu + i * 1e-13 for i in range(n)])
-    assert abs(perturbed - exact) < 1e-9
+    assert abs(perturbed - exact) < 1e-12
     assert np.isfinite([perturbed.real, perturbed.imag]).all()
 
 
@@ -159,7 +159,7 @@ def test_permutation_symmetry():
 
 def test_t_zero_vanishes_for_n_ge_1():
     """Φ_n(0; ν) = 0ⁿ · Vol(σ_n) = 0 for n ≥ 1 (the tⁿ factor); Φ_0(0) = 1."""
-    assert phi_n(0.0, []) == pytest.approx(1.0)
+    assert phi_n(0.0, []) == pytest.approx(1.0, rel=1e-12)
     for nus in ([1.3], [0.6, 2.3], [0.4 + 1.0j, 0.4 - 1.0j, 1.5]):
         assert abs(phi_n(0.0, nus)) < 1e-15
 

@@ -15,36 +15,21 @@ The data files:
 Neither is ever refrozen.  This file checks that:
 
 1. the baseline loads, is self-consistent and contains no local-only model;
-2. the legacy fixture copies are byte-identical to their M0 hashes, and
-   their probes (including the raw k=2 exact tie (0, 0) and the negative-τ
-   probes) reproduce under the legacy flags at the fixture tolerance, in
-   either cache state (``test_legacy_fixture_values_reproduce``; the
-   default-mode fixture test of the moved ``spike_reset_k2_ell1`` is a
-   strict xfail until M9, so this is its rollback guard -- in the slow
-   suite, while the default suite runs the same model, parameters and
-   flags through the zoo entry 'spike_reset-k2-l1' (legacy));
-3. zoo entries reproduce in-process to rtol 1e-13 (plan §4.4: hash
-   randomisation causes 1-ulp jitter, so ``==`` is not used in-repo), and so
-   do their nquad / zero-normal counters, in two modes:
+2. the legacy fixture copies are byte-identical to their M0 hashes (they
+   are frozen history: the legacy umbrella ``DAEDALUS_PHASE_J_LEGACY=1``,
+   which reproduced them in-process, was retired in audit W7);
+3. zoo entries whose numbers did not move reproduce with the current
+   defaults in-process to rtol 1e-13 (plan §4.4: hash randomisation causes
+   1-ulp jitter, so ``==`` is not used in-repo), and so do their nquad /
+   zero-normal counters where the routes did not change.  Only entries whose
+   numbers did not move at M1 (``m1_expected != 'moves'``), at M3 (the DBM
+   route) or at M9 (the box-free routes: quad_exp moved by +6 %, slow modes
+   the box truncated; CHANGELOG) are compared.  Until audit W7 this file
+   also re-ran entries under the umbrella's flags (the pre-change numbers of
+   every entry, an M1 mover among them) and on the boxed routes; those runs
+   went with the umbrella.
 
-   * ``legacy`` -- the flags ``DAEDALUS_PHASE_J_LEGACY=1`` selects (Θ(0)
-     ``legacy_clip``; the bounding box is read at call time in every mode),
-     set in-process on ``final_integral`` with ``monkeypatch`` (the flags
-     are read at call time).  Checked for an M1 mover AND a non-mover: the
-     umbrella must reproduce the pre-change numbers of every entry, and it
-     must never reach the M1 Θ(0) code (its counters stay 0).
-   * ``default`` -- the current defaults, only for entries whose numbers did
-     not move at M1 (``m1_expected != 'moves'``).  The M1 zoo re-run measured
-     every such tracked entry unchanged to rtol 1e-13 (plan §7, M1 delta
-     table).  Since M2b, in an entry that reaches the scipy quadrature
-     fallback (``nquad_hardened_calls`` > 0: quad_exp) the loop orders >= 1
-     are compared at rtol 2e-5 and the totals at 1e-6 in this mode (the
-     hardened fallback moves them by the error of the baseline's
-     default-tolerance quadrature: 5.3e-6 and 2.9e-7 measured); its tree
-     level keeps the strict tolerance.
-
-   The heavier entries of both modes are ``slow`` (``pytest -m slow``).
-   (Both kernel backends at M9.)
+   The heavier entries are ``slow`` (``pytest -m slow``).
 
 Cache state (plan Appendix C.1).  The baseline was recorded from the
 developer's local caches: the gitignored v1 prediagram cells in
@@ -56,13 +41,11 @@ tolerance (measured on a fresh clone: grouped spike reset k=2 l=1 legacy 30
 nquad calls vs 180, quad_exp k=2 l=1 ell1 2.0e-9 rel).  So for a ZOO entry
 whose baseline made nquad calls, and only when the v1 cells of every
 (k, ell) of the entry are absent, the values are compared at rtol 1e-8 and
-the route counters are not compared (the Θ(0) counters still must stay 0
-in legacy mode).  Entries without nquad calls are compared strictly in
-both states, and so are the four legacy FIXTURE copies (item 2: they
-reproduce to ~1e-14 in both states, well inside their rtol 1e-10).
+the route counters are not compared.  Entries without nquad calls are
+compared strictly in both states.
 
-Cost (default suite): about 35 s (three small models and three legacy
-fixtures, warm ``saved_models/`` cache).
+Cost (default suite): about 15 s (two small models, warm ``saved_models/``
+cache).
 """
 from __future__ import annotations
 
@@ -90,23 +73,16 @@ _LEGACY_SHA256 = {
         'ac2d0c0ec008ac4428b6f5f539af79e1ede530751080d9d6f9b1295d0844993e',
 }
 
-# (entry, mode) pairs re-run in-process.  'legacy' = the umbrella's flags,
-# 'default' = the current defaults (never for an M1 mover).  Keep the
+# (entry, mode) pairs re-run in-process with the current defaults ('default',
+# the only mode since audit W7; never for an M1 mover).  Keep the
 # default-suite cost <= ~30 s; everything heavier is in _REPRODUCE_SLOW.
 _REPRODUCE = [
     ('ou_quartic-k2-l3', 'default'),     # non-mover: 0 nquad, no zero-normal rows
     ('spike_reset-k1-l1', 'default'),    # non-mover (M1 zoo: bit-identical)
-    ('spike_reset-k1-l1', 'legacy'),     # non-mover under the umbrella
-    # M1 mover under the umbrella.  Also NOT bit-reproducible run to run
-    # (1-2 ulp, measured at M0.3: max rel 7.7e-16), hence rtol 1e-13.
-    ('spike_reset-k2-l1', 'legacy'),
 ]
 _REPRODUCE_SLOW = [
-    ('spike_reset-k2-l1-grouped', 'legacy'),     # mover, grouped dispatch
-    # non-mover WITH zero-normal rows (all c_eff < 0: EMPTY either way)
-    ('quad_exp-k2-l1', 'legacy'),
-    ('quad_exp-k2-l1', 'default'),
-    # the other tracked non-movers, current defaults.  NOTE: ou_quartic at
+    # the other tracked non-movers, current defaults.  (quad_exp-k2-l1, a
+    # non-mover at M1 with zero-normal rows, moved at M3 and M9.)  NOTE: ou_quartic at
     # k=3 is identically 0 (odd cumulants vanish at the symmetric saddle): no
     # Phase J integral is evaluated (poset/interval/polygon attempted = 0), so
     # this entry is no evidence about ties.  The OU tie evidence is k=4
@@ -125,16 +101,17 @@ _REPRODUCE_SLOW = [
     ('spatial-reaction_diffusion_2d-l1', 'default'),
     ('spatial-coupled_rd_2species_1d-l1', 'default'),
 ]
-_MODES = ('default', 'legacy')
+_MODES = ('default',)
 # Entries whose numbers moved at M3 (P3: the poset lower-bound inheritance
-# rule and the exact DBM route, ``final_integral.USE_DBM_FALLBACK``).  In the
-# default mode they are compared with that one flag off, so this test keeps
-# guarding everything else about the current defaults; the M3 move itself is
+# rule and the exact DBM route) or at M9 (the box-free routes): not compared
+# (until audit W7 they were, with the retired switches USE_DBM_FALLBACK and
+# USE_PHASE_J_DD_KERNELS / SEMIINF_CHAIN / UNBOUNDED_2D off).  The M3 move is
 # checked region by region against tight quadrature (M3 report) and by
 # tests/test_phase_j_p3_inheritance.py.  quad_exp-k2-l1: 96 P3-refused region
-# evaluations, all answered by the DBM route; the one-loop term moves by up to
-# 1.2e-2 relative (τ = 10; 9.3e-4 at τ = 2.5, 0 at τ = 0), the tree level not.
-_M3_MOVERS = ('quad_exp-k2-l1',)
+# evaluations, all answered by the DBM route; the one-loop term moved by up
+# to 1.2e-2 relative (τ = 10; 9.3e-4 at τ = 2.5, 0 at τ = 0), the tree level
+# not; the box-free routes then moved it by +6 %.
+_MOVERS = ('quad_exp-k2-l1',)
 # Entries whose tree level moved when near-degenerate poles were resolved
 # (item 21's cluster deformation; item 31 then made the exact per-entry pole
 # membership unconditional, so ``DAEDALUS_POLE_CLUSTERS=0`` no longer restores
@@ -149,6 +126,39 @@ _M3_MOVERS = ('quad_exp-k2-l1',)
 # (keys ``<entry>/<array>``), and used in place of the baseline's.
 _REFROZEN_NPZ = os.path.join(os.path.dirname(__file__), 'fixtures',
                              'phase_j_legacy_baseline_refrozen_item21.npz')
+# Audit W6 (GEN-02): every ``.set_mf_equation`` model's saddle is solved to
+# round-off by the multi-root solver (the old fsolve stopped ~1e-12..1e-11
+# short; 50-digit roots confirm the new values to <= 3e-16).  The arrays this
+# moves beyond rtol 1e-13 are refrozen here: spike_reset k1 l1 (ell1, total:
+# 2.9e-12), spike_reset k2 l1 and its grouped twin (ell0, ell1, total:
+# 2.9e-11), quad_exp k2 l1 (ell0: 1.1e-11; its ell1 / total differ from the
+# baseline already at main, unchanged here).
+_REFROZEN_NPZ_W6 = os.path.join(os.path.dirname(__file__), 'fixtures',
+                                'phase_j_legacy_baseline_refrozen_w6.npz')
+# Spatial entries, refrozen from main dca8804 (W5 slow-test triage; every move is documented by a merged
+# PR, bisected per commit): #44 (spatial loops at tau != 0 split the chamber time grid at the kinks; tau = 0
+# rows bit-identical) moved spatial-allen_cahn_1d-l2 by <= 1.05e-3, spatial-reaction_diffusion_conserved_1d-l1
+# by 3.4e-5 and spatial-coupled_rd_2species_1d-l1 by 1.4e-3 relative on their tau = 0.5 rows; #58 (the
+# radial-simplex equal-time rule and the derivative-vertex kink segments) then moved the Allen-Cahn tau = 0
+# rows by <= 2.2e-6 and the conserved model by <= 4.5e-4 (tau = 0) / 1.7e-5 (tau = 0.5).  The coupled model
+# is bit-identical across #55 / #58.
+_REFROZEN_NPZ_W5S = os.path.join(os.path.dirname(__file__), 'fixtures',
+                                 'phase_j_legacy_baseline_refrozen_w5s.npz')
+# The model text fingerprint of the colored-noise models changed in #50 (W3b: the spec signature of a model with
+# CGF rows carries the new row semantics, so caches of rows read the old way are rebuilt once); their values are
+# unchanged (W3b zoo A/B: bit-identical).  {entry: (baseline signature, current signature)}.
+# The linear_hawkes fingerprint changed in #59 (W6, GEN-01: n_populations=N is an explicit population, so its
+# fields carry a population name); its values moved by 2.2e-16 (documented there).
+_RESIGNED = {'ou_quartic_colored-k2-l1': ('2943c44b21ec6c37', '59405a1a4fc0c8b1'),
+             'ou_quartic_two_dim_color_corr-k2-l1': ('325029e162ea2dea', '4c5aa2778ffe21fe'),
+             'linear_hawkes-k2-l1': ('34e554dcae108db0', '5cafdb79feb04f7a')}
+# Strict entries whose cross-platform scatter exceeds 1e-13 (measured on CI's stack, ubuntu / openblas / scipy
+# 1.17.1, against the macOS baseline): ou_quartic_two_dim_color_corr ell1 4.0e-13 relative (an ill-conditioned
+# realization, W4b's G6_ILL_CONDITIONED); its values did not move (the same at every commit since the baseline).
+_PLATFORM_RTOL = {'ou_quartic_two_dim_color_corr-k2-l1': 1e-12}
+# Entries that refuse by design now: #44 (UV-divergent loop subgraphs refuse; reaction_diffusion_2d has a
+# tadpole at d = 2).  {entry: the error class the run must report}.
+_REFUSED_NOW = {'spatial-reaction_diffusion_2d-l1': 'SpatialUVDivergenceError'}
 
 
 # The one route counter that the cluster route changes on that entry: the
@@ -162,12 +172,15 @@ _REFROZEN_COUNTERS = {'multipopulation_test-k2-l1': {'polytope_m0_direct': 42}}
 def _refrozen_arrays(name):
     """The refrozen arrays of an entry whose baseline values moved for a
     reviewed reason, ``{array: values}`` (empty for every other entry)."""
-    if not os.path.exists(_REFROZEN_NPZ):
-        return {}
-    with np.load(_REFROZEN_NPZ) as z:
-        prefix = name + '/'
-        return {k[len(prefix):]: np.array(z[k]) for k in z.files
-                if k.startswith(prefix)}
+    out = {}
+    prefix = name + '/'
+    for path in (_REFROZEN_NPZ, _REFROZEN_NPZ_W6, _REFROZEN_NPZ_W5S):
+        if not os.path.exists(path):
+            continue
+        with np.load(path) as z:
+            out.update({k[len(prefix):]: np.array(z[k]) for k in z.files
+                        if k.startswith(prefix)})
+    return out
 
 
 # Default mode, an entry served by the M2b hardened quadrature fallback: the
@@ -231,47 +244,16 @@ def test_legacy_fixture_copies_are_frozen():
                             'refrozen')
 
 
-# The four frozen fixtures under the legacy flags (plan §3.1: the umbrella
-# test compares against legacy/*.npz).  spike_reset_k2_ell1 is the only
-# expensive one (about 10 s; the others take under 1 s each) and is slow
-# here: the default suite already runs the same model, parameters, k, ell
-# and legacy flags through the zoo entry 'spike_reset-k2-l1' (legacy, in
-# ``_REPRODUCE``, values AND route counters).  What only this fixture adds
-# is its raw probes, among them the exact k=2 tie (0, 0).
-_LEGACY_FIXTURES_SLOW = ('spike_reset_k2_ell1',)
+def _in_git_checkout():
+    """The repository root is a git work tree's top level (an exported tree nested inside some
+    other repository does not count)."""
+    rc, out = Z._git('rev-parse', '--show-toplevel')
+    return rc == 0 and os.path.realpath(out.strip()) == os.path.realpath(Z._REPO_ROOT)
 
 
-def _legacy_fixture_params():
-    from tests.phase_j_refactor_fixtures._configs import FIXTURES
-    return [pytest.param(fx, id=fx.name,
-                         marks=([pytest.mark.slow]
-                                if fx.name in _LEGACY_FIXTURES_SLOW else []))
-            for fx in FIXTURES]
-
-
-@pytest.mark.parametrize('fx', _legacy_fixture_params())
-def test_legacy_fixture_values_reproduce(fx):
-    """Every probe of a frozen pre-change fixture copy (``legacy/``)
-    reproduces under the legacy umbrella's flags, set in-process, at the
-    fixture's own tolerance (``fx.rtol``, 1e-10; cross-process, so not
-    ``==``) -- in BOTH cache states.  Unlike the zoo entries (module
-    docstring) the fixtures need no relaxation without the local v1
-    prediagram cells: measured on a fresh clone (no v1 cells, warm and
-    fully cold caches, three hash seeds) every fixture matched its copy to
-    <= 1.9e-14 relative, including spike_reset_k2_ell1, which makes 576
-    scipy.nquad calls in either state (7.7e-16 with the local cells)."""
-    from tests.phase_j_refactor_fixtures._runner import evaluate
-    from tests.tools.phase_j_subset_diff import phase_j_flags
-    ref = np.load(os.path.join(_LEGACY_DIR, f'{fx.name}.npz'))
-    with phase_j_flags('legacy') as flags:
-        assert flags['THETA0_CONST_ROW_MODE'] == 'legacy_clip'
-        cur = evaluate(fx)
-    np.testing.assert_array_equal(cur['tau_probes'], ref['tau_probes'])
-    np.testing.assert_allclose(
-        cur['C_values'], ref['C_values'], rtol=fx.rtol, atol=fx.atol,
-        err_msg=f'{fx.name}: legacy flags vs legacy/{fx.name}.npz')
-
-
+@pytest.mark.skipif(not _in_git_checkout(),
+                    reason='needs a git checkout: tracked and local-only models are told apart by '
+                           'git (outside one, every entry looks local-only)')
 def test_baseline_loads_and_is_consistent(baseline):
     meta, arrays = baseline
     assert meta['schema_version'] == Z.SCHEMA_VERSION
@@ -308,14 +290,6 @@ def test_baseline_loads_and_is_consistent(baseline):
     assert len(meta['code']['sha256_final_integral']) == 64
 
 
-# Counters added at M1 (Θ(0) helper) and M2a (structural zeros): the legacy
-# umbrella never reaches that code, so they stay 0 in legacy mode.
-_THETA0_COUNTER_KEYS = ('theta0_const_empty', 'theta0_const_drop',
-                        'theta0_tie', 'theta0_tie_ordered',
-                        'theta0_subsets_pruned', 'polygon_zero_area',
-                        'poset_empty_const', 'poset_empty_cycle') \
-    + Z.M2A_VALUE_KEYS
-
 # Relaxed value tolerance for an nquad-served entry run from other diagram
 # representatives than the baseline's (see the module docstring).
 _OTHER_REPRESENTATIVES_RTOL = 1e-8
@@ -333,66 +307,49 @@ def _baseline_cache_state(entry):
                for ell in range(int(entry['max_ell']) + 1))
 
 
-def test_reproduce_lists_respect_the_m1_movers(baseline):
-    """An M1 mover is only ever compared under the legacy umbrella; both a
-    mover and a non-mover are checked in legacy mode in the default suite;
-    every listed entry has an ok baseline."""
+def test_reproduce_lists_respect_the_movers(baseline):
+    """A mover (M1, M3, M9) is never compared; every listed entry has an ok
+    baseline."""
     meta, _arrays = baseline
     for name, mode in _REPRODUCE + _REPRODUCE_SLOW:
         assert mode in _MODES, (name, mode)
         s = meta['entries'][name]
         assert s['status'] == 'ok', (name, s['status'])
-        if s.get('m1_expected') == 'moves':
-            assert mode == 'legacy', (
-                f'{name} moved at M1: compare it under the legacy umbrella '
-                'only')
-    legacy = [n for n, mode in _REPRODUCE if mode == 'legacy']
-    assert any(meta['entries'][n].get('m1_expected') == 'moves'
-               for n in legacy)
-    assert any(meta['entries'][n].get('m1_expected') != 'moves'
-               for n in legacy)
+        assert s.get('m1_expected') != 'moves', name
+        assert name not in _MOVERS, name
     assert any(mode == 'default' for _n, mode in _REPRODUCE)
 
 
 def _reproduce(baseline, name, mode, monkeypatch):
-    import engine.integration.time_domain.final_integral as FI
     meta, arrays = baseline
     s = meta['entries'].get(name)
     if s is None or s['status'] != 'ok':
         pytest.fail(f'{name}: no ok baseline entry ({s and s["status"]})')
-    if mode == 'legacy':
-        # every flag the umbrella sets (since M9 the box-free routes are the
-        # default, so the M6/M7 switches must be reset too)
-        flags = FI._legacy_umbrella_flags()
-        assert flags['THETA0_CONST_ROW_MODE'] == 'legacy_clip'
-        for flag, value in flags.items():
-            monkeypatch.setattr(FI, flag, value)
-    else:
-        assert s.get('m1_expected') != 'moves', name
-        default = FI._initial_phase_j_flags({})
-        if name in _M3_MOVERS:
-            default['USE_DBM_FALLBACK'] = False
-        # The baseline was computed on the boxed routes: 'default' mode
-        # checks that the 0.2.0 rules (Θ(0), inheritance, hardened
-        # fallback) leave the non-movers unchanged THERE.  The box-free
-        # routes, the default since M9, move quad_exp by +6 % (slow modes
-        # the box truncated); that move is recorded in the CHANGELOG.
-        default.update({'USE_PHASE_J_DD_KERNELS': False,
-                        'SEMIINF_CHAIN': False, 'UNBOUNDED_2D': 'box'})
-        for flag, value in default.items():
-            monkeypatch.setattr(FI, flag, value)
+    # the pre-M1 baseline samples the k = 2 τ = 0 point at −1e−6 (the
+    # convention until Oct 2026, ``api.compute._tau0_mode``)
+    monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
+    assert mode == 'default', mode
+    assert s.get('m1_expected') != 'moves' and name not in _MOVERS, name
     entry = Z.entry_by_name(name, include_local=False)
     # Representative dependence (module docstring): only an nquad-served
     # entry run without the baseline's local prediagram cells is relaxed.
     strict = (_baseline_cache_state(entry)
               or not s['counters'].get('nquad_calls'))
     rec = Z.run_entry(entry, with_provenance=False)
+    if name in _REFUSED_NOW:
+        assert str(rec['status']).startswith('ERR') and _REFUSED_NOW[name] in rec['status'], rec['status']
+        return
     assert rec['status'] == 'ok', rec.get('status')
     assert rec['params_effective'] == s['params_effective'], name
     # The MODEL must be the one baselined (its file may change elsewhere).
-    assert rec['model_spec_signature'] == s['model_spec_signature'], (
+    want_sig = s['model_spec_signature']
+    if name in _RESIGNED:
+        assert _RESIGNED[name][0] == want_sig, name
+        want_sig = _RESIGNED[name][1]
+    assert rec['model_spec_signature'] == want_sig, (
         f'{name}: model definition changed since the baseline')
     rtol = 1e-13 if strict else _OTHER_REPRESENTATIVES_RTOL
+    rtol = max(rtol, _PLATFORM_RTOL.get(name, 0.0))
     ref, cur = dict(arrays[name]), Z.result_arrays(rec)
     ref.update(_refrozen_arrays(name))
     if rec['counters'].get('nquad_hardened_calls'):
@@ -402,7 +359,6 @@ def _reproduce(baseline, name, mode, monkeypatch):
         # (measured: quad_exp k=2 l=1 by <= 5.3e-6 relative on the one-loop
         # term, 2.9e-7 on the total, tree level unchanged); the routes
         # (counters below) do not change.
-        assert mode == 'default', name
         cmp = {}
         for a in sorted(set(ref) | set(cur)):
             cmp.update(Z.compare_values(
@@ -414,9 +370,6 @@ def _reproduce(baseline, name, mode, monkeypatch):
     how = 'strict' if strict else 'other representatives'
     assert not bad, (f'{name} [{mode}, {how}]: (max_abs, max_rel, ok) per '
                      f'array: {bad}')
-    if mode == 'legacy':
-        for key in _THETA0_COUNTER_KEYS:
-            assert rec['counters'].get(key, 0) == 0, (name, key)
     if not strict:
         return          # routes depend on the representatives (docstring)
     # Control flow is deterministic: counters reproduce exactly.  In the
@@ -426,7 +379,7 @@ def _reproduce(baseline, name, mode, monkeypatch):
     # never builds identically-zero subsets (``Z.M2A_ROUTE_KEYS``), so the
     # routes are compared exactly only when the baseline saw no zero-normal
     # row and none of those counters of this run is nonzero.
-    if mode == 'legacy' or not (
+    if not (
             s['counters'].get('zero_normal_rows_seen')
             or any(rec['counters'].get(k)
                    for k in Z.M1_ROUTE_KEYS + Z.M2A_ROUTE_KEYS
@@ -443,8 +396,7 @@ def _reproduce(baseline, name, mode, monkeypatch):
 @pytest.mark.parametrize('name,mode', _REPRODUCE,
                          ids=[f'{n}-{m}' for n, m in _REPRODUCE])
 def test_cheap_entries_reproduce(baseline, name, mode, monkeypatch):
-    """The pre-M1 baseline reproduces to rtol 1e-13: under the legacy
-    umbrella's flags for a mover and a non-mover, and with the current
+    """The pre-M1 baseline reproduces to rtol 1e-13 with the current
     defaults for the non-movers."""
     _reproduce(baseline, name, mode, monkeypatch)
 
@@ -454,8 +406,7 @@ def test_cheap_entries_reproduce(baseline, name, mode, monkeypatch):
                          ids=[f'{n}-{m}' for n, m in _REPRODUCE_SLOW])
 def test_heavier_entries_reproduce(baseline, name, mode, monkeypatch):
     """As ``test_cheap_entries_reproduce``, for the rest of the tracked
-    non-movers (current defaults) and the grouped mover / a zero-normal
-    non-mover under the umbrella."""
+    non-movers."""
     _reproduce(baseline, name, mode, monkeypatch)
 
 
@@ -502,7 +453,7 @@ def test_delta_table_verdicts():
     assert rows['same']['max_abs'] == 0.0
     assert rows['jitter']['verdict'] == 'unchanged'
     assert rows['moves']['verdict'] == 'MOVES'
-    assert rows['moves']['max_rel'] == pytest.approx(0.5)
+    assert rows['moves']['max_rel'] == pytest.approx(0.5, rel=1e-12)
     assert (rows['moves']['nquad_before'], rows['moves']['nquad_after']) == (4, 0)
     # moved although the baseline saw no zero-normal row and the new run
     # decided nothing the M1 rules can change (Z.M1_VALUE_KEYS all 0)
@@ -535,37 +486,16 @@ def test_assemble_refuses_to_overwrite_the_baseline(monkeypatch):
     assert 'refusing to overwrite' in str(exc.value)
 
 
-def test_fixture_report_flag_context_restores():
-    import engine.integration.time_domain.final_integral as FI
+def test_fixture_report_flag_context():
+    """The harness's flag context: 'default' only (the 'legacy' mode, the
+    umbrella's flags, was retired in audit W7)."""
     from tests.tools import phase_j_subset_diff as H
-    names = ('THETA0_CONST_ROW_MODE', 'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
-             'USE_DBM_FALLBACK', 'USE_PHASE_J_DD_KERNELS', 'SEMIINF_CHAIN',
-             'UNBOUNDED_2D', 'CHAIN_UPPERS_KERNEL', 'POLYGON_BBOX_CAP')
-    before = tuple(getattr(FI, n) for n in names)
-    with pytest.raises(RuntimeError):
-        with H.phase_j_flags('legacy') as flags:
-            assert FI.THETA0_CONST_ROW_MODE == 'legacy_clip'
-            assert FI.STRUCTURAL_ZEROS is False
-            assert FI.NQUAD_HARDENED is False
-            assert FI.USE_DBM_FALLBACK is False
-            # the box-free switches too, since 0.2.0 made them the default
-            assert FI.USE_PHASE_J_DD_KERNELS is False
-            assert FI.SEMIINF_CHAIN is False
-            assert FI.UNBOUNDED_2D == 'box'
-            assert flags == FI._legacy_umbrella_flags()
-            assert set(flags) == {'THETA0_CONST_ROW_MODE',
-                                  'STRUCTURAL_ZEROS', 'NQUAD_HARDENED',
-                                  'USE_DBM_FALLBACK',
-                                  'USE_PHASE_J_DD_KERNELS',
-                                  'CHAIN_UPPERS_KERNEL', 'SEMIINF_CHAIN',
-                                  'UNBOUNDED_2D'}
-            raise RuntimeError('restored even on error')
-    assert tuple(getattr(FI, n) for n in names) == before
-    with H.phase_j_flags('default'):
-        assert tuple(getattr(FI, n) for n in names) == before
-    with pytest.raises(ValueError):
-        with H.phase_j_flags('nope'):
-            pass
+    with H.phase_j_flags('default') as flags:
+        assert flags == {}
+    for mode in ('legacy', 'nope'):
+        with pytest.raises(ValueError):
+            with H.phase_j_flags(mode):
+                pass
 
 
 # S3: the state-space route is the default; these tests pin the pole

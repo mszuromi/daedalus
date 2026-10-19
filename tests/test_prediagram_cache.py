@@ -241,20 +241,21 @@ def test_cache_off_source_rejects_an_unknown_value(tmp_path, monkeypatch,
 def test_use_cache_false_never_forks_inside_a_notebook_kernel(
         tmp_path, monkeypatch, no_eager_knob):
     """With ``DAEDALUS_PREDIAGRAM_PROCS`` > 1 the streamed path asks for
-    workers; inside a macOS Jupyter kernel the existing fork guard must turn
-    that into a warning and a serial run (forking there has crashed the
-    machine).  The kernel is simulated; any process pool is a failure."""
+    workers; on macOS (which never forks: forking a Jupyter kernel there has
+    crashed the machine) the fork guard must turn that into a warning and a
+    serial run.  The guard is simulated; any process pool is a failure."""
     import concurrent.futures
 
     import engine.fork_safety as fs
 
     def _no_pool(*a, **kw):
         raise AssertionError('a process pool was started in a notebook kernel')
-    monkeypatch.setattr(fs, 'fork_unsafe_in_notebook', lambda *a, **kw: True)
+    monkeypatch.setattr(fs, 'fork_unsafe', lambda *a, **kw: True)
+    monkeypatch.setattr(fs, '_WARNED', set())
     monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', _no_pool)
     monkeypatch.setenv(pdc._PROCS_ENV, '4')
     monkeypatch.setattr(pdc, '_STREAMED_MEMO', {})      # force a real stream
-    with pytest.warns(UserWarning, match='fork'):
+    with pytest.warns(RuntimeWarning, match='fork'):
         records, source = pdc.load_prediagrams(str(tmp_path), 2, 1,
                                                use_cache=False)
     assert source == 'streamed' and len(records) == 9
@@ -459,10 +460,12 @@ def _spatial_run():
 
     from api.compute import compute_cumulants
     import daedalus as dd
-    model, _ = dd.load_model('reaction_diffusion_2d')
+    # d=1: the d=2 model's one loop has a tadpole, UV-divergent at d>=2
+    # (refused since audit wave 2)
+    model, _ = dd.load_model('reaction_diffusion_quadratic_1d')
     compute_cumulants(model, k=2, max_ell=1,
                       external_fields=[('dphi', 1)] * 2,
-                      parameters={'mu': 1.0, 'D': 1.0, 'g': 0.2, 'T': 1.0},
+                      parameters={'mu': 1.0, 'D': 1.0, 'g': 0.3, 'T': 1.0},
                       tau_grid=np.asarray([0.0]),
                       chi_grid=np.asarray([0.4, 1.0]), use_cache=False,
                       verbose=False, spatial_parallel=False)
@@ -497,22 +500,19 @@ def test_cache_off_sources_of_the_temporal_and_spatial_paths(monkeypatch):
 #: ``TEMPORAL_CACHE_OFF_STREAMS``.
 _FALLBACK_GATE_CASES = [
     pytest.param(
-        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), False,
+        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0),
         id='spike_reset-perdiag'),
     pytest.param(
-        'single_population_spike_reset_test', 'P_SPIKE', (0.0, 10.0), True,
-        id='spike_reset-grouped'),
-    pytest.param(
-        'single_population_quad_exp_test', 'P_SP', (0.0, 1.0, 5.0), False,
+        'single_population_quad_exp_test', 'P_SP', (0.0, 1.0, 5.0),
         id='quad_exp-perdiag'),
 ]
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize('model_name, params, taus, grouped',
+@pytest.mark.parametrize('model_name, params, taus',
                          _FALLBACK_GATE_CASES)
 def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
-        model_name, params, taus, grouped, monkeypatch):
+        model_name, params, taus, monkeypatch):
     """The gate of ``TEMPORAL_CACHE_OFF_STREAMS``: streamed and eager records
     give the same totals to rtol 1e-13 on the models whose regions reached
     the ``scipy.nquad`` fallback before 0.2.0."""
@@ -529,8 +529,7 @@ def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
         res = compute_cumulants(
             model, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
             parameters=getattr(zoo, params), tau_grid=np.asarray(taus),
-            use_cache=False, parallel=False, verbose=False,
-            use_grouped_phase_j=grouped)
+            use_cache=False, parallel=False, verbose=False)
         curves[env] = np.asarray(res['C_tau'])
     e, s = curves['1'], curves['0']
     assert np.all(np.isfinite(e)) and np.all(e != 0)
@@ -709,13 +708,9 @@ def test_leaf_swap_reproduces_the_v2_total_bit_for_bit(tmp_path, monkeypatch):
     from sage.all import DiGraph, Graph
 
     taus = [3.0]                       # where the last bit actually differs
-    # The documented 1-ULP example was measured on the legacy (boxed) routes;
-    # on the box-free default route (M9) v1 and v2 happen to agree bit for
-    # bit at this point, which would leave nothing to demonstrate.
-    import engine.integration.time_domain.final_integral as FI
-    for flag, value in (('USE_PHASE_J_DD_KERNELS', False),
-                        ('SEMIINF_CHAIN', False), ('UNBOUNDED_2D', 'box')):
-        monkeypatch.setattr(FI, flag, value)
+    # The documented 1-ULP example was measured on the boxed routes retired
+    # in audit W7; on the box-free routes v1 and v2 may agree bit for bit at
+    # this point, which leaves nothing to demonstrate (the skip below).
     ctx = _ctx(2, 1, 'pdcache-leafswap')
     v1, v2 = _both_sources(ctx, 2, 1, monkeypatch, tmp_path)
 
@@ -800,7 +795,7 @@ def test_compute_cumulants_agrees_through_the_real_wiring(tmp_path,
         for x, y in zip(a[ell], b[ell]):
             assert x == pytest.approx(y, rel=1e-13, abs=1e-15), (ell, a, b)
     # Tree cumulant of the OU process: C(tau) = (D/mu) * exp(-mu*tau), D=mu=1.
-    assert a[0][1] == pytest.approx(0.36787944117144233, rel=1e-9)
+    assert a[0][1] == pytest.approx(0.36787944117144233, rel=1e-12)
     assert a[1][0] != 0.0, 'the 1-loop correction must not be identically zero'
 
 

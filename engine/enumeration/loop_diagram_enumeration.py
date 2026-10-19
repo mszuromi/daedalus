@@ -130,36 +130,6 @@ def relabel_leaves_first(G):
     return G.relabel(relabel_dict, inplace=False), relabel_dict
 
 
-def graphs_isomorphic_with_labels(G1, leaves1, G2, leaves2):
-    if G1.order() != G2.order() or G1.size() != G2.size():
-        return False
-    if len(leaves1) != len(leaves2):
-        return False
-    leaves1_set = set(leaves1)
-    leaves2_set = set(leaves2)
-    G1c = G1.copy(); G2c = G2.copy()
-    for v in G1.vertices():
-        G1c.set_vertex(v, 0 if v in leaves1_set else 1)
-    for v in G2.vertices():
-        G2c.set_vertex(v, 0 if v in leaves2_set else 1)
-    return G1c.is_isomorphic(G2c)
-
-
-def directed_graphs_isomorphic_with_labels(D1, leaves1, D2, leaves2):
-    if D1.order() != D2.order() or D1.size() != D2.size():
-        return False
-    if len(leaves1) != len(leaves2):
-        return False
-    leaves1_set = set(leaves1)
-    leaves2_set = set(leaves2)
-    D1c = D1.copy(); D2c = D2.copy()
-    for v in D1.vertices():
-        D1c.set_vertex(v, 0 if v in leaves1_set else 1)
-    for v in D2.vertices():
-        D2c.set_vertex(v, 0 if v in leaves2_set else 1)
-    return D1c.is_isomorphic(D2c)
-
-
 # ===========================================================================
 # Tree generation
 # ===========================================================================
@@ -456,9 +426,15 @@ def check_topology_constraints(G, k, ell=None):
 #                     vector (forced endpoints first), every spanning tree.
 #   'multiset'     -- the former enumerate-every-multiset-then-screen path.
 # All three yield the same set of topologies (tests/test_degree_first_edges.py,
-# tests/test_canonical_cotree.py).  Env ``DAEDALUS_EDGE_GENERATOR`` overrides.
-import os as _os
-EDGE_GENERATOR = _os.environ.get('DAEDALUS_EDGE_GENERATOR', 'canonical')
+# tests/test_canonical_cotree.py): the other two are kept as the canonical
+# generator's independent references (tests set this attribute).  The env
+# switch ``DAEDALUS_EDGE_GENERATOR`` is retired (audit W7: it only warns).
+
+from engine import _env
+_env.retired('DAEDALUS_EDGE_GENERATOR',
+             "the 'canonical' generator is the only route; the 'degree_first' "
+             "and 'multiset' generators remain as test references")
+EDGE_GENERATOR = 'canonical'
 
 
 def process_tree_parallel(args, raw=False):
@@ -609,7 +585,10 @@ def _realizations(vs, rem, forbidden):
 # vector).  Worth it without the co-tree filter; with it, the filter already
 # removes most repeats and the per-vector labelling costs more than the extra
 # certificates it saves (measured: see tests/test_canonical_cotree.py header).
-DELTA_ORBIT_DEDUP = _os.environ.get('DAEDALUS_DELTA_ORBIT_DEDUP', 'auto')
+# 'auto' | '1' | '0' (tests set it; the env switch is retired, audit W7).
+_env.retired('DAEDALUS_DELTA_ORBIT_DEDUP',
+             "'auto' (on only without the co-tree filter) is the only setting")
+DELTA_ORBIT_DEDUP = 'auto'
 
 
 def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None, raw=False):
@@ -828,9 +807,11 @@ def process_tree_multiset(args):
 # canonical_label() of the multigraph (~100 us).  All are complete isomorphism
 # invariants in the same (order, sorted_edges) format, but their BYTES differ
 # for the same class: compare certificate sets across backends only via
-# prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND overrides.
+# prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND = fast | sage
+# overrides (any other value raises: 'nauty' used to mean 'sage' silently).
 from engine.enumeration import fastenum as _fe
-CERT_BACKEND = _os.environ.get('DAEDALUS_CERT_BACKEND', 'fast' if _fe.available else 'sage')
+CERT_BACKEND = _env.choice('DAEDALUS_CERT_BACKEND', ('fast', 'sage'),
+                           'fast' if _fe.available else 'sage')
 if CERT_BACKEND == 'fast' and not _fe.available:
     CERT_BACKEND = 'sage'
 
@@ -926,6 +907,12 @@ def _remove_isomorphic_undirected(candidates):
     return out
 
 
+def _threads_allowed(n_threads):
+    """``n_threads``, or 1 under ``DAEDALUS_PARALLEL=0`` (the kill switch)."""
+    from engine.fork_safety import parallel_disabled
+    return 1 if n_threads != 1 and parallel_disabled() else n_threads
+
+
 def _enumerate_topologies_raw(k, ell, n_threads=1, max_vertices_search=50, verbose=True,
                               trees_with_j=None):
     """Internal: returns unique_multigraphs list."""
@@ -936,6 +923,7 @@ def _enumerate_topologies_raw(k, ell, n_threads=1, max_vertices_search=50, verbo
         print(f"  {len(trees_with_j)} valid trees found")
 
     candidates = []
+    n_threads = _threads_allowed(n_threads)
 
     if n_threads == 1:
         for i, (tree, j, num_leaves) in enumerate(trees_with_j):
@@ -999,8 +987,13 @@ def check_orientation_constraints(D, leaves):
 #                for the ~12% of patterns that pass;
 #   'sage'    -- the former path: build a DiGraph per pattern, check with Sage.
 # Same output (tests/test_orientation_integer.py); measured 2-2.6x faster
-# stage at (3,2), (4,2), (2,3).  Env ``DAEDALUS_ORIENTATION_CHECKER`` overrides.
-ORIENTATION_CHECKER = _os.environ.get('DAEDALUS_ORIENTATION_CHECKER', 'integer')
+# stage at (3,2), (4,2), (2,3).  'sage' is kept as the reference (tests set
+# this attribute); the env switch ``DAEDALUS_ORIENTATION_CHECKER`` is retired
+# (audit W7: it only warns).
+_env.retired('DAEDALUS_ORIENTATION_CHECKER',
+             "the 'integer' checker is the only route; 'sage' remains as a "
+             "test reference")
+ORIENTATION_CHECKER = 'integer'
 
 
 def enumerate_orientations(G, leaves):
@@ -1190,6 +1183,7 @@ def process_orientation_parallel(args):
 def _enumerate_prediagrams_raw(topologies, n_threads=1, verbose=True):
     """Internal: returns unique_directed_diagrams list."""
     all_directed = []
+    n_threads = _threads_allowed(n_threads)
 
     if n_threads == 1:
         for i, (G, leaves, internal) in enumerate(topologies):
@@ -1414,9 +1408,14 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
     """Map ``fn`` over ``items``, with processes when that is safe here.
 
     Threads are GIL-bound for Sage graph work, so processes are the point.
-    macOS + Jupyter forbids fork entirely (it has hard-crashed this project's
-    machine), so the guard degrades to serial there rather than to threads.
+    macOS never forks (it has hard-crashed this project's machine from a
+    notebook), so the guard degrades to serial there rather than to threads;
+    ``DAEDALUS_PARALLEL=0`` makes it serial everywhere.
     """
+    from engine.fork_safety import (fork_unsafe, parallel_disabled,
+                                    warn_fork_fallback_once)
+    if n_procs != 1 and parallel_disabled():
+        n_procs = 1
     if n_procs == 1 or len(items) == 0:
         for i, it in enumerate(items):
             if verbose and (i + 1) % 200 == 0:
@@ -1424,32 +1423,63 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
             yield fn(it)
         return
 
-    from engine.fork_safety import fork_unsafe_in_notebook
-    if fork_unsafe_in_notebook('fork'):
-        import warnings
-        warnings.warn(
-            'Streaming enumeration: fork-based multiprocessing is unsafe in a '
-            'Jupyter kernel on macOS; falling back to serial.  Run as a script '
-            '(`sage -python run.py`) to use all cores.')
+    if fork_unsafe('fork'):
+        warn_fork_fallback_once('Streaming enumeration')
         for it in items:
             yield fn(it)
         return
 
-    # 'fork', not the macOS default 'spawn': spawn re-imports the calling
-    # module in every worker, which both re-runs an unguarded caller and pays
-    # a full `from sage.all import *` per process.  The guard above has
-    # already established that forking here is safe (script, not notebook),
-    # which is the same contract the temporal pipeline runs under.
+    # 'fork', not 'spawn': spawn re-imports the calling module in every
+    # worker, which both re-runs an unguarded caller and pays a full
+    # `from sage.all import *` per process.  The guard above has already
+    # established that forking is allowed here (not macOS), the same contract
+    # the temporal pipeline runs under.
     import multiprocessing as mp
+    import threading
     from concurrent.futures import ProcessPoolExecutor
+    from engine import worker_budget as _wb
+    n_fit, share = _wb.workers_that_fit(n_procs, _wb.FORK_WORKER_FLOOR,
+                                        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        for it in items:
+            yield fn(it)
+        return
+    n_procs = n_fit
+    over = threading.Event()
+
+    def on_over(pid, fp):
+        over.set()
+        _wb.kill_pid(pid)                # stop its growth now
+    done = 0
+    broken = False
     with ProcessPoolExecutor(max_workers=n_procs,
                              mp_context=mp.get_context('fork')) as ex:
-        done = 0
-        for res in ex.map(fn, items, chunksize=max(1, len(items) // (n_procs * 8))):
-            done += 1
-            if verbose and done % 200 == 0:
-                print(f'  {label} {done}/{len(items)}...', end='\r')
-            yield res
+        procs = lambda: list(getattr(ex, '_processes', None) or ())  # noqa: E731
+        with _wb.FootprintWatch(procs, share, on_over, relative=True):
+            try:
+                for res in ex.map(fn, items,
+                                  chunksize=max(1, len(items) // (n_procs * 8))):
+                    if over.is_set():
+                        broken = True
+                        break
+                    done += 1
+                    if verbose and done % 200 == 0:
+                        print(f'  {label} {done}/{len(items)}...', end='\r')
+                    yield res
+            except Exception as exc:     # BrokenProcessPool after a kill
+                from concurrent.futures.process import BrokenProcessPool
+                if not isinstance(exc, BrokenProcessPool):
+                    raise
+                broken = True
+            if broken:
+                for pid in procs():
+                    _wb.kill_pid(pid)
+                ex.shutdown(wait=False, cancel_futures=True)
+    if broken:
+        # a worker outgrew its share: the rest in this process (in order:
+        # ``ex.map`` yields in input order, so ``items[done:]`` is the rest)
+        for it in items[done:]:
+            yield fn(it)
 
 
 def stream_topology_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):

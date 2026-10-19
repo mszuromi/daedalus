@@ -181,10 +181,7 @@ def _dict_form_to_poly(R, exp_to_coeff: dict):
     non-polynomial actions)."""
     if not exp_to_coeff:
         return R.zero()
-    from engine.core.field_theory import (
-        _expand_legacy_requested, _ring_from_nonzero_dict, _sr_nonzero)
-    if _expand_legacy_requested():
-        return R(exp_to_coeff)
+    from engine.core.field_theory import _ring_from_nonzero_dict, _sr_nonzero
     return _ring_from_nonzero_dict(
         R, {k: c for k, c in exp_to_coeff.items() if _sr_nonzero(c)})
 
@@ -371,7 +368,14 @@ def save_expand(model: dict, ft, cache_dir_root: str = 'saved_models',
         # fields, a namespace side effect of ``expand()`` that
         # ``extract_vertex_types`` needs (restored by load_expand).
         'kernel_attachments': _kernel_attachments_to_names(ft._ns),
-        # Written with Conv(g, constant) = ĝ(0)·constant (item 52); a bundle
+        # A kernel convolving several fields: the interaction sectors
+        # written with per-field kernel aliases and the alias table
+        # (``FieldTheory.expand``), read by ``extract_vertex_types``.
+        'kernel_aliases':  _kernel_aliases_to_names(ft._ns),
+        'vertex_alias_by_tp': (
+            None if getattr(ft, '_vertex_alias_by_tp', None) is None
+            else _by_tp_to_dict_form(ft._vertex_alias_by_tp)),
+        # Written with Conv(g, constant) = ĝ(0)·constant; a bundle
         # without it took every kernel as normalised.
         'kernel_dc_rule':  1,
         'cache_version':   2,
@@ -446,6 +450,16 @@ def bundle_stale_reason(model: dict, ft, bundle: dict):
                     f'attachments and the vertex sector carries the kernel '
                     f'symbol {hit} — stale cache (re-expanding).')
 
+    # Shared kernels.  A bundle written before the per-field kernel aliases
+    # cannot say which leg a kernel convolving several fields sits on in a
+    # vertex (the coefficient carries one ``g`` for all of them).
+    if 'kernel_aliases' not in bundle and any(
+            len(fs) > 1 for fs in (bundle.get('kernel_attachments')
+                                   or {}).values()):
+        return ('[expand-cache] the bundle predates per-field kernel '
+                'aliases and a kernel convolves several fields — stale '
+                'cache (re-expanding).')
+
     # Kernel integrals.  A bundle written before ``Conv(g, constant)`` took
     # the kernel's integral ĝ(0) treated every kernel as normalised; it is
     # stale only for a model with a kernel whose integral is not 1.
@@ -489,6 +503,17 @@ def _kernel_attachments_from_names(names: dict) -> dict:
     """Inverse of :func:`_kernel_attachments_to_names` (SR symbols are
     identified by name)."""
     return {SR.var(k): {SR.var(f) for f in fvs} for k, fvs in names.items()}
+
+
+def _kernel_aliases_to_names(ns) -> dict:
+    """``ns._kernel_aliases`` ({alias: (kernel, field)}) by name."""
+    al = getattr(ns, '_kernel_aliases', None) or {}
+    return {str(a): [str(k), str(f)] for a, (k, f) in al.items()}
+
+
+def _kernel_aliases_from_names(names: dict) -> dict:
+    """Inverse of :func:`_kernel_aliases_to_names`."""
+    return {SR.var(a): (SR.var(k), SR.var(f)) for a, (k, f) in names.items()}
 
 
 def _vertex_kernel_symbol(model, ft, by_tp_dict):
@@ -565,14 +590,9 @@ def load_expand(model: dict, ft, target_order: int,
     # Rebuild S_raw from the (potentially-filtered) by_tp so it stays
     # consistent with the requested target_order rather than carrying
     # the loaded higher-order surplus.
-    from engine.core.field_theory import _expand_legacy_requested, _sum_of_polys
-    if _expand_legacy_requested():
-        S_raw = ft._R.zero()
-        for poly in ft._by_tp.values():
-            S_raw = S_raw + poly
-    else:
-        # the sectors partition the monomials (no re-test of coefficients)
-        S_raw = _sum_of_polys(ft._R, list(ft._by_tp.values()))
+    from engine.core.field_theory import _sum_of_polys
+    # the sectors partition the monomials (no re-test of coefficients)
+    S_raw = _sum_of_polys(ft._R, list(ft._by_tp.values()))
     ft._S_raw = S_raw
 
     ft._mf_sector_raw = _by_tp_from_dict_form(
@@ -618,11 +638,22 @@ def load_expand(model: dict, ft, target_order: int,
     # Conductance vertices: restore ``ns._kernel_attachments`` (written by
     # ``reduce_conv_in_action`` during ``expand()``), which
     # ``extract_vertex_types`` reads to build ``ConvVertexType`` records.
-    # Before item 27 it was not restored: every warm run built plain
+    # It used to be not restored: every warm run built plain
     # vertices with the kernel symbol left in the coefficient.
     _att = bundle.get('kernel_attachments')
     if _att:
         ft._ns._kernel_attachments = _kernel_attachments_from_names(_att)
+    _al = bundle.get('kernel_aliases')
+    _al_tp = bundle.get('vertex_alias_by_tp')
+    if _al and _al_tp is not None:
+        if cached_order > target_order:
+            _al_tp = downgrade_by_tp_dict(_al_tp, target_order)
+        ft._ns._kernel_aliases = _kernel_aliases_from_names(_al)
+        ft._vertex_alias_by_tp = {
+            k: p for k, p in _by_tp_from_dict_form(ft._R, _al_tp).items()
+            if p != ft._R.zero()}
+    else:
+        ft._vertex_alias_by_tp = None
 
     # A cache-load skips ``FieldTheory.expand()`` and therefore skips the
     # first-order-in-Dt guard that lives at its tail.  Re-run it on the

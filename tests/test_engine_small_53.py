@@ -99,7 +99,7 @@ def test_small_cross_residue_is_kept(engine, c, monkeypatch):
     p = r['propagator']
     assert (p.get('pole_analysis') or {}).get('residue_route') == 'double'
     for C in p['C_mats']:
-        assert abs(complex(C[0, 1])) == pytest.approx(c / (a - b), rel=1e-9)
+        assert abs(complex(C[0, 1])) == pytest.approx(c / (a - b), rel=1e-12, abs=0)
 
 
 def test_large_field_driven_by_tiny_one(monkeypatch):
@@ -148,9 +148,9 @@ def machine(monkeypatch):
 ])
 def test_default_budget_follows_the_machine(machine, ram_gb, fp_gb, want_gb):
     machine(ram_gb * GB, fp_gb * GB)
-    assert FI.phase_j_mem_budget_bytes({}) == pytest.approx(want_gb * GB)
+    assert FI.phase_j_mem_budget_bytes({}) == pytest.approx(want_gb * GB, rel=1e-12)
     b, rule = FI.mem_budget('SPATIAL_MEM_BUDGET_GB', {})
-    assert b == pytest.approx(want_gb * GB)
+    assert b == pytest.approx(want_gb * GB, rel=1e-12)
     assert rule.startswith('default min(6.00 GB, 0.6 x')
     assert f'{ram_gb * GB / 1e9:.2f} GB RAM' in rule
     assert rule.endswith(f'= {want_gb:.2f} GB')
@@ -163,7 +163,7 @@ def test_default_budget_unknown_ram_or_footprint(machine):
     assert b == 6 * GB and 'unknown' in rule
     machine(8 * GB, None)
     b, rule = FI.default_mem_budget()
-    assert b == pytest.approx(0.6 * 8 * GB) and 'taken as 0' in rule
+    assert b == pytest.approx(0.6 * 8 * GB, rel=1e-12) and 'taken as 0' in rule
 
 
 @pytest.mark.parametrize('ram_gb', [8, 16, 64])
@@ -172,8 +172,13 @@ def test_explicit_budget_is_used_as_given(machine, ram_gb):
     f = FI.phase_j_mem_budget_bytes
     assert f({'PHASE_J_MEM_BUDGET_GB': '24'}) == 24 * GB
     assert f({'PHASE_J_MEM_BUDGET_GB': '0.5'}) == 0.5 * GB
-    for off in ('off', 'inf', '0', '-1', 'none'):
+    for off in ('off', 'inf', 'none', 'unlimited'):
         assert f({'PHASE_J_MEM_BUDGET_GB': off}) is None
+    # 0 / negative raise (they meant "no limit" here and "refuse everything"
+    # for SPATIAL_MEM_BUDGET_GB; audit W7, RED-05)
+    for bad in ('0', '-1'):
+        with pytest.raises(ValueError, match='positive number of GB'):
+            f({'PHASE_J_MEM_BUDGET_GB': bad})
     with pytest.raises(ValueError, match='PHASE_J_MEM_BUDGET_GB'):
         f({'PHASE_J_MEM_BUDGET_GB': 'lots'})
 
@@ -205,7 +210,7 @@ def test_running_guard_names_the_default_rule(machine):
     msg = str(ei.value)
     assert 'over the budget of default min(6.00 GB, 0.6 x 8.00 GB RAM' in msg
     assert 'at least 0.80 GB = 0.80 GB' in msg
-    assert ei.value.estimate['budget_bytes'] == pytest.approx(0.8 * GB)
+    assert ei.value.estimate['budget_bytes'] == pytest.approx(0.8 * GB, rel=1e-12)
     FI._plan_guard(10 ** 5, 10 ** 5)                    # 0.11 GB: fits
 
 
@@ -245,7 +250,7 @@ def test_default_budget_reaches_the_prepass(machine):
                           external_fields=[('dT', 1)] * 2, parallel=False,
                           verbose=False, tau_grid=np.array([0.0, 0.7]))
     est = r['phase_j_memory']
-    assert est['budget_bytes'] == pytest.approx(3.3 * GB)
+    assert est['budget_bytes'] == pytest.approx(3.3 * GB, rel=1e-12)
     assert est['budget_rule'].startswith('default min(6.00 GB')
 
 
@@ -256,15 +261,19 @@ def test_run_reads_the_budget_once(monkeypatch):
     monkeypatch.setattr(FI, '_ram_bytes', lambda: 8 * GB)
     calls = []
 
+    # +10 MB per read (the run-growth guard of audit W8 reads the footprint
+    # at every checkpoint: a fake +0.5 GB per read is a growth it refuses)
     def growing():
         calls.append(1)
-        return (1.0 + 0.5 * len(calls)) * GB             # +0.5 GB per read
+        return (1.5 + 0.01 * (len(calls) - 1)) * GB
     monkeypatch.setattr(FI, 'process_footprint_bytes', growing)
     r = compute_cumulants(_oscillator(), k=2, max_ell=1,
                           external_fields=[('dT', 1)] * 2, parallel=False,
                           verbose=False, tau_grid=np.array([0.0, 0.7]))
     est = r['phase_j_memory']
-    assert est['budget_bytes'] == pytest.approx((4.8 - 1.5) * GB)
+    assert len(calls) > 3                                 # it did grow
+    # the first reading (1.5 GB held) sets the budget of the whole run
+    assert est['budget_bytes'] == pytest.approx((4.8 - 1.5) * GB, rel=1e-12)
     assert FI._PLAN_MEM['budget'] == est['budget_bytes']
     assert FI._PLAN_MEM['rule'] == est['budget_rule']
 

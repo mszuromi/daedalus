@@ -50,6 +50,7 @@ Cast every call-site integer or float with int()/float() first — Sage's
 preparser turns ``0`` into ``Integer(0)``, which Numba cannot type.
 """
 
+import math
 import numpy as np
 import numba
 
@@ -172,7 +173,7 @@ def sim_hawkes_multipop_quad_reset_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **quadratic-rate hard-spike-reset**
     variant of the heterogeneous-population Hawkes process.  Matches
-    ``models/multipopulation_spike_reset_test.model.py``:
+    the matching model file:
 
       dF_{ij}/dt   = (1/tau_g[i,j]) * (n_j(t) - F_{ij})
       tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] F_{ij}
@@ -366,7 +367,7 @@ def sim_hawkes_multipop_cubic_alpha_numba(n_steps, dt_sim,
       lambda_i(t)    = max(a_i · v_i^3, 0)                       # CUBIC rate
       n_i(t)         ~ Poisson(lambda_i(t) dt)
 
-    Matches ``models/single_population_cubic_alpha_test.model.py``:
+    Matches the corresponding model file:
     no spike reset, cubic φ, alpha synaptic kernel
     α(t) = (t / τ_g²) · exp(-t / τ_g) · H(t).
 
@@ -636,7 +637,7 @@ def sim_hawkes_multipop_linear_conductance_numba(
     """
     Euler-step simulator for the **linear-rate CONDUCTANCE-synapse**
     variant of the heterogeneous-population Hawkes process.  Matches
-    ``models/single_population_conductance_synapse_test.model.py``:
+    the matching model file:
 
       dF_{ij}/dt   = (1/tau_g) * (n_j(t) - F_{ij})         # exp synapse filter
       tau_v_i · dv_i/dt = -v_i + E_drive_i
@@ -830,7 +831,7 @@ def sim_hawkes_multipop_quad_reset_delta_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **quadratic-rate + hard-spike-reset +
     delta synapse** Hawkes process.  Matches
-    ``models/single_population_quad_spike_reset_test.model.py``:
+    the matching model file:
 
       tau_v_i · dv_i/dt = -v_i + E_i + sum_j W[i,j] · n_j(t)
                          - tau_v_i · v_i · n_i(t)                # hard reset
@@ -924,7 +925,7 @@ def sim_hawkes_multipop_quad_softreset_delta_numba(
     """
     Euler-step simulator for **quadratic-rate + SOFT spike-reset +
     delta-synapse** Hawkes.  Matches
-    ``models/single_population_quad_spike_reset_test.model.py``
+    the matching model file
     after its 2026-05-18 update (reset term changed from full
     ``tau[i]*v[i]*n[i]`` to the parameter-free ``reset_coeff*v[i]*n[i]``
     with ``reset_coeff = 0.5``).
@@ -1131,7 +1132,7 @@ def sim_hawkes_multipop_linear_conductance_delta_numba(
     """
     Euler-step simulator for **linear-rate + CONDUCTANCE-synapse +
     delta-kernel** Hawkes.  Matches
-    ``models/single_population_conductance_synapse_test.model.py``
+    the matching model file
     after switching its synapse kernel from
     ``(1/τ_g)·exp(-t/τ_g)·θ(t)`` to ``dirac_delta(t)``.
 
@@ -1208,6 +1209,108 @@ def sim_hawkes_multipop_linear_conductance_delta_numba(
     return binned_counts, voltage_bins, total_spikes
 
 
+def _saddle_array(ns, names):
+    for nm in names:
+        arr = getattr(ns, nm, None)
+        if arr is not None:
+            return list(arr) if isinstance(arr, (list, tuple)) else [arr]
+    return None
+
+
+def _coupling_from_model(model, fundamental, mf_values, pops, pop_offsets):
+    """Signed coupling ``W[i, j] = s_ij w_ij``: the weight parameter
+    ``w<post><pre>`` (or ``w``) times the sign with which it enters the
+    model's own v-saddle equation (``model['mf_bg_conditions']``): the sign
+    of ``d v*_i / d w_ij`` at the saddle (``mf_values``; every kernel at its
+    integral), so an inhibitory term ``- sum w g n`` gives a negative ``W``
+    whatever the populations are called.  The v / n saddles of population
+    ``P`` are ``v<P>star`` / ``n<P>star`` (or ``vstar`` / ``nstar``), the
+    simulator's convention."""
+    from sage.all import SR
+    from engine.core.field_theory import FieldTheory
+    from api._mean_field import _kernel_saddle_subs
+    ns = FieldTheory(model)._build_namespace()[0]
+    mf = model['mf_bg_conditions'](ns)
+    N = sum(int(p['size']) for p in pops)
+    out = np.zeros((N, N))
+    filtered = np.zeros((N, N), dtype=bool)
+    omega = SR.var('_bsa_omega')
+    try:
+        images = dict(model['kernel_ft_image'](ns, omega)
+                      if model.get('kernel_ft_image') else {})
+    except Exception:                                    # noqa: BLE001
+        images = {}
+    kernels = []
+    for k in model.get('kernels', []):
+        kv = getattr(ns, k['name'], None)
+        stack = [kv] if kv is not None else []
+        while stack:
+            v = stack.pop()
+            if isinstance(v, (list, tuple)):
+                stack.extend(v)
+            else:
+                kernels.append(v)
+    # every parameter and saddle symbol at its value
+    point = {}
+    for pspec in model.get('parameters', []):
+        name = pspec['name']
+        arr = getattr(ns, name, None)
+        val = mf_values.get(name) if pspec.get('mean_field') else fundamental.get(name)
+        if arr is None or val is None:
+            continue
+        if isinstance(arr, (list, tuple)):
+            for i, row in enumerate(arr):
+                if isinstance(row, (list, tuple)):
+                    for j, sym in enumerate(row):
+                        point[sym] = SR(float(val[i][j]))
+                else:
+                    point[row] = SR(float(val[i]))
+        else:
+            point[arr] = SR(float(val[0] if isinstance(val, (list, tuple)) else val))
+    for post in pops:
+        P = post['name']
+        v_arr = _saddle_array(ns, (f'v{P}star', 'vstar'))
+        if v_arr is None:
+            raise KeyError(f'build_sim_arrays: no voltage saddle v{P}star / '
+                           f'vstar in the model for population {P!r}.')
+        ps, psize = pop_offsets[P]
+        for pre in pops:
+            Q = pre['name']
+            wname = f'w{P}{Q}' if f'w{P}{Q}' in fundamental else 'w'
+            if wname not in fundamental:
+                continue
+            w_syms = getattr(ns, wname, None)
+            ws = fundamental[wname]
+            qs, qsize = pop_offsets[Q]
+            for i in range(psize):
+                rhs = SR(mf.get(v_arr[i], 0))
+                ksub = _kernel_saddle_subs(ns, model, kernels, [rhs])
+                for j in range(qsize):
+                    w_ij = float(ws[i][j])
+                    if w_ij == 0.0:
+                        continue
+                    if w_syms is None:
+                        raise KeyError(f'build_sim_arrays: the model has no '
+                                       f'parameter {wname!r}.')
+                    d0 = rhs.diff(w_syms[i][j])
+                    # a kernel of this pair with a frequency-dependent image
+                    # is a filter (needs a time constant); none or a
+                    # constant image is instantaneous
+                    filtered[ps + i, qs + j] = any(
+                        SR(images[k]).has(omega) for k in d0.variables()
+                        if k in images)
+                    d = d0.subs(ksub)
+                    dv = float(d.subs(point))
+                    if dv == 0.0:          # n*_j = 0 at the saddle
+                        dv = float(d.subs({k: SR(1) for k in d.variables()}))
+                    if dv == 0.0:
+                        raise ValueError(
+                            f'build_sim_arrays: {wname}[{i},{j}] does not enter '
+                            f'the v-saddle equation of population {P!r}.')
+                    out[ps + i, qs + j] = math.copysign(1.0, dv) * w_ij
+    return out, filtered
+
+
 def build_sim_arrays(model, fundamental, mf_values):
     """
     Helper: assemble the flat per-neuron / per-pair simulation arrays
@@ -1264,8 +1367,7 @@ def build_sim_arrays(model, fundamental, mf_values):
     a_gain  = np.zeros(N)
     E_drive = np.zeros(N)
     W       = np.zeros((N, N))
-    tau_g   = np.ones((N, N))   # default 1.0 to avoid div-by-zero for
-                                # pairs with no coupling (W=0)
+    tau_g   = np.ones((N, N))   # 1.0 for uncoupled pairs (W = 0)
     v_init  = np.zeros(N)
 
     def _resolve(keys):
@@ -1319,49 +1421,42 @@ def build_sim_arrays(model, fundamental, mf_values):
             v_init[start + i]  = float(v_mf_arr[i])
 
     # ── Per-pair coupling W and filter τ_g ────────────────────────
-    # For the multipop_test action:
-    #   (τE Dt+1) vE_i = EmE_i + sum_j wEE[i,j] gEE[i,j] nE_j
-    #                          - sum_j wEI[i,j] gEI[i,j] nI_j
-    # So the sign is: + wEE, - wEI, + wIE, - wII.  We bake the sign
-    # into W here so the simulator's voltage update is just sum_j
-    # W[i,j] * F[i,j] with no extra logic.
-    #
-    # For single-pop models the matrix params are bare (``w``,
-    # ``taug``) and the only pair is (E, E) so the sign is + by default.
-    sign_map = {
-        # (post_pop, pre_pop): sign
-        ('E', 'E'): +1.0,
-        ('E', 'I'): -1.0,
-        ('I', 'E'): +1.0,
-        ('I', 'I'): -1.0,
-    }
+    # W[i, j] is the weight w_ij with the sign it enters the model's own
+    # v-saddle equation (d v*_i / d w_ij at the saddle; audit GEN-16: the
+    # sign was taken from the literal population names 'E' / 'I' and any
+    # other names got +1).  The time constant: ``taug<post><pre>``,
+    # ``tau_g<post><pre>``, ``taug`` or ``tau_g`` (a scalar applies to every
+    # pair).  A pair whose kernel filters (an omega-dependent image) and has
+    # none raises (it was a silent 1.0); an instantaneous (delta) kernel
+    # keeps the unused 1.0.  Limit: the sign is read at the saddle, so a
+    # shunting form ``Em / (1 - w n)`` or a reversal-potential factor gives
+    # the sign of the whole term there.
+    Wm, filtered = _coupling_from_model(model, fundamental, mf_values, pops,
+                                        pop_offsets)
+    W[:, :] = Wm
     for post in pops:
         for pre in pops:
-            wname_pop   = f'w{post["name"]}{pre["name"]}'
-            tgname_pop  = f'taug{post["name"]}{pre["name"]}'
-            # Coupling matrix W — required.  ``taug`` may be absent for
-            # models with a delta kernel (the simulator that consumes
-            # them ignores tau_g).
-            if wname_pop in fundamental:
-                ws = fundamental[wname_pop]
-            elif 'w' in fundamental:
-                ws = fundamental['w']
-            else:
-                continue
-            if tgname_pop in fundamental:
-                tgs = fundamental[tgname_pop]
-            elif 'taug' in fundamental:
-                tgs = fundamental['taug']
-            else:
-                tgs = None
-            sign = sign_map.get((post['name'], pre['name']), +1.0)
+            pq = f'{post["name"]}{pre["name"]}'
+            tgs = next((fundamental[k] for k in (f'taug{pq}', f'tau_g{pq}',
+                                                 'taug', 'tau_g')
+                        if k in fundamental), None)
+            if tgs is not None and np.ndim(tgs) == 0:
+                tgs = np.full((pop_offsets[post['name']][1],
+                               pop_offsets[pre['name']][1]), float(tgs))
             post_start, post_size = pop_offsets[post['name']]
-            pre_start, pre_size   = pop_offsets[pre['name']]
+            pre_start, pre_size = pop_offsets[pre['name']]
             for i in range(post_size):
                 for j in range(pre_size):
-                    W[post_start + i, pre_start + j] = sign * float(ws[i][j])
+                    ii, jj = post_start + i, pre_start + j
                     if tgs is not None:
-                        tau_g[post_start + i, pre_start + j] = float(tgs[i][j])
+                        tau_g[ii, jj] = float(tgs[i][j])
+                    elif W[ii, jj] != 0.0 and filtered[ii, jj]:
+                        raise KeyError(
+                            f'build_sim_arrays: the coupling {post["name"]} <- '
+                            f'{pre["name"]} has a filtering kernel but no time '
+                            f'constant parameter (taug{pq}, tau_g{pq}, taug or '
+                            f'tau_g); the simulator would otherwise use an '
+                            f'invented one.')
 
     return {
         'N':           N,

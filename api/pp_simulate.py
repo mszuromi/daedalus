@@ -36,11 +36,12 @@ import math
 import re
 
 import numpy as np
+from engine.errors import DaedalusError
 
 __all__ = ['simulate', 'cross_covariance', 'mean_rate', 'PPSimulationError']
 
 
-class PPSimulationError(ValueError):
+class PPSimulationError(DaedalusError, ValueError):
     """The model has a part this simulator does not handle."""
 
 
@@ -241,12 +242,14 @@ def _param_values(sde, params):
 
 
 def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0,
-             record=None):
+             record=None, max_bytes=None):
     """Simulate ``sde`` (an :class:`api.sde.SDE` with point processes, drifts and
     Gaussian sources).  Returns ``{'counts': {name: (n_bins, size, n_paths)},
     'fields': {name: (n_bins, size, n_paths)}, 'bin': bin, 'dt': dt, ...}``:
     spike counts per bin of width ``bin`` (default ``dt``) and continuous fields
-    sampled at the bin ends, after ``burn_in``."""
+    sampled at the bin ends, after ``burn_in``.  ``max_bytes``: the largest output
+    allowed (default: the memory guards' default budget, ``default_mem_budget``);
+    a larger one raises ``MemoryError`` before anything is allocated."""
     from api.noise import expr_to_text
     from api.sde import SDEError
     sde._derive()                                   # validates; declares composites
@@ -400,11 +403,25 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
         if any(a == 0 for a, _ in coef[f]):
             raise PPSimulationError(f'equation({f!r}): zero Dt coefficient.')
 
-    out_counts = {f: np.zeros((nb, size[f], n_paths)) for f in spikes}
     bad = [f for f in (record or []) if f not in conts]
     if bad:
         raise PPSimulationError(f'record={bad}: only continuous fields are sampled (spike '
                                 f'trains are always recorded as counts).')
+    # the output is 8 bytes per bin, unit and path of every recorded field:
+    # refuse before allocating it (T=1e4, dt=1e-3, 100 paths is 8 GB; audit MEM-13)
+    out_bytes = 8 * nb * n_paths * sum(size[f] for f in [*spikes, *(record or conts)])
+    if max_bytes is None:
+        from engine.integration.time_domain.final_integral import default_mem_budget
+        max_bytes, rule = default_mem_budget()
+    else:
+        rule = f'max_bytes={float(max_bytes):g}'
+    if out_bytes > max_bytes:
+        raise MemoryError(
+            f'simulate: the output would hold {out_bytes / 1e9:.2f} GB ({nb:,} bins x '
+            f'{n_paths} paths x {out_bytes // (8 * nb * n_paths)} recorded units, 8 bytes each), '
+            f'over {max_bytes / 1e9:.2f} GB ({rule}); use a coarser bin= (counts are summed '
+            f'per bin), fewer paths or a shorter T, record= fewer fields, or pass max_bytes=.')
+    out_counts = {f: np.zeros((nb, size[f], n_paths)) for f in spikes}
     out_fields = {f: np.zeros((nb, size[f], n_paths)) for f in (record or conts)}
     rate_sum = {f: np.zeros(size[f]) for f in spikes}
     for k in range(nburn + nsteps):
@@ -415,6 +432,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             for i in range(size[f]):
                 lam = np.maximum(np.real(ev(rate_code[f][0], i)), 0.0)
                 lam = np.broadcast_to(lam, (n_paths,))
+                _check_runaway(f, i, lam, dt, k, nburn)
                 c[i] = rng.poisson(lam * dt) * float(np.real(ev(rate_code[f][1], i)))
                 if k >= nburn:
                     rate_sum[f][i] += lam.mean()
@@ -459,13 +477,48 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             'mean_intensity': {f: rate_sum[f] / max(nsteps, 1) for f in spikes}}
 
 
+# An intensity times dt above this is no model of anything: the rate feedback
+# has run away (numpy's own limit, 9e18, then fails with "lam value too large"
+# from deep inside the sampler).
+_RUNAWAY_MEAN = 1e12
+
+
+def _check_runaway(f, i, lam, dt, k, nburn):
+    """Refuse a diverged intensity with a message naming the cause."""
+    m = float(np.max(lam)) * dt
+    if np.isfinite(m) and m <= _RUNAWAY_MEAN:
+        return
+    when = ('during the burn-in' if k < nburn
+            else f'at step {k - nburn} of the run')
+    raise PPSimulationError(
+        f'simulate: the intensity of {f}[{i}] diverged {when} (mean spikes '
+        f'per step {m:g}): the rate feedback is unstable on this path '
+        f'(supercritical self-excitation or an exponentially growing rate '
+        f'function).  Reduce the coupling / the horizon T, or check the '
+        f'rate function; a different seed only moves WHEN a supercritical '
+        f'model diverges.')
+
+
+def _batch_se(per_unit, n_batches, what):
+    """Batch-means standard error of the mean over the axis-0 units; needs at
+    least two units (one path has no spread, and ``std(ddof=1)`` of one batch
+    is NaN).  Returns ``(mean, se)``."""
+    n = len(per_unit)
+    if n < 2:
+        raise ValueError(
+            f'{what}: a standard error needs at least 2 independent paths '
+            f'(got {n}); run simulate(..., n_paths>=2).')
+    groups = np.array_split(per_unit, max(2, min(int(n_batches), n)))
+    gm = np.array([g.mean(0) for g in groups])
+    return per_unit.mean(0), gm.std(0, ddof=1) / math.sqrt(len(gm))
+
+
 def mean_rate(rec, f, i, n_batches=20):
-    """Mean spike rate of ``f[i]`` and its batch-means standard error."""
+    """Mean spike rate of ``f[i]`` and its batch-means standard error
+    (needs at least 2 paths)."""
     c = rec['counts'][f][:, i, :]
     per_path = c.sum(0) / rec['T']
-    groups = np.array_split(per_path, min(n_batches, len(per_path)))
-    gm = np.array([g.mean() for g in groups])
-    return per_path.mean(), gm.std(ddof=1) / math.sqrt(len(gm))
+    return _batch_se(per_path, n_batches, 'mean_rate')
 
 
 def cross_covariance(rec, a, b, lags, n_batches=20):
@@ -489,6 +542,4 @@ def cross_covariance(rec, a, b, lags, n_batches=20):
                 row.append(np.dot(xa[-l:, p], xb[:nb + l, p]) / (nb + l))
         per_path.append(row)
     per_path = np.array(per_path) / rec['bin'] ** 2
-    groups = np.array_split(per_path, min(n_batches, n_paths))
-    gm = np.array([g.mean(0) for g in groups])
-    return per_path.mean(0), gm.std(0, ddof=1) / math.sqrt(len(gm))
+    return _batch_se(per_path, n_batches, 'cross_covariance')

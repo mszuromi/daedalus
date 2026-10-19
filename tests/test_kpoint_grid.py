@@ -35,13 +35,14 @@ def test_k3_grid_shape_symmetry_and_matches_explicit():
     assert np.all(np.isfinite(g))
     assert res['kpoint_grid_axes']['n_legs'] == 2
     # kappa_3 is symmetric under exchanging the two identical legs
-    assert np.allclose(g[0, :, 0, :], g[0, :, 0, :].T, atol=1e-6)
+    assert np.allclose(g[0, :, 0, :], g[0, :, 0, :].T, rtol=1e-12, atol=1e-12 * np.max(np.abs(g)))
     # the grid point (chi2=0.5, chi3=1.0) must equal the explicit-events value
     pts = np.array([[[0.5, 0.0], [1.0, 0.0]]])
     ref = dd.run(model, dd.Config(
         k=3, max_ell=0, external_fields=[('dh', 1)] * 3,
         parameters=_P, spatial_points=pts), mod)
-    assert np.isclose(np.real(ref['C_kpoint'])[0], g[0, 1, 0, 2], atol=1e-6)
+    assert np.isclose(np.real(ref['C_kpoint'])[0], g[0, 1, 0, 2], rtol=1e-12,
+                      atol=1e-12 * np.max(np.abs(g)))
 
 
 def test_k3_full_chi_tau_grid_is_4d():

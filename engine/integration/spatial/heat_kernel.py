@@ -20,7 +20,7 @@ decay
     G(t, x) = θ(t) · (4π B t)^(-1/2) · exp[ -x²/(4 B t) - A t ]   (d=1)
 
 verified to machine precision (incl. complex A, B) in
-``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
+the internal design notes (not distributed).
 
 This module provides:
   * ``gaussian_heat_kernel`` — the closed-form kernel above (complex
@@ -45,9 +45,10 @@ from typing import Callable, Optional
 
 import mpmath as mp
 from sage.all import SR, I as SR_I, matrix
+from engine.errors import DaedalusError
 
 
-class SpatialPropagatorError(Exception):
+class SpatialPropagatorError(DaedalusError, Exception):
     """Raised when the Tier-1 closed-form heat-kernel path does not
     apply (non-diagonal coupling, higher-derivative operator,
     non-unit iω coefficient, …).  The caller may fall back to a
@@ -105,8 +106,13 @@ def erf_time_integral(alpha, beta, L_lo, U_hi=None, dps: int = 30):
     semi-infinite ``U → ∞`` limit (valid for Re √α > 0).
 
     Verified to machine precision (incl. complex α) in
-    ``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
+    the internal design notes (not distributed).
     """
+    if U_hi is None and not complex(alpha).real > 0.0:
+        raise SpatialPropagatorError(
+            f'erf_time_integral: the U -> infinity limit needs Re(alpha) > 0 '
+            f'(a stable mass); got alpha={complex(alpha)} — the stationary '
+            f'correlator does not exist (unstable or critical mode).')
     with mp.workdps(dps):
         a = mp.sqrt(mp.mpc(alpha))
         b = mp.sqrt(mp.mpc(beta))

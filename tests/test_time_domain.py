@@ -23,6 +23,12 @@ import os
 import sys
 import warnings
 
+import pytest
+
+_LINUX_FORK_ONLY = pytest.mark.skipif(
+    sys.platform == 'darwin',
+    reason='macOS never forks (engine.fork_safety); Linux CI covers the fork path')
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import (
@@ -31,7 +37,7 @@ from sage.all import (
 
 from engine.diagrams.type_assignment import TypedDiagram
 from engine.core.vertices import VertexType, SourceType
-from engine.integration.symbolic import (
+from tests.oracles.symbolic import (
     build_integrand_stationary,
     group_diagrams_by_kernel,
     integrate_to_time_domain,
@@ -42,8 +48,17 @@ from engine.integration.time_domain import (
     identify_loop_subgraphs,
     integrate_tree_diagram,
     compute_correction_td,
-    eval_delta_contributions_on_tau_grid,
 )
+
+
+def _direct(kernel_groups):
+    """``compute_correction_td`` arguments from ``group_diagrams_by_kernel``
+    output: each diagram with its OWN prefactor (the retired
+    ``kernel_groups=`` input used the group's summed prefactor)."""
+    return dict(
+        typed_diagrams=[td for g in kernel_groups for td in g['diagrams']],
+        prefactors=[pf for g in kernel_groups
+                    for pf in g['individual_prefactors']])
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -289,15 +304,15 @@ def test_k2_tree_single_integration_analytical():
     for t1_val in (0.5, 1.0, 2.5):
         phase_j_val = complex(contribution(t1_val, 0.0))
         expected = 0.5 * float(exp(-abs(t1_val)))
-        assert abs(phase_j_val.real - expected) < 1e-8, (
+        assert abs(phase_j_val.real - expected) < 1e-12, (
             f"At t1={t1_val}: Phase J = {phase_j_val.real}, "
             f"expected = {expected}"
         )
-        assert abs(phase_j_val.imag) < 1e-10
+        assert abs(phase_j_val.imag) < 1e-12
     for t1_val in (-0.5, -2.0):
         phase_j_val = complex(contribution(t1_val, 0.0))
         expected = 0.5 * float(exp(-abs(t1_val)))
-        assert abs(phase_j_val.real - expected) < 1e-8
+        assert abs(phase_j_val.real - expected) < 1e-12
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -332,7 +347,7 @@ def test_k2_tree_translation_invariance():
     val_a = complex(contribution(1.0, 0.0))
     val_b = complex(contribution(6.0, 5.0))
 
-    assert abs(val_a.real - val_b.real) < 1e-8, (
+    assert abs(val_a.real - val_b.real) < 1e-12, (
         f"Translation invariance violated: "
         f"(t1=1,t2=0) → {val_a.real}, (t1=6,t2=5) → {val_b.real}"
     )
@@ -444,7 +459,7 @@ def test_phase_J_nondiagonal_2x2_does_not_overflow():
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     assert len(kernel_groups) == 1
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -585,13 +600,13 @@ def test_G_t_matrix_detects_delta_component():
     d11 = complex(delta[1, 1])
 
     # G_ft[0,0] = (1+iω)/(1+iω+a) → 1 as ω→∞ → δ(t) coeff = 1
-    assert abs(d00 - 1.0) < 1e-6, (
+    assert abs(d00 - 1.0) < 1e-12, (
         f'Expected δ coeff at [0,0] to be ~1, got {d00}'
     )
     # All other entries have lim → 0 → no δ
-    assert abs(d01) < 1e-6
-    assert abs(d10) < 1e-6
-    assert abs(d11) < 1e-6
+    assert abs(d01) < 1e-12
+    assert abs(d10) < 1e-12
+    assert abs(d11) < 1e-12
 
 
 def test_phase_J_delta_component_asymmetric_cross_correlator():
@@ -655,7 +670,7 @@ def test_phase_J_delta_component_asymmetric_cross_correlator():
     assert len(kernel_groups) == 1
 
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -686,7 +701,7 @@ def test_phase_J_delta_component_asymmetric_cross_correlator():
     for tv in tau_vals:
         exp_val = C_analytic(tv)
         pj_val = complex(total_C_J(tv, 0.0)).real
-        assert abs(exp_val - pj_val) < 1e-10, (
+        assert abs(exp_val - pj_val) < 1e-12, (
             f'Phase J does not match analytic at τ={tv}: '
             f'analytic={exp_val}, PhaseJ={pj_val}, '
             f'diff={abs(exp_val-pj_val):.2e}'
@@ -719,8 +734,8 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     produces a pure δ(t₁ - t₂) shot-noise spike at τ = 0. The
     continuous Phase J callable cannot represent this; instead, the
     spike is returned as a structured `delta_contributions` entry
-    that the caller can insert into a discrete τ grid via
-    `eval_delta_contributions_on_tau_grid`.
+    that the caller can insert into a discrete τ grid (``api.cumulant``
+    does so for ``compute_cumulants`` results).
 
     This test:
       1. Runs Phase J on the 2×2 instantaneous fixture, autocorrelator edges.
@@ -758,7 +773,7 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     assert len(kernel_groups) == 1
 
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -788,33 +803,30 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     #     source factor for SourceType(SR(1), [ñ,ñ], (2,0)))
     #   c_δ = G_ft[0,0](∞) = 1
     #   both-δ weight = combined_pf × c_δ × c_δ × (no smooth factors) = -2
-    assert abs(coeff_val.real - (-2.0)) < 1e-10, (
+    assert abs(coeff_val.real - (-2.0)) < 1e-12, (
         f'δ coefficient at τ=0 should be -2, got {coeff_val}'
     )
-    assert abs(coeff_val.imag) < 1e-10
+    assert abs(coeff_val.imag) < 1e-12
 
-    # Discretize onto a τ grid and check the spike integrates correctly
+    # Discretize onto a τ grid in the user-facing bin convention
+    # (``api.cumulant``; the old eval_delta_contributions_on_tau_grid
+    # helper is retired) and check the spike integrates correctly
+    from api.cumulant import _bin_deposits
     tau_grid = np.linspace(-5.0, 5.0, 501)
-    spikes = eval_delta_contributions_on_tau_grid(
-        delta_contribs, tau_grid, free_ext_dim=1,
+    deposits = _bin_deposits(tau_grid, float(tau_fire))
+    assert len(deposits) == 1, (
+        f'Expected spike in exactly one bin, got {deposits}'
+    )
+    idx, inv_width = deposits[0]
+    assert abs(tau_grid[idx]) < 1e-10, (
+        f'Spike should be at τ=0, got τ={tau_grid[idx]}'
     )
     dtau = float(tau_grid[1] - tau_grid[0])
-
-    # Most bins should be zero
-    nonzero_idx = np.nonzero(np.abs(spikes) > 1e-10)[0]
-    assert len(nonzero_idx) == 1, (
-        f'Expected spike in exactly one bin, got {len(nonzero_idx)}'
-    )
-    # The nonzero bin should be at τ = 0
-    assert abs(tau_grid[nonzero_idx[0]]) < 1e-10, (
-        f'Spike should be at τ=0, got τ={tau_grid[nonzero_idx[0]]}'
-    )
-    # Bin height × bin width should recover the analytic weight (-2)
-    integrated_weight = complex(spikes[nonzero_idx[0]]) * dtau
-    assert abs(integrated_weight.real - (-2.0)) < 1e-10, (
+    integrated_weight = coeff_val / abs(a0) * inv_width * dtau
+    assert abs(integrated_weight.real - (-2.0)) < 1e-12, (
         f'Integrated δ weight should be -2, got {integrated_weight}'
     )
-    assert abs(integrated_weight.imag) < 1e-10
+    assert abs(integrated_weight.imag) < 1e-12
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -930,7 +942,7 @@ def test_phase_J_2d_polytope_decays_at_large_tau():
 
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1406,7 +1418,7 @@ def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
     # when extraction succeeds).
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result_fast = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1445,6 +1457,7 @@ def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
     )
 
 
+@_LINUX_FORK_ONLY
 def test_phase_J_total_C_batch_parallel_matches_serial():
     r"""
     Parallel-eval regression (parallel-eval branch, 2026-04-21):
@@ -1484,7 +1497,7 @@ def test_phase_J_total_C_batch_parallel_matches_serial():
 
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1524,6 +1537,7 @@ def test_phase_J_total_C_batch_parallel_matches_serial():
     )
 
 
+@_LINUX_FORK_ONLY
 def test_phase_J_total_C_batch_nested_matches_serial():
     r"""
     Nested per-(τ, diagram) parallel regression (parallel-eval branch,
@@ -1548,7 +1562,7 @@ def test_phase_J_total_C_batch_nested_matches_serial():
 
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1589,66 +1603,84 @@ def test_phase_J_total_C_batch_nested_matches_serial():
     )
 
 
-def test_phase_J_fork_in_notebook_guard_degrades_to_serial(monkeypatch):
-    r"""Fork-in-notebook crash guard (spatial→temporal safety lesson, 2026-06).
-
-    ``total_C_batch`` / ``eval_per_diagram_batch`` default to fork-based
-    multiprocessing.  Forking after Cocoa/BLAS init inside a Jupyter kernel
-    on macOS can HARD-CRASH the kernel and the OS (it did, twice).  The guard
-    ``_fork_unsafe_in_notebook`` must:
-
-      (a) be INERT outside that exact context — plain scripts / pytest / Linux
-          / terminal IPython keep the fast fork path (otherwise this whole
-          test file, which exercises the fork path above, would change
-          behaviour); and
-      (b) TRIP inside a *simulated* macOS Jupyter (ZMQ) kernel, degrading
-          ``parallel=True`` to a serial evaluation that is bit-identical to
-          the explicit serial path — and NEVER forking.
-
-    The simulation patches ``sys.platform`` and ``IPython.get_ipython`` so the
-    test is deterministic on any host OS (CI is typically Linux).
-    """
-    from engine.integration.time_domain import pipeline as P
-
-    # (a) No ZMQ kernel → guard inert for every start method.
-    monkeypatch.setattr(P.sys, 'platform', 'darwin', raising=False)
-    monkeypatch.setattr('IPython.get_ipython', lambda: None, raising=False)
-    assert P._fork_unsafe_in_notebook('fork') is False
-    assert P._fork_unsafe_in_notebook('spawn') is False
-
-    # (b) Simulated macOS Jupyter kernel: fork unsafe, spawn still safe.
-    class ZMQInteractiveShell:           # class name is what the guard checks
-        pass
-    monkeypatch.setattr('IPython.get_ipython',
-                        lambda: ZMQInteractiveShell(), raising=False)
-    assert P._fork_unsafe_in_notebook('fork') is True
-    assert P._fork_unsafe_in_notebook('spawn') is False
-
-    # End-to-end: in the simulated kernel, parallel=True must degrade to
-    # serial (warn once) and match the serial result EXACTLY — no fork.
+def _guard_fixture_batch():
     pd = _propagator_data_2pop_nondiagonal()
     td = _tree_k2_cross_population()
     kernel_groups = group_diagrams_by_kernel([td], pd, k=2)
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups, propagator_data=pd, k=2,
+        **_direct(kernel_groups), propagator_data=pd, k=2,
         num_params=None, origin_leaf_idx=1,
     )
-    total_C_batch = j_result['total_C_batch']
     tau_points = [(tv, 0.0) for tv in (-3.0, -1.0, 0.3, 1.0, 3.0, 5.0, 7.0)]
+    return j_result, tau_points
 
-    P._FORK_GUARD_WARNED = False          # reset one-shot so warning is catchable
+
+def _no_fork(monkeypatch):
+    import multiprocessing as mp
+
+    def boom(*a, **k):
+        raise AssertionError('a Phase J batch started a process pool')
+    monkeypatch.setattr(mp, 'get_context', boom)
+
+
+def test_phase_J_fork_guard_macos_never_forks(monkeypatch):
+    r"""Fork safety (2026-06 crash lesson; S0 of the parallelization plan).
+
+    Forking after Cocoa/BLAS/ECL init has hard-crashed a macOS Jupyter kernel
+    AND the OS, and a Sage process is multithreaded after its first symbolic
+    step, so macOS never forks: ``total_C_batch`` / ``eval_per_diagram_batch``
+    with ``parallel=True`` run serially there, warn once, and match the
+    serial result exactly -- in a plain script as much as in a kernel.  Linux
+    keeps the fork path.  ``sys.platform`` is patched, so the test is
+    deterministic on any host and never forks.
+    """
+    import engine.fork_safety as fs
+    from engine.integration.time_domain import pipeline as P
+
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    assert P._fork_unsafe('fork') is False and P._fork_unsafe('spawn') is False
+    monkeypatch.setattr(sys, 'platform', 'darwin')
+    monkeypatch.setattr('IPython.get_ipython', lambda: None, raising=False)
+    monkeypatch.delitem(sys.modules, 'ipykernel', raising=False)
+    assert P._fork_unsafe('fork') is True          # no kernel: still never
+    assert P._fork_unsafe('spawn') is False
+
+    j_result, tau_points = _guard_fixture_batch()
+    serial = j_result['total_C_batch'](tau_points, parallel=False)
+    serial_pd, _ = j_result['eval_per_diagram_batch'](tau_points, parallel=False)
+    _no_fork(monkeypatch)
+    monkeypatch.setattr(fs, '_WARNED', set())
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
-        guarded = total_C_batch(tau_points, parallel=True, n_workers=8)
-    serial = total_C_batch(tau_points, parallel=False)
+        auto = j_result['total_C_batch'](tau_points, parallel=True,
+                                         n_workers=8)
+        guarded = j_result['total_C_batch'](tau_points, parallel=True,
+                                            n_workers=8, start_method='fork')
+        guarded_pd, _ = j_result['eval_per_diagram_batch'](
+            tau_points, parallel=True, n_workers=8, start_method='fork')
+    msgs = [str(r.message) for r in rec if 'disabled on macOS' in str(r.message)]
+    # the automatic method never asks for fork; an explicit 'fork' warns once
+    assert len(msgs) == 1 and msgs[0].startswith('Phase J parallel batch')
+    assert auto == guarded == serial and guarded_pd == serial_pd
 
-    assert any('fork-based multiprocessing is UNSAFE' in str(r.message)
-               for r in rec), 'fork-guard fallback warning was not emitted'
-    maxdiff = max(abs(complex(a) - complex(b))
-                  for a, b in zip(guarded, serial))
-    assert maxdiff == 0.0, (
-        f'guarded parallel→serial fallback != serial: max |diff| = {maxdiff!r}'
-    )
+
+def test_phase_J_parallel_kill_switch(monkeypatch):
+    """``DAEDALUS_PARALLEL=0``: no pool on any platform, no warning, the
+    serial numbers."""
+    import engine.fork_safety as fs
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    j_result, tau_points = _guard_fixture_batch()
+    serial = j_result['total_C_batch'](tau_points, parallel=False)
+    monkeypatch.setenv('DAEDALUS_PARALLEL', '0')
+    _no_fork(monkeypatch)
+    monkeypatch.setattr(fs, '_WARNED', set())
+    with warnings.catch_warnings(record=True) as rec:
+        warnings.simplefilter('always')
+        got = j_result['total_C_batch'](tau_points, parallel=True, n_workers=8)
+        vals, _ = j_result['eval_per_diagram_batch'](tau_points, parallel=True,
+                                                     n_workers=8)
+    assert got == serial and len(vals) == len(tau_points)
+    assert not [r for r in rec if 'fork' in str(r.message)]
 
 
 def test_phase_J_k3_star_tree_finite_and_stationary():
@@ -1676,7 +1708,7 @@ def test_phase_J_k3_star_tree_finite_and_stationary():
     assert kernel_groups[0]['loop_number'] == 0
 
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=3,
         num_params=None,
@@ -1693,7 +1725,7 @@ def test_phase_J_k3_star_tree_finite_and_stationary():
             f'Phase J returned NaN at (t_1, t_2, t_3) = ({a}, {b}, {c})'
         )
         assert abs(val.real) < 1e3
-        assert abs(val.imag) < 1e-10 * max(abs(val.real), 1.0)
+        assert abs(val.imag) < 1e-12 * max(abs(val.real), 1.0)
 
     # 2. Translation invariance
     ref = complex(total_C(1.0, 2.0, 3.0)).real
@@ -1701,7 +1733,7 @@ def test_phase_J_k3_star_tree_finite_and_stationary():
         shifted = complex(
             total_C(1.0 + shift, 2.0 + shift, 3.0 + shift)
         ).real
-        assert abs(shifted - ref) < 1e-8, (
+        assert abs(shifted - ref) < 1e-12, (
             f'Stationarity violated at shift={shift}: '
             f'ref={ref}, shifted={shifted}'
         )
@@ -1740,7 +1772,7 @@ def test_phase_J_vs_phase_I_linear_hawkes_tree():
 
     j_t1, j_t2 = SR.var('t1'), SR.var('t2')
     j_result = compute_correction_td(
-        kernel_groups=kernel_groups,
+        **_direct(kernel_groups),
         propagator_data=pd,
         k=2,
         num_params=None,
@@ -1756,7 +1788,7 @@ def test_phase_J_vs_phase_I_linear_hawkes_tree():
             {phase_i_t1: t1_val, phase_i_t2: 0}
         ).real())
         pj_val = complex(total_C_fn(t1_val, 0.0)).real
-        assert abs(pi_val - pj_val) < 1e-6, (
+        assert abs(pi_val - pj_val) < 1e-12, (
             f"Phase I vs Phase J mismatch at τ={t1_val}: "
             f"PI={pi_val}, PJ={pj_val}"
         )

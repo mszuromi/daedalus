@@ -121,7 +121,11 @@ def test_bug5_broken_rounded_realization_reaches_g6(monkeypatch):
 
 def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
     from api.analyze import analyze, Question
-    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')        # an unresolved cluster
+    # an unresolved cluster: the exact residue tier fails (until audit W7
+    # the retired DAEDALUS_POLE_CLUSTERS=0 switched the deformation off)
+    import api._propagator as PR
+    monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield',
+                        lambda *a, **k: (None, None, None))
     s = (SDE('bug60 g3 standalone').parameter('a', default=1.0)
          .parameter('D', default=0.1, domain='positive').field('x').field('y')
          .equation('x', lhs='Dt*x + a*x', rhs='0.5*y - 0.1*x^2')
@@ -139,6 +143,10 @@ def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
                                                           external_fields=ext)).findings
              if f.code.startswith('G3')}
     assert inrun.get('G3_POLE_CLUSTER_UNRESOLVED') == 'info'
+    # the patch reaches the run's residue tier only (the standalone analyzer
+    # takes its poles from its own exact analysis, where the cluster
+    # resolves): every other G3 verdict is the same
+    del inrun['G3_POLE_CLUSTER_UNRESOLVED']
     assert alone == inrun
 
 
@@ -251,7 +259,7 @@ def test_bug13_conductance_term_with_a_point_process():
     assert r['status'] == 'ok' and np.all(np.isfinite(r['C_tau']))
     vstar = brentq(lambda v: v - (-1.5 + (1.0 - v) * 0.4 * np.exp(v)), -5, 1)
     assert abs(r['mf_values']['vstar'][0] - vstar) < 1e-10
-    assert abs(r['mf_values']['nstar'][0] - np.exp(vstar)) < 1e-10
+    assert abs(r['mf_values']['nstar'][0] - np.exp(vstar)) < 1e-11
 
 
 # ── bug 3: overflow / NaN never accepted by the mean-field solvers ───────────
@@ -276,15 +284,37 @@ def test_bug3_dae_residual_penalizes_nan_and_overflow(monkeypatch):
                           tau_grid=np.array([0.0]), **RUN)
     assert abs(r['mf_values']['xstar'][0] - 0.5) < 1e-12
     assert cap['R'](np.array([0.5]))[0] == 0.0
-    assert cap['R'](np.array([2.0]))[0] == 1e10              # 0*inf = NaN before
+    assert cap['R'](np.array([2.0]))[0] == MD._PENALTY       # 0*inf = NaN before (penalty 1e10 then)
 
 
-def test_bug3_saddle_residual_check():
-    from api._mean_field import _check_saddle_residual
-    _check_saddle_residual('t', [1e-12, -2e-12], [0.3, 1.5])
-    for bad in ([1e-3, 0.0], [float('nan'), 0.0], [1e10, 1e10]):
-        with pytest.raises(RuntimeError, match='did not converge'):
-            _check_saddle_residual('t', bad, [0.3, 1.5])
+def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
+    """The ``.set_mf_equation`` saddle system (the same multi-root solver
+    since audit W6 / GEN-02; its own fsolve residual check is retired)
+    penalizes a non-finite residual like the ``.equation`` rows do."""
+    import api._mean_field_dae as MD
+    cap = {}
+    orig = MD._saddle_system
+
+    def spy(*a, **k):
+        out = orig(*a, **k)
+        if out is not None:          # (the reduced form: None without one)
+            cap['R'] = out[2]
+        return out
+    from api.model import ModelBuilder
+    m = (ModelBuilder('bug60 saddle nan').physical_field('x')
+         .parameter('D', default=0.1, domain='positive')
+         .set_action_text('xt*((Dt + 1)*x - 0.5 - 1e-300*exp(800*x)) - D*xt^2')
+         .set_mf_equation('xstar', '0.5 + 1e-300*exp(800*xstar)').build())
+    import api._mean_field_dae as MD2
+    MD2._saddle_system = spy
+    try:
+        r = compute_cumulants(m, k=1, max_ell=0, external_fields=[('x', 1)],
+                              tau_grid=np.array([0.0]), **RUN)
+    finally:
+        MD2._saddle_system = orig
+    assert abs(r['mf_values']['xstar'][0] - 0.5) < 1e-12
+    assert abs(cap['R'](np.array([0.5]))[0]) < 1e-15
+    assert cap['R'](np.array([2.0]))[0] == MD._PENALTY       # exp(1600) overflows
 
 
 # ── bug 9: an invalid DAEDALUS_PHASE_J_ENGINE fails at the API entry ─────────

@@ -190,7 +190,7 @@ def test_g2k_lambert_matches_argument_principle():
         ap = count_rhp_roots(lambda s: np.linalg.det(Kf(s)))
         assert ap.n_rhp == n_exp, (dv, ap)
         for z in ap.roots:
-            assert min(abs(z - w) for w in lw.roots) < 1e-8 * max(1.0, abs(z))
+            assert min(abs(z - w) for w in lw.roots) < 1e-12 * max(1.0, abs(z))
     lw = kernel_stability(K, om, {a: A_, c: C_, d: 1.4})
     assert abs(lw.rightmost.real - 0.048369) < 1e-6 and abs(abs(lw.rightmost.imag) - 1.547343) < 1e-6
 
@@ -213,7 +213,7 @@ def test_g2k_two_population_cycle_matches_pade_roots():
         rhp = [z for z in roots if z.real > 1e-9]
         assert len(rhp) == n_exp
         for z in ks.roots:
-            assert min(abs(z - w) for w in rhp) < 1e-6
+            assert min(abs(z - w) for w in rhp) < 1e-11
     ks = kernel_stability(K, om, {d: 1.0})
     assert abs(ks.rightmost - complex(0.07346, 0.72058)) < 1e-4 or \
         abs(ks.rightmost - complex(0.07346, -0.72058)) < 1e-4
@@ -269,7 +269,7 @@ def test_delayed_noise_matches_closed_form():
 def test_pipeline_tree_exact_and_one_loop_vs_hartree():
     r = _cc(_ou('delay pipeline n8'), 1, delay={'order': 8})
     tree = np.real(r['C_tau_by_ell'][0])
-    exact = _exact_ou(np.where(TAUS == 0, -1e-6, TAUS), 0.5)   # tau = 0: the Ito nudge
+    exact = _exact_ou(TAUS, 0.5)          # tau = 0: the exact Ito left limit (both sides)
     assert np.max(np.abs(tree - exact)) <= 1e-12 * np.max(np.abs(exact))
     loop = np.real(r['C_tau_by_ell'][1])
     ref = _hartree(TAUS, 0.5)
@@ -282,7 +282,7 @@ def test_pipeline_tree_exact_and_one_loop_vs_hartree():
     assert r['analysis'].traits.propagator_class == 'delay-rational'
     led = [e for e in r['analysis'].ledger if e.name.startswith('delay:')]
     assert led and led[0].kind == 'approximation' and 'Pade(8,8)' in led[0].detail
-    assert r['total_C'](0.0, 0.5) == pytest.approx(tree[1] + loop[1], rel=1e-12)
+    assert r['total_C'](0.0, 0.5) == pytest.approx(tree[1] + loop[1], rel=1e-12, abs=0)
     assert r['total_C_by_ell'][0](1.0, 1.0) == pytest.approx(tree[0], rel=1e-13)
 
 
@@ -353,7 +353,7 @@ def test_rational_kernel_model_unchanged_and_g2k_info():
         quad(S, 0, np.inf, weight='cos', wvar=t, limlst=200, limit=2000)[0] for t in (0.5, 2.0)]
     got = np.real(r['C_tau_by_ell'][0])
     assert np.allclose(got[1:], ref[1:], rtol=1e-8), (got, ref)
-    assert got[0] == pytest.approx(ref[0], rel=2e-6)          # tau = 0 at -1e-6 (Ito)
+    assert got[0] == pytest.approx(ref[0], rel=1e-12)         # tau = 0: the exact left limit
 
 
 def test_k3_uses_the_pade_tree_and_converges():
@@ -457,7 +457,7 @@ def test_delayed_kernel_in_a_nonlinear_term_keeps_its_delay():
         a = compute_cumulants(_cond_model('delay cond A', time_expr='heaviside(t - d)*exp(-(t - d)/tau)/tau'), **kw)
         b = compute_cumulants(_cond_model('delay cond B', delay='d', freq_image='1/(1 + I*omega*tau)'), **kw)
     assert a['status'] == 'ok' and b['status'] == 'ok'
-    assert np.allclose(np.real(a['C_tau_by_ell'][1]), np.real(b['C_tau_by_ell'][1]), rtol=1e-10, atol=0)
+    assert np.allclose(np.real(a['C_tau_by_ell'][1]), np.real(b['C_tau_by_ell'][1]), rtol=1e-12, atol=0)
     assert np.max(np.abs(a['C_tau_by_ell'][1])) > 0
 
 

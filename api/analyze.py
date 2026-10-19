@@ -186,6 +186,10 @@ FINDING_CODES = {
     # the realization was exactly Hurwitz but numerically unusable (graded
     # beyond double precision): the pole route took the run
     'G6_SS_ILL_CONDITIONED':     ('G6', 'warning'),
+    # spatial quadrature not certified (result['status'] = 'approximate'):
+    # derivative-vertex loops, equal-time diagrams left on the product grid
+    'G6_SPATIAL_DERIVATIVE_LOOP': ('G6', 'warning'),
+    'G6_SPATIAL_EQUAL_TIME':     ('G6', 'warning'),
     # a bug in a gate (caught, never raised; a warning in compute_cumulants)
     'INTERNAL_ERROR':            ('G?', 'error'),
 }
@@ -203,7 +207,7 @@ _NEVER_DOWNGRADE = frozenset({
 #: as ``final_integral.NQUAD_EPSREL`` for the quadrature fallback), applied
 #: to the cumulant.  ``Question.accuracy``, when declared, replaces it.
 _G6_DEFAULT_RTOL = 1e-10
-#: item 60: the a posteriori realization error (api._realization.
+#: the a posteriori realization error (api._realization.
 #: _aposteriori_error) enters the G6 estimate above this value (the
 #: realization is refused outright above 1e-2)
 _G6_REALIZATION_FLOOR = 1e-6
@@ -214,6 +218,7 @@ _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
 # (api._pole_clusters.CLUSTER_RTOL; a cluster is deformed when its
 # cancellation factor exceeds KAPPA_MAX, see _g3_pole_findings)
 from api._pole_clusters import CLUSTER_RTOL as _CLOSE_POLE_RTOL  # noqa: E402
+from engine.errors import DaedalusError
 _STIFF_RATIO = 1e3         # fast/slow decay-rate ratio flagged as stiff
 _EXACT_POLE_BUDGET_SEC = 5  # SIGALRM budget for the exact CF[omega] inverse
 _SUPPORTED_DOMAINS = ('positive', 'real', 'integer', 'complex')
@@ -339,7 +344,7 @@ class ModelTraits:
     undriven_fields: tuple = ()
     # G2
     time_homogeneous: Optional[bool] = None
-    mf_solver: Optional[str] = None       # 'dae' | 'iteration'
+    mf_solver: Optional[str] = None       # 'dae' (every model)
     n_saddles: Optional[int] = None
     n_stable_saddles: Optional[int] = None
     saddle_index: Optional[int] = None    # index used (pipeline semantics)
@@ -362,7 +367,7 @@ class ModelTraits:
     repeated_poles: Optional[bool] = None
     n_close_pole_pairs: Optional[int] = None
     # near-degenerate / repeated poles (api._pole_clusters): 'harmless',
-    # 'resolved', 'unresolved' or 'disabled'; None without close poles
+    # 'resolved' or 'unresolved'; None without close poles
     pole_cluster_status: Optional[str] = None
     pole_cluster_kappa: Optional[float] = None   # largest cancellation factor
     fast_slow_ratio: Optional[float] = None
@@ -1505,10 +1510,12 @@ def _classify_eigs(eigs):
     eigs = np.asarray(eigs, dtype=complex)
     if eigs.size == 0:
         return None, 0
-    scale = max(1.0, float(np.max(np.abs(eigs))))
+    # relative to the largest eigenvalue, no floor (a floor of 1.0 called
+    # every mode of a model in slow time units marginal: audit UNIT-03)
+    scale = float(np.max(np.abs(eigs)))
     tol = _MARGINAL_RTOL * scale
     re = eigs.real
-    n_marg = int(np.sum(np.abs(re) < tol))
+    n_marg = int(np.sum(np.abs(re) <= tol))
     if np.any(re > tol):
         return 'unstable', n_marg
     if n_marg:
@@ -1536,18 +1543,24 @@ def _g2_dae_gate(ctx):
 
 
 def _g2_iteration_gate(ctx):
-    """The single saddle of the mean-field iteration rows (legacy models)."""
+    """Every root of the ``.set_mf_equation`` saddle equations (models
+    without ``.equation`` rows; the same multi-root solver)."""
     model, fund = ctx.model, ctx.fundamental
     if not _g2_ready(ctx) or model.get('equations'):
         return
     fpi = ctx.q.fixed_point_index
-    ctx.t['mf_solver'] = 'iteration'
+    ctx.t['mf_solver'] = 'dae'
     try:
         from api._mean_field import solve_mean_field
         with _quiet():
-            mf = solve_mean_field(ctx.ft, model, fund, verbose=False)
+            mf = solve_mean_field(ctx.ft, model, fund, verbose=False,
+                                  fixed_point_index=(0 if fpi is None
+                                                     else int(fpi)))
     except Exception as exc:
-        ctx.add('G2_MF_FAILED', f'the mean-field solve failed: {_exc_text(exc)}',
+        msg = _exc_text(exc)
+        code = ('G2_NO_SADDLE' if 'no MF fixed point found' in msg
+                else 'G2_MF_FAILED')
+        ctx.add(code, f'the mean-field solve failed: {msg}',
                 'check the mean-field equations and the parameter point')
         ctx.stop_numeric = True
         return
@@ -1556,26 +1569,28 @@ def _g2_iteration_gate(ctx):
 
 
 def _g2_iteration_record(ctx, mf, fpi):
-    """The iteration solver's single saddle (``mf``: its result)."""
-    ctx.t['mf_solver'] = 'iteration'
+    """The roots of the ``.set_mf_equation`` saddle equations (``mf``: the
+    solver result, its selected root)."""
+    ctx.t['mf_solver'] = 'dae'
     ctx.num_params = mf['num_params']
-    ctx.t['n_saddles'] = 1
-    ctx.t['saddle_index'] = 0
-    sv = mf.get('saddle_values') or {}
-    if not sv:
-        sv = {k: v for k, v in (('nstar', mf.get('nstar_vals')),
-                                ('vstar', mf.get('vstar_vals'))) if v}
-    ctx.t['saddle'] = _saddle_tuple(sv)
+    roots = [r['values'] for r in (mf.get('mf_all_roots') or [])]
+    ctx.t['n_saddles'] = len(roots) or 1
+    ctx.t['saddle_index'] = mf.get('mf_index_used', 0)
+    ctx.t['saddle'] = _saddle_tuple(mf.get('saddle_values') or {})
     ctx.add('G2_SINGLE_SADDLE_SOLVER',
-            'the model declares mean-field iteration rows (no '
-            '.equation(...)): the iteration solver returns one saddle; '
-            'other saddles are not searched. Stability is read from the '
-            'propagator poles (G3).',
-            'declare .equation(lhs=..., rhs=...) rows to search every saddle')
-    if fpi not in (None, 0):
+            f'the model declares saddle equations (.set_mf_equation, no '
+            f'.equation(...)): {len(roots) or 1} root(s) found'
+            + (': ' + '; '.join(_fmt_root(r) for r in roots[:4])
+               if len(roots) > 1 else '')
+            + '. Their stability is not classified here (no Dt terms); it '
+            'is read from the propagator poles (G3).',
+            'declare .equation(lhs=..., rhs=...) rows for a linear '
+            'stability analysis of every saddle')
+    if fpi is not None and not (0 <= fpi < max(len(roots), 1)):
         ctx.add('G2_FIXED_POINT_INDEX',
-                f'fixed_point_index={fpi} is ignored by the iteration '
-                'solver (one saddle).', 'drop fixed_point_index')
+                f'fixed_point_index={fpi} is out of range: {len(roots)} '
+                'saddle(s) to choose from (the pipeline clamps it with a '
+                'warning).', f'use 0..{max(len(roots), 1) - 1}')
 
 
 def _saddle_tuple(values):
@@ -1769,8 +1784,10 @@ def _check_positivity(ctx):
     saddle = dict(ctx.t['saddle'])
     nat = ((ctx.model.get('naming_convention') or {})
            .get('mean_field_saddles') or {})
+    from api.naming import saddle_for_field
     for nm in names:
-        key = nm if nm in saddle else nat.get(nm, f'{nm}star')
+        key = (nm if nm in saddle
+               else nat.get(nm) or saddle_for_field(ctx.model, nm) or nm)
         vals = saddle.get(key)
         if vals is None:
             ctx.ledger_add('assertion', f'positive_at_saddle:{nm}',
@@ -1940,7 +1957,7 @@ def _g3_propagator(ctx):
 
 
 def _standalone_route_prediction(ctx):
-    """Item 60: ``analyze()`` outside ``compute_cumulants`` makes the run's
+    """``analyze()`` outside ``compute_cumulants`` makes the run's
     state-space route prediction itself (``compute._ss_route_prediction`` on
     the same operator, parameter point and vertex types), so the G3 pole
     findings get the levels the in-run analyzer gives them.  Left unset
@@ -2099,7 +2116,7 @@ def _g3_pole_findings(ctx, res):
                            'averages deformed propagators (api._pole_clusters)',
                }.get(status, 'not resolved by the pole-cluster deformation ('
                      + str((pcr or {}).get('reason', '')) + ')'
-                     if status in ('unresolved', 'disabled') else
+                     if status == 'unresolved' else
                      'residues ~ 1/gap; not analysed')
         ctx.add('G3_CLOSE_POLES',
                 f'{len(close)} pole pair(s) closer than {_CLOSE_POLE_RTOL:g} '
@@ -2108,11 +2125,11 @@ def _g3_pole_findings(ctx, res):
                 'none needed when resolved (see result["pole_clusters"]); '
                 'otherwise move the parameters off the degeneracy or '
                 'check G6 accuracy')
-    if status in ('unresolved', 'disabled'):
+    if status == 'unresolved':
         from api._pole_clusters import lost_digits, LOST_DIGITS_WARN
         ml = ctx.q.max_ell if getattr(ctx.q, 'max_ell', None) is not None else 1
         digits = lost_digits(kap if squarefree else float('inf'), ml)
-    if status in ('unresolved', 'disabled') and digits > LOST_DIGITS_WARN:
+    if status == 'unresolved' and digits > LOST_DIGITS_WARN:
         lost = ('the pole-residue form cannot represent a repeated pole'
                 if not math.isfinite(digits) else
                 f'about {digits:.0f} digits lost at max_ell={ml} '
@@ -2122,8 +2139,8 @@ def _g3_pole_findings(ctx, res):
                 f'poles needs the pole-cluster deformation, which is {status}: '
                 f'{(pcr or {}).get("reason", "")}; {lost}.' + ss_note,
                 'give the exact tier rational parameters / kernel images (it '
-                'needs an exact rational propagator), unset '
-                'DAEDALUS_POLE_CLUSTERS=0, or (a cluster too close to the '
+                'needs an exact rational propagator), or (a cluster too '
+                'close to the '
                 'stability boundary) perturb the parameters off the '
                 'degeneracy', level='info' if ss_all else None)
     rates = [p.imag for p in poles if p.imag > 0]
@@ -2142,7 +2159,7 @@ def _g3_pole_findings(ctx, res):
     if delta:
         ctx.add('G3_DELTA_COMPONENT',
                 f'G(omega) has an instantaneous (delta) part in entries {delta}.', '')
-    scale = max([1.0] + [abs(p) for p in poles])
+    scale = max([0.0] + [abs(p) for p in poles])     # relative, no unit floor
     tol = _MARGINAL_RTOL * scale
     lower = [p for p in poles if p.imag < -tol]
     marginal = [p for p in poles if abs(p.imag) <= tol]
@@ -2221,7 +2238,10 @@ def _g3_spatial(ctx):
         q = SR.var('_analyze_q')
         with _quiet():
             Ms, Ds, Vs = reaction_diffusion_matrices(
-                ctx.K_ft, ctx.omega, q, lap, getattr(ns, 'GradX', None))
+                ctx.K_ft, ctx.omega, q, lap,
+                # the operator IR lowers Dx to the global symbol GradX (the
+                # namespace has no GradX attribute)
+                getattr(ns, 'GradX', None) or SR.var('GradX'))
         sub = ctx.num_params
         num = [np.array([[complex(SR(m[i, j]).subs(sub))
                           for j in range(m.ncols())] for i in range(m.nrows())])
@@ -2233,8 +2253,15 @@ def _g3_spatial(ctx):
                 'spatial rate checks are skipped.', '')
         return
     M, D, V = num
-    scale = max(1.0, float(np.max(np.abs(M))), float(np.max(np.abs(D))))
-    tol = _MARGINAL_RTOL * scale
+    # each tolerance relative to the matrix it tests (M: a rate, D: a
+    # diffusion constant, M + V q + D q^2: the decay rate at q), no unit floor
+    tol_M = _MARGINAL_RTOL * float(np.max(np.abs(M)))
+    tol_D = _MARGINAL_RTOL * float(np.max(np.abs(D)))
+
+    def tol_q(qq):
+        return _MARGINAL_RTOL * max(float(np.max(np.abs(M))),
+                                    float(np.max(np.abs(V))) * qq,
+                                    float(np.max(np.abs(D))) * qq * qq)
     mass = float(np.min(np.linalg.eigvals(M).real))
     diff = float(np.min(np.linalg.eigvals(D).real))
     rates = [(qq, float(np.min(np.linalg.eigvals(M + V * qq + D * qq * qq).real)))
@@ -2243,21 +2270,21 @@ def _g3_spatial(ctx):
     ctx.t['spatial_mass_min'] = mass
     ctx.t['spatial_diffusion_min'] = diff
     ctx.t['spatial_rate_min'] = r_min
-    if diff < -tol:
+    if diff < -tol_D:
         ctx.add('G3_SPATIAL_UNSTABLE',
                 f'the diffusion matrix has a negative eigenvalue ({diff:.4g}): '
                 'anti-diffusive, every mode of large wavenumber grows '
                 '(ill-posed, no stationary state).',
                 'check the sign of the Laplacian term (+D*Laplacian on the '
                 'right-hand side is diffusive)')
-    elif any(r < -tol for qq, r in rates if qq > 0):
+    elif any(r < -tol_q(qq) for qq, r in rates if qq > 0):
         ctx.add('G3_SPATIAL_UNSTABLE',
                 f'the mode at wavenumber q = {q_min:g} grows (decay rate '
                 f'{r_min:.4g} < 0) although the homogeneous mode is stable: a '
                 'finite-wavelength (Turing-type) instability; no stationary '
                 'state around this saddle.',
                 'change the parameters to a regime where every mode decays')
-    if abs(mass) <= tol:
+    if abs(mass) <= tol_M:
         _spatial_massless(ctx)
 
 
@@ -2440,7 +2467,9 @@ def _g4_noise(ctx):
     ctx.t['noise_sources'] = tuple(names[i] for i in sources)
     if not unresolved:
         w = np.linalg.eigvalsh(Nmat) if nf else np.array([])
-        scale = max(1.0, float(np.max(np.abs(Nmat)))) if nf else 1.0
+        # relative to the covariance itself (a floor of 1.0 let a small
+        # noise with a negative variance through)
+        scale = float(np.max(np.abs(Nmat))) if nf else 0.0
         if w.size and w.min() < -1e-10 * scale:
             ctx.add('G4_NEGATIVE_VARIANCE',
                     f'the Gaussian noise covariance at the saddle has a '
@@ -3005,7 +3034,7 @@ def _ledger_common(ctx):
 #   (run)         after the backend: G6 run diagnostics, never raises
 
 
-class AnalyzerError(ValueError):
+class AnalyzerError(DaedalusError, ValueError):
     """``compute_cumulants`` stopped at an analyzer gate.  ``report``: the
     :class:`ModelReport` so far; ``findings``: the error findings;
     ``stage``: the gate boundary (a ``ValueError``, so callers that caught
@@ -3202,9 +3231,6 @@ class Preflight:
         if errs:
             raise AnalyzerError(_format_stop(errs, stage, exc),
                                 self.report(), errs, stage) from exc
-
-    def mean_field_failed(self, exc):
-        self.failed('mean_field', exc)
 
     def poles(self, prop, ss_route=None):
         """G3 + G5 on the propagator.  ``ss_route`` (S3, ``compute.
@@ -3452,6 +3478,23 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                 f'First reason: {str(first.get("reason"))[:200]}',
                 'see result["phase_j_incomplete"]; the numbers are '
                 'incomplete until every diagram evaluates')
+    # spatial quadrature accuracy (api.compute._spatial_accuracy): a result
+    # the integrator cannot certify is 'approximate', named here
+    for rec in ((result.get('spatial_accuracy') or [])
+                if isinstance(result, dict) else []):
+        sp = rec.get('coarse_spread')
+        code = ('G6_SPATIAL_DERIVATIVE_LOOP'
+                if rec.get('reason') == 'derivative_vertex_loop'
+                else 'G6_SPATIAL_EQUAL_TIME')
+        ctx.add(code,
+                f"{rec.get('note')}"
+                + (f'; 0.7x-coarser grid spread {sp:.2e} of max|C|'
+                   if sp is not None else '')
+                + ' (result["status"] = "approximate").',
+                'refine SPATIAL_GRID_NT / SPATIAL_GRID_NS to watch it converge')
+        ctx.ledger_add('assertion', 'spatial_accuracy',
+                       f"{rec.get('reason')}: {rec.get('note')}",
+                       satisfied=False)
     if not evaluated:
         ctx.add('G6_NOT_EVALUATED',
                 'no Phase J tau-grid evaluation ran inside compute_cumulants '
@@ -3504,7 +3547,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     # routes' sums
     E = (float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
          + float(c.get('ss_err_abs_sum', 0.0)))
-    # item 60: the per-subset estimates above assume the ROUNDED realization
+    # the per-subset estimates above assume the ROUNDED realization
     # represents G; a graded / not numerically Hurwitz one was checked a
     # posteriori (api._realization: refused above 1e-2) and its measured
     # relative error enters the estimate, so a realization that passes the
@@ -3520,6 +3563,17 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         # Lyapunov solution measured exact to 5e-13), not the realization's
         if float(rc['err_rel']) > _G6_REALIZATION_FLOOR:
             real_rel = float(rc['err_rel'])
+    # CON-09: the balanced truncation of the propagator entries and of the
+    # dressed lines (api._realization; default tolerance 1e-12) moves the
+    # cumulant by up to its relative H-infinity bound; the bound enters the
+    # estimate like the a posteriori error above
+    trunc = (rc or {}).get('truncation') if rc else None
+    trunc_rel = 0.0
+    if trunc and int(c.get('ss_estimated', 0)):
+        trunc_rel = float(trunc.get('max_bound_rel') or 0.0)
+        d['truncation_rel'] = trunc_rel
+        d['truncated_entries'] = (int(trunc.get('n_truncated') or 0)
+                                  + int(trunc.get('n_dressed_truncated') or 0))
     pc = result.get('pole_clusters') if isinstance(result, dict) else None
     if pc and pc.get('status') == 'resolved' and pc.get('node_runs'):
         # the counters add up every node run of the pole-cluster deformation
@@ -3542,13 +3596,15 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         R = 0.0 if E == 0 else float('inf')
     if real_rel and complete and R is not None:
         R = R + real_rel
+    if trunc_rel and complete and R is not None:
+        R = R + trunc_rel
     # Near-degenerate / repeated poles (api._pole_clusters): a resolved
     # cluster adds the deformation's own estimate (grid-L1, Fourier tail of
     # the node values); an unresolved one its lost-digit estimate.
     if pc and complete:
         if pc.get('status') == 'resolved' and pc.get('accuracy_l1') is not None:
             R = (R or 0.0) + float(pc['accuracy_l1'])
-        elif pc.get('status') in ('unresolved', 'disabled'):
+        elif pc.get('status') == 'unresolved':
             lost = pc.get('lost_digits')
             if lost is not None:
                 R = max(R or 0.0, float('inf') if not math.isfinite(lost)
@@ -3572,6 +3628,8 @@ def _g6(ctx, pf, result, c, complete, evaluated):
             f'sum_tau |C(tau)| = {S:.6g} over the tau grid'
             + (f' plus the realization\'s a posteriori relative error '
                f'{real_rel:.3g}' if real_rel else '')
+            + (f' plus the balanced-truncation bound {trunc_rel:.3g}'
+               if trunc_rel else '')
             + f' (threshold {thr:g}, {src}){why}.',
             'pass parallel=False for the accuracy estimate'
             if (R is None and not complete) else '')

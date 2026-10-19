@@ -1,7 +1,7 @@
 """D2: the model analyzer wired into ``compute_cumulants``, the backend registry, provenance, the G6 run
 diagnostics, and the D1 follow-ups.
 
-A  wiring on and off give bit-identical numbers (per-diagram, grouped, spatial); the full zoo A/B is a separate
+A  wiring on and off give bit-identical numbers (per-diagram, spatial); the full zoo A/B is a separate
    in-process harness (reports/16_report.md).
 B  every deliberately bad model stops at the cheapest gate with its specific code and a remedy, BEFORE the
    diagram enumeration (the enumerator is replaced by a tripwire); warning-level defects are recorded, and stop
@@ -318,7 +318,7 @@ def _arrays(res):
 
 @pytest.mark.parametrize('name,ext,kw', [
     ('ou_quartic', (('x', 1), ('x', 1)), {'max_ell': 1}),
-    ('single_population_spike_reset_test', (('n', 1), ('n', 2)), {'max_ell': 1, 'use_grouped_phase_j': True}),
+    ('single_population_spike_reset_test', (('n', 1), ('n', 2)), {'max_ell': 1}),
     ('linear_hawkes', (('n', 1), ('n', 2)), {'max_ell': 1}),
     ('edwards_wilkinson_1d', (('phi', 1), ('phi', 1)), dict(max_ell=0, **_SP_GRID)),
 ])
@@ -326,7 +326,7 @@ def test_wiring_on_off_bit_identical(name, ext, kw):
     model, mod = _load(name)
     par = getattr(mod, 'DEFAULT_FUNDAMENTAL', None) or None
     # discarded warm-up: a cold on-disk cache and a warm one pick different (isomorphic) diagram
-    # representatives and differ at ~1e-16 relative (spike reset, grouped: 2.6e-16), which is not
+    # representatives and differ at ~1e-16 relative, which is not
     # what this test compares; on a fresh clone the first run below would otherwise be the cold one
     _run(model, ext=ext, parameters=par, preflight=False, **kw)
     on = _run(model, ext=ext, parameters=par, preflight=True, **kw)
@@ -350,7 +350,8 @@ def test_preflight_env_switch(monkeypatch):
 
 def _legacy_dispatch(req):
     """The dispatch of compute_cumulants at 0.2.0 (e6f3d4c), transcribed: the backend name, or the exception
-    (type, first line) it raised."""
+    (type, first line) it raised.  Grouped Phase J (``phase_j_grouped``) is retired: every temporal request
+    goes to the per-diagram backend."""
     spatial, k = req.spatial, req.k
     if spatial and (req.has_spatial_grid or req.has_spatial_points):
         if k != 2 and not req.has_spatial_points:
@@ -366,7 +367,7 @@ def _legacy_dispatch(req):
         return 'spatial_integrator'
     if spatial:
         return ValueError, f'model {req.model_name!r} is spatial'
-    return 'phase_j_grouped' if req.grouped else 'phase_j_per_diagram'
+    return 'phase_j_per_diagram'
 
 
 def _requests():
@@ -375,11 +376,10 @@ def _requests():
             for ell in (0, 2, 3):
                 for grid in (False, True):
                     for pts in (False, True):
-                        for grouped in (False, True):
-                            for ic in ('stationary', 'switch_on'):
-                                yield routing.RouteRequest(
-                                    model_name='m', spatial=spatial, k=k, max_ell=ell, has_spatial_grid=grid,
-                                    has_spatial_points=pts, grouped=grouped, initial_mode=ic)
+                        for ic in ('stationary', 'switch_on'):
+                            yield routing.RouteRequest(
+                                model_name='m', spatial=spatial, k=k, max_ell=ell, has_spatial_grid=grid,
+                                has_spatial_points=pts, initial_mode=ic)
 
 
 def test_registry_reproduces_the_legacy_dispatch():
@@ -396,7 +396,7 @@ def test_registry_reproduces_the_legacy_dispatch():
             assert str(ei.value).startswith(text), (req, str(ei.value))
             assert 'Rejected backends:' in str(ei.value)
         n += 1
-    assert n == 288
+    assert n == 144
 
 
 def _tracked_names():
@@ -409,13 +409,12 @@ def test_routing_table_of_the_tracked_models(capsys):
     for name in _tracked_names():
         model, mod = _load(name)
         spatial = bool(model.get('spatial'))
-        for grouped in ((False,) if spatial else (False, True)):
-            req = routing.RouteRequest(model_name=model['name'], spatial=spatial, k=2, max_ell=1,
-                                       has_spatial_grid=spatial, grouped=grouped,
-                                       initial_mode=(model.get('initial') or {}).get('mode', 'stationary'))
-            got = routing.select(req).name
-            assert got == _legacy_dispatch(req)
-            rows.append(f'{name:40s} grouped={int(grouped)}  ->  {got}')
+        req = routing.RouteRequest(model_name=model['name'], spatial=spatial, k=2, max_ell=1,
+                                   has_spatial_grid=spatial,
+                                   initial_mode=(model.get('initial') or {}).get('mode', 'stationary'))
+        got = routing.select(req).name
+        assert got == _legacy_dispatch(req)
+        rows.append(f'{name:40s} ->  {got}')
     with capsys.disabled():
         print('\nrouting table (k=2, max_ell=1):\n  ' + '\n  '.join(rows))
 
@@ -455,11 +454,16 @@ def test_honest_failure_names_the_failing_trait(no_enumeration):
         _run(model, policy={'downgrade': ['G3_NONRATIONAL_KERNEL']})
     msg = str(ei.value)
     assert msg.startswith('propagator is not rational in omega') and 'first failing trait: propagator_class' in msg
-    for name in ('spatial_integrator', 'phase_j_grouped', 'phase_j_per_diagram', 'phase_h_symbolic'):
+    # the retired grouped Phase J and Phase H backends are not registered (audit W7)
+    names = [b.name for b in routing.backends()]
+    assert names == ['spatial_integrator', 'phase_j_per_diagram']
+    for name in names:
         assert f'  - {name}:' in msg
+    assert 'phase_j_grouped' not in msg and 'phase_h_symbolic' not in msg
     assert not no_enumeration
-    with pytest.raises(routing.NoBackendError, match='library without a compute_cumulants runner'):
-        _run(_load('ou_quartic')[0], max_ell=0, backend='phase_h_symbolic')
+    for retired in ('phase_j_grouped', 'phase_h_symbolic'):
+        with pytest.raises(ValueError, match='not registered'):
+            _run(_load('ou_quartic')[0], max_ell=0, backend=retired)
     with pytest.raises(ValueError, match='not registered'):
         _run(_load('ou_quartic')[0], max_ell=0, backend='nope')
 
@@ -526,7 +530,7 @@ def test_g6_bound_and_verdicts_on_synthetic_counters():
                       'dd_err_abs_sum': 4e-7, 'dbm_err_abs_sum': 1e-7, 'dd_poset': 5, 'nquad_calls': 1},
                      [0.5, -0.5j])
     d = rep.diagnostics
-    assert d['accuracy_estimate'] == pytest.approx(5e-7)
+    assert d['accuracy_estimate'] == pytest.approx(5e-7, rel=1e-12, abs=0)
     assert d['accuracy_threshold'] == A._G6_DEFAULT_RTOL == 1e-10
     lv = {f.code: f.level for f in rep.findings}
     assert lv['G6_ACCURACY_LOW'] == 'warning' and lv['G6_DIVERGENT_SUBSETS'] == 'warning'
@@ -568,7 +572,7 @@ def test_g6_stiff_without_cancellation_is_quiet():
     res = _run(model, max_ell=1, parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 1e-4},
                policy={'allow_markov_embedding': True})
     rep = res['analysis']
-    assert rep.has('G3_STIFF') and rep.traits.fast_slow_ratio == pytest.approx(1e4, rel=1e-9)
+    assert rep.has('G3_STIFF') and rep.traits.fast_slow_ratio == pytest.approx(1e4, rel=1e-12)
     d = rep.diagnostics
     assert d['n_estimated_subsets'] > 0 and d['accuracy_estimate'] < 1e-12
     assert not rep.has('G6_ACCURACY_LOW')
@@ -587,18 +591,22 @@ def test_g6_flags_the_digits_lost_to_near_degenerate_poles(monkeypatch):
     kw = dict(max_ell=1, policy={'allow_markov_embedding': True}, tau_grid=np.array([0.0, 0.5, 2.0]))
     near = {'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 1 / (1 + 1e-4)}
     res = _run(model, parameters=near, **kw)
-    assert abs(complex(res['C_tau_by_ell'][1][0]).real - (-0.0900074997)) < 1e-9
+    assert abs(complex(res['C_tau_by_ell'][1][0]).real - (-0.0900074997)) < 1e-11
     rep = res['analysis']
     assert res['pole_clusters']['status'] == 'resolved' and rep.has('G3_CLOSE_POLES')
     assert not rep.has('G6_ACCURACY_LOW') and rep.diagnostics['accuracy_estimate'] < 1e-10
-    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
-    with pytest.warns(UserWarning, match='digits lost'):
-        bad = _run(model, parameters=near, **kw)
+    # an unresolved cluster: the exact residue tier unavailable (before
+    # audit W7: the deformation switched off, DAEDALUS_POLE_CLUSTERS=0)
+    from api import _propagator as PR
+    with monkeypatch.context() as mp_:
+        mp_.setattr(PR, '_compute_residues_via_polynomial_fracfield',
+                    lambda *a, **k: (None, None, None))
+        with pytest.warns(UserWarning, match='digits lost'):
+            bad = _run(model, parameters=near, **kw)
     assert abs(complex(bad['C_tau_by_ell'][1][0]).real - (-0.0900074997)) > 1e-3        # the lost digits
     rep = bad['analysis']
     assert rep.has('G3_POLE_CLUSTER_UNRESOLVED') and rep.has('G6_ACCURACY_LOW')
     assert rep.diagnostics['accuracy_estimate'] > 1e-2
-    monkeypatch.delenv('DAEDALUS_POLE_CLUSTERS')
     good = _run(model, parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0, 'tauc': 0.5}, **kw)
     assert good['pole_clusters'] is None
     good = good['analysis']
@@ -869,3 +877,28 @@ def test_g6_names_an_ill_conditioned_realization():
     assert hit and hit[0].level == 'warning' and '2 subset(s)' in hit[0].message
     led = [e for e in ctx.ledger if e.name == 'realization_conditioning']
     assert led and led[0].satisfied is False
+
+
+def test_spatial_accuracy_findings():
+    """G6 names a spatial result the integrator cannot certify (result
+    status 'approximate'): G6_SPATIAL_DERIVATIVE_LOOP for a derivative-vertex
+    loop, G6_SPATIAL_EQUAL_TIME for a coupled loop at tau = 0 (product grid)."""
+    import warnings
+    import numpy as np
+    from api import compute_cumulants
+    kpz = (SpatialModelBuilder('kpz g6', n_populations=0).physical_field('p', spatial_dim=1)
+           .parameter('mu', default=1.0, domain='positive').parameter('D', default=0.7, domain='positive')
+           .parameter('c', default=0.3, domain='real').parameter('T', default=1.0, domain='positive')
+           .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='0')
+           .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)-(c/2)*Dx(p,0)^2)-T*pt^2')
+           .operator_ir().boundary('infinite').initial('stationary').build())
+    crd, _mod = _load('coupled_rd_2species_1d')
+    kw = dict(k=2, max_ell=1, tau_grid=np.array([0.0]), spatial_grid=np.array([0.5]),
+              use_cache=False, parallel=False, spatial_parallel=False, verbose=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r1 = compute_cumulants(kpz, external_fields=[('p', 1)] * 2, **kw)
+        r2 = compute_cumulants(crd, external_fields=[('a', 1)] * 2, **kw)
+    assert 'G6_SPATIAL_DERIVATIVE_LOOP' in {f.code for f in r1['analysis'].findings}
+    assert 'G6_SPATIAL_EQUAL_TIME' in {f.code for f in r2['analysis'].findings}
+    assert r1['status'] == r2['status'] == 'approximate'

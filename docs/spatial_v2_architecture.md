@@ -1,7 +1,7 @@
 # Spatial v2 — momentum-space-native diagrammatic pipeline (architecture)
 
 Status: **design + Phase 1 (operator IR) landed.** This supersedes the v1
-"symbolic-`Laplacian` bridge" (`docs/spatial_stageC5_general_integrator_design.md`),
+"symbolic-`Laplacian` bridge" (the internal design notes (not distributed)),
 which is kept running in parallel until v2 reproduces its regressions.
 
 ## 0. Why v2
@@ -70,7 +70,7 @@ theory (action with Lap,Dt,Dx + fields + BC + noise)
 
 ## 3. The operator IR (Phase 1 — landed)
 
-`pipeline/spatial_operator_ir.py` (+ `tests/test_spatial_operator_ir.py`, 12
+`api/spatial_operator_ir.py` (+ `tests/test_spatial_operator_ir.py`, 12
 tests). Operators are inert, argument-**binding** Sage function nodes
 (`Lap(phi)`, `Dt(phi)`, `Dx(phi,i)`); all semantics live in explicit passes:
 
@@ -168,8 +168,8 @@ the "generalized momentum." One interface, three backends:
 
 | module | role | status |
 |---|---|---|
-| `pipeline/spatial_operator_ir.py` | operators, linearity, saddle, generators, form factors | ✅ Phase 1 |
-| `pipeline/theory.py` (parse) | author `Lap(phi)` syntax → IR | Phase 2 |
+| `api/spatial_operator_ir.py` | operators, linearity, saddle, generators, form factors | ✅ Phase 1 |
+| `api/model.py` (parse) | author `Lap(phi)` syntax → IR | Phase 2 |
 | `…/spatial/propagator_k.py` (new) | `K(ω,k)`, fold bilinear-`v`, `G=K⁻¹` | Phase 3 |
 | vertex extraction (form factors) | per-leg `𝔣ₗ(k)` from generators | Phase 3 |
 | `…/spatial/spatial_reduce.py` (new) | analytic `∫dᵈℓ` (generalize `loop_parametric`) | Phase 4 |
@@ -225,7 +225,7 @@ backend.
    generator → `form_factor·base` bridge). Proven on `reaction_diffusion`:
    reproduces `K(ω,k)=−iω+μ+Dk²` + the `g` vertex.
 3. ✅ Gated `Lap(phi)`/`Dt(phi)`/`Dx(phi,i)` authoring (`.operator_ir()`),
-   threaded TheoryBuilder → field_theory `ns._operator_ir` → theory_compiler.
+   threaded ModelBuilder → field_theory `ns._operator_ir` → theory_compiler.
    The action lambda runs the IR passes; **Phase 3b-i** lowers the derived
    generators back to the v1 bare-symbol form, so a derivative-free-vertex
    theory (reaction-diffusion) becomes IDENTICAL to v1 and flows through the

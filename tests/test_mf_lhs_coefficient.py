@@ -78,9 +78,9 @@ def test_algebraic_remainder_moves_to_rhs():
     mf = res.get('mf_values') or res.get('mf')
     f, r, d_ = 0.5, 0.3, 0.1
     m_exact = f / (r + d_)
-    assert np.isclose(np.ravel(mf['nstar'])[0], f)
-    assert np.isclose(np.ravel(mf['mstar'])[0], m_exact)
-    assert np.isclose(np.ravel(mf['ustar'])[0], r * m_exact)
+    assert np.isclose(np.ravel(mf['nstar'])[0], f, rtol=1e-12, atol=1e-12)
+    assert np.isclose(np.ravel(mf['mstar'])[0], m_exact, rtol=1e-12, atol=1e-12)
+    assert np.isclose(np.ravel(mf['ustar'])[0], r * m_exact, rtol=1e-12, atol=1e-12)
 
 
 def _pure_builder(m_eq):
@@ -105,7 +105,7 @@ def test_pure_time_derivative_is_accepted_like_the_moved_form():
     x = solve_mean_field_dae(b.build(), fund)['mf_values']
     y = solve_mean_field_dae(moved.build(), fund)['mf_values']
     assert x == y
-    assert np.isclose(x['mstar'][0], 0.5 / 0.4) and np.isclose(x['ustar'][0], 0.5)
+    assert np.isclose(x['mstar'][0], 0.5 / 0.4, rtol=1e-12, atol=1e-12) and np.isclose(x['ustar'][0], 0.5, rtol=1e-12, atol=1e-12)
 
 
 def test_pure_integrator_without_a_linear_field_is_refused_with_guidance():
@@ -148,12 +148,11 @@ def test_residual_form_as_entered_in_the_ui():
     res = dd.run(b.build(), dd.Config(k=2, max_ell=0, external_fields=[('dm', 1), ('dm', 1)],
                                       tau_grid=(0.0, 2.0, 3), parallel=False), None)
     mf = res['mf_values']
-    assert np.isclose(np.ravel(mf['mstar'])[0], 1.25) and np.isclose(np.ravel(mf['ustar'])[0], 0.375)
+    assert np.isclose(np.ravel(mf['mstar'])[0], 1.25, rtol=1e-12, atol=1e-12) and np.isclose(np.ravel(mf['ustar'])[0], 0.375, rtol=1e-12, atol=1e-12)
     # immigration–death is Poisson: Var = m*, C(tau) = m* exp(-(r+d)|tau|); the
-    # tau=0 grid point is the Ito left limit tau = -_ITO_EPS
-    from api.compute import _ITO_EPS
-    assert np.isclose(float(np.real(res['C_tau'][0])), 1.25 * np.exp(-0.4 * _ITO_EPS), rtol=1e-9)
-    assert np.isclose(float(np.real(res['C_tau'][1])), 1.25 * np.exp(-0.4), rtol=1e-9)
+    # tau=0 grid point is the exact Ito left limit
+    assert np.isclose(float(np.real(res['C_tau'][0])), 1.25, rtol=1e-12, atol=1e-12)
+    assert np.isclose(float(np.real(res['C_tau'][1])), 1.25 * np.exp(-0.4), rtol=1e-12, atol=1e-12)
 
 
 def test_unparseable_lhs_warns_instead_of_silently_guessing():

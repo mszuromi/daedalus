@@ -2,9 +2,11 @@
 tests/tools/phase_j_zoo_baseline.py
 ===================================
 Model-zoo baseline for Phase J (the internal Phase J plan (not distributed) §4.3,
-milestone M0.3).  It records the pre-change reference data that the legacy
-rollback umbrella test (``DAEDALUS_PHASE_J_LEGACY=1``, M1 onward) compares
-against forever.
+milestone M0.3).  It recorded the pre-change reference data that the legacy
+rollback umbrella test (``DAEDALUS_PHASE_J_LEGACY=1``, M1 until audit W7
+retired the umbrella) compared against; the baseline files stay frozen and
+tests/test_phase_j_legacy_baseline.py checks the current defaults against
+the entries whose numbers did not move.
 
 For every zoo entry (model × config) it records:
 
@@ -40,7 +42,7 @@ For every zoo entry (model × config) it records:
   for the M0.3 baseline (added afterwards); those runs were made from the
   repo root with ``use_cache=True``, i.e. from the developer's local caches.
 * provenance: git HEAD, the dirty tracked files, sha256 of ``final_integral.py``
-  / ``grouped_integral.py`` / the model file, the numeric flags, library
+  / the model file, the numeric flags, library
   versions and ``PYTHONHASHSEED``, which is required to be ``0``.
 
 Each entry runs in its OWN subprocess with a hard timeout.  The default is
@@ -181,14 +183,14 @@ SEP = '::'                   # npz key separator: '<entry>::<array>'
 #   'moves'      measured to move;
 #   'unchanged'  measured bit-identical (no c_eff == 0 zero-normal polygon rows);
 #   'unknown'    not measured (timed out / not scanned).
-# The legacy umbrella test must reproduce EVERY entry under
-# DAEDALUS_PHASE_J_LEGACY=1; with the new defaults only 'unchanged' entries
-# may be compared directly.
+# The legacy umbrella test reproduced EVERY entry under
+# DAEDALUS_PHASE_J_LEGACY=1 (retired in audit W7); with the defaults only
+# 'unchanged' entries may be compared directly.
 
 
 def _E(name, *, model=None, model_file=None, kind='temporal', k=2, max_ell=1,
        ext=None, params=None, tau_grid=None, points=None, chi_grid=None,
-       grouped=False, timeout=DEFAULT_TIMEOUT, row='', m1='unknown',
+       timeout=DEFAULT_TIMEOUT, row='', m1='unknown',
        notes='', stub_nquad=False, local_only=False, spatial_n_q=None,
        lane=None):
     return dict(
@@ -200,7 +202,7 @@ def _E(name, *, model=None, model_file=None, kind='temporal', k=2, max_ell=1,
         points=None if points is None else [[float(x) for x in p]
                                             for p in points],
         chi_grid=None if chi_grid is None else [float(x) for x in chi_grid],
-        grouped=bool(grouped), timeout=float(timeout), row=row, m1=m1,
+        timeout=float(timeout), row=row, m1=m1,
         notes=notes, stub_nquad=bool(stub_nquad), local_only=bool(local_only),
         spatial_n_q=spatial_n_q, lane=lane)
 
@@ -279,10 +281,6 @@ ZOO = [
     # ── spike-reset family: live Θ(0) bug, P3 inheritance ──
     _E('spike_reset-k2-l1', model='single_population_spike_reset_test', k=2,
        max_ell=1, ext=[('n', 1), ('n', 2)], params=P_SPIKE, tau_grid=T_SPIKE,
-       row='single_population_spike_reset_test', m1='moves'),
-    _E('spike_reset-k2-l1-grouped', model='single_population_spike_reset_test',
-       k=2, max_ell=1, ext=[('n', 1), ('n', 2)], params=P_SPIKE,
-       tau_grid=T_SPIKE, grouped=True,
        row='single_population_spike_reset_test', m1='moves'),
     _E('spike_reset-k1-l1', model='single_population_spike_reset_test', k=1,
        max_ell=1, ext=[('n', 1)], params=P_SPIKE, tau_grid=[0.0],
@@ -506,14 +504,11 @@ def code_provenance():
     _, dirty = _git('status', '--porcelain', '--untracked-files=no')
     fi = os.path.join(_REPO_ROOT, 'engine', 'integration', 'time_domain',
                       'final_integral.py')
-    gi = os.path.join(_REPO_ROOT, 'engine', 'integration', 'time_domain',
-                      'grouped_integral.py')
     return {
         'git_head': head.strip() if rc == 0 else None,
         'git_branch': branch.strip(),
         'git_dirty_tracked': [ln for ln in dirty.splitlines() if ln.strip()],
         'sha256_final_integral': _sha256(fi),
-        'sha256_grouped_integral': _sha256(gi),
     }
 
 
@@ -534,22 +529,18 @@ def _library_versions():
 
 def _numeric_flags():
     import engine.integration.time_domain.final_integral as FI
-    names = ('USE_POLYGON_M2_INTEGRATOR', 'POLYGON_BBOX_CAP',
+    # (records made before audit W7 also list the retired switches
+    # POLYGON_BBOX_CAP, USE_NUMBA_CHAIN_SIMPLEX,
+    # USE_CHAIN_SIMPLEX_PRECISION_FIX, _HAVE_NUMBA, THETA0_CONST_ROW_MODE,
+    # STRUCTURAL_ZEROS, NQUAD_HARDENED and USE_DBM_FALLBACK)
+    names = ('USE_POLYGON_M2_INTEGRATOR',
              'POSET_PHYSICAL_MARGIN', 'USE_1D_INTEGRATOR',
-             'USE_NUMBA_CHAIN_SIMPLEX', 'USE_CHAIN_SIMPLEX_PRECISION_FIX',
              'USE_POSET_INTEGRATOR', 'USE_POSET_CAP_MATCH_SCIPY',
              'USE_POSET_MPMATH_ACCUMULATION', 'TAU_KERNEL_CAP', 'QUAD_OPTS',
-             '_HAVE_NUMBA',
-             # M1 call-time flag ('<absent>' in pre-M1 records)
-             'THETA0_CONST_ROW_MODE',
-             # M2a call-time flag ('<absent>' in pre-M2a records)
-             'STRUCTURAL_ZEROS',
-             # M2b call-time flag and the hardened fallback's tolerances
-             # ('<absent>' in pre-M2b records)
-             'NQUAD_HARDENED', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL',
-             'NQUAD_LIMIT', 'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP',
-             # M3 call-time flag ('<absent>' in pre-M3 records)
-             'USE_DBM_FALLBACK')
+             # the hardened fallback's tolerances ('<absent>' in pre-M2b
+             # records)
+             'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL',
+             'NQUAD_LIMIT', 'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
     out = {}
     for n in names:
         v = getattr(FI, n, '<absent>')
@@ -647,7 +638,7 @@ def resolve_params(entry, model, module):
 
 class _NquadStub:
     """Counting stand-in for ``_integrate_polytope`` (m>=1 -> 0j; m=0 passes
-    through).  Installed in final_integral AND grouped_integral."""
+    through).  Installed in final_integral."""
 
     def __init__(self):
         self.calls = {}
@@ -666,15 +657,12 @@ class _NquadStub:
     @contextlib.contextmanager
     def installed(self):
         import engine.integration.time_domain.final_integral as FI
-        import engine.integration.time_domain.grouped_integral as GI
-        self._orig = FI._integrate_polytope
-        saved = (FI._integrate_polytope, GI._integrate_polytope)
+        self._orig = saved = FI._integrate_polytope
         FI._integrate_polytope = self
-        GI._integrate_polytope = self
         try:
             yield self
         finally:
-            FI._integrate_polytope, GI._integrate_polytope = saved
+            FI._integrate_polytope = saved
 
 
 def migrate_counters(c, semantics):
@@ -764,7 +752,7 @@ def run_entry(entry, *, with_provenance=True):
     ext = [tuple(e) for e in entry['ext']]
     kw = dict(k=entry['k'], max_ell=entry['max_ell'], external_fields=ext,
               parameters=params, parallel=False, verbose=False,
-              use_cache=True, use_grouped_phase_j=entry['grouped'])
+              use_cache=True)
     if entry['kind'] == 'spatial':
         kw['tau_grid'] = np.asarray(entry['tau_grid'], dtype=float)
         kw['chi_grid'] = np.asarray(entry['chi_grid'], dtype=float)
@@ -1020,7 +1008,7 @@ def _summarise(rec):
     e = rec.get('entry') or {}
     s['config'] = {k: e.get(k) for k in (
         'model', 'model_file', 'kind', 'k', 'max_ell', 'ext', 'tau_grid',
-        'points', 'chi_grid', 'grouped', 'stub_nquad', 'timeout')}
+        'points', 'chi_grid', 'stub_nquad', 'timeout')}
     s['row'] = e.get('row')
     s['m1_expected'] = e.get('m1')
     s['notes'] = e.get('notes')
@@ -1106,7 +1094,7 @@ def assemble(run_dir=WORK_DIR, *, tracked_npz=TRACKED_NPZ,
         'schema_version': SCHEMA_VERSION,
         'generated': datetime.datetime.now().isoformat(timespec='seconds'),
         'generator': 'tests/tools/phase_j_zoo_baseline.py',
-        'plan': f'docs/integration_speedup_plan.md §4.3 / {plan_label}',
+        'plan': f'the internal design notes (not distributed) §4.3 / {plan_label}',
         'tau_convention': ('k=2 grid τ=0 is evaluated at t1=-_ITO_EPS=-1e-6 '
                            '(Itô left limit); k>=3 points are raw, with the '
                            'API-nudged variant alongside'),
@@ -1131,8 +1119,10 @@ def assemble(run_dir=WORK_DIR, *, tracked_npz=TRACKED_NPZ,
             rec = json.load(fh)
         summ[e['name']] = _summarise(rec)
         if rec.get('code'):
+            # (records written before W7 also carry the retired
+            # 'sha256_grouped_integral'; it is not compared)
             code_at_run = {k: rec['code'].get(k) for k in (
-                'git_head', 'sha256_final_integral', 'sha256_grouped_integral')}
+                'git_head', 'sha256_final_integral')}
             rec = dict(rec, code_at_run=code_at_run)
         for key in ('flags', 'versions', 'env', 'code_at_run'):
             if key in rec:
@@ -1287,7 +1277,7 @@ M1_VALUE_KEYS = ('theta0_const_empty', 'theta0_const_drop',
 #: a constant row decided inside an analytic path does not.
 M1_ROUTE_KEYS = ('theta0_subsets_pruned', 'polygon_zero_area',
                  'poset_empty_cycle')
-#: The M2a structural zeros (``final_integral.STRUCTURAL_ZEROS``): an
+#: The M2a structural zeros (the retired ``STRUCTURAL_ZEROS``): an
 #: ``_integrate_polytope`` region with an order cycle whose shifts sum to <= 0
 #: answered 0 (``polytope_empty_cycle``), and δ-subsets never built because
 #: they keep an identically-zero edge smooth (``forced_delta_pruned``).  Both
@@ -1299,13 +1289,13 @@ M2A_VALUE_KEYS = ('polytope_empty_cycle', 'forced_delta_pruned')
 #: evaluated, so its analytic / nquad attempts disappear (a cycle answered
 #: at the entry of ``_integrate_polytope`` is still counted there).
 M2A_ROUTE_KEYS = ('forced_delta_pruned',)
-#: The M2b hardened quadrature fallback (``final_integral.NQUAD_HARDENED``):
+#: The M2b hardened quadrature fallback (the retired ``NQUAD_HARDENED``):
 #: every region served by it may move at the accuracy of the pre-M2b
 #: default-tolerance scipy.nquad (measured up to 6.8e-5 relative per region),
 #: so a value may move wherever this counter is nonzero; routes do not
 #: change (the same regions reach the fallback).
 M2B_VALUE_KEYS = ('nquad_hardened_calls',)
-#: M3 (``final_integral.USE_DBM_FALLBACK``): an m>=3 region refused by the
+#: M3 (the retired ``USE_DBM_FALLBACK``): an m>=3 region refused by the
 #: poset lower-bound inheritance rule moves (it was integrated over too small
 #: a region), and every region the exact DBM route answers may move at the
 #: accuracy of the fallback that served it before (or by the ±200 box, see

@@ -74,7 +74,7 @@ def test_two_field_decoupled_each_matches_closed_form(field, mu, D, T):
     it0 = int(np.argmin(np.abs(th['tau_grid'])))
     C = np.asarray(th['C_tau_x']).real[it0]
     np.testing.assert_allclose(C, _closed_equal_time(xs, mu, D, T),
-                               rtol=1e-9, atol=1e-12)
+                               rtol=1e-12, atol=1e-12)
 
 
 def _linear_model():
@@ -106,7 +106,7 @@ def test_linear_diffusion_varied_params(mu, D, T):
     it0 = int(np.argmin(np.abs(th['tau_grid'])))
     C = np.asarray(th['C_tau_x']).real[it0]
     np.testing.assert_allclose(C, _closed_equal_time(xs, mu, D, T),
-                               rtol=1e-9, atol=1e-12)
+                               rtol=1e-12, atol=1e-12)
 
 
 def _allen_cahn_model():
@@ -222,7 +222,7 @@ def test_mixed_dim0_dim1_spatial_field_matches_closed_form():
     it0 = int(np.argmin(np.abs(th['tau_grid'])))
     C = np.asarray(th['C_tau_x']).real[it0]
     np.testing.assert_allclose(C, _closed_equal_time(xs, 1.0, 1.0, 1.0),
-                               rtol=1e-9, atol=1e-12)
+                               rtol=1e-12, atol=1e-12)
 
 
 def test_mixed_dim0_field_spatial_request_raises_clean():
@@ -309,4 +309,4 @@ def test_allen_cahn_tree_is_lambda_independent_free_form(lam):
     it0 = int(np.argmin(np.abs(th['tau_grid'])))
     C = np.asarray(th['C_tau_x']).real[it0]
     np.testing.assert_allclose(C, _closed_equal_time(xs, 1.0, 1.0, 1.0),
-                               rtol=1e-9, atol=1e-12)
+                               rtol=1e-12, atol=1e-12)

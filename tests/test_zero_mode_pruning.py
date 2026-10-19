@@ -53,11 +53,9 @@ def model():
     return _oscillator()
 
 
-def _cumulants(model, k=2, ell=1, field='dT', grouped=False):
+def _cumulants(model, k=2, ell=1, field='dT'):
     kw = dict(k=k, max_ell=ell, external_fields=[(field, 1)] * k,
               parallel=False, verbose=False)
-    if grouped:
-        kw['use_grouped_phase_j'] = True
     if k <= 2:
         r = compute_cumulants(model, tau_grid=np.array([-0.4, 0.0, 0.7]),
                               **kw)
@@ -68,13 +66,29 @@ def _cumulants(model, k=2, ell=1, field='dT', grouped=False):
     return r, {e: repr(complex(f(*pt))) for e, f in r['total_C_by_ell'].items()}
 
 
+_BUILD_PRUNED = FI._build_pruned_modesum_plan
+
+
+def _set_pruning(monkeypatch, on):
+    """Pruning on (the only setting since audit W7 retired
+    ``PRUNE_ZERO_MODES`` / ``DAEDALUS_PRUNE_ZERO_MODES``), or off through the
+    unpruned fallback build of ``_build_modesum_plan`` (what a pruned build
+    that declines gets)."""
+    monkeypatch.setattr(FI, '_build_pruned_modesum_plan',
+                        _BUILD_PRUNED if on else (lambda *a, **k: None))
+
+
 def _ab(monkeypatch, model, variants, **kw):
-    """Values for each ``{attr: value}`` variant of FI, after a warm-up."""
+    """Values for each ``{attr: value}`` variant of FI (``prune``: see
+    ``_set_pruning``), after a warm-up."""
     _cumulants(model, **kw)
     out = []
     for flags in variants:
         for a, v in flags.items():
-            monkeypatch.setattr(FI, a, v)
+            if a == 'prune':
+                _set_pruning(monkeypatch, v)
+            else:
+                monkeypatch.setattr(FI, a, v)
         FI._reset_runtime_counters()
         r, vals = _cumulants(model, **kw)
         out.append((vals, dict(FI._RUNTIME_COUNTERS), r))
@@ -88,7 +102,7 @@ def _ab(monkeypatch, model, variants, **kw):
 @pytest.mark.parametrize('k, field', [(2, 'dT'), (2, 'dh'), (1, 'dh')])
 def test_pruning_and_zero_group_skip_change_no_bit(monkeypatch, model, k,
                                                    field):
-    variants = [dict(PRUNE_ZERO_MODES=p, DD_BATCH_SKIP_ZERO_GROUPS=f)
+    variants = [dict(prune=p, DD_BATCH_SKIP_ZERO_GROUPS=f)
                 for p in (True, False) for f in (True, False)]
     runs = _ab(monkeypatch, model, variants, k=k, field=field)
     ref = runs[0][0]
@@ -102,8 +116,8 @@ def test_pruning_and_zero_group_skip_change_no_bit(monkeypatch, model, k,
 
 
 def test_k3_one_loop_pruned_equals_unpruned(monkeypatch, model):
-    runs = _ab(monkeypatch, model, [dict(PRUNE_ZERO_MODES=True),
-                                    dict(PRUNE_ZERO_MODES=False)], k=3)
+    runs = _ab(monkeypatch, model, [dict(prune=True),
+                                    dict(prune=False)], k=3)
     assert runs[0][0] == runs[1][0]
     c = runs[0][1]
     # 21 plans: 4,374 nonzero tuples of 393,903
@@ -113,15 +127,6 @@ def test_k3_one_loop_pruned_equals_unpruned(monkeypatch, model):
     loop = complex(runs[0][0][1])
     assert abs(tree.real - 0.12476252951567) < 1e-12
     assert abs(loop.real - 0.0419736529578) < 1e-11
-
-
-def test_grouped_route_pruned_equals_unpruned(monkeypatch, model):
-    runs = _ab(monkeypatch, model, [dict(PRUNE_ZERO_MODES=True),
-                                    dict(PRUNE_ZERO_MODES=False)],
-               grouped=True)
-    assert runs[0][0] == runs[1][0]
-    assert runs[0][1]['zero_modes_pruned'] > 0
-    assert runs[1][1]['zero_modes_pruned'] == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -196,6 +201,9 @@ def test_group_order_replay_on_random_plans(monkeypatch, block):
         if 'n_tuples_full' not in pruned or len(pruned['pole_tuples']) == len(
                 full['pole_tuples']):
             continue
+        if not pruned['pole_tuples']:             # an edge without a nonzero
+            assert all(C == 0 for C, _l in full['pole_tuples'])   # mode
+            continue
         _same_counts(pruned, full)
         qt = pruned['pole_tuples']
         got = [(a, [qt[t] for t in idx]) for a, idx in pruned['tuple_groups']]
@@ -231,8 +239,6 @@ def test_pruned_plan_keeps_the_unpruned_group_order(n):
 
 @pytest.mark.parametrize('n', [3, 4])
 def test_poset_value_is_bit_identical_pruned_or_not(monkeypatch, n):
-    monkeypatch.setattr(FI, 'USE_PHASE_J_DD_KERNELS', True)
-    monkeypatch.setattr(FI, 'SEMIINF_CHAIN', True)
     ems = [_ems(md) for md in _modes(n)]
     vals = []
     for prune in (False, True, False):
@@ -255,14 +261,18 @@ def test_order_replay_over_its_cap_keeps_the_pruned_order(monkeypatch):
     assert len(p['pole_tuples']) == 3 * 2 * 1 * 1
 
 
-def test_edge_without_a_nonzero_mode_keeps_the_unpruned_plan():
+def test_edge_without_a_nonzero_mode_builds_the_empty_plan():
+    # every tuple of the unpruned plan has coefficient exactly 0, so the
+    # pruned plan is the plan of an edge without modes (audit MEM-06: the
+    # full product was built and charged for an identically zero integrand)
     modes = _modes(3)
     modes[2] = [(0j, -1.1), (0j, -0.4)]
     ems = [_ems(md) for md in modes]
     p = FI._build_modesum_plan(ems, _ROWS, 3, 1, prune=True)
     q = FI._build_modesum_plan(ems, _ROWS, 3, 1, prune=False)
-    assert p['pole_tuples'] == q['pole_tuples']
-    assert p['tuple_groups'] == q['tuple_groups']
+    assert p['pole_tuples'] == () and p['tuple_groups'] == ()
+    assert p['n_tuples_full'] == 0
+    assert q['pole_tuples'] and all(C == 0 for C, _l in q['pole_tuples'])
 
 
 def test_only_exact_zeros_are_pruned():
@@ -309,8 +319,13 @@ def test_budget_parsing(monkeypatch):
     f = FI.phase_j_mem_budget_bytes
     assert f({}) == 6e9
     assert f({'PHASE_J_MEM_BUDGET_GB': '0.5'}) == 0.5e9
-    for off in ('off', 'inf', '0', '-1', 'none'):
+    for off in ('off', 'inf', 'none', 'unlimited'):
         assert f({'PHASE_J_MEM_BUDGET_GB': off}) is None
+    # 0 / negative raise (they meant "no limit" here and "refuse everything"
+    # for SPATIAL_MEM_BUDGET_GB; audit W7, RED-05)
+    for bad in ('0', '-1'):
+        with pytest.raises(ValueError, match='positive number of GB'):
+            f({'PHASE_J_MEM_BUDGET_GB': bad})
     with pytest.raises(ValueError, match='PHASE_J_MEM_BUDGET_GB'):
         f({'PHASE_J_MEM_BUDGET_GB': 'lots'})
 
@@ -489,23 +504,7 @@ def test_abandoned_pruned_plan_is_refunded(monkeypatch):
     assert sc.tuples == 32 and sc.plans == 1
 
 
-def test_grouped_fallback_does_not_swallow_the_budget_error(monkeypatch,
-                                                            model):
-    """Over budget inside the grouped route's per-diagram fallback: the
-    refusal propagates (it is not recorded as a skipped group)."""
-    import api._grouped_phase_j as GP
-    import api.compute as CO
-    monkeypatch.setattr(CO, '_phase_j_memory_preflight',
-                        lambda *a, **k: None)
-    monkeypatch.setattr(GP, 'integrate_grouped_diagram',
-                        lambda *a, **k: {'status': 'failed',
-                                         'reason': 'forced'})
-    monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1e-7')
-    with pytest.raises(FI.PhaseJResourceError):
-        _cumulants(model, grouped=True)
-
-
-def test_grouped_m1_decay_margin_uses_every_pole(monkeypatch, model):
+def test_m1_decay_margin_uses_every_pole(monkeypatch, model):
     seen = []
     orig = FI._decay_tol
 
@@ -513,7 +512,7 @@ def test_grouped_m1_decay_margin_uses_every_pole(monkeypatch, model):
         seen.append(modes)
         return orig(modes, tuples, plan, cdata)
     monkeypatch.setattr(FI, '_decay_tol', spy)
-    _cumulants(model, k=1, field='dh', grouped=True)
+    _cumulants(model, k=1, field='dh')
     assert seen and all(m is not None for m in seen)
 
 

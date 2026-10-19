@@ -36,14 +36,13 @@ Screening is cheap (an O(n^2) look at the poles the exact tier already has);
 only a close pair (``CLUSTER_RTOL``) or a repeated root triggers the exact
 high-precision analysis, and only a cluster whose cancellation factor
 ``kappa`` exceeds ``KAPPA_MAX`` (or a repeated root) is deformed.  Models
-without such a cluster take exactly the old path.  ``DAEDALUS_POLE_CLUSTERS=0``
-switches the deformation off (old numbers, plus a warning when a cluster
-needs it).
+without such a cluster take exactly the old path.  (The switch
+``DAEDALUS_POLE_CLUSTERS=0``, which turned the deformation off, was retired
+in audit W7: set, it warns once and is ignored.)
 """
 from __future__ import annotations
 
 import math
-import os
 import warnings
 from dataclasses import dataclass, field
 
@@ -62,20 +61,19 @@ N_NODES_MAX = 48
 ACCURACY_WARN = 1e-6       # warn above this estimated relative error
 LOST_DIGITS_WARN = 10.0    # an unresolved cluster warns above this loss (1e-6)
 TAU_MAX_DEFAULT = 50.0
-ENV_SWITCH = 'DAEDALUS_POLE_CLUSTERS'
 _DPS = 50                  # working precision of the root / residue arithmetic
 
 
 class PoleClusterWarning(UserWarning):
     """A cluster of near-degenerate or repeated poles could not be resolved
-    (or the resolution is switched off, or its accuracy estimate is poor):
+    (or its accuracy estimate is poor):
     the numbers may have lost the stated number of digits."""
 
 
-def enabled():
-    """The deformation is on unless ``DAEDALUS_POLE_CLUSTERS`` is 0/off."""
-    return os.environ.get(ENV_SWITCH, '1').strip().lower() not in (
-        '0', 'off', 'false', 'no')
+from engine import _env                                     # noqa: E402
+
+_env.retired('DAEDALUS_POLE_CLUSTERS',
+             'the near-degenerate pole deformation is always on (audit W7)')
 
 
 def has_close_pair(poles, rtol=None):
@@ -271,7 +269,8 @@ class ClusterAnalysis:
     cancellation factor: no deformation, the 50-digit residues), 'resolved'
     (deformation built), 'unresolved' (needed but not possible: the 50-digit
     residues, or the old path for a repeated pole; a warning above
-    ``LOST_DIGITS_WARN``), 'disabled' (needed, switched off: the old path).
+    ``LOST_DIGITS_WARN``).  ('disabled', the deformation switched off, was
+    retired in audit W7.)
     ``nominal``: (pole_vals, C_mats) at w = 0, residues to 50 digits (at a
     repeated root the Laurent 1/(lambda - rho) coefficient only)."""
     status: str
@@ -323,7 +322,20 @@ def analyze(G_ft_F, Q_poly, nf, tau_max=None):
         n = len(roots)
         if sum(mult_Q) != Qh.degree():
             raise ArithmeticError('coprime base does not account for Q')
-        retarded = [mp.re(r) < -1e-9 for r in roots]
+        # retarded: decaying beyond the 50-digit roots' own accuracy, per
+        # root (audit W4b, ACC-65: an absolute -1e-9 dropped a stable mode
+        # slower than 1e-9; a floor relative to the largest root would drop
+        # it next to a far root); an exact zero root is marginal
+        # an exact zero root: the root nearest 0 of a factor with no
+        # constant term (decided on the exact factor, not by size)
+        zero_k = set()
+        for b in set(id(x) for x in fac):
+            ks = [k for k in range(len(roots)) if id(fac[k]) == b]
+            if ks and fac[ks[0]].constant_coefficient() == 0:
+                zero_k.add(min(ks, key=lambda k: abs(roots[k])))
+        retarded = [k not in zero_k
+                    and mp.re(r) < -mp.mpf(10) ** (-30) * abs(r)
+                    for k, r in enumerate(roots)]
         # entries: numerator, leading coefficient, per-root multiplicity
         entries = []
         for (i, j), D in dens.items():
@@ -357,11 +369,6 @@ def analyze(G_ft_F, Q_poly, nf, tau_max=None):
         if not any(c.active for c in clusters):
             return ClusterAnalysis(status='harmless', clusters=info,
                                    kappa_max=kmax, nominal=nominal)
-        if not enabled():
-            return ClusterAnalysis(
-                status='disabled', clusters=info, kappa_max=kmax,
-                jordan=jordan, nominal=nominal,
-                reason=f'{ENV_SWITCH}=0: the deformation is switched off')
         active, reason = _separable(
             [c for c in clusters if c.active], roots, mult_Q, ret, n)
         if reason:

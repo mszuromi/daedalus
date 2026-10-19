@@ -153,7 +153,7 @@ def test_find_best_cached_order_picks_smallest_above_target(
 def test_compute_cumulants_warm_cache_speedup(
         model_and_fund, isolated_cache):
     """Calling ``compute_cumulants`` twice with the same arguments —
-    the second call hits the cache and runs much faster (>= 10x),
+    the second call hits the cache and runs much faster (>= 3x),
     and produces identical numerical output."""
     import time
     import numpy as np
@@ -182,13 +182,15 @@ def test_compute_cumulants_warm_cache_speedup(
     t_warm = time.perf_counter() - t0
 
     # Outputs must match exactly.
-    assert np.allclose(th1['C_tau'], th2['C_tau']), \
+    assert np.allclose(th1['C_tau'], th2['C_tau'], rtol=1e-12, atol=1e-12), \
         'C_tau differs between cold and warm runs'
 
-    # Warm run must be substantially faster than cold.  Conservative
-    # threshold (10x) — typical speedup on this small model is ~40x.
-    assert t_warm < t_cold / 10, \
-        (f'expected warm run < cold / 10; got cold={t_cold:.2f}s, '
+    # Warm run must be substantially faster than cold.  The cold run was
+    # ~40x the warm one while the symbolic propagator inverse went through
+    # Maxima; since the cold build is ~1 s (audit W8, SPD-04) the speedup
+    # is ~8x, so the threshold is 3x.
+    assert t_warm < t_cold / 3, \
+        (f'expected warm run < cold / 3; got cold={t_cold:.2f}s, '
          f'warm={t_warm:.2f}s')
 
 
@@ -389,7 +391,8 @@ def test_operator_ir_signed_cache_round_trips(combined_model, isolated_cache):
 
 
 def test_combined_operator_ir_cached_matches_uncached(combined_model,
-                                                      isolated_cache):
+                                                      isolated_cache,
+                                                      monkeypatch):
     """Headline regression: ``compute_cumulants`` for the combined
     Model-B⊕KPZ operator-IR model at ``max_ell=1`` agrees whether the
     expand cache is used or bypassed — and the cached run keeps the
@@ -403,6 +406,12 @@ def test_combined_operator_ir_cached_matches_uncached(combined_model,
         return np.asarray(res['C_tau']), si.get('vertex_mode')
 
     kw = _combined_kwargs()
+    # Cache plumbing only.  Physically this model's one-loop C is UV-divergent
+    # in d = 1 (the KPZ (dphi)^2 self-loop <(dphi)^2> = int dk k^2 C(k) feeding
+    # the Allen-Cahn vertex) and compute_cumulants refuses it; the comparison
+    # cached vs uncached does not need a finite answer.
+    from engine.integration.spatial import full_integrator as _FI
+    monkeypatch.setattr(_FI, '_refuse_uv_divergent', lambda *a, **k: None)
 
     # Reference: cache fully bypassed.
     C_nc, m_nc = _c00_mode(
@@ -420,8 +429,8 @@ def test_combined_operator_ir_cached_matches_uncached(combined_model,
     assert m_nc == m_cold == m_warm == 'composite+perleg', (
         f'vertex_mode dropped: no-cache={m_nc!r}, cold={m_cold!r}, '
         f'warm={m_warm!r} — form-factor table was lost on cache load')
-    assert np.allclose(C_cold, C_nc), 'cold-cache C(x) != uncached'
-    assert np.allclose(C_warm, C_nc), 'warm-cache C(x) != uncached'
+    assert np.allclose(C_cold, C_nc, rtol=1e-12, atol=1e-12), 'cold-cache C(x) != uncached'
+    assert np.allclose(C_warm, C_nc, rtol=1e-12, atol=1e-12), 'warm-cache C(x) != uncached'
     # The 1-loop value must be the corrected one, not the plain +0.495.
     assert C_nc.flat[0] < 0.0, (
         f'C(0,0)={C_nc.flat[0]} — expected the composite+perleg 1-loop '

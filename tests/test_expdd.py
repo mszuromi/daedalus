@@ -34,7 +34,6 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import engine.integration.time_domain.expdd as X
-import engine.integration.time_domain.final_integral as FI
 
 ROOT = os.path.join(os.path.dirname(__file__), '..')
 SEED = int(os.environ.get('DAEDALUS_EXPDD_TEST_SEED', '0'))
@@ -350,10 +349,18 @@ def test_unit_triangle_battery():
     assert b.max_rel <= 1e-13, b.max_rel
 
 
+def _legacy_unit_triangle(p, q):
+    """The closed form of the retired (audit W7) pre-0.2.0 polygon route,
+    ``J(p, q) = [(e^p - e^q)/(p - q) - (e^p - 1)/p] / q`` (generic p, q)."""
+    import cmath
+    return ((cmath.exp(p) - cmath.exp(q)) / (p - q)
+            - (cmath.exp(p) - 1) / p) / q
+
+
 def test_unit_triangle_matches_the_legacy_closed_form_where_it_is_safe():
     for p, q in ((0.3 + 0.1j, -1.2 + 2j), (-2.0, -3.5), (1j, 2j)):
         assert X.unit_triangle(p, q) == pytest.approx(
-            FI._exp_over_unit_triangle(p, q), rel=1e-13)
+            _legacy_unit_triangle(p, q), rel=1e-13)
 
 
 # ═══ (3) triangles on big boxes ════════════════════════════════════════
@@ -370,10 +377,11 @@ def _mp_triangle(V, al, be, ga=0j, real=False):
 
 def test_triangle_big_boxes_never_bail():
     """cfx_accuracy (3): fast poles on boxes up to 2000 wide.  The legacy
-    routine bails (``None``) above |Re| 600; expdd only on a true overflow."""
+    routine (``final_integral._exp_over_triangle``, retired in audit W7)
+    bailed (``None``) above |Re| 600 on this battery; expdd only on a true
+    overflow."""
     rng = _rng(30)
     b = _Worst('triangle big boxes')
-    legacy_bails = 0
     for _ in range(300):
         cap = rng.choice([6, 12, 200, 2000])
         V = [tuple(rng.uniform(-cap, 0.5, 2)) for _ in range(3)]
@@ -385,12 +393,10 @@ def test_triangle_big_boxes_never_bail():
         if ref != 0 and mp.log(abs(ref)) > X.LOG_OVERFLOW:
             assert X.triangle(*V, al, be) is None
             continue
-        legacy_bails += FI._exp_over_triangle(*V, al, be) is None
         with mp.workdps(DPS):
             b.add(*_err(_mpval(X.triangle_log(*V, al, be)), ref,
                         _mp_triangle(V, al, be, real=True)), case=(V, al, be))
     b.check()
-    assert legacy_bails > 0          # the battery does reach the old guard
 
 
 def test_triangle_gamma_and_degenerate():
@@ -543,21 +549,6 @@ def _random_uppers_case(rng):
     return al, L, upp, U_top
 
 
-def test_uppers_vs_legacy_cut_enumeration():
-    """cfx_accuracy (6): transfer matrix vs the production cut enumeration on
-    300 cases (prototype: 1.2e-12)."""
-    rng = _rng(60)
-    worst = 0.0
-    for _ in range(300):
-        al, L, upp, U_top = _random_uppers_case(rng)
-        o = FI._chain_with_intermediate_uppers_uncached(al, L, upp, U_top)
-        nw = X.chain_with_uppers(al, L, upp, U_top)
-        if o is None:
-            continue
-        worst = max(worst, abs(nw - o) / max(abs(o), 1e-14))
-    assert worst <= 1e-11, worst
-
-
 def test_uppers_vs_mpmath():
     rng = _rng(61)
     b = _Worst('uppers vs mpmath')
@@ -662,8 +653,21 @@ def test_a_nan_upper_raises():
 
 
 def _captured_calls():
-    from tests.test_chain_uppers_memo import CALLS
-    return CALLS
+    """The captured chain calls of ``tests/fixtures/chain_uppers_captured.npz``
+    (recorded from quad_exp, spike_reset, a two-field OU quartic and ou_quartic
+    k=4 runs, with the values of the retired legacy evaluator,
+    ``final_integral._chain_with_intermediate_uppers``, memo off)."""
+    z = np.load(os.path.join(os.path.dirname(__file__), 'fixtures',
+                             'chain_uppers_captured.npz'))
+    calls = []
+    for i in range(len(z['lens'])):
+        m = int(z['lens'][i])
+        alphas = [complex(a) for a in z['alphas'][i, :m]]
+        upp = {int(p): float(v) for p, v in zip(z['up_pos'][i], z['up_val'][i])
+               if p >= 0}
+        ref = None if z['value_is_none'][i] else complex(z['value'][i])
+        calls.append((alphas, float(z['L'][i]), upp, float(z['U'][i]), ref))
+    return calls
 
 
 def test_uppers_semantics_on_the_captured_calls():
@@ -694,13 +698,12 @@ def test_uppers_argument_conventions():
     assert f(a, -5.0, {2: -1.0}, 0.0) == pytest.approx(
         X.chain_simplex(a, -5.0, -1.0), rel=1e-14)
     assert f(a, -5.0, {1: 3.0}, 0.0) == f(a, -5.0, {}, 0.0)
-    # the same conventions as the legacy routine and the mpmath reference,
-    # case by case ({0: -4.999}: legacy is off by 1e-12 there, expdd 1e-16)
+    # the same conventions as the mpmath reference, case by case (they were
+    # also those of the retired legacy routine, which was off by 1e-12 at
+    # {0: -4.999}; expdd 1e-16)
     for upp in ({0: None, 1: -1.0}, {0: -2.0, 1: -2.0}, {0: -1.0, 1: -2.0},
                 {1: -5.0}, {2: -1.0, 0: -3.0}, {0: -4.999}):
         got = f(a, -5.0, upp, 0.0)
-        leg = FI._chain_with_intermediate_uppers_uncached(a, -5.0, upp, 0.0)
-        assert got == pytest.approx(leg, rel=1e-11, abs=1e-300), upp
         with mp.workdps(DPS):
             ref = complex(mp_uppers(a, -5.0, upp, 0.0))
         assert got == pytest.approx(ref, rel=1e-14, abs=1e-300), upp
@@ -716,7 +719,7 @@ def _degenerate_calls():
 
 
 def test_captured_degenerate_chain_calls():
-    """cs_bench [A]: 200 real degenerate chain calls (ou_quartic_two_dim k=2
+    """cs_bench [A]: 200 real degenerate chain calls (a two-field OU quartic k=2
     l=2, ou_quartic k=4 l=2; every block sum of the alphas that vanishes is a
     repeated node)."""
     calls = _degenerate_calls()
@@ -856,7 +859,6 @@ def test_a_large_scale_with_a_small_mantissa_is_a_value():
     V = ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0))
     got = X.triangle(*V, 650.0, -30.0)
     assert got == pytest.approx(complex(_mp_triangle(V, 650.0, -30.0)), rel=1e-13)
-    assert FI._exp_over_triangle(*V, 650.0, -30.0) is None
 
 
 def test_overflow_boundary_is_consistent_with_mpmath():

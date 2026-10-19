@@ -49,7 +49,7 @@ def test_hcal0_is_matrix_exponential():
     ts = np.array([0.0, 0.3, 1.1])
     H0 = hcal_n(ts, _M, np.zeros((2, 2)), 0)
     for i, t in enumerate(ts):
-        assert np.allclose(H0[i], expm(-_M * t), atol=1e-12)
+        assert np.allclose(H0[i], expm(-_M * t), rtol=1e-12, atol=1e-12)
 
 
 @pytest.mark.parametrize('qsq,t', [(1.0, 0.5), (2.5, 0.8)])
@@ -92,12 +92,12 @@ def test_order0_scalar_diffusion_reduces_to_coupled_two_point():
     coupled_two_point — pins the s-integral normalization."""
     Dsc = 0.7 * np.eye(2)
     D0, Dhat = split_reference_diffusion(Dsc)
-    assert np.allclose(Dhat, 0.0)
+    assert np.allclose(Dhat, 0.0, rtol=0, atol=1e-12)
     ref = build_reference(_M, Dsc)
     for q, tau in ((0.0, 0.0), (0.8, 0.5), (1.4, 1.0)):
         C_d = dressed_tree_C(q, tau, _M, Dhat, D0, _NZ, 0, n_s=64)
         C_l = coupled_two_point(ref, _NZ, q * q, tau)
-        assert np.allclose(C_d, C_l, atol=2e-6 * max(1.0, np.max(np.abs(C_l)))), \
+        assert np.allclose(C_d, C_l, rtol=1e-11, atol=1e-11 * max(1.0, np.max(np.abs(C_l)))), \
             f'(q={q},τ={tau}):\n{C_d}\nvs\n{C_l}'
 
 
@@ -105,7 +105,7 @@ def test_tau_negative_transpose():
     D0, Dhat = split_reference_diffusion(np.diag(_DVEC))
     Cp = dressed_tree_C(1.0, 0.5, _M, Dhat, D0, _NZ, 2)
     Cm = dressed_tree_C(1.0, -0.5, _M, Dhat, D0, _NZ, 2)
-    assert np.allclose(Cm, Cp.T, atol=1e-12)
+    assert np.allclose(Cm, Cp.T, rtol=1e-12, atol=1e-12)
 
 
 # ── D-4 policy wiring + D-5 end-to-end (unequal diffusion) ───────────────────
@@ -202,6 +202,10 @@ def test_unequal_D_default_policy_raises_actionable():
 
 
 @pytest.mark.slow   # coupled-Dyson order-3 loop path: minutes-long; opt in with -m slow
+# bigmem: the coupled one loop at dressing order 2 / 3 needs 6.4 / 10.8 GB per chamber at the default grids
+# (P x 256 / 592 spectral assignments); before the memory guard (#44) it reached > 18.9 GB (killed at a 12 GB
+# watchdog), so it never fitted a standard runner.  Run with SPATIAL_MEM_BUDGET_GB raised on a big machine.
+@pytest.mark.bigmem
 def test_unequal_D_loops_order3_runs():
     """Loop insertions have NO order cap (exact at every order via the
     ln-derivative partition expansion + generalized-partial-fraction
@@ -257,6 +261,10 @@ _LUF = {'mua': _MU1, 'mub': _MU2, 'Da': _D1, 'Db': _D2, 'eps': 1e-8,
 
 
 @pytest.mark.slow   # coupled-Dyson loop-dressing ladder: minutes-long; opt in with -m slow
+# bigmem: the coupled one loop at dressing order 2 / 3 needs 6.4 / 10.8 GB per chamber at the default grids
+# (P x 256 / 592 spectral assignments); before the memory guard (#44) it reached > 18.9 GB (killed at a 12 GB
+# watchdog), so it never fitted a standard runner.  Run with SPATIAL_MEM_BUDGET_GB raised on a big machine.
+@pytest.mark.bigmem
 def test_unequal_D_loop_dressing_ladder():
     """THE loop-dressing referee: the decoupled-unequal-D loop correction dC
     must converge to the single-field answer at D=Da — order 0 (no dressing,

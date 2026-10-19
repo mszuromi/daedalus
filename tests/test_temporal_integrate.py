@@ -1,7 +1,7 @@
 """
 tests/test_temporal_integrate.py
 ================================
-Backend C — C2 (causal time-simplex), ``engine.integration.spatial.temporal_integrate``.
+Backend C — C2 (causal time-simplex), ``tests.oracles.temporal_integrate``.
 
 Validates the parametric self-energy assembly Σ(q,t) for 2-vertex diagrams:
   * 1-loop bubble Σ_R / Σ_K vs backend B (loop_parametric.sigma_R/K_kernel, itself
@@ -22,13 +22,13 @@ from scipy import integrate
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.integration.spatial.temporal_integrate import (
+from tests.oracles.temporal_integrate import (
     sigma_parametric, bubble_edges, sunset_edges, bubble_delta_equal_time_via_C,
 )
-from engine.integration.spatial.loop_parametric import (
+from tests.oracles.loop_parametric import (
     sigma_R_kernel, sigma_K_kernel,
 )
-from engine.integration.spatial.loop_dyson import bubble_delta_S
+from tests.oracles.loop_dyson import bubble_delta_S
 
 MU = D = T = 1.0
 
@@ -45,7 +45,7 @@ def test_c2_bubble_sigma_R_matches_backend_B(q, t):
     backend B's sigma_R_kernel (the validated 1-loop reference)."""
     got = sigma_parametric(bubble_edges('R'), q, t, MU, D, T)
     ref = sigma_R_kernel(q, t, MU, D, T)
-    assert abs(got - ref) <= 1e-6 * max(abs(ref), 1e-12)
+    assert abs(got - ref) <= 1e-8 * max(abs(ref), 1e-12)
 
 
 @pytest.mark.parametrize('q', [0.0, 0.8, 1.5])
@@ -94,7 +94,7 @@ def test_c2_bubble_d2_sigma_R_matches_brute_force(q, t):
     ref, _ = integrate.dblquad(integrand, -np.inf, np.inf,
                                lambda _lx: -np.inf, lambda _lx: np.inf)
     ref /= (2 * np.pi) ** 2
-    assert abs(got - ref) <= 1e-4 * max(abs(ref), 1e-12)
+    assert abs(got - ref) <= 1e-10 * max(abs(ref), 1e-12)
 
 
 # ── C3-lite capstone: the full bubble δC(q,0) end-to-end through the C stack ──

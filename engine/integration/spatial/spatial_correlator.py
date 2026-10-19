@@ -21,12 +21,12 @@ heat-kernel mode with mass ``A_i`` and diffusion ``B_i``) the spatial
 with the integral evaluated by ``heat_kernel.erf_time_integral``
 (Rescue A).  Verified 3 ways (closed form vs 2-D quadrature vs the
 analytic ``C(x,0) = D^noise/(2√(AB)) e^{-|x|√(A/B)}``) in
-``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
+the internal design notes (not distributed).
 
 This is the **tree-level / Gaussian** correlator: exact for the free
 model, and the leading term for an interacting one (the λφ³ vertex
 enters at 1-loop, which is the remaining Phase-5 work — see
-``docs/spatial_implementation_plan.md`` §5).  Off-diagonal field
+the internal design notes (not distributed) §5).  Off-diagonal field
 coupling and loops are deferred to v2.
 """
 from __future__ import annotations
@@ -43,6 +43,24 @@ from engine.integration.spatial.heat_kernel import (
 
 
 # ── Noise extraction ──────────────────────────────────────────────
+def _noise_value(coeff, sub, exp_vec):
+    """Numeric value of one noise-sector coefficient.  Never silent: a
+    coefficient that does not reduce to a number (a missing parameter / saddle
+    value, or a momentum-dependent — e.g. conserved — noise the white-noise
+    extractors cannot represent) raises, naming the leftover symbols; a
+    dropped noise entry would change the correlator with no error."""
+    val = SR(coeff).subs(sub)
+    try:
+        return complex(val)
+    except (TypeError, ValueError):
+        left = sorted(str(v) for v in val.free_variables())
+        raise SpatialPropagatorError(
+            f'noise coefficient {coeff} (monomial exponents {tuple(exp_vec)}) '
+            f'does not reduce to a number: leftover symbol(s) {left}.  Supply '
+            f'every parameter and saddle value; momentum-dependent noise is '
+            f'not supported by the spatial white-noise extractors.')
+
+
 def extract_noise_coefficients(ft, num_params):
     """Return ``{field_index: D_noise}`` — the white-noise spectral
     coefficient per (response) field, read from the action's (2,0)
@@ -80,10 +98,7 @@ def extract_noise_coefficients(ft, num_params):
         nz = [idx for idx in range(n_gens) if exp_vec[idx] != 0]
         if len(nz) == 1 and nz[0] < n_tilde and exp_vec[nz[0]] == 2:
             i = nz[0]
-            try:
-                val = complex(SR(coeff).subs(sub))
-            except Exception:
-                val = 0j
+            val = _noise_value(coeff, sub, exp_vec)
             Dn = -val.real       # action term is - D_noise φ̃²
             if abs(Dn) > 1e-300:
                 out[i] = Dn
@@ -101,8 +116,9 @@ def extract_noise_matrix(ft, num_params):
         N_ii = −2·coeff(φ̃_i²),      N_ij = −coeff(φ̃_i φ̃_j)   (i ≠ j).
 
     So ``N_ii = 2·κ_i`` with ``κ_i`` the value :func:`extract_noise_coefficients`
-    returns.  Reads only the q⁰ (white-noise) part; q²-dependent (conserved /
-    Model-B) noise is skipped (left 0), matching the diagonal extractor's scope.
+    returns.  White noise only: a coefficient that does not reduce to a
+    number (missing parameter, or q-dependent noise) raises (it used to be
+    left 0 silently).
     """
     by_tp = getattr(ft, '_by_tp', None)
     if by_tp is None:
@@ -120,10 +136,7 @@ def extract_noise_matrix(ft, num_params):
         return N
     for exp_vec, coeff in terms:
         nz = [idx for idx in range(n_gens) if exp_vec[idx] != 0]
-        try:
-            c = complex(SR(coeff).subs(sub)).real      # white-noise (q⁰) part
-        except Exception:
-            continue                                   # q-dependent noise → skip
+        c = _noise_value(coeff, sub, exp_vec).real
         if len(nz) == 1 and nz[0] < n_tilde and exp_vec[nz[0]] == 2:
             i = nz[0]
             N[i, i] = -2.0 * c
@@ -174,6 +187,112 @@ def free_two_point(mu, D, kap, x, tau, bc_mode='infinite', L=None,
     raise SpatialPropagatorError(f'unknown bc_mode {bc_mode!r}')
 
 
+def heat_time_integral_d(mu, beta, t_lo, spatial_dim, dps=30, abs_tol=0.0):
+    """``∫_{t_lo}^∞ s^{−d/2} e^{−μ s − β/s} ds`` (complex ``μ`` with Re μ > 0),
+    the time integral behind the free correlator in ``d`` dimensions.
+
+    ``t_lo = 0``: the closed form ``2 (β/μ)^{ν/2} K_ν(2√(μβ))``, ``ν = 1 − d/2``
+    (needs ``β > 0`` for ``d ≥ 2``; at ``β = t_lo = 0`` the integral diverges —
+    the equal-point variance is UV-divergent for ``d ≥ 2`` — and this raises).
+    ``t_lo > 0``: adaptive mpmath quadrature at ``dps`` digits with its error
+    estimate checked (raises if it is above 1e-12 relative and above
+    ``abs_tol``, the absolute accuracy the caller needs)."""
+    import mpmath as mp
+    d = int(spatial_dim)
+    mu = complex(mu)
+    beta = float(beta)
+    t_lo = float(t_lo)
+    if not mu.real > 0.0:
+        raise SpatialPropagatorError(
+            f'free correlator needs a stable mass (Re mu > 0); got mu={mu}.')
+    with mp.workdps(dps):
+        if t_lo == 0.0:
+            if beta <= 0.0:
+                if d >= 2:
+                    raise SpatialPropagatorError(
+                        f'equal-point (x=0, tau=0) free correlator is '
+                        f'UV-divergent at d={d} (no continuum value; the '
+                        f'q-grid used to return a cutoff-dependent number).')
+                return complex(mp.gamma(1.0 - 0.5 * d) * mp.mpc(mu) ** (0.5 * d - 1.0))
+            nu = mp.mpf(1) - mp.mpf(d) / 2
+            m_ = mp.mpc(mu)
+            val = 2 * (beta / m_) ** (nu / 2) * mp.besselk(nu, 2 * mp.sqrt(m_ * beta))
+            return complex(val)
+        m_ = mp.mpc(mu)
+        h = mp.mpf(d) / 2
+        # s = t_lo + u, e^{−μ t_lo} factored out; breakpoints at the decay
+        # scale 1/Re μ and around the peak of s^{−d/2} e^{−Re μ s − β/s}
+        mr = mp.mpf(mu.real)
+        s_pk = (-h + mp.sqrt(h * h + 4 * mr * beta)) / (2 * mr)
+        f = lambda u: ((t_lo + u) ** (-h)
+                       * mp.exp(-m_ * u - beta / (t_lo + u)))
+        cuts = sorted({mp.mpf(0)} | {c for c in (
+            s_pk - t_lo, (s_pk - t_lo) * 2, 1 / mr, 10 / mr, 60 / mr)
+            if c > 0})
+        val, err = mp.quad(f, cuts + [mp.inf], error=True, maxdegree=12)
+        if (abs(err) > 1e-12 * abs(val)
+                and abs(err) > max(mp.mpf(abs_tol), mp.mpf('1e-300'))):
+            raise SpatialPropagatorError(
+                f'free correlator time integral did not converge (estimate '
+                f'{complex(val)}, error {float(abs(err)):.2e}).')
+        val = val * mp.exp(-m_ * t_lo)
+        return complex(val)
+
+
+def free_two_point_d(mu, D, kap, x, tau, spatial_dim, abs_tol=0.0):
+    """Exact infinite-domain free correlator in ``d`` dimensions,
+    ``C(x,τ) = κ ∫_{|τ|}^∞ ds e^{−μs} (4πDs)^{−d/2} e^{−|x|²/4Ds}`` — the
+    inverse FT of ``κ/(μ+Dq²)·e^{−(μ+Dq²)|τ|}`` with no q-grid or cutoff.
+    ``d = 1`` delegates to :func:`free_two_point`; ``d ≥ 2`` refuses the
+    UV-divergent equal point ``x = τ = 0``.  ``abs_tol``: absolute accuracy
+    needed on ``C`` (an image term far below the total needs no 1e-12
+    relative accuracy of its own)."""
+    d = int(spatial_dim)
+    if d == 1:
+        return free_two_point(mu, D, kap, x, tau)
+    D = float(D)
+    r = float(np.linalg.norm(np.atleast_1d(np.asarray(x, dtype=float))))
+    beta = r * r / (4.0 * D)
+    pref = float(kap) * (4.0 * math.pi * D) ** (-0.5 * d)
+    integ = heat_time_integral_d(mu, beta, abs(float(tau)), d,
+                                 abs_tol=(abs_tol / abs(pref) if pref else 0.0))
+    return complex(pref * integ)
+
+
+def free_two_point_box(mu, D, kap, x, tau, spatial_dim, L, max_shells=80,
+                       rtol=1e-14):
+    """Exact free correlator on a periodic cubic box of period ``L`` (``x``
+    along one axis): the image sum ``Σ_{n∈ℤ^d} C_∞(x·e₁ + nL, τ)`` of
+    :func:`free_two_point_d`, summed in shells ``‖n‖_∞ = s`` until two
+    consecutive shells add less than ``rtol`` of the total.  Raises when that
+    needs more than ``max_shells`` shells (box much smaller than the
+    correlation length) instead of truncating silently."""
+    import itertools as _it
+    d = int(spatial_dim)
+    L = float(L)
+    if d == 1:
+        return free_two_point(mu, D, kap, x, tau, bc_mode='periodic', L=L)
+    e1 = np.zeros(d)
+    e1[0] = float(x)
+    total = free_two_point_d(mu, D, kap, e1, tau, d)
+    quiet = 0
+    for sh in range(1, max_shells + 1):
+        add = 0j
+        for n in _it.product(range(-sh, sh + 1), repeat=d):
+            if max(abs(c) for c in n) != sh:
+                continue
+            add += free_two_point_d(mu, D, kap, e1 + L * np.asarray(n, float),
+                                    tau, d, abs_tol=1e-3 * rtol * abs(total))
+        total += add
+        quiet = quiet + 1 if abs(add) <= rtol * abs(total) else 0
+        if quiet >= 2:
+            return complex(total)
+    raise SpatialPropagatorError(
+        f'periodic image sum did not converge in {max_shells} shells (L={L} '
+        f'is small against the correlation length sqrt(D/mu)); not '
+        f'truncating silently.')
+
+
 # ── Assembly over (τ, x) grid ─────────────────────────────────────
 def compute_spatial_correlator_tree(ft, model, prop, num_params,
                                     external_fields, tau_grid,
@@ -218,18 +337,21 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     n_tilde = prop['nf']
     phys_names = ring_names[n_tilde:]
 
-    # External legs may be ('phi',1) style already normalized to the
-    # internal fluctuation name with a numeric suffix (e.g. 'dphi1').
-    def _field_index(legname):
-        base = str(legname)
-        # strip trailing population index digits to match phys col base
-        for idx, pn in enumerate(phys_names):
-            if base == pn or base.rstrip('0123456789') == pn.rstrip('0123456789'):
-                return idx
-        return 0
-    leg_names = [f[0] if isinstance(f, (tuple, list)) else f
-                 for f in external_fields]
-    fi = _field_index(leg_names[0])
+    # External legs resolve through the phys_idx (name, population) keys, so
+    # a multi-population field's population 2 is its own column (the old
+    # name-only match with the digits stripped returned column 0 for every
+    # population; an unknown leg fell back to column 0 silently).
+    from engine.diagrams.type_assignment import build_field_index_map
+    from engine.integration.spatial.pipeline_bridge import _legs_to_phys_idx
+    _, _pidx = build_field_index_map(list(ring_names), int(n_tilde))
+    _keys = _legs_to_phys_idx(list(external_fields), _pidx)
+    fi = int(_pidx[_keys[0]])
+    if len(_keys) >= 2 and int(_pidx[_keys[1]]) != fi:
+        raise NotImplementedError(
+            'compute_spatial_correlator_tree: the external legs sit on two '
+            'different fields (a cross-correlator); this diagonal oracle '
+            'returns auto-correlators only — use '
+            'compute_spatial_correlator_via_pipeline (coupled driver).')
 
     # Tier-1 guard: the closed-form heat-kernel block is only built for a
     # diagonal (decoupled) inverse propagator.  Off-diagonal multi-field
@@ -244,7 +366,7 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
             'block).  This model is not Tier-1 — the usual causes are '
             'off-diagonal / coupled multi-field structure OR a higher-'
             'derivative operator (k⁴+, e.g. Laplacian²).  Both are v2 '
-            'features — see docs/spatial_phase5_rearchitecture_plan.md. '
+            'features — see the internal design notes (not distributed). '
             f'(reason: {why})')
 
     A_expr, B_expr = prop['G_tx_sym'][(fi, fi)]
@@ -261,14 +383,14 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     if B <= 0.0:
         if B < 0.0:
             raise SpatialPropagatorError(
-                f'field {leg_names[0]!r} (index {fi}) has NEGATIVE diffusion '
+                f'field {phys_names[fi]!r} (index {fi}) has NEGATIVE diffusion '
                 f'B={B}: the spatial operator is anti-diffusive, so the heat '
                 f'kernel diverges (the model is short-wavelength unstable / '
                 f'ill-posed).  Check the sign of the Laplacian term — it '
                 f'should enter as "- D*Laplacian" with D>0 (dispersion +D·k²) '
                 f'— and that D itself is positive.')
         raise SpatialPropagatorError(
-            f'field {leg_names[0]!r} (index {fi}) has zero diffusion (B=0): '
+            f'field {phys_names[fi]!r} (index {fi}) has zero diffusion (B=0): '
             f'it carries no spatial (Laplacian) kinetic term, i.e. it is a '
             f'time-only (spatial_dim=0) field.  A spatial correlator C(x, τ) '
             f'is only defined for spatial (dim >= 1) fields — request this '
@@ -373,7 +495,7 @@ def periodic_inverse_ft(q_grid, Cq, x, spatial_dim, L, n_cut=None):
     #     S(n1) = Σ_{n_⊥} C(|k_n|)   (n_⊥: the other d-1 axes),
     # built one n1 slab at a time: memory O(n^{d-1}), not O(n^d) (the whole
     # d=3 lattice was ~9 arrays of (2 n_cut + 1)^3 doubles, 13.6 GB at
-    # n_cut = 288; item 53).  The lattice magnitudes are exact integers
+    # n_cut = 288).  The lattice magnitudes are exact integers
     # before the square root, so each term is as before; only the order of
     # the additions changed.
     n_sq1 = ns.astype(float) ** 2

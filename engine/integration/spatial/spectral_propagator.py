@@ -181,6 +181,11 @@ def coupled_two_point(ref: SpectralReference, N, qsq: float,
             'diffusion requires the Dyson–Duhamel series (not yet wired).')
     n = ref.n_fields
     A = np.asarray(ref.M, dtype=float) + ref.D0 * float(qsq) * np.eye(n)
+    if not float(np.min(np.linalg.eigvals(A).real)) > 0.0:
+        raise ValueError(
+            f'coupled_two_point: A(q) = M + D0 q^2 is not stable at q^2={qsq} '
+            f'(min Re eig = {float(np.min(np.linalg.eigvals(A).real)):.4g}); '
+            f'no stationary covariance exists.')
     Sigma = lyapunov_covariance(A, N)
     G = expm(-A * abs(float(tau)))                 # e^{−A|τ|}  (= G₀ for scalar 𝒟)
     return G @ Sigma if tau >= 0 else Sigma @ G.T

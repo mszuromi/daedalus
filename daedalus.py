@@ -108,11 +108,13 @@ _PIPELINE_EXPORTS = {
     'PhaseJIncompleteError':     'api.compute',
     # Phase J over its memory budget (PHASE_J_MEM_BUDGET_GB)
     'PhaseJResourceError':       'api.compute',
-    # a discard=True run asked for a point it did not evaluate (item 61)
+    # a discard=True run asked for a point it did not evaluate
     'DiscardedDiagramsError':    'api.compute',
     'backends':                  'api.routing',
     'params_slug':               'api',
     'MeanField':                 'api',
+    # the common base of every exception the package raises on purpose
+    'DaedalusError':             'api',
     'Parameters':                'api',
     'normalize_external_fields': 'api',
     # δ components of a cumulant (Feature B): dd.cumulant(result)
@@ -134,7 +136,8 @@ _PIPELINE_EXPORTS = {
     'TreeCovariance':            'api.symbolic_out',
     'tree_modes':                'api.symbolic_out',
     'ModeSum':                   'api.symbolic_out',
-    'Kernel':                    'api.symbolic_out',
+    'PairingKernel':             'api.symbolic_out',
+    'Kernel':                    'api.symbolic_out',   # deprecated alias of PairingKernel
     'KernelIntegral':            'api.symbolic_out',
     'integrate_against':         'api.symbolic_out',
     'inverse_transform':         'api.symbolic_out',
@@ -256,17 +259,29 @@ def _field_pop_size(model: dict, natural_name: str) -> int:
 
 def _ext_is_valid(model: dict, ext, k: int) -> bool:
     """True iff ``ext`` is a usable k-leg external_fields list for ``model``:
-    present, of length ``k``, and every leg names a real physical field.
+    present, of length ``k``, every leg names a real physical field, and a
+    leg's 1-based population index is one of that field's populations.
 
-    A stale METADATA recommendation (wrong length, or naming a field that
-    no longer exists) fails this check so :func:`run` auto-builds a fresh
-    one instead of feeding garbage to ``compute_cumulants``."""
+    A stale METADATA recommendation (wrong length, naming a field that
+    no longer exists, or a population the field does not have) fails this
+    check so :func:`run` auto-builds a fresh one instead of feeding garbage
+    to ``compute_cumulants``."""
     if not ext or len(ext) != k:
         return False
     valid = set(field_names(model))
-    def _nm(e):
-        return e[0] if isinstance(e, (tuple, list)) else e
-    return all(_nm(e) in valid for e in ext)
+
+    def _ok(e):
+        if not isinstance(e, (tuple, list)):
+            return e in valid
+        if not e or e[0] not in valid:
+            return False
+        if len(e) < 2:
+            return True
+        pop = e[1]
+        if isinstance(pop, bool) or not isinstance(pop, (int, np.integer)):
+            return False
+        return 1 <= int(pop) <= _field_pop_size(model, e[0])
+    return all(_ok(e) for e in ext)
 
 
 def _auto_external_fields(model: dict, k: int) -> list:
@@ -290,9 +305,8 @@ def param_names(model: dict) -> list[str]:
     """The parameter names you can override via ``Config(parameters={...})`` —
     the declared parameters, excluding the mean-field saddle symbols.  Use this
     to get the exact spellings (a mistyped name now raises in ``dd.run``)."""
-    return [p['name'] for p in (model.get('parameters') or [])
-            if not str(p.get('name', '')).endswith('star')
-            and not p.get('mean_field')]
+    from api.naming import free_parameter_names
+    return free_parameter_names(model)
 
 
 def _fmt_default(v, maxlen: int = 52) -> str:
@@ -332,7 +346,10 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
     also surface its docstring + ``METADATA`` run recommendations.
 
     This is the canonical "what is this model?" cell for the example
-    notebooks — it reads only the model dict, so it stays model-independent."""
+    notebooks — it reads only the model dict, so it stays model-independent.
+    An unbuilt ``api.sde.SDE`` / builder is built first."""
+    from api.compute import as_model_dict
+    model = as_model_dict(model)
     out = []
     bar = '─' * 72
     out.append(bar)
@@ -379,9 +396,7 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
             for p in pops))
 
     params = model.get('parameters') or []
-    def _is_saddle(p):                # saddle iff named '<base>star' OR mean_field
-        return (str(p.get('name', '')).endswith('star')
-                or bool(p.get('mean_field')))
+    from api.naming import is_saddle as _is_saddle   # the mean_field flag
     numeric = [p for p in params if not _is_saddle(p)]
     saddle = [p.get('name') for p in params if _is_saddle(p)]
     if saddle:
@@ -527,6 +542,13 @@ class Config:
     # the route's defaults (automatic order).
     delay: Optional[dict] = None
 
+    # ── numerical knobs shared with compute_cumulants (None = its default) ──
+    taylor_order: Optional[int] = None      # vertex Taylor order (None: max(k + 2 max_ell, 2))
+    use_cache: Optional[bool] = None        # on-disk caches (None: on)
+    accuracy: Optional[float] = None        # target relative accuracy of the G6 estimate
+    backend: Optional[str] = None           # an explicit backend name (api.routing)
+    discard: Any = None                     # False | True | 'auto': release each diagram after evaluating it
+
     # ── Dyson dressing (coupled unequal-D) ──
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
     reference_diffusion: Optional[float] = None
@@ -544,11 +566,12 @@ class Config:
     parallel: bool = False
     # Worker count for the parallel backend (forwarded to compute_cumulants).
     # None → the backend's own default (spatial threads: min(8, cores);
-    # temporal batch: os.cpu_count()).  NOTE: the SPATIAL backend is
-    # thread-based (safe in a Jupyter kernel) and is the one this actually
-    # tunes in a notebook; the TEMPORAL batch is fork-based and is force-
-    # serialized on macOS+Jupyter (see the fork guard), so n_workers there
-    # only takes effect outside a notebook (scripts / pytest / Linux).
+    # temporal batch: up to 8 threads, or os.cpu_count() fork workers on
+    # Linux).  The spatial backend and the temporal batch's thread fan-out
+    # (diagrams with large state blocks) are safe in a Jupyter kernel; fork
+    # (temporal batch, type assignment) is Linux-only: macOS never forks
+    # (engine.fork_safety).  The numbers do not depend on it.
+    # DAEDALUS_PARALLEL=0 turns every pool off.
     n_workers: Optional[int] = None
     verbose: bool = False
 
@@ -595,11 +618,51 @@ class Config:
         # at Config construction, not deep inside run().
         self.resolved_tau_grid()
         self.resolved_grid()
+        self._check_numbers()
+        self._check_switch_on()
+
+    def _check_numbers(self):
+        """The integer / positive options, checked at construction (and
+        again by :func:`run`, as fields may be set afterwards) instead of
+        deep inside the run."""
+        from api.compute import _entry_int
+        for _n, _lo in (('k', 1), ('max_ell', 0), ('n_workers', 1),
+                        ('fixed_point_index', 0), ('mf_dae_n_starts', 1),
+                        ('taylor_order', 1)):
+            _v = getattr(self, _n)
+            if _v is None:
+                continue
+            if _entry_int(f'Config.{_n}', _v) < _lo:
+                raise ValueError(f"Config.{_n} must be >= {_lo}; got {_v!r}.")
         for _n in ('tau_max', 'tau_step'):
             _v = getattr(self, _n)
             if _v is not None and not np.isfinite(float(_v)):
                 raise ValueError(f"Config.{_n} must be finite; got {_v!r}.")
-        self._check_switch_on()
+        if self.use_cache is not None and not isinstance(
+                self.use_cache, (bool, np.bool_)):
+            raise ValueError(
+                f"Config.use_cache must be True, False or None; got "
+                f"{self.use_cache!r}.")
+        if self.accuracy is not None and not (
+                isinstance(self.accuracy, (int, float, np.integer, np.floating))
+                and not isinstance(self.accuracy, bool)
+                and np.isfinite(float(self.accuracy))
+                and float(self.accuracy) > 0):
+            raise ValueError(
+                f"Config.accuracy must be a finite number > 0; got "
+                f"{self.accuracy!r}.")
+        if self.discard is not None and not (
+                isinstance(self.discard, (bool, np.bool_))
+                or self.discard == 'auto'):
+            raise ValueError(
+                f"Config.discard must be False, True or 'auto'; got "
+                f"{self.discard!r}.")
+        if self.tau_step is not None and not float(self.tau_step) > 0:
+            raise ValueError(
+                f"Config.tau_step must be > 0; got {self.tau_step!r}.")
+        if self.tau_max is not None and not float(self.tau_max) >= 0:
+            raise ValueError(
+                f"Config.tau_max must be >= 0; got {self.tau_max!r}.")
 
     def _check_switch_on(self):
         if self.t_min is None and (self.times is not None
@@ -633,47 +696,17 @@ class Config:
     @staticmethod
     def _resolve_grid(g, name='grid'):
         """``(lo, hi, n)`` TUPLE → ``linspace``; list/array → literal points;
-        None → None.
-
-        A 3-element *list* whose last entry is an integer count (e.g.
-        ``[-5, 5, 51]``) is the classic "I meant a range" slip — a list is taken
-        literally, so that would be the 3 points {-5, 5, 51} (note the 51!).
-        Rather than silently mis-grid, we raise and point at the tuple form."""
-        if g is None:
-            return None
-        if isinstance(g, tuple):
-            if len(g) != 3:
-                raise ValueError(
-                    f"{name} tuple must be (lo, hi, n); got a {len(g)}-tuple "
-                    f"{g!r}. For an arbitrary grid pass a list/array instead.")
-            arr = np.linspace(g[0], g[1], int(g[2]))
-            Config._require_finite(arr, name)
-            return arr
-        if (isinstance(g, list) and len(g) == 3
-                and isinstance(g[2], (int, float))
-                and float(g[2]) >= 2 and float(g[2]) == int(g[2])):
-            lo, hi, n = g[0], g[1], int(g[2])
-            raise ValueError(
-                f"{name}={g!r} is a 3-element LIST, so it is read as 3 literal "
-                f"grid points {{{float(lo)}, {float(hi)}, {float(n)}}} — note the "
-                f"{n}!  For a linspace RANGE of {n} points from {lo} to {hi}, use "
-                f"a TUPLE: {name}=({lo}, {hi}, {n}).  For {n} literal points, pass "
-                f"a numpy array: {name}=np.array({g!r}).")
-        arr = np.asarray(g, dtype=float)
-        if arr.size == 0:
-            raise ValueError(
-                f"{name} is empty — pass a non-empty grid, or omit it (None) to use "
-                f"the default.")
-        Config._require_finite(arr, name)
-        return arr
+        None → None.  The rule is shared with ``compute_cumulants``
+        (:func:`api._grids.resolve_grid`); a 3-element *list* ending in an
+        integer count (``[-5, 5, 51]``) is the "I meant a range" slip and
+        raises, pointing at the tuple form."""
+        from api._grids import resolve_grid
+        return resolve_grid(g, name)
 
     @staticmethod
     def _require_finite(arr, name):
-        bad = ~np.isfinite(arr)
-        if bad.any():
-            raise ValueError(
-                f"{name} must be finite: {int(bad.sum())} of {arr.size} "
-                f"entries are NaN or infinite.")
+        from api._grids import require_finite
+        require_finite(arr, name)
 
 
 def _meta(mod, key, default=None):
@@ -684,14 +717,14 @@ def fundamental_from_model(model: dict) -> dict:
     """Build a ``fundamental`` dict from the parameters' own ``default``
     values baked into the model — every non-saddle parameter with a
     declared default.  Lets a loaded model run out of the box even when
-    its ``DEFAULT_FUNDAMENTAL`` is empty.  Saddle params (``*star``,
+    its ``DEFAULT_FUNDAMENTAL`` is empty.  Saddle params (``mean_field=True``,
     solved by the mean-field step) and defaultless params are skipped."""
+    from api.naming import is_saddle
     out = {}
     for p in model.get('parameters') or []:
-        name = p.get('name') or ''
-        if name.endswith('star') or p.get('default') is None:
+        if is_saddle(p) or p.get('default') is None:
             continue
-        out[name] = p['default']
+        out[p['name']] = p['default']
     return out
 
 
@@ -750,7 +783,7 @@ def config_options(spatial=None):
             ('k',               'correlator order: 1=mean ⟨φ⟩, 2=correlation, ≥3=cumulant'),
             ('max_ell',         'loop order: 0=tree, 1=+1-loop, 2=+2-loop, …'),
             ('external_fields', "the k legs, e.g. [('x',1),('x',1)]; sets k if k is None"),
-            ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → model defaults"),
+            ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → model defaults  [alias: fundamental]"),
             ('output',          "'cumulant' | 'moment' | 'central_moment'"),
         ]),
     ]
@@ -765,7 +798,7 @@ def config_options(spatial=None):
         ('initial_covariance', 'with t_min, k=2, tree: covariance C0 of the fluctuations at t_min (adds R C0 Rᵀ)'),
     ])
     spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
-        ('chi_grid',      'grid χ=x_j−x_k: (lo,hi,n) TUPLE→linspace, or array; [χ0] fixes χ'),
+        ('chi_grid',      'grid χ=x_j−x_k: (lo,hi,n) TUPLE→linspace, or array; [χ0] fixes χ  [alias: spatial_grid]'),
         ('tau_grid',      'τ grid: (lo,hi,n) TUPLE→linspace, or array; [0.0] → equal-time C(χ,0)'),
         ('tau_max',       'under-the-hood: τ extent if no tau_grid (0.0 → equal-time)'),
         ('tau_step',      'under-the-hood: τ spacing (paired with tau_max)'),
@@ -777,13 +810,23 @@ def config_options(spatial=None):
             ('mf_dae_n_starts',   'multi-start Newton count for the saddle solve'),
             ('mf_dae_seed_box',   '{field: (lo,hi)} start range for the saddle search'),
         ]),
+        ('numerics (the compute_cumulants options)', [
+            ('taylor_order', 'vertex Taylor order; None → max(k + 2 max_ell, 2)'),
+            ('use_cache',    'on-disk caches (diagram, propagator, expand); None → on'),
+            ('accuracy',     'target relative accuracy of the G6 error estimate; None → 1e-10'),
+            ('backend',      'an explicit backend name (api.routing); None → the router picks'),
+            ('discard',      "False | True | 'auto': release each diagram after evaluating it (memory)"),
+        ]),
+        ('delay kernels (api.delay)', [
+            ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
+        ]),
         ('Dyson dressing (coupled unequal-D)', [
             ('dyson_order',         'None=leave model; int≥0 overrides the Dyson order'),
             ('reference_diffusion', 'reference D for the Dyson expansion'),
         ]),
         ('execution', [
-            ('parallel',  'enable the parallel backend (temporal fork-parallelism is force-serialized in a macOS Jupyter kernel)'),
-            ('n_workers', 'worker count (spatial threads; temporal batch outside Jupyter)'),
+            ('parallel',  'enable the parallel backend (threads everywhere, fork on Linux only; same numbers; DAEDALUS_PARALLEL=0 turns every pool off)'),
+            ('n_workers', 'worker count (spatial and temporal threads; fork workers on Linux)'),
             ('verbose',   'print backend progress'),
         ]),
         ('model analyzer (api.analyze)', [
@@ -847,19 +890,28 @@ def _result_meta(result, key, default=None):
     return (result.get('config') or {}).get(key, default)
 
 
-def _external_mean(model: dict, res: dict) -> float:
-    """Mean-field saddle φ* for the external leg's field — the TREE-level value
-    of the 1-point function ⟨φ⟩.
+def _leg_parts(leg):
+    """``(field name, 1-based population)`` of an external leg (a
+    ``(name, pop)`` tuple or a bare name, population 1)."""
+    if isinstance(leg, (tuple, list)):
+        return str(leg[0]), (int(leg[1]) if len(leg) > 1 else 1)
+    return str(leg), 1
+
+
+def _external_mean(model: dict, res: dict, leg=None) -> float:
+    """Mean-field saddle φ* of one external leg's field and population — the
+    TREE-level value of the 1-point function ⟨φ⟩ on that leg.
 
     The cumulant pipeline expands around the saddle, so the *fluctuation*
     field's tree-level 1-point function is 0; the physical mean is the saddle
-    value plus the ℓ≥1 loop tadpole shifts.  The saddle is stored under the
-    ``'<base>star'`` convention (``nSstar``, ``xstar``, ``hstar`` …) in the
-    temporal ``res['mf_values']`` or the spatial ``res['mf']['mf_values']``
-    (a list of per-component dicts).  Returns the saddle for the external
-    leg's base physical field (0.0 for a symmetric/zero saddle, or if none is
-    found)."""
-    # Collect every candidate saddle dict {'<base>star': [vals]} — temporal
+    value plus the ℓ≥1 loop tadpole shifts (:func:`_leg_mean_by_ell`).  The
+    saddle is stored under the field's saddle parameter (``api.naming``;
+    ``nSstar``, ``xstar`` …) in the temporal ``res['mf_values']`` or the
+    spatial ``res['mf']['mf_values']`` (a list of per-component dicts), one
+    value per population.  ``leg`` is a ``(field, pop)`` external leg; None
+    means the result's first external leg.  Returns 0.0 for a symmetric/zero
+    saddle, or if none is found."""
+    # Collect every candidate saddle dict {<saddle>: [vals]} — temporal
     # exposes one at the top level; spatial nests them under res['mf'].
     dicts = []
     mv = res.get('mf_values')
@@ -875,30 +927,70 @@ def _external_mean(model: dict, res: dict) -> float:
     if not dicts:
         return 0.0
     # External leg's field → base physical field (strip the response/fluct 'd').
-    ext = _result_meta(res, 'external_fields')
-    if ext:
-        e0 = ext[0]
-        fld = e0[0] if isinstance(e0, (tuple, list)) else str(e0)
-    else:
-        names = field_names(model)
-        fld = names[0] if names else ''
-    base = fld[1:] if fld.startswith('d') else fld
-    keys = [base + 'star', fld + 'star', base, fld]
+    if leg is None:
+        ext = _result_meta(res, 'external_fields')
+        if ext:
+            leg = ext[0]
+        else:
+            names = field_names(model)
+            leg = names[0] if names else ''
+    fld, pop = _leg_parts(leg)
+    from api.naming import saddle_for_field
+    sad = saddle_for_field(model, fld)       # natural or internal leg name
+    keys = [k for k in (sad, fld) if k]
     for d in dicts:
         for key in keys:
             if key in d:
                 try:
-                    val = float(np.real(np.asarray(d[key]).ravel()[0]))
-                    return 0.0 if abs(val) < 1e-14 else val   # kill subnormals
+                    vals = np.real(np.asarray(d[key], dtype=complex)).ravel()
                 except Exception:
-                    pass
+                    continue
+                if vals.size == 0:
+                    continue
+                if vals.size == 1:
+                    val = float(vals[0])
+                elif 1 <= pop <= vals.size:
+                    val = float(vals[pop - 1])
+                else:
+                    raise ValueError(
+                        f'external leg {leg!r}: population {pop} is outside '
+                        f'the {vals.size} saddle values of {key!r}')
+                return 0.0 if abs(val) < 1e-14 else val   # kill subnormals
     return 0.0
+
+
+def _leg_mean_by_ell(model, res, kw, legs, L, compute_cumulants):
+    """``{leg: [μ⁽⁰⁾, …, μ⁽ᴸ⁾]}``: the mean of every distinct external leg
+    per loop order.  ``μ⁽⁰⁾`` is the mean-field saddle of the leg's field and
+    population (:func:`_external_mean`); ``μ⁽ℓ⁾`` (ℓ ≥ 1) is the ℓ-loop
+    1-point cumulant of the fluctuation (the tadpoles), from one ``k = 1``
+    run per leg (the order-k run itself when ``k = 1``)."""
+    out = {}
+    for leg in legs:
+        if leg in out:
+            continue
+        mu = [_external_mean(model, res, leg)]
+        if L >= 1:
+            if len(kw['external_fields']) == 1:
+                r1 = res
+            else:
+                kw1 = dict(kw)
+                kw1.update(k=1, external_fields=[leg],
+                           tau_grid=np.array([0.0]))
+                r1 = compute_cumulants(**kw1)
+            be = r1.get('C_tau_by_ell') or {}
+            for e in range(1, L + 1):
+                arr = be.get(e)
+                mu.append(0.0 if arr is None else
+                          float(np.real(np.asarray(arr).ravel()[0])))
+        out[leg] = mu
+    return out
 
 
 def _assemble_moment_temporal(model, res, kw, k, central):
     """Full / central k-point MOMENT along the same 1-D slice as ``C_tau``:
 
-        M(τ) = ⟨φ(0) φ(τ) φ(0) … φ(0)⟩
+        M(τ) = ⟨φ_0(0) φ_1(τ) φ_2(0) … φ_{k−1}(0)⟩
              = Σ_π  Σ_{(ℓ_B): Σℓ_B ≤ L}  ∏_{B∈π} κ(B)^{(ℓ_B)}
 
     — the set-partition (cluster) expansion truncated at ONE shared loop budget
@@ -908,12 +1000,18 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     product-of-fully-dressed-cumulants would).  The two agree only at tree
     (L=0); they diverge at L≥1 for any multi-block partition.
 
-    Singleton blocks contribute the tree mean ⟨φ⟩ at ℓ=0 (raw) or drop out
-    (central → only no-singleton partitions survive); their 1-loop tadpole is
-    not folded in (a documented refinement).  The per-order cumulants
-    κ_j^{(ℓ)} come straight from the ``*_by_ell`` increments — one extra
-    ``compute_cumulants`` run per order 2..k, each delivering every loop order
-    at once (the order-k run is reused)."""
+    Every block is the cumulant of ITS OWN legs (``external_fields`` entries:
+    field and population) at those legs' times.  A singleton block {i} is the
+    mean of leg i per loop order (``_leg_mean_by_ell``: the saddle at ℓ=0,
+    the tadpoles at ℓ≥1), and it shares the loop budget like any block; the
+    central moment keeps only the partitions without singletons.  A block of
+    two legs is their cross-cumulant at their lag, from a ``k = 2`` run on
+    those two legs over the lags it needs (the order-k run itself when
+    ``k = 2``; ``_pair_key`` orders the pair so that τ = 0 is read on the
+    slice's side of the tie); a
+    block of three or more legs is the ``total_C_by_ell`` callable of a run on
+    its legs (the order-k run for the full block).  ``res['moment_means']``
+    records the leg means used."""
     import itertools
     from api import compute_cumulants as _compute
 
@@ -927,45 +1025,88 @@ def _assemble_moment_temporal(model, res, kw, k, central):
                  r.get('phase_j_incomplete')})
         return r
     tau = np.asarray(res['tau_grid'], dtype=float)
-    f0 = kw['external_fields'][0]
+    legs = [tuple(e) if isinstance(e, (tuple, list)) else e
+            for e in kw['external_fields']]
     L = int(kw.get('max_ell', 0) or 0)
-    mu = 0.0 if central else _external_mean(model, res)
-
-    def _by_ell_2pt(r):
-        """{ℓ: even-lag interpolator} of the 2-point cumulant's ℓ-loop piece."""
-        be = r.get('C_tau_by_ell') or {0: r.get('C_tau')}
-        t = np.asarray(r['tau_grid']); a = np.abs(t); o = np.argsort(a); ax = a[o]
-        out = {}
-        for e in range(L + 1):
-            arr = be.get(e)
-            if arr is None:
-                out[e] = (lambda lag: 0.0 + 0.0j)
-            else:
-                ay = np.real(np.asarray(arr))[o]
-                out[e] = (lambda lag, ax=ax, ay=ay:
-                          complex(np.interp(abs(lag), ax, ay)))
-        return out
-
-    # κ_2 per loop order (reuse the order-k run when k==2, else one 2-pt run).
-    if k == 2:
-        k2 = _by_ell_2pt(res)
-    else:
-        kw2 = dict(kw); kw2.update(k=2, external_fields=[f0] * 2)
-        k2 = _by_ell_2pt(compute_cumulants(**kw2))
-
-    # κ_j per loop order for j = 3..k (reuse the order-k ``*_by_ell``).
-    kj = {}
-    for j in range(3, k + 1):
-        if j == k and res.get('total_C_by_ell'):
-            be = res['total_C_by_ell']
-        else:
-            kwj = dict(kw); kwj.update(k=j, external_fields=[f0] * j)
-            be = compute_cumulants(**kwj).get('total_C_by_ell') or {}
-        kj[j] = {e: (be.get(e) if callable(be.get(e))
-                     else (lambda *t: 0.0 + 0.0j))
-                 for e in range(L + 1)}
-
     parts = list(_set_partitions(list(range(k))))
+
+    means = {}
+    if not central:
+        means = _leg_mean_by_ell(model, res, kw, legs, L, compute_cumulants)
+        res['moment_means'] = {leg: list(v) for leg, v in means.items()}
+
+    # ── 2-leg blocks: one k = 2 run per ordered pair of legs (key) over the
+    # lags it needs, read as C(τ) = ⟨φ_first(0) φ_second(τ)⟩.  A block with
+    # the swept leg 1 is keyed (other leg, leg 1) at lag τ: at τ = 0 leg 1
+    # sits just BEFORE every other leg on the slice (``_kpoint_slice_times``),
+    # and the k = 2 grid's τ = 0 point is the same side (the second leg
+    # earlier).  A block of two legs at 0 is keyed in leg order at lag 0 (the
+    # anchor is the latest leg; tied pinned legs: the later-listed one counts
+    # as earlier).  A pair of identical legs is even in the lag
+    # (stationarity), so for k ≥ 3 it is run over |τ| only.
+    def _pair_key(a, b, ti):
+        if b == 1:                        # a == 0
+            key, lag = (legs[a], legs[b]), float(tau[ti])
+        elif a == 1:
+            key, lag = (legs[b], legs[a]), float(tau[ti])
+        else:
+            key, lag = (legs[a], legs[b]), 0.0
+        if key[0] == key[1] and k >= 3:
+            lag = abs(lag)
+        return key, lag
+
+    needed = {}
+    for part in parts:
+        for bl in part:
+            if len(bl) == 2:
+                a, b = sorted(bl)
+                for ti in range(tau.size):
+                    key, lag = _pair_key(a, b, ti)
+                    needed.setdefault(key, set()).add(lag)
+
+    def _table(r):
+        """(lag → index, {ℓ: real array}) of a k = 2 run's grid."""
+        t = np.asarray(r['tau_grid'], dtype=float)
+        be = r.get('C_tau_by_ell') or {0: r.get('C_tau')}
+        arrs = {e: (None if be.get(e) is None else np.asarray(be[e]))
+                for e in range(L + 1)}
+        return t, arrs
+
+    pair_tab = {}
+    if k == 2 and (legs[0], legs[1]) in needed:
+        pair_tab[(legs[0], legs[1])] = _table(res)       # the run itself
+    for key, lags in needed.items():
+        if key in pair_tab:
+            continue
+        kw2 = dict(kw)
+        kw2.update(k=2, external_fields=list(key),
+                   tau_grid=np.array(sorted(lags), dtype=float))
+        kw2.pop('tau_max', None)
+        kw2.pop('tau_step', None)
+        pair_tab[key] = _table(compute_cumulants(**kw2))
+
+    def _pair_value(key, lag, ell):
+        t, arrs = pair_tab[key]
+        idx = np.flatnonzero(np.abs(t - lag) <= 1e-12 * max(1.0, abs(lag)))
+        if idx.size == 0:
+            raise RuntimeError(
+                f'moment assembly: lag {lag!r} of the 2-point block {key} is '
+                f'not on its grid {t.tolist()}')
+        arr = arrs.get(ell)
+        return 0.0 + 0.0j if arr is None else complex(arr[int(idx[0])])
+
+    # ── blocks of 3 or more legs: the per-ell callables of a run on the
+    # block's legs (in leg order), evaluated at the legs' slice times.
+    kj = {}
+    if k >= 3 and res.get('total_C_by_ell'):
+        kj[tuple(legs)] = res['total_C_by_ell']
+
+    def _block_fns(bl_legs):
+        if bl_legs not in kj:
+            kwj = dict(kw)
+            kwj.update(k=len(bl_legs), external_fields=list(bl_legs))
+            kj[bl_legs] = compute_cumulants(**kwj).get('total_C_by_ell') or {}
+        return kj[bl_legs]
 
     # The k external times of every point: those of ``run``'s slice 1 with
     # the default base lags (leg 1 swept, the other legs at 0), from
@@ -975,8 +1116,8 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     # is evaluated at the same times as slice 1 of κ₃.  The pinned legs sit
     # at 0⁻ = −_ITO_EPS, so they do not coincide with the anchor; for k ≥ 4
     # they coincide with each other, as on the slices.  A block of 2 legs
-    # reads the k = 2 grid at its nominal lag (τ or 0), whose τ = 0 point is
-    # the k = 2 Itô left limit.
+    # reads the k = 2 grid at τ or 0 (``_pair_key``), whose τ = 0 point is
+    # the k = 2 equal-time value on the slice's side of the tie.
     slice_times = None
     if k >= 3:
         from api.compute import _ITO_EPS
@@ -984,35 +1125,36 @@ def _assemble_moment_temporal(model, res, kw, k, central):
                                            _ITO_EPS) for t in tau]
 
     def _kappa(block, ell, ti):
-        """ℓ-loop piece of the |block|-point cumulant at the slice times."""
+        """ℓ-loop piece of the block's cumulant at the slice times."""
         b = sorted(block)
-        if len(b) == 2:                       # leg 1 swept (τ); rest pinned (0)
-            return k2[ell](float(tau[ti]) if 1 in b else 0.0)
-        times = [slice_times[ti][idx] for idx in b]
-        return complex(kj[len(b)][ell](*times))
+        if len(b) == 1:
+            return means[legs[b[0]]][ell]
+        if len(b) == 2:
+            key, lag = _pair_key(b[0], b[1], ti)
+            return _pair_value(key, lag, ell)
+        fn = _block_fns(tuple(legs[i] for i in b)).get(ell)
+        if not callable(fn):
+            return 0.0 + 0.0j
+        return complex(fn(*[slice_times[ti][idx] for idx in b]))
 
     M = np.empty(tau.size, dtype=complex)
     for ti in range(tau.size):
         tot = 0.0 + 0.0j
         for part in parts:
-            singles = [bl for bl in part if len(bl) == 1]
-            multis = [bl for bl in part if len(bl) > 1]
-            if central and singles:           # central drops every singleton
-                continue
-            mu_factor = mu ** len(singles)    # singletons: tree mean, ℓ=0 only
-            if singles and mu_factor == 0.0:  # zero mean → singleton terms die
-                continue
-            if not multis:                    # all-singleton (raw): pure μ^k
-                tot += mu_factor
-                continue
-            # share the loop budget L across the multi-blocks (Σℓ_B ≤ L);
-            # singletons consume none (only the ℓ=0 mean is available).
-            for assign in itertools.product(range(L + 1), repeat=len(multis)):
+            if central and any(len(bl) == 1 for bl in part):
+                continue                      # central drops every singleton
+            if any(len(bl) == 1 and not any(means[legs[bl[0]]])
+                   for bl in part):
+                continue                      # a zero-mean leg kills the term
+            # share the loop budget L across all the blocks (Σℓ_B ≤ L)
+            for assign in itertools.product(range(L + 1), repeat=len(part)):
                 if sum(assign) > L:
                     continue
-                prod = mu_factor
-                for bl, e in zip(multis, assign):
+                prod = 1.0 + 0.0j
+                for bl, e in zip(part, assign):
                     prod *= _kappa(bl, e, ti)
+                    if prod == 0.0:
+                        break
                 tot += prod
         M[ti] = tot
     return M
@@ -1140,6 +1282,62 @@ def _kpoint_slice_times(base, j, tau, eps):
     return times
 
 
+def _kpoint_incomplete(res, cfg, exc, msg):
+    """Mark a k≥3 result incomplete and report ``msg``: a
+    ``PhaseJIncompleteWarning``, or ``PhaseJIncompleteError`` under
+    ``policy={'mode': 'strict'}``."""
+    import warnings
+    from api.compute import (PhaseJIncompleteError, PhaseJIncompleteWarning,
+                             _policy_is_strict)
+    from api.save import _ensure_warning_shown
+    res['status'] = 'incomplete'
+    if _policy_is_strict(cfg.policy):
+        raise PhaseJIncompleteError(msg, result=res) from exc
+    _ensure_warning_shown(PhaseJIncompleteWarning, 'always', message=msg,
+                          stacklevel=3)
+    warnings.warn(msg, PhaseJIncompleteWarning, stacklevel=3)
+
+
+def _spatial_raw_moment_message(max_ell, mu_a=None, mu_b=None):
+    why = ('' if mu_a is None else f' (saddles {mu_a}, {mu_b})')
+    return (f"Config.output='moment' for a spatial k=2 run at "
+            f"max_ell={max_ell}: the raw moment needs the loop corrections "
+            f"of the means, which the spatial integrator does not compute"
+            f"{why}.  Use output='central_moment' (= the cumulant at k=2) "
+            f"or max_ell=0.")
+
+
+def _refuse_spatial_raw_moment(model, kw, ext, max_ell):
+    """Refuse a spatial raw k=2 moment that needs the means' loop corrections
+    BEFORE the (expensive) loop run, not after it.
+
+    The rule: with a loop budget L the raw moment needs mu_a^(la) mu_b^(lb)
+    for la + lb <= L, i.e. the means' tadpole shifts as soon as L >= 2, or
+    L >= 1 with a nonzero saddle.  L >= 2 is decided from the budget alone;
+    L = 1 needs the saddle, read from a one-event tree-level k = 1 run (the
+    same call the k = 1 path makes), per distinct external leg."""
+    from api import compute_cumulants
+    if max_ell >= 2:
+        raise NotImplementedError(
+            _spatial_raw_moment_message(max_ell))
+    base = {kk: v for kk, v in kw.items()
+            if kk not in ('spatial_grid', 'tau_max', 'tau_step', 'tau_grid',
+                          'spatial_points', 'external_fields', 'k', 'max_ell')}
+    mus = []
+    seen = {}
+    for leg in ext:
+        key = tuple(leg) if isinstance(leg, (tuple, list)) else leg
+        if key not in seen:
+            r1 = compute_cumulants(
+                **base, k=1, max_ell=0, external_fields=[leg],
+                spatial_points=np.zeros((1, 0, 2), dtype=float))
+            seen[key] = _external_mean(model, r1, leg)
+        mus.append(seen[key])
+    if any(mus):
+        raise NotImplementedError(
+            _spatial_raw_moment_message(max_ell, *mus[:2]))
+
+
 def run(model: dict, cfg: Config, module=None) -> dict:
     """Resolve the config against the model's defaults and call
     ``compute_cumulants``.  Handles temporal vs spatial, the spatial
@@ -1147,6 +1345,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     dict with ``cfg`` / ``model`` attached under ``'_cfg'`` / ``'_model'``."""
     from api import compute_cumulants
 
+    cfg._check_numbers()              # fields may be set after construction
     # an api.sde.SDE (incl. point-process models) is built here, as by hand
     if not isinstance(model, dict) and callable(getattr(model, 'build', None)):
         model = model.build()
@@ -1193,9 +1392,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if cfg.parameters:
         # Reject mistyped override names instead of silently inserting a
         # key the backend ignores (which would run with the DEFAULT value).
-        _valid = {p['name'] for p in (model.get('parameters') or [])
-                  if not str(p.get('name', '')).endswith('star')
-                  and not p.get('mean_field')}
+        from api.naming import free_parameter_names
+        _valid = set(free_parameter_names(model))
         _unknown = [kk for kk in cfg.parameters if kk not in _valid]
         if _valid and _unknown:
             raise ValueError(
@@ -1221,15 +1419,37 @@ def run(model: dict, cfg: Config, module=None) -> dict:
               n_workers=cfg.n_workers)
 
     # Mean-field DAE root-selection overrides (multi-root models such as
-    # the double-well regime mu<0).  Forward each only when set, so that
+    # the double-well regime mu<0).  The Config value wins, then the model
+    # file's METADATA ``fixed_point_index_default`` / ``seed_box_default``
+    # (written by the model builder UI); forward each only when set, so that
     # ``compute_cumulants``' own defaults (fixed_point_index=0,
     # mf_dae_n_starts=64, mf_dae_seed_box=None) are preserved otherwise.
-    if cfg.fixed_point_index is not None:
-        kw['fixed_point_index'] = int(cfg.fixed_point_index)
+    fpi = cfg.fixed_point_index
+    if fpi is None and module is not None:
+        fpi = _meta(module, 'fixed_point_index_default')
+        if fpi is not None:
+            from api.compute import _entry_int
+            if _entry_int("METADATA['fixed_point_index_default']", fpi) < 0:
+                raise ValueError(
+                    f"METADATA['fixed_point_index_default'] must be >= 0; "
+                    f"got {fpi!r}.")
+    if fpi is not None:
+        kw['fixed_point_index'] = int(fpi)
     if cfg.mf_dae_n_starts is not None:
         kw['mf_dae_n_starts'] = int(cfg.mf_dae_n_starts)
-    if cfg.mf_dae_seed_box is not None:
-        kw['mf_dae_seed_box'] = cfg.mf_dae_seed_box
+    seed_box = cfg.mf_dae_seed_box
+    if seed_box is None and module is not None:
+        seed_box = _meta(module, 'seed_box_default')
+        if seed_box is not None and not isinstance(seed_box, dict):
+            raise ValueError(
+                f"METADATA['seed_box_default'] must be a dict "
+                f"{{state variable: (lo, hi)}}; got {seed_box!r}.  Fix it in "
+                f"the model file (or pass Config(mf_dae_seed_box=...)).")
+    if seed_box is not None:
+        kw['mf_dae_seed_box'] = seed_box
+    for _opt in ('taylor_order', 'use_cache', 'accuracy', 'backend', 'discard'):
+        if getattr(cfg, _opt) is not None:
+            kw[_opt] = getattr(cfg, _opt)
     if cfg.policy is not None:
         kw['policy'] = cfg.policy
     if getattr(cfg, 'delay', None) is not None:
@@ -1324,6 +1544,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if tg is not None and not (is_spatial(model) and k != 2):
         kw['tau_grid'] = tg
 
+    if (is_spatial(model) and k == 2 and max_ell >= 1
+            and (getattr(cfg, 'output', 'cumulant') or 'cumulant') == 'moment'):
+        _refuse_spatial_raw_moment(model, kw, ext, max_ell)
+
     res = compute_cumulants(**kw)
 
     # Spatial k≥3 grid: reshape the flat per-event k-point cumulant back into the
@@ -1358,8 +1582,21 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             tau = np.array([0.0])
             res['tau_grid'] = tau
         elif tau.size > 41:                      # bound the # of 1-D evaluations
+            import warnings
+            n_in = tau.size
             tau = np.linspace(float(tau.min()), float(tau.max()), 41)
             res['tau_grid'] = tau
+            res['_kpoint_tau_resampled'] = (
+                f'tau_grid of {n_in} points replaced by 41 evenly spaced '
+                f'points over [{tau[0]}, {tau[-1]}] for the k={k} slices')
+            from api.save import _ensure_warning_shown
+            _msg = (f'k={k}: the {n_in}-point tau_grid was replaced by 41 '
+                    f'evenly spaced points over [{tau[0]}, {tau[-1]}] for the '
+                    f'slices (result["tau_grid"]); evaluate result["total_C"] '
+                    f'directly for other times.')
+            _ensure_warning_shown(UserWarning, 'always', message=_msg,
+                                  stacklevel=2)
+            warnings.warn(_msg, UserWarning, stacklevel=2)
 
         # The connected k-point cumulant depends on k−1 time differences
         # τ_j = t_j − t_0 (leg 0 anchored at τ=0).  ``base`` is the fixed point
@@ -1401,7 +1638,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             # The k−1 axis-parallel slices through ``base``.  When total_C is
             # the plain sum of the per-ell callables (``api.compute``), its
             # slice is that sum of their slices, in total_C's order, instead
-            # of a second evaluation of every diagram (item 35, F3: half the
+            # of a second evaluation of every diagram (half the
             # Phase J evaluations of a k≥3 run).
             slices_by_ell = {j: {e: _slice(f, j) for e, f in tcb.items()}
                              for j in range(1, k)}
@@ -1430,9 +1667,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 f'where leg j meets another leg is the left limit of its '
                 f'slice (times in _kpoint_slice_times)')
 
-            # Optional: the FULL (k−1)-dim tensor C(τ_1..τ_{k−1}).  Downsample
-            # the axis so the total n^{k−1} evaluations stay bounded.
-            if cfg.kpoint_full_grid:
+        except Exception as e:
+            # The slices could not be evaluated: the result keeps the
+            # callables (``total_C``) but has no curve, so it is marked
+            # incomplete and the failure is reported (raised under a strict
+            # policy), never only printed.  (The catch stays broad —
+            # lambdified callables have a wide failure surface.)
+            res['_kpoint_slice_error'] = repr(e)
+            _kpoint_incomplete(
+                res, cfg, e,
+                f'k={k}: evaluating the slices of the k-point cumulant '
+                f'failed ({e!r}); result["C_tau"] is None (no curve). '
+                f'result["total_C"] is the cumulant as a function of the '
+                f'{k} external times.')
+
+        if cfg.kpoint_full_grid and res.get('C_tau') is not None:
+            try:
+                # Optional: the FULL (k−1)-dim tensor C(τ_1..τ_{k−1}).
+                # Downsample the axis so the total n^{k−1} evaluations stay
+                # bounded.
                 import itertools
                 n = min(tau.size, max(2, int(4000 ** (1.0 / (k - 1)))))
                 gtau = (tau if n >= tau.size else
@@ -1453,20 +1706,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                     res['_kpoint_grid_note'] = (
                         f'τ downsampled to {gtau.size} pts/axis '
                         f'({gtau.size ** (k - 1)} evals) to bound grid cost')
-        except Exception as e:
-            # Don't swallow silently: record it and surface a note when verbose.
-            # (The catch stays broad — lambdified callables have a wide failure
-            # surface — but we instrument rather than hide it.)
-            res['_kpoint_slice_error'] = repr(e)
-            if cfg.verbose:
-                print(f'  [k>=3 slice synthesis failed: {e!r}; '
-                      f'using the equal-time fallback]')
+            except Exception as e:
+                res['_kpoint_grid_error'] = repr(e)
+                _kpoint_incomplete(
+                    res, cfg, e,
+                    f'k={k}: evaluating the full k-point grid '
+                    f'(kpoint_full_grid) failed ({e!r}); the slices '
+                    f'(result["C_tau"]) are complete, result["C_tau_grid"] '
+                    f'is missing.')
 
     # Optional output conversion: assemble the full / central k-point MOMENT
     # from the cumulants (the set-partition / cluster expansion).
     # compute_cumulants stays pure — this is post-processing on top.
     out_kind = getattr(cfg, 'output', 'cumulant') or 'cumulant'
-    if out_kind in ('moment', 'central_moment'):
+    if out_kind in ('moment', 'central_moment') and res.get(
+            '_kpoint_slice_error') is not None:
+        # the cumulant blocks could not be evaluated (reported above)
+        res['moment'] = None
+        res['output_kind'] = out_kind
+    elif out_kind in ('moment', 'central_moment'):
         central = out_kind == 'central_moment'
         if is_spatial(model):
             if k == 1:                      # M₁ = ⟨φ⟩: the raw first moment
@@ -1476,10 +1734,26 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 # the k≥3 branch and raised a misleading "spatial k≥3 not
                 # implemented" error.)
                 res['moment'] = 0.0 if central else _external_mean(model, res)
-            elif k == 2:                    # M(x) = κ₂(x) [+ μ² for raw]
-                mu = 0.0 if central else _external_mean(model, res)
-                res['moment'] = (np.real(np.asarray(res['C_tau_x']))
-                                 + (0.0 if central else mu * mu))
+            elif k == 2:                    # M(x) = κ₂(x) [+ μ_a μ_b for raw]
+                mu_ab = 0.0
+                if not central:
+                    leg_a, leg_b = (tuple(e) if isinstance(e, (tuple, list))
+                                    else e for e in ext)
+                    mu_a = _external_mean(model, res, leg_a)
+                    mu_b = _external_mean(model, res, leg_b)
+                    # The spatial integrator has no 1-point tadpoles, so the
+                    # loop corrections of the means are unavailable: with a
+                    # loop budget L the raw moment needs μ_a⁽ℓa⁾ μ_b⁽ℓb⁾ for
+                    # ℓa + ℓb ≤ L, which involves them as soon as L ≥ 1 with
+                    # a nonzero saddle, or L ≥ 2.
+                    # (refused up front by _refuse_spatial_raw_moment; this
+                    # is the same rule on the finished result)
+                    if max_ell >= 2 or (max_ell >= 1 and (mu_a or mu_b)):
+                        raise NotImplementedError(
+                            _spatial_raw_moment_message(max_ell, mu_a, mu_b))
+                    mu_ab = mu_a * mu_b
+                    res['moment_means'] = {leg_a: [mu_a], leg_b: [mu_b]}
+                res['moment'] = (np.real(np.asarray(res['C_tau_x'])) + mu_ab)
             else:
                 raise NotImplementedError(
                     f"Config.output={out_kind!r} for spatial k≥3 is not "
@@ -1943,7 +2217,8 @@ def plot_temporal_mean(result, cfg, model, sim=None):
         ax.legend(fontsize=8)
     fld = _result_meta(result, 'external_fields') or [('phi', 1)]
     fb = fld[0][0] if isinstance(fld[0], (tuple, list)) else str(fld[0])
-    base = fb[1:] if fb.startswith('d') else fb        # physical field (drop 'd')
+    from api.naming import field_natural_name
+    base = field_natural_name(model, fb)                # the physical field
     ax.axhline(0, color='gray', lw=0.5)
     # Mark the mean-field tree value φ* so the loop shift off it is visible
     # (especially under show_orders='total', where the tree bar is hidden).

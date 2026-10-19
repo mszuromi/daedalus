@@ -22,9 +22,9 @@ This produces::
         'mf_parameters': ['nstar', 'vstar', ...],   # internal names
     }
 
-Models that don't declare a naming convention fall back to the
-classic Hawkes ``n``/``v``/``m`` map below — so existing model files
-without ``natural_name=`` annotations keep working.
+Without a naming convention only the internal names are accepted (no
+built-in letter table: every ModelBuilder model declares its convention,
+audit GEN-04).
 
 User-facing primitives
 ----------------------
@@ -40,36 +40,14 @@ from __future__ import annotations
 from typing import Optional
 
 
-# ── Default fallback naming map ───────────────────────────────────────
-# Used when a model dict has no ``naming_convention`` (i.e. older
-# hand-written model files in simulations/).  Covers the classic Hawkes
-# letters n/v/m.  Extend this only if you want to bake new defaults
-# into the pipeline itself; the preferred path for new physics is to
-# declare ``natural_name=`` in the ModelBuilder.
-
-_DEFAULT_FLUCT = {
-    'n':  'dn',  'dn': 'dn',
-    'v':  'dv',  'dv': 'dv',
-    'm':  'dm',  'dm': 'dm',
-}
-
-_DEFAULT_SADDLE = {
-    'n': 'nstar',  'nstar': 'nstar',
-    'v': 'vstar',  'vstar': 'vstar',
-    'm': 'mstar',  'mstar': 'mstar',
-}
-
-
 def _build_fluct_map(naming_convention: Optional[dict]) -> dict[str, str]:
     """Compose the natural→internal fluctuation map.
 
-    Order of precedence (later wins):
-      1. ``_DEFAULT_FLUCT`` (n/v/m fallback)
-      2. ``naming_convention['fluctuation_fields']`` (model declarations)
-      3. internal-name passthrough (each declared internal name maps to
-         itself, so users can pass either form)
+    ``naming_convention['fluctuation_fields']`` (the model's declarations),
+    each declared internal name also mapping to itself, so users can pass
+    either form.
     """
-    out = dict(_DEFAULT_FLUCT)
+    out: dict[str, str] = {}
     if naming_convention:
         for natural, internal in (naming_convention.get(
                 'fluctuation_fields') or {}).items():
@@ -81,9 +59,9 @@ def _build_fluct_map(naming_convention: Optional[dict]) -> dict[str, str]:
 def _build_saddle_map(naming_convention: Optional[dict]) -> dict[str, str]:
     """Compose the natural→internal mean-field saddle map.
 
-    Same precedence story as ``_build_fluct_map``.
+    Built like ``_build_fluct_map``.
     """
-    out = dict(_DEFAULT_SADDLE)
+    out: dict[str, str] = {}
     if naming_convention:
         for natural, internal in (naming_convention.get(
                 'mean_field_saddles') or {}).items():
@@ -116,8 +94,8 @@ def normalize_external_fields(external_fields,
             naming_convention={'fluctuation_fields': {'r': 'dr'}})
                                                             → [('dr', 1)]
 
-    Already-internal names pass through unchanged.  When
-    ``naming_convention`` is omitted, the n/v/m fallback applies.
+    Already-internal names pass through unchanged (and are the only
+    names understood when ``naming_convention`` is omitted).
     """
     fluct_map = _build_fluct_map(naming_convention)
     out = []

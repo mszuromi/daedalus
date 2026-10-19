@@ -32,22 +32,21 @@ from engine.integration.time_domain.pipeline import (
 # Pipeline-package helpers
 from api._propagator import build_propagator, compute_poles_and_residues
 from api._mean_field import solve_mean_field
-from api._mean_field_dae import (
-    solve_mean_field_dae_compat,
-    linear_stability,
-)
+from api._mean_field_dae import linear_stability
 from api._diagrams  import enumerate_unique_diagrams
 from engine.enumeration import prediagram_cache as _pd_cache
 from api.save       import _phase_j_convention, _phase_j_flags
 from api.access     import (
     MeanField, Parameters, normalize_external_fields,
 )
+from engine.errors import DaedalusError
 
 # Itô equal-time regularizer (magnitude).  Our SDEs use the Itô convention, which
 # is LEFT-continuous (Θ(0)=Θ(0⁻)); the equal-time *observable* is therefore the
-# LEFT limit.  At a τ=0 grid point we evaluate the correlator at −_ITO_EPS
-# (≪ every physical timescale here, O(1)) instead of exactly 0, so a coincident
-# causal chamber survives and the spurious single-point τ=0 dip disappears.  (For
+# LEFT limit.  Before Oct 2026 a τ=0 grid point was evaluated at −_ITO_EPS
+# instead of exactly 0, so a coincident causal chamber survived the Θ(0)=0
+# rule; Phase J's exact tie rule now does that at τ = 0 itself (the default,
+# see ``_tau0_mode``; the −_ITO_EPS sample is DAEDALUS_TAU0=nudge).  (For
 # the stationary/symmetric correlators here C is even, so the left limit equals the
 # right; the sign only matters for a genuine τ=0 jump, where Itô takes the left.)
 _ITO_EPS = 1e-6
@@ -57,8 +56,8 @@ _ITO_EPS = 1e-6
 # (``final_integral._const_row_verdict``: of Θ(t1 − t0) and Θ(t0 − t1) at
 # t1 == t0 exactly the one with leg 1 earlier holds) gives the Itô left
 # limit C(0⁻) exactly (<= 3e-14 against independent references on every
-# route), and the exact delayed tree returns its own left limit.  'nudge'
-# (default until the switch is decided): the sample at τ = −_ITO_EPS, whose
+# route), and the exact delayed tree returns its own left limit.  Default
+# since Oct 2026.  'nudge': the pre-Oct-2026 sample at τ = −_ITO_EPS, whose
 # relative error is (rate × 1e-6) and therefore unit dependent (1e-3 at a
 # rate of 1e3).  Environment variable DAEDALUS_TAU0 = 'exact' | 'nudge',
 # read at call time.  k ≥ 3 slices (``daedalus._kpoint_slice_times``,
@@ -69,16 +68,16 @@ _TAU0_MODES = ('exact', 'nudge')
 
 def _tau0_mode():
     """'exact' or 'nudge' (``DAEDALUS_TAU0``; see ``_TAU0_MODES``)."""
-    m = os.environ.get('DAEDALUS_TAU0', 'nudge').strip().lower() or 'nudge'
-    if m not in _TAU0_MODES:
-        raise ValueError(f'DAEDALUS_TAU0={m!r}: expected one of {_TAU0_MODES}')
-    return m
+    from engine import _env
+    return _env.choice('DAEDALUS_TAU0', _TAU0_MODES, 'exact')
 
 
 def _tau0_lag():
     """The lag a k = 2 τ = 0 point is evaluated at: 0.0 ('exact') or
-    −_ITO_EPS ('nudge')."""
-    return 0.0 if _tau0_mode() == 'exact' else -_ITO_EPS
+    −_ITO_EPS ('nudge').  'exact' uses Phase J's exact tie rule (the only
+    constant-row rule since the pre-M1 'legacy_clip' mode was retired in
+    audit W7)."""
+    return -_ITO_EPS if _tau0_mode() != 'exact' else 0.0
 
 
 def _ito_nudge_callable(fn, k):
@@ -90,9 +89,9 @@ def _ito_nudge_callable(fn, k):
     Only the k=2 single-axis slice has a well-defined "anchor leg" (leg 0); for
     other k the callable is returned unchanged (``daedalus.run`` places the
     k≥3 times itself: ``_kpoint_slice_times`` for the slices,
-    ``_kpoint_pinned_time`` per leg for the full grid).  Mirrors the grid
-    nudge: a second-leg time within 1e-12 of the anchor leg's time is moved
-    to ``anchor − _ITO_EPS``.
+    ``_kpoint_pinned_time`` per leg for the full grid).  Mirrors the grid:
+    a second-leg time within 1e-12 (relative) of the anchor leg's time is moved onto it
+    (default, an exact tie) or to ``anchor − _ITO_EPS`` (DAEDALUS_TAU0=nudge).
     """
     if k != 2:
         return fn
@@ -102,7 +101,15 @@ def _ito_nudge_callable(fn, k):
     # moved to the equal-time left limit.  'exact': a second time within
     # 1e-12 of the first is moved ONTO it (an exact tie, decided by the
     # engine's tie rule)
-    return lambda t0, t1: fn(t0, t0 + lag if abs(t1 - t0) <= 1e-12 else t1)
+    # (the tie is relative to the times themselves: an absolute 1e-12 tied
+    # distinct times of a model in fast time units)
+    # Only FINITE times can tie: with t1 = inf the relative threshold is itself
+    # infinite and would snap inf onto tau = 0; non-finite times go to the
+    # engine, which refuses them.
+    def _tied(t0, t1):
+        return (math.isfinite(t0) and math.isfinite(t1)
+                and abs(t1 - t0) <= 1e-12 * max(abs(t0), abs(t1)))
+    return lambda t0, t1: fn(t0, t0 + lag if _tied(t0, t1) else t1)
 
 
 def _phase_j_warning_scope():
@@ -140,8 +147,8 @@ def _ss_route_prediction(prop, num_params, vertex_types):
     ``bypass_deformation``: the run is covered by the state-space route and
     the propagator has a pole-cluster deformation, which then is not run
     (the route uses no poles or residues)."""
-    raw = os.environ.get('DAEDALUS_PHASE_J_ENGINE')
-    if raw is not None and raw.strip().lower() == 'poles':
+    from engine import _env
+    if _env.phase_j_engine() == 'poles':
         return {'engine': 'poles', 'covers_run': False,
                 'reason': 'engine_poles', 'bypass_deformation': False}
     from engine.integration.time_domain import statespace as _ssm
@@ -170,7 +177,7 @@ def _pole_cluster_preamble(prop, max_ell, ss_route=None):
                         'the run; it uses no poles or residues')
         pc['accuracy'] = None
         return pc
-    if pc['status'] in ('unresolved', 'disabled'):
+    if pc['status'] == 'unresolved':
         digits = _pc.lost_digits(pc['kappa_max'], max_ell)
         pc['lost_digits'] = digits
         if digits <= _pc.LOST_DIGITS_WARN:
@@ -193,10 +200,80 @@ class PhaseJIncompleteWarning(UserWarning):
 
 
 from engine.integration.time_domain.final_integral import (  # noqa: E402
-    PhaseJResourceError)
+    PhaseJResourceError, growth_scoped as _growth_scoped)
 
 
-class PhaseJIncompleteError(RuntimeError):
+class SpatialAccuracyWarning(UserWarning):
+    """A spatial result whose quadrature accuracy is not certified
+    (``result['status'] == 'approximate'``; ``result['spatial_accuracy']``
+    says why and gives the measured spread)."""
+
+
+class SpatialAccuracyError(DaedalusError, RuntimeError):
+    """Raised instead of :class:`SpatialAccuracyWarning` under
+    ``policy={'mode': 'strict'}``; ``result`` is the approximate result."""
+
+    def __init__(self, message, result=None):
+        super().__init__(message)
+        self.result = result
+
+
+def _spatial_accuracy(result, tau_grid, max_ell):
+    """The reasons a spatial result is approximate (empty: certified as far
+    as the integrator knows).  Reads the drivers' records in
+    ``result['spatial_info']``: derivative-vertex loops (the product grid
+    converges ~n^-2 around the integrable loop-shrink singularity; the
+    measured 0.7x-coarser spread), equal-time diagrams the radial-simplex
+    rule could not take (above its dimension: the grid) or did not converge
+    to 1e-6, and coupled loops at equal times (the spectral driver keeps the
+    product grid there)."""
+    info = result.get('spatial_info') if isinstance(result, dict) else None
+    if not isinstance(info, dict):
+        return []
+    out = []
+    da = info.get('derivative_accuracy')
+    if da:
+        out.append({'reason': 'derivative_vertex_loop', 'note': da['note'],
+                    'coarse_spread': da.get('coarse_spread')})
+    eq = info.get('equal_time')
+    if eq and (eq.get('grid_calls') or (
+            eq.get('unconverged') and (eq.get('max_rel_change') or 0) > 1e-6)):
+        out.append({'reason': 'equal_time_grid',
+                    'note': eq.get('grid_note') or (
+                        'radial-simplex rule not converged to 1e-6 '
+                        f'(max successive-order change '
+                        f'{eq.get("max_rel_change"):.2e})'),
+                    'coarse_spread': None})
+    if info.get('integrator') in ('mc', 'bessel'):
+        out.append({'reason': 'monte_carlo_integrator',
+                    'note': (f"SPATIAL_INTEGRATOR={info['integrator']}: a "
+                             'Monte-Carlo estimate (statistical error; bessel '
+                             'is biased at tau != 0)'),
+                    'coarse_spread': None})
+    pts = result.get('points') if isinstance(result, dict) else None
+    if info.get('coupled') and pts is not None and np.size(pts):
+        # coupled k-point: the spectral driver keeps the product grid, which
+        # converges only algebraically at equal-time events
+        P_ = np.asarray(pts, dtype=float)
+        if np.any(np.all(P_[..., 1] == 0.0, axis=-1)):
+            out.append({'reason': 'equal_time_coupled_loop',
+                        'note': ('coupled k-point events at equal times use '
+                                 'the product grid (algebraic convergence; '
+                                 'not certified)'),
+                        'coarse_spread': None})
+    taus = np.asarray(tau_grid if tau_grid is not None else [], dtype=float)
+    if (info.get('coupled') and pts is None and max_ell >= 1 and taus.size
+            and np.any(taus == 0.0)):
+        out.append({'reason': 'equal_time_coupled_loop',
+                    'note': ('coupled loops at tau = 0 use the product grid '
+                             '(algebraic convergence at equal times; ~1e-5 '
+                             'relative at the default grid on one-loop '
+                             'diagrams; not certified)'),
+                    'coarse_spread': None})
+    return out
+
+
+class PhaseJIncompleteError(DaedalusError, RuntimeError):
     """Raised instead of :class:`PhaseJIncompleteWarning` under
     ``policy={'mode': 'strict'}``.  ``result``: the (incomplete) result
     dict; ``failures``: ``{ell: [failure record, ...]}``."""
@@ -209,11 +286,11 @@ class PhaseJIncompleteError(RuntimeError):
 
 def _phase_j_failures(phase_j_by_ell):
     """``{ell: [{'diagram', 'n_diagrams', 'reason'}, ...]}`` for every
-    diagram (per-diagram route) or group (grouped route) that Phase J could
-    not evaluate and therefore left out of ``C_tau``; ``{}`` when none.
-    Reads the ``skipped_kernel_ids`` of each loop order (ints with the
-    reason in ``groups`` on the per-diagram route, dicts on the grouped
-    one), so every route reports through the same field."""
+    diagram that Phase J could not evaluate and therefore left out of
+    ``C_tau``; ``{}`` when none.  Reads the ``skipped_kernel_ids`` of each
+    loop order (ints with the reason in ``groups``; dicts in results of
+    the retired grouped route), so every route reports through the same
+    field."""
     out = {}
     for ell, pj in sorted((phase_j_by_ell or {}).items()):
         if not isinstance(pj, dict):
@@ -235,6 +312,48 @@ def _phase_j_failures(phase_j_by_ell):
         if recs:
             out[ell] = recs
     return out
+
+
+def _entry_int(name, v):
+    """``v`` as an ``int``: an int / numpy integer (not a bool); anything
+    else raises a ``TypeError`` naming the argument."""
+    import operator
+    if not isinstance(v, (bool, np.bool_)):
+        try:
+            return operator.index(v)      # int, numpy and Sage integers
+        except TypeError:
+            pass
+    raise TypeError(f'{name} must be an integer; got {v!r} '
+                    f'({type(v).__name__}).')
+
+
+def as_model_dict(model):
+    """The model dict of ``model``: a dict passes; an unbuilt builder (an
+    ``api.sde.SDE`` or a ``ModelBuilder``/``TemporalModelBuilder``, anything
+    with a ``build()``) is built, as ``dd.run`` does.  Anything else is a
+    ``TypeError`` that says what was given."""
+    if isinstance(model, dict):
+        return model
+    build = getattr(model, 'build', None)
+    if callable(build):
+        built = build()
+        if isinstance(built, dict):
+            return built
+    raise TypeError(
+        f'model must be a model dict (the result of .build()) or a builder '
+        f'with a build() method (api.sde.SDE, ModelBuilder); got '
+        f'{type(model).__name__}.')
+
+
+def _is_count(v):
+    import operator
+    if isinstance(v, (bool, np.bool_)):
+        return False
+    try:
+        operator.index(v)
+        return True
+    except TypeError:
+        return False
 
 
 def _policy_is_strict(policy):
@@ -351,7 +470,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                               prop, model, k, max_ell, verbose, preflight,
                               ss_route=None, n_tau=1, run_budget=None,
                               discard=False, discard_ok=False):
-    """Item 35: the estimate of the modesum-plan memory of the whole Phase J
+    """The estimate of the modesum-plan memory of the whole Phase J
     run (``final_integral.estimate_modesum_plans`` over every diagram of
     every ell, times the pole-deformation node runs), recorded in the
     analyzer report (``diagnostics['phase_j_memory']`` and an assertion in
@@ -368,7 +487,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     the largest segment working set) instead of pole tuples, and a run the
     route covers makes one Phase J pass (no deformation runs).
 
-    Item 61 (``discard``: the caller's option; ``discard_ok``: the run has
+    Evaluate-and-discard (``discard``: the caller's option; ``discard_ok``: the run has
     fixed evaluation points and one pass): with evaluate-and-discard the
     run holds one diagram at a time, so the largest diagram plus one
     segment working set (``held_bytes``) is compared with the budget
@@ -394,7 +513,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     # done only when the bound is over budget)
     runs = int(getattr(deform, 'n_nodes', 1) or 1) if deform is not None \
         else 1
-    # ``run_budget``: the run's ``(bytes, rule)``, read once (item 53)
+    # ``run_budget``: the run's ``(bytes, rule)``, read once
     budget, budget_rule = (run_budget if run_budget is not None
                            else _fi.mem_budget('PHASE_J_MEM_BUDGET_GB'))
     est = _fi.estimate_modesum_plans(
@@ -698,9 +817,9 @@ class _PipelineState:
 
 def _preflight_default() -> bool:
     """``DAEDALUS_PREFLIGHT`` (read at call time): ``0``/``off``/``false``
-    turns the analyzer gates off; default on."""
-    v = os.environ.get('DAEDALUS_PREFLIGHT', '').strip().lower()
-    return v not in ('0', 'off', 'false', 'no')
+    turns the analyzer gates off; default on; any other value raises."""
+    from engine import _env
+    return _env.flag('DAEDALUS_PREFLIGHT', True)
 
 
 def _make_preflight(preflight, model, k, max_ell, external_fields_user,
@@ -749,8 +868,9 @@ _SS_DICT_COUNTERS = ('ss_declined_by_reason', 'ss_fallback_by_reason')
 def _counter_delta(token):
     """``(counters of the run, complete)``: additive counters as
     differences, maxima as the run's maximum (the global value restored to
-    ``max(before, run)``); ``complete`` is False when ``total_C_batch``
-    handed work to forked workers (their counters stay in the children)."""
+    ``max(before, run)``); ``complete`` is False when work went to forked
+    workers whose counters stayed in the children (the Phase J batch now
+    returns its workers' counters, W8p S1)."""
     from engine.integration.time_domain import final_integral as _fi
     from engine.integration.time_domain import pipeline as _pl
     snap, maxes, workers = token
@@ -781,7 +901,7 @@ class PhaseJEngineFallbackWarning(UserWarning):
 
 
 def _realization_check(prop, num_params):
-    """Item 60: the state-space realization's a posteriori check
+    """The state-space realization's a posteriori check
     (``api._realization``: run when the rounded realization is graded or
     not numerically Hurwitz) for the analyzer's G6 accuracy estimate:
     ``{'checked', 'err_rel', 'graded', 'bad_margin'}``, or ``None`` when the
@@ -800,7 +920,34 @@ def _realization_check(prop, num_params):
     return {'checked': bool(cond.get('aposteriori_checked')),
             'err_rel': cond.get('aposteriori_err_rel'),
             'graded': bool(cond.get('graded')),
-            'bad_margin': bool(cond.get('bad_margin'))}
+            'bad_margin': bool(cond.get('bad_margin')),
+            'truncation': _truncation_record(m.real),
+            # the run's own realization, for the census to re-read the
+            # truncation record once the dressed lines exist (popped there;
+            # never part of the result)
+            '_real': m.real}
+
+
+def _truncation_record(real):
+    """The balanced-truncation record of a realization for the result and
+    the G6 estimate: ``{'tol', 'n_truncated', 'n_dressed_truncated',
+    'max_bound_rel'}`` -- the per-entry truncation of the propagator and,
+    once the run has built them, the truncated dressed lines
+    (``Realization.truncation['dressed']``) -- or ``None`` when the
+    realization has no record.  ``max_bound_rel`` is the largest relative
+    H-infinity bound ``2 sum(discarded HSV) / sigma_1`` of any truncated
+    entry or line (0.0 when nothing was cut)."""
+    tr = getattr(real, 'truncation', None)
+    if not isinstance(tr, dict):
+        return None
+    dressed = tr.get('dressed') or {}
+    cut = [v for v in dressed.values() if v.get('r', 0) < v.get('n', 0)]
+    worst = max([float(tr.get('max_bound_rel') or 0.0)]
+                + [float(v.get('bound_rel') or 0.0) for v in cut])
+    return {'tol': tr.get('tol'),
+            'n_truncated': int(tr.get('n_truncated') or 0),
+            'n_dressed_truncated': len(cut),
+            'max_bound_rel': worst}
 
 
 def _engine_census(result, counters):
@@ -826,6 +973,13 @@ def _engine_census(result, counters):
         fallback_evals=int(c.get('ss_fallback_evals', 0)),
         fallback_by_reason=dict(c.get('ss_fallback_by_reason') or {}),
         statespace_share=(n_ss / (n_ss + n_dec)) if n_ss + n_dec else None)
+    # the dressed lines are truncated while the run builds them: re-read the
+    # realization's record now that the run is over
+    rc = rep.get('realization_check')
+    if isinstance(rc, dict):
+        real = rc.pop('_real', None)
+        if real is not None:
+            rc['truncation'] = _truncation_record(real)
     pc = result.get('pole_clusters')
     if (isinstance(pc, dict) and pc.get('status') == 'bypassed'
             and rep.get('pole_deformation') != 'bypassed'
@@ -857,10 +1011,10 @@ def _attach_provenance(result, route, pf):
 
 
 
-# ── switch-on transients (item 44) ─────────────────────────────────────────
+# ── switch-on transients ─────────────────────────────────────────
 
 def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
-                       tau_grid, *, spatial, grouped, saving):
+                       tau_grid, *, spatial, saving):
     """Validate the switch-on arguments of ``compute_cumulants`` (before any
     work).  ``None`` for a stationary run (``t_min=None``); otherwise the
     request ``{'t_min', 'times' (n, k), 'initial_covariance'}``."""
@@ -886,10 +1040,6 @@ def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
         raise NotImplementedError(
             'switch-on transients (t_min) are implemented for temporal '
             'models only')
-    if grouped:
-        raise ValueError(
-            't_min: the grouped integrator (use_grouped_phase_j=True) is not '
-            'supported; use the per-diagram path (the default)')
     if saving:
         raise ValueError(
             't_min: output_npz / output_csv do not support switch-on results '
@@ -1077,6 +1227,7 @@ def _switch_on_check(result, failures, model_name):
                 f'subsets); their switch-on weights are not implemented')
 
 
+@_growth_scoped
 def compute_cumulants(
     model: dict,
     k: int,
@@ -1114,7 +1265,7 @@ def compute_cumulants(
     times=None,                      # with t_min: absolute external times, (n, k) or (n,) (every leg at t)
     initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
     delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
-    discard=False,                   # item 61: evaluate each diagram on the grid, then release it (True / 'auto')
+    discard=False,                   # evaluate each diagram on the grid, then release it (True / 'auto')
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1123,8 +1274,8 @@ def compute_cumulants(
     Parameters
     ----------
     model : dict
-        The model dict (e.g. ``HAWKES_MODEL`` from
-        ``simulations/hawkes_linear_expg_gtas.py``).  Must declare:
+        The model dict (``builder.build()``; an unbuilt ``api.sde.SDE`` or
+        builder is built for you).  Must declare:
         ``response_fields``, ``physical_fields``, ``parameters``,
         ``kernels``, ``operators``, ``functions``, ``mf_substitutions``,
         ``mf_bg_conditions``, ``specializations``, ``kernel_ft_image``,
@@ -1163,7 +1314,7 @@ def compute_cumulants(
 
         **Previously this floor was 4**, which forced models at
         ``k=2, max_ell=0`` to pay an order-4 expansion they didn't
-        mathematically need — see ``docs/CHANGELOG.md``
+        mathematically need — see ``CHANGELOG.md``
         (model-precompute-cache branch) for the cost it imposed on
         the dendritic-linear model.
     origin_leaf_idx : int
@@ -1194,23 +1345,33 @@ def compute_cumulants(
         never uses the prediagram cache; it streams its prediagrams in
         memory whatever this says.
     parallel : bool, default True
-        Enable fork-based multiprocessing for the two heavy stages
-        that support it: per-prediagram type assignment in step [5]
-        and per-τ Phase J evaluation in step [7].  Both stages share
-        the same flag.
+        Parallel evaluation where it helps, by a method safe for the
+        platform; the numbers are the same bytes as ``parallel=False``.
+        Phase J's τ grid (step [7]) fans its diagrams out: diagrams with
+        large state blocks go to threads on every platform (notebooks
+        included); a batch predicted to take seconds goes to spawned,
+        Sage-free worker processes in a macOS / Windows script (in a
+        notebook only on request: ``DAEDALUS_SPAWN_IN_KERNEL=1``); on
+        Linux a fork pool takes batches with many diagrams.  Type
+        assignment (step [5]) forks on Linux only.  macOS never forks.
+        Every pool fits the memory budget (fewer workers, then serial).
+        ``DAEDALUS_PARALLEL=0`` turns every worker pool off, spatial
+        threads included.  See ``docs/parallel.md``.
     n_workers : int or None, default None
-        Worker process count when ``parallel=True``.  ``None`` lets
-        each stage pick its own default (``min(os.cpu_count(),
-        n_tasks)``).
+        Worker count when ``parallel=True``.  ``None`` lets each stage
+        pick its own default (Phase J threads: up to 8; spawned workers:
+        4; fork workers: ``os.cpu_count()``; all within the memory
+        budget).  Given, it also sets the process count of a streamed
+        prediagram enumeration (Linux).
     discard : bool or 'auto', default False
-        Evaluate-and-discard (item 61).  ``True``: each diagram is
+        Evaluate-and-discard.  ``True``: each diagram is
         evaluated on the τ grid right after it is built and then
         released (its pole plans and stationary states are refunded to
         the memory budget), so Phase J holds one diagram at a time: the
         pre-pass compares the largest diagram plus one segment working
         set with the budget instead of the sum.  Needs fixed evaluation
-        points: k = 1 or 2 with a τ grid (no switch-on, not grouped, no
-        pole-cluster deformation pass).  The values are the same; the
+        points: k = 1 or 2 with a τ grid (no switch-on, no pole-cluster
+        deformation pass).  The values are the same; the
         result's callables (``total_C``, ``total_C_by_ell``, the
         per-diagram callables) then answer the grid points only and raise
         ``DiscardedDiagramsError`` elsewhere (rerun with
@@ -1250,8 +1411,8 @@ def compute_cumulants(
         of the absolute external times.  Computed on the state-space Phase J
         route only (``engine.integration.time_domain.statespace``: a finite
         first segment from the empty state); a model or subset it does not
-        take, ``DAEDALUS_PHASE_J_ENGINE=poles``, spatial models, the grouped
-        integrator and ``output_npz``/``output_csv`` raise.  As ``t_min ->
+        take, ``DAEDALUS_PHASE_J_ENGINE=poles``, spatial models and
+        ``output_npz``/``output_csv`` raise.  As ``t_min ->
         -inf`` the result tends to the stationary one.  A noise kernel
         the model builder Markov-embedded (an auxiliary field) starts at
         zero too: the noise is switched on with the system
@@ -1295,7 +1456,13 @@ def compute_cumulants(
         'total_C_by_ell'  : {ell: callable(*tau)} — per-loop-order
         'C_tau'           : ndarray of total_C on the τ-grid (k=1, 2;
                              None for k≥3 — caller uses total_C / per-
-                             ell callables instead)
+                             ell callables instead).  k=2: the connected
+                             cumulant C(τ) = <dφ(0) dφ(τ)> of the
+                             fluctuation about the saddle.  k=1: the mean
+                             SHIFT <φ> − φ* produced by the loops (0 at
+                             tree level, since the cumulants expand
+                             around the saddle); the mean itself is
+                             ``mf_values`` + ``C_tau``.
         'C_tau_by_ell'    : {ell: ndarray or None} — per-loop-order
                              grid eval; ``C_tau == sum(values())``
         'tau_grid'        : ndarray of τ values
@@ -1350,6 +1517,23 @@ def compute_cumulants(
     and ``total_C`` / ``total_C_by_ell`` take ABSOLUTE times (each call runs
     inside :func:`statespace.switch_on_scope`).
 
+    SPATIAL k=2 (a ``spatial`` model) returns the same schema where it
+    applies, keyed by space as well:
+        'C_tau_x'         : ndarray ``(n_tau, n_x)`` of C(x, τ) at the top
+                             loop order
+        'C_tau'           : the slice of ``C_tau_x`` at the x closest to 0
+        'C_tau_x_by_ell'  : {ell: ndarray} the cumulative C(x, τ) at each
+                             loop order (``'C_tau_x_by_order'`` is the same
+                             dict under its older name)
+        'total_C_by_ell'  : {ell: callable(tau, x)} the loop-order increments
+        'tau_grid', 'chi_grid' : the grids (``'spatial_grid'`` is the older
+                             name of ``chi_grid``)
+        'status'          : ``'ok'``
+        'spatial_info', 'mf_values', 'mf', 'params', 'num_params',
+        'propagator', 'config' : as above
+    (There is no ``C_tau_by_ell``: the per-order data are the x-dependent
+    ``C_tau_x_by_ell``.)
+
     SPATIAL k≥3 (``spatial_points`` given) returns a DIFFERENT dict (an
     early return), keyed by the explicit evaluation events rather than a
     τ-grid:
@@ -1361,13 +1545,24 @@ def compute_cumulants(
         'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
         'k', 'max_ell', 'mf'
     """
+    model = as_model_dict(model)         # an SDE / builder is built here
+    # Grouped Phase J is retired (audit W7, RED-03): the flag is accepted
+    # for one release and runs the per-diagram integrator (same numbers)
+    if use_grouped_phase_j:
+        warnings.warn(
+            'use_grouped_phase_j is retired and has no effect: grouped Phase '
+            'J was removed (the per-diagram integrator gives the same '
+            'numbers and is what runs); drop the argument',
+            FutureWarning, stacklevel=2)
+        use_grouped_phase_j = False
     # the call as given (a model with delay kernels is handed to api.delay,
     # which re-enters compute_cumulants with Pade-approximated copies)
     _delay_call = dict(locals())
-    # item 60: a misspelled DAEDALUS_PHASE_J_ENGINE fails here, not at the
+    # a misspelled DAEDALUS_PHASE_J_ENGINE fails here, not at the
     # first Phase J subset after the enumeration
     from engine.integration.time_domain import statespace as _ss_env
     _ss_env.engine_requested()
+    _ss_env.fallback_enabled()      # (validated before the run too, W7)
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
     # ``chi_grid``), mirroring onto the internal names; canonical wins.
     if parameters is not None:
@@ -1392,6 +1587,14 @@ def compute_cumulants(
     _missing = sorted(p['name'] for p in _pspecs
                       if p['name'] not in fundamental
                       and not p.get('mean_field'))
+    # A misspelled name would otherwise be ignored and the run would use the
+    # DEFAULT value of the parameter meant (same rule as ``dd.run``).
+    _declared = {str(p['name']) for p in _pspecs}
+    _unknown = sorted(str(n) for n in _given if str(n) not in _declared)
+    if _declared and _unknown:
+        raise ValueError(
+            f'compute_cumulants: unknown parameter name(s) {_unknown}; the '
+            f'model declares {sorted(_declared)}.')
     if _missing:
         raise ValueError(
             'compute_cumulants: ' +
@@ -1401,6 +1604,8 @@ def compute_cumulants(
             ', '.join(_missing) + '. '
             'Pass parameters={...} or declare defaults via '
             'ModelBuilder.parameter(name, default=...).')
+    k = _entry_int('k', k)
+    max_ell = _entry_int('max_ell', max_ell)
     if external_fields is None:
         raise ValueError('external_fields is required')
     if len(external_fields) != k:
@@ -1411,6 +1616,32 @@ def compute_cumulants(
         raise ValueError(f'k must be >= 1; got {k}')
     if max_ell < 0:
         raise ValueError(f'max_ell must be >= 0; got {max_ell}')
+    try:
+        _acc = (None if accuracy is None or isinstance(accuracy, (bool, str))
+                else float(accuracy))
+    except (TypeError, ValueError):
+        _acc = None
+    if accuracy is not None and not (_acc is not None and np.isfinite(_acc)
+                                     and _acc > 0):
+        raise ValueError(
+            f'accuracy must be a finite number > 0 (a target relative '
+            f'accuracy, e.g. 1e-10) or None; got {accuracy!r}.')
+    if _entry_int('fixed_point_index', fixed_point_index) < 0:
+        raise ValueError(f'fixed_point_index must be >= 0; got '
+                         f'{fixed_point_index!r}.')
+    if n_workers is not None and _entry_int('n_workers', n_workers) < 1:
+        raise ValueError(f'n_workers must be >= 1 or None; got {n_workers!r}.')
+    if isinstance(discard, (bool, np.bool_)):
+        discard = bool(discard)
+    elif not (isinstance(discard, str) and discard == 'auto'):
+        raise ValueError(f"discard={discard!r}: expected False, True or "
+                         f"'auto'")
+    # one rule for every entry point (dd.Config, YAML, here): an
+    # (lo, hi, n) tuple is a range, a list/array is literal points, and a
+    # 3-element integer-count list is refused (api._grids)
+    from api._grids import resolve_grid
+    tau_grid = resolve_grid(tau_grid, 'tau_grid')
+    spatial_grid = resolve_grid(spatial_grid, 'spatial_grid')
     _nso = model.get('noise_series_order') if isinstance(model, dict) else None
     if _nso and k + 2 * max_ell > int(_nso['order']):
         # a CGF with a removable singularity at 0 (the uniform jump) enters
@@ -1454,7 +1685,6 @@ def compute_cumulants(
         model, k, max_ell, t_min, times, initial_covariance, tau_grid,
         spatial=(bool(model.get('spatial')) or spatial_grid is not None
                  or spatial_points is not None),
-        grouped=use_grouped_phase_j,
         saving=bool(output_npz or output_csv))
 
     # Auto-pick a Taylor budget that covers every vertex the
@@ -1558,7 +1788,7 @@ def compute_cumulants(
         _delays = _delay.kernel_delays(model, ft._ns)
         if _delays and switch_on is not None:
             # the delay driver's exact tree and its Pade-order search are
-            # stationary (item 44: not combined yet)
+            # stationary (not combined yet)
             from engine.integration.time_domain import statespace as _ss_dl
             raise _ss_dl.SwitchOnUnsupported(
                 'delay_kernels', 'models with delay kernels (api.delay) are '
@@ -1589,21 +1819,15 @@ def compute_cumulants(
         print('[3/7] Solve MF self-consistency...')
     _t_phase = time.perf_counter()
     try:
-        if model.get('equations'):
-            # Route to the DAE-based multi-root solver when the model
-            # declares ``.equation(lhs=..., rhs=..., population=...)``.
-            # Returns the same legacy-shape keys plus DAE-specific extras
-            # (mf_all_roots, mf_index_used, ...) that we surface on the
-            # final th dict below.
-            mf = solve_mean_field_dae_compat(
-                ft, model, fundamental,
-                fixed_point_index=fixed_point_index,
-                n_starts=mf_dae_n_starts,
-                seed_box=mf_dae_seed_box,
-                verbose=verbose,
-            )
-        else:
-            mf = solve_mean_field(ft, model, fundamental, verbose=verbose)
+        # One multi-root solver for every model (``.equation`` rows or
+        # ``.set_mf_equation`` saddle equations; audit GEN-02); its root
+        # census (mf_all_roots, mf_index_used, ...) is surfaced below.
+        mf = solve_mean_field(
+            ft, model, fundamental, verbose=verbose,
+            fixed_point_index=fixed_point_index,
+            n_starts=mf_dae_n_starts,
+            seed_box=mf_dae_seed_box,
+        )
     except Exception as _mf_exc:
         if _pf is not None:               # name the cause when a gate can
             _pf.failed('mean_field', _mf_exc)
@@ -1612,6 +1836,11 @@ def compute_cumulants(
     _phase_time('mean_field', _t_phase)
     if _pf is not None:
         _pf.mean_field(mf)                # G2 / G3 spatial / G4 / undriven
+    else:
+        # the analyzer (G2_UNSTABLE_SADDLE) is off: an unstable selection is
+        # refused here by name, not later as a pole-free propagator
+        from api._mean_field_dae import refuse_unstable_saddle
+        refuse_unstable_saddle(model, fundamental, mf)
 
     # ── 3.5 Spatial short-circuit ─────────────────────────────────
     # A spatial model's propagator carries the inert ``Laplacian``
@@ -1629,7 +1858,7 @@ def compute_cumulants(
 
     # ── Routing (api.routing): the first registered backend that applies.
     # The built-in table reproduces the dispatch of 0.2.0 exactly (spatial
-    # short-circuit, grouped / per-diagram Phase J) and raises the same
+    # short-circuit, per-diagram Phase J) and raises the same
     # errors when nothing applies.
     from api import routing as _routing
     _request = _routing.RouteRequest(
@@ -1638,7 +1867,6 @@ def compute_cumulants(
         k=k, max_ell=max_ell,
         has_spatial_grid=spatial_grid is not None,
         has_spatial_points=spatial_points is not None,
-        grouped=bool(use_grouped_phase_j),
         initial_mode=('switch_on' if switch_on is not None else
                       (model.get('initial') or {}).get('mode', 'stationary')),
         requested=backend,
@@ -1655,7 +1883,7 @@ def compute_cumulants(
         taylor_order=taylor_order, origin_leaf_idx=origin_leaf_idx,
         use_cache=use_cache, parallel=parallel,
         spatial_parallel=spatial_parallel, spatial_n_q=spatial_n_q,
-        n_workers=n_workers, use_grouped_phase_j=use_grouped_phase_j,
+        n_workers=n_workers,
         discard=discard,
         verbose=verbose, naming_convention=naming_convention,
         vtypes=vtypes, stypes=stypes, phase_walls=phase_walls,
@@ -1677,6 +1905,14 @@ def compute_cumulants(
         _failures = _phase_j_failures(result['phase_j_by_ell'])
         result['phase_j_incomplete'] = _failures
         result['status'] = 'incomplete' if _failures else 'ok'
+    # Spatial: a result whose quadrature accuracy is not certified is
+    # 'approximate' (never 'ok'); G6 reports it; strict policy raises below
+    _sp_acc = []
+    if isinstance(result, dict) and route.backend.name == 'spatial_integrator':
+        _sp_acc = _spatial_accuracy(result, result.get('tau_grid', tau_grid),
+                                    max_ell)
+        result['spatial_accuracy'] = _sp_acc
+        result['status'] = 'approximate' if _sp_acc else 'ok'
     if _pf is not None:
         # G6 sizes its accuracy estimate on ``C_tau``; a switch-on run's
         # values are ``C_times`` (a read-only view: G6 never writes)
@@ -1703,6 +1939,18 @@ def compute_cumulants(
         _ensure_warning_shown(PhaseJIncompleteWarning, 'always',
                               message=_msg, stacklevel=2)
         warnings.warn(_msg, PhaseJIncompleteWarning, stacklevel=2)
+    if _sp_acc:
+        _msg = ('spatial result is approximate: ' + '; '.join(
+            r['note'] + (f' (0.7x-coarser grid spread '
+                         f'{r["coarse_spread"]:.2e} of max|C|)'
+                         if r.get('coarse_spread') is not None else '')
+            for r in _sp_acc) + ' -- see result["spatial_accuracy"].')
+        if _policy_is_strict(policy):
+            raise SpatialAccuracyError(_msg, result=result)
+        from api.save import _ensure_warning_shown
+        _ensure_warning_shown(SpatialAccuracyWarning, 'always',
+                              message=_msg, stacklevel=2)
+        warnings.warn(_msg, SpatialAccuracyWarning, stacklevel=2)
     if route.backend.standard_tail:
         _standard_tail(state, result, output_npz, output_csv)
     return result
@@ -1755,19 +2003,28 @@ def _run_spatial(state):
             _ns = ft._ns
             _Msr, _Dsr, _Vsr = reaction_diffusion_matrices(
                 prop['K_ft'], prop['omega'], SR.var('k'),
-                _ns.Laplacian, getattr(_ns, 'GradX', None))
+                _ns.Laplacian, getattr(_ns, 'GradX', None) or SR.var('GradX'))
             _nf = int(_Msr.nrows())
             _sub = _norm_sr(num_params)
 
             def _numm(sm):
                 return _np.array(
-                    [[complex(SR(sm[a_, b_]).subs(_sub)).real
+                    [[complex(SR(sm[a_, b_]).subs(_sub))
                       for b_ in range(_nf)] for a_ in range(_nf)],
-                    dtype=float)
-            _Mn, _Dn, _Vn = _numm(_Msr), _numm(_Dsr), _numm(_Vsr)
-            if not _np.allclose(_Vn, 0.0, atol=1e-9):
-                raise NotImplementedError(
-                    'coupled k>=3: drift (V != 0) not supported.')
+                    dtype=complex)
+            _Mc, _Dc = _numm(_Msr), _numm(_Dsr)
+            # M and D are real for a real action; never drop an imaginary
+            # part silently (relative to the matrix's own scale)
+            for _nm, _mc in (('reaction M', _Mc), ('diffusion D', _Dc)):
+                if _np.max(_np.abs(_mc.imag)) > 1e-12 * max(
+                        float(_np.max(_np.abs(_mc))), 1e-300):
+                    raise NotImplementedError(
+                        f'coupled k>=3: the {_nm} matrix is complex at the '
+                        f'saddle; a real matrix is required.')
+            _Mn, _Dn = _Mc.real, _Dc.real
+            # the drift V = i*v*I (GradX -> i k, purely imaginary): a common
+            # drift is boosted away exactly inside compute_coupled_kpoint;
+            # any other V refuses there (pipeline_bridge._drift_velocity)
             _D0, _Dhat = split_reference_diffusion(_Dn)
             tree_info_k = {
                 'M': _Mn, 'Dhat': _Dhat, 'D0': float(_D0),
@@ -1802,7 +2059,7 @@ def _run_spatial(state):
     # integrator sums EVERY enumerated diagram up to max_ell loops through one
     # genuine integral (Symanzik ∫dᵈℓ → causal-chamber time integral →
     # ret+adv), weighted by the enumeration 𝒮(Γ) — no shortcut, no diagram
-    # dropped (docs/spatial_generic_pipeline_plan.md).
+    # dropped (the internal design notes (not distributed)).
     if max_ell >= 1:
         from engine.integration.spatial.pipeline_bridge import (
             compute_spatial_correlator_generic,
@@ -1837,8 +2094,8 @@ def _run_spatial(state):
     # spatial_grid) only; the callables read that grid (the highest loop
     # order, and the per-order increments for total_C_by_ell), so
     # total_C(τ, x) == C_tau_x[iτ, ix] at every grid point.  Off the grid
-    # they refuse — except the single-field d=1 TREE, which has an exact
-    # closed form anywhere (free_two_point, erf / image sum).
+    # they refuse — except the single-field TREE, which is exact anywhere
+    # (free_two_point / free_two_point_d / the periodic image sum).
     _C_by_order = {int(el): _np.asarray(C) for el, C in
                    (sp_info.get('C_by_order') or {0: C_tau_x}).items()}
     _orders = sorted(_C_by_order)
@@ -1846,9 +2103,12 @@ def _run_spatial(state):
                   else _C_by_order[el])
              for i, el in enumerate(_orders)}
     _sp_d = int(sp_info.get('spatial_dim', 1))
-    _tree_exact = (_orders == [0] and _sp_d == 1 and not sp_info.get('coupled')
+    _tree_exact = (_orders == [0] and not sp_info.get('coupled')
                    and sp_info.get('modes'))
     _tau_arr = _np.asarray(tau_grid, dtype=float)
+    # a constant drift was boosted away (C_v(x, tau) = C_0(x - v tau, tau)):
+    # the off-grid exact tree is the drift-free mode at the boosted point
+    _v_drift = float(sp_info.get('drift_velocity') or 0.0)
 
     def _spatial_callable(table, exact_tree):
         def fn(*tau_then_x):
@@ -1868,11 +2128,20 @@ def _run_spatial(state):
             if it.size and ix.size:
                 return complex(table[int(it[0]), int(ix[0])])
             if exact_tree:
+                from engine.integration.spatial.spatial_correlator import (
+                    free_two_point_d, free_two_point_box)
                 val = 0j
+                xq = xq - _v_drift * tau
                 for (A, B, N) in sp_info['modes']:
-                    val += free_two_point(A, B, N, xq, tau,
-                                          bc_mode=sp_info['bc_mode'],
-                                          L=sp_info['L'])
+                    if _sp_d == 1:
+                        val += free_two_point(A, B, N, xq, tau,
+                                              bc_mode=sp_info['bc_mode'],
+                                              L=sp_info['L'])
+                    elif sp_info['bc_mode'] == 'periodic':
+                        val += free_two_point_box(A, B, N, xq, tau, _sp_d,
+                                                  sp_info['L'])
+                    else:
+                        val += free_two_point_d(A, B, N, xq, tau, _sp_d)
                 return val
             raise ValueError(
                 f'spatial total_C: (tau={tau}, x={xq}) is not on the '
@@ -1900,6 +2169,10 @@ def _run_spatial(state):
         # — the WHOLE progression from ONE call (the highest-ℓ run already
         # contains every lower order; no need to re-run per order).
         'C_tau_x_by_order': sp_info.get('C_by_order', {0: C_tau_x}),
+        # the temporal schema's names for the same data: ``status`` and the
+        # per-loop-order key spelled with ell (the same dict as ``_by_order``)
+        'status':         'ok',
+        'C_tau_x_by_ell': sp_info.get('C_by_order', {0: C_tau_x}),
         'tau_grid':       tau_grid,
         'spatial_grid':   spatial_grid_arr,
         'chi_grid':       spatial_grid_arr,   # canonical alias of spatial_grid
@@ -1928,18 +2201,13 @@ def _run_spatial(state):
 
 def _run_phase_j_per_diagram(state):
     """Backend ``phase_j_per_diagram`` (``api.routing``)."""
-    return _run_phase_j(state, grouped=False)
+    return _run_phase_j(state)
 
 
-def _run_phase_j_grouped(state):
-    """Backend ``phase_j_grouped`` (``api.routing``)."""
-    return _run_phase_j(state, grouped=True)
-
-
-def _run_phase_j(state, grouped):
+def _run_phase_j(state):
     """The temporal Phase J stages [4/7]-[7/7]: poles and residues, the
     diagram enumeration, the prefactor classification and the time-domain
-    integration (``grouped``: the grouped integrator), and the result dict.
+    integration, and the result dict.
     ``state``: the pipeline objects after the mean-field stage."""
     (model, k, max_ell, ft, prop, num_params, mf, external_fields,
      external_fields_user, fundamental, tau_grid, tau_max, tau_step,
@@ -1953,7 +2221,6 @@ def _run_phase_j(state, grouped):
         state.origin_leaf_idx, state.use_cache, state.parallel,
         state.n_workers, state.verbose, state.naming_convention,
         state.vtypes, state.stypes, state.phase_walls, state.phase_time)
-    use_grouped_phase_j = bool(grouped)
     # ── 4. Numerical poles + residues (fills prop in place) ───────
     if verbose:
         print('[4/7] Compute numerical poles + residue matrices...')
@@ -2099,13 +2366,14 @@ def _run_phase_j(state, grouped):
         'model_name': model.get('name'),
     }
 
-    # Item 35: the memory pre-pass, before any modesum plan is built.  The
-    # budget is read ONCE for the run (item 53: its default depends on what
+    # the memory pre-pass, before any modesum plan is built.  The
+    # budget is read ONCE for the run (its default depends on what
     # the process holds), so the pre-pass and the running guard agree.
     from engine.integration.time_domain import final_integral as _fi_b
-    _run_budget = (_fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    _run_budget = (_fi_b.run_budget() if hasattr(_fi_b, 'run_budget')
+                   else _fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
-    # Item 61: evaluate-and-discard needs fixed evaluation points (k <= 2
+    # evaluate-and-discard needs fixed evaluation points (k <= 2
     # on the τ grid) and a single pass
     discard = getattr(state, 'discard', False)
     if discard not in (False, True, 'auto'):
@@ -2114,7 +2382,6 @@ def _run_phase_j(state, grouped):
     _discard_why = (
         'k >= 3 (no fixed evaluation points)' if k > 2 else
         'switch-on transients (t_min)' if switch_on is not None else
-        'the grouped integrator' if use_grouped_phase_j else
         'the pole-cluster deformation averages several passes'
         if (prop.get('pole_deformation') is not None
             and not ss_route.get('bypass_deformation')) else None)
@@ -2137,18 +2404,22 @@ def _run_phase_j(state, grouped):
     elif k == 2:
         # Single-axis slice: vary leaf 1 over tau_grid, leaf 0 pinned at 0.
         # Itô LEFT-limit at equal time (Itô ⇒ left-continuous, Θ(0)=Θ(0⁻)): the
-        # τ=0 entry is sampled at t_1 = −_ITO_EPS rather than exactly 0.  The
+        # τ=0 entry was sampled at t_1 = −_ITO_EPS rather than exactly 0.  The
         # propagators are strictly-causal retarded with Θ(0)=0; landing the τ-grid
         # on that measure-zero step discontinuity drops a coincident-ordering
         # contribution and produces a spurious single-point dip at τ=0.  Nudging
         # to 0⁻ keeps the surviving causal chamber and gives the left limit (= the
         # right limit for an even/stationary C; differs only at a genuine τ=0
         # jump, where Itô takes the left).  The grid LABEL stays 0.
-        # (DAEDALUS_TAU0=exact evaluates the τ = 0 point AT equal times,
-        # where the engine's exact tie rule gives C(0⁻) exactly; see
-        # ``_tau0_mode``.)
+        # (Since Oct 2026 the τ = 0 point is evaluated AT equal times by
+        # default, where the engine's exact tie rule gives C(0⁻) exactly;
+        # the −_ITO_EPS sample is DAEDALUS_TAU0=nudge, see ``_tau0_mode``.)
         _lag0 = _tau0_lag()
-        tau_points = [(0.0, float(t) if abs(float(t)) > 1e-12 else _lag0)
+        # a grid value is the equal-time point when it is 0 to round-off of
+        # the grid's own scale (an absolute 1e-12 turned every lag of a model
+        # in fast time units, rates ~1e12, into tau = 0: audit W4a)
+        _tz = 1e-12 * max([0.0] + [abs(float(t)) for t in tau_grid])
+        tau_points = [(0.0, float(t) if abs(float(t)) > _tz else _lag0)
                       for t in tau_grid]
     else:
         tau_points = None   # k≥3: caller handles grid evaluation
@@ -2184,26 +2455,8 @@ def _run_phase_j(state, grouped):
                     C_tau_by_ell[ell] = None
                 continue
 
-            if use_grouped_phase_j:
-                # Prototype: group typed diagrams by parent prediagram and
-                # sum integrands before fast_callable + quadrature.  See
-                # ``api/_grouped_phase_j.py`` for the math + caveats.
-                from api._grouped_phase_j import (
-                    compute_correction_td_grouped,
-                )
-                td_result_ell = compute_correction_td_grouped(
-                    typed_diagrams   = [r['typed_diagram']
-                                        for r in records_ell],
-                    prefactors       = [r['combined_prefactor']
-                                        for r in records_ell],
-                    k                = k,
-                    propagator_data  = pdata,
-                    external_fields  = external_fields,
-                    num_params       = num_params,
-                    origin_leaf_idx  = origin_leaf_idx,
-                )
-            elif _discard_on:
-                # item 61: each diagram evaluated on the grid, then released
+            if _discard_on:
+                # each diagram evaluated on the grid, then released
                 with _phase_j_warning_scope():
                     td_result_ell = compute_correction_td(
                         typed_diagrams   = [r['typed_diagram']
@@ -2297,7 +2550,7 @@ def _run_phase_j(state, grouped):
                 pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
             if _discard_on:
                 # several passes are averaged: evaluate-and-discard is off
-                # for them (item 61); the running guard still checks
+                # for them; the running guard still checks
                 _discard_on = False
                 if mem_estimate is not None:
                     mem_estimate['discard'] = False
@@ -2324,18 +2577,12 @@ def _run_phase_j(state, grouped):
 
     _phase_time('phase_j', _t_phase)
 
-    if use_grouped_phase_j:
-        # M7: say so once per run if the grouped path dropped shot-noise
-        # δ(τ) records (since Feature B it carries them: never fires).
-        from api._grouped_phase_j import warn_dropped_delta_records
-        warn_dropped_delta_records(phase_j_by_ell)
-
     # Master total_C: sum across ell (for caller convenience)
     @_phase_j_scoped
     def total_C(*ext_time_values):
         return sum(complex(fn(*ext_time_values))
                    for fn in total_C_by_ell.values())
-    # item 35 (F3): ``dd.run`` may form total_C's values from the per-ell
+    # ``dd.run`` may form total_C's values from the per-ell
     # values it evaluates anyway (the same sum, in this order)
     total_C.sum_of_by_ell = total_C_by_ell
 
@@ -2389,19 +2636,8 @@ def _run_phase_j(state, grouped):
     #      pre-date the declarative API.
     npop = len(ft._ns.pop)
 
-    mf_param_names: list[str] = []
-    if naming_convention and naming_convention.get('mf_parameters'):
-        mf_param_names = list(naming_convention['mf_parameters'])
-    else:
-        # Walk model['parameters'] looking for the flag
-        for pspec in model.get('parameters', []) or []:
-            if pspec.get('mean_field'):
-                mf_param_names.append(pspec['name'])
-        # Last-resort fallback for legacy models
-        if not mf_param_names:
-            for legacy in ('nstar', 'vstar', 'mstar'):
-                if hasattr(ft._ns, legacy):
-                    mf_param_names.append(legacy)
+    from api.naming import saddle_names
+    mf_param_names: list[str] = saddle_names(model)
 
     # Map each MF param name to the range of local indices it owns.
     # Heterogeneous models declare ``indexed_by=['<pop>']`` on each
@@ -2486,8 +2722,10 @@ def _run_phase_j(state, grouped):
             # Read after the τ-grid evaluation above: the rule these numbers
             # were computed with (the Phase J flags are read at call time).
             'phase_j_convention': _phase_j_convention(),
-            'phase_j_flags':      _phase_j_flags(use_grouped_phase_j),
-            'use_grouped_phase_j': bool(use_grouped_phase_j),
+            'phase_j_flags':      _phase_j_flags(),
+            # grouped Phase J is retired (W7): kept so readers of old
+            # result files see one key
+            'use_grouped_phase_j': False,
         },
     }
 
@@ -2508,8 +2746,11 @@ def _run_phase_j(state, grouped):
         # (with full eigenvalue spectrum + A/B matrices) is the
         # canonical record for downstream consumers.
         try:
-            result['mf_stability'] = linear_stability(
+            # (saddle equations without .equation rows have no Dt terms
+            # to linearize)
+            result['mf_stability'] = (linear_stability(
                 model, fundamental, mf['mf_values'], verbose=False)
+                if model.get('equations') else None)
         except Exception as e:
             if verbose:
                 print(f'  [stability] skipped: {type(e).__name__}: {e}')

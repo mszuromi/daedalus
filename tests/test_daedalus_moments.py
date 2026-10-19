@@ -43,7 +43,7 @@ def test_central_moment_k4_is_kappa4_plus_3_kappa2_sq():
     k2 = float(np.real(np.asarray(r2['C_tau']))[
         int(np.argmin(np.abs(r2['tau_grid'])))])
     M4 = float(np.real(r4['moment'])[zi])
-    assert abs(M4 - (k4 + 3.0 * k2 * k2)) < 1e-9, (M4, k4, k2)
+    assert abs(M4 - (k4 + 3.0 * k2 * k2)) < 1e-12, (M4, k4, k2)
     assert r4['output_kind'] == 'central_moment'
 
 
@@ -51,12 +51,13 @@ def test_raw_moment_adds_mean_squared(monkeypatch):
     """k=2 raw moment = κ₂(τ) + ⟨φ⟩²; force a non-zero mean and check the
     constant μ² offset over the whole curve."""
     m, mod = dd.load_model('ou_quartic_double_well')
-    monkeypatch.setattr(dd, '_external_mean', lambda model, res: 2.0)
+    monkeypatch.setattr(dd, '_external_mean',
+                        lambda model, res, leg=None: 2.0)
     rm = dd.run(m, dd.Config(k=2, max_ell=0, output='moment', **_TAU), mod)
     monkeypatch.undo()
     rc = dd.run(m, dd.Config(k=2, max_ell=0, **_TAU), mod)
     diff = np.real(rm['moment']) - np.real(rc['C_tau'])
-    assert np.allclose(diff, 4.0, atol=1e-9)                # μ² = 2² = 4
+    assert np.allclose(diff, 4.0, rtol=1e-12, atol=1e-12)                # μ² = 2² = 4
 
 
 def test_central_equals_cumulant_for_k_le_3():
@@ -67,7 +68,7 @@ def test_central_equals_cumulant_for_k_le_3():
         rk = dd.run(m, dd.Config(k=k, max_ell=0, output='central_moment',
                                  **_TAU), mod)
         assert np.allclose(np.real(rk['moment']),
-                           np.real(rc['C_tau']), atol=1e-9), k
+                           np.real(rc['C_tau']), rtol=1e-12, atol=1e-12), k
 
 
 def _zi(res):
@@ -93,7 +94,7 @@ def test_one_loop_moment_shares_the_loop_budget():
 
     consistent = (k4_0 + k4_1) + 3.0 * (k2_0 * k2_0 + 2.0 * k2_0 * k2_1)
     dressed = (k4_0 + k4_1) + 3.0 * (k2_0 + k2_1) ** 2
-    assert abs(M4 - consistent) < 1e-7, (M4, consistent)
+    assert abs(M4 - consistent) < 1e-12, (M4, consistent)
     # the two conventions genuinely differ here (κ₂⁽¹⁾ ≠ 0), so this is a
     # real discriminating test, not a tautology:
     assert abs(consistent - dressed) > 1e-4, (k2_1, consistent, dressed)

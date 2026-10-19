@@ -13,8 +13,8 @@ References are exact: the colored OU (``ou_quartic_colored``: x' = -mu x
 g = 1/tauc) and, its only nonlinearity being eps x^3, the one-loop term
 ``C1 = 3 eps C0(0) dC0/dmu`` (the Hartree tadpole); the three-pole chain
 x <- y <- z likewise (spectral density 2 D / prod (omega^2 + rate^2)).
-The tau = 0 point is compared at tau = 1e-6, the Ito left limit the pipeline
-evaluates.  Before the fix the colored OU's one-loop term was noise of order
+The tau = 0 point is compared at tau = 0, the exact Ito left limit the pipeline
+evaluates (C is even and continuous here).  Before the fix the colored OU's one-loop term was noise of order
 1 at gap 1e-4 and the tree was 1.40625 at gap 1e-7 and -2e15 at gap 0.
 """
 from __future__ import annotations
@@ -40,7 +40,7 @@ from api.model import TemporalModelBuilder                          # noqa: E402
 
 MODELS = Path(__file__).resolve().parent.parent / 'models'
 TAU = np.array([0.0, 0.5, 2.0])
-TAU_REF = ['1e-6', '0.5', '2']
+TAU_REF = ['0', '0.5', '2']
 GAPS = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-10, 0.0]
 RTOL = 1e-9
 
@@ -136,7 +136,7 @@ def colored():
 def test_colored_ou_matches_the_exact_reference(colored, gap):
     r = colored[gap]
     tree_ref, loop_ref = _colored_ref(1 / (1 + gap))
-    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=RTOL, atol=0)
+    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=1e-10, atol=0)
     np.testing.assert_allclose(_real(r['C_tau_by_ell'][1]), loop_ref, rtol=RTOL, atol=0)
     pc = r['pole_clusters']
     if gap <= 5e-2:                    # the pair is a cluster (5 % relative) with kappa > 10
@@ -181,8 +181,8 @@ def test_long_tau_grid_keeps_its_accuracy():
     reference to 1e-9 relative up to tau = 50 (C(50) ~ 1e-21)."""
     taus = [0.0, 2.0, 10.0, 30.0, 50.0]
     r = _run(_load('ou_quartic_colored'), _params(1e-6), tau=taus, policy=_MARKOV)
-    tree_ref, loop_ref = _colored_ref(1 / (1 + 1e-6), taus=['1e-6'] + [str(t) for t in taus[1:]])
-    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=RTOL, atol=0)
+    tree_ref, loop_ref = _colored_ref(1 / (1 + 1e-6), taus=['0'] + [str(t) for t in taus[1:]])
+    np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), tree_ref, rtol=1e-10, atol=0)
     np.testing.assert_allclose(_real(r['C_tau_by_ell'][1]), loop_ref, rtol=RTOL, atol=0)
     pc = r['pole_clusters']
     assert pc['status'] == 'resolved' and pc['clusters'][0]['h'] <= 3 / 50 + 1e-15
@@ -225,7 +225,7 @@ def test_decoupled_near_equal_rates_are_exact():
         r = compute_cumulants(model, k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)], parallel=False,
                               verbose=False, tau_grid=np.array([0.0, 1.0]),
                               parameters={'mu1': 1.0, 'mu2': 1.0 + g, 'D': 1.0})
-        np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), [np.exp(-1e-6), np.exp(-1.0)], rtol=1e-13)
+        np.testing.assert_allclose(_real(r['C_tau_by_ell'][0]), [1.0, np.exp(-1.0)], rtol=1e-13)
         assert r['pole_clusters']['status'] == 'harmless'
 
 
@@ -249,14 +249,30 @@ def test_cluster_without_the_exact_tier_is_flagged(monkeypatch):
     assert 'exact tier failed' in r['pole_clusters']['reason']
 
 
-def test_switched_off_is_flagged(monkeypatch):
-    """DAEDALUS_POLE_CLUSTERS=0 restores the old numbers (the one-loop term is rounding noise at gap 1e-4)
-    and says so."""
-    monkeypatch.setenv(PC.ENV_SWITCH, '0')
-    r = _run(_load('ou_quartic_colored'), _params(1e-4), policy=_MARKOV)
-    _assert_flagged(r, 'disabled', 10)
+# The one-loop term at gap 1e-4 with the deformation switched off (the
+# retired ``DAEDALUS_POLE_CLUSTERS=0``, pole engine; frozen at audit W7): the
+# old numbers, rounding noise.
+_SWITCHED_OFF_LOOP = [0j, (-1.125 + 0j), (-0.15625 + 0j)]
+
+
+def test_the_retired_switch_off_lost_the_one_loop_term():
     _, loop_ref = _colored_ref(1 / (1 + 1e-4))
-    assert abs(complex(r['C_tau_by_ell'][1][0]).real - loop_ref[0]) > 1e-3
+    assert abs(_SWITCHED_OFF_LOOP[0].real - loop_ref[0]) > 1e-3
+
+
+def test_the_retired_switch_is_ignored(monkeypatch):
+    """``DAEDALUS_POLE_CLUSTERS=0`` (retired in audit W7) no longer turns the
+    deformation off: the cluster is resolved and the one-loop term exact."""
+    from engine import _env
+    monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
+    _env._RETIRED_SEEN.discard('DAEDALUS_POLE_CLUSTERS')
+    r = _run(_load('ou_quartic_colored'), _params(1e-4), policy=_MARKOV)
+    # (``_run`` records the warnings itself: the retired switch warned)
+    assert 'DAEDALUS_POLE_CLUSTERS' in _env._RETIRED_SEEN
+    assert r['pole_clusters']['status'] == 'resolved'
+    _, loop_ref = _colored_ref(1 / (1 + 1e-4))
+    assert abs(complex(r['C_tau_by_ell'][1][0]).real - loop_ref[0]) <= (
+        1e-9 * abs(loop_ref[0]))
 
 
 def test_strict_policy_refuses_only_unresolved_clusters(monkeypatch):
@@ -264,7 +280,8 @@ def test_strict_policy_refuses_only_unresolved_clusters(monkeypatch):
     strict = {'mode': 'strict', 'allow_markov_embedding': True}
     r = _run(model, _params(1e-4), policy=strict)                    # resolved: runs
     assert r['pole_clusters']['status'] == 'resolved'
-    monkeypatch.setenv(PC.ENV_SWITCH, '0')
+    # an unresolved cluster: the exact residue tier unavailable
+    monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield', lambda *a, **kw: (None, None, None))
     from api.analyze import AnalyzerError
     with pytest.raises(AnalyzerError, match='G3_POLE_CLUSTER_UNRESOLVED'):
         _run(model, _params(1e-4), policy=strict)
@@ -313,7 +330,7 @@ def test_trapezoid_combination_and_tail_estimate():
         vals = [np.array([1 / (1 - w / 4)]) for w, _, _ in nodes]
         F0 = PC.combine_values(vals, nodes)[0]
         err = PC.tail_estimate(vals, nodes, N)[0]
-        assert abs(F0 - 1) == pytest.approx(4.0 ** -N / (1 - 4.0 ** -N), rel=1e-6)
+        assert abs(F0 - 1) == pytest.approx(4.0 ** -N / (1 - 4.0 ** -N), rel=1e-12, abs=0)
         assert err >= abs(F0 - 1)
     assert len(dummy.nodes(True)) == N // 2 + 1 and len(dummy.nodes(False)) == N
 

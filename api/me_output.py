@@ -42,9 +42,9 @@ From the triple, without poles:
 Conventions (k = 2) are those of ``C_tau``: ``C(τ) = κ(x_1(0), x_2(τ))``;
 side ``'+'`` is τ > 0, ``'-'`` is τ < 0; a :class:`~api.cumulant.ModeTerm`
 ``(coeff, rate, power, side)`` is ``coeff · τ**power · exp(rate · τ)`` in the
-signed τ (as item 23's ``ModeSum``).  At τ = 0 the default is the Itô left
-limit (side '-', exactly); ``C_tau``'s τ = 0 point is sampled at
-``τ = −api.compute._ITO_EPS`` instead.
+signed τ (as the ``ModeSum``).  At τ = 0 the default is the Itô left
+limit (side '-', exactly), as ``C_tau``'s τ = 0 point (exact by default;
+``τ = −api.compute._ITO_EPS`` under DAEDALUS_TAU0=nudge).
 
 Where the triple is not available the object says why (``reasons``) and
 nothing is guessed: a subset on the pole route (the state-space route
@@ -59,6 +59,7 @@ from typing import Any, NamedTuple, Optional
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = ['MEBlock', 'SideME', 'CumulantME', 'SliceME', 'MEUnavailable',
            'MEConditioningWarning', 'MEFallbackWarning', 'RationalKernel',
@@ -84,7 +85,52 @@ CACHE_MAX = 512
 MAX_DENSE_TOTAL = 20000
 
 
-class MEUnavailable(ValueError):
+#: the dense forms cached on blocks may hold at most this fraction of the
+#: memory budget (``PHASE_J_MEM_BUDGET_GB``, default ``default_mem_budget``)
+#: in all; beyond it a form is rebuilt on demand (one frequency of
+#: ``spectrum_smooth`` on a 3-field one-loop result cached 5 GB of them under
+#: a 4 GB budget, audit MEM-03)
+FORM_CACHE_BUDGET_FRACTION = 0.5
+_FORM_CACHE = {'bytes': 0}
+_FORM_CACHE_LOCK = __import__('threading').Lock()
+
+
+def _check_dense_bytes(nbytes, what):
+    """Refuse (``PhaseJResourceError``) a dense form of ``nbytes`` larger than
+    the memory budget before it is allocated (audit MEM-09)."""
+    from engine.integration.time_domain import final_integral as FI
+    budget, rule = FI.mem_budget('PHASE_J_MEM_BUDGET_GB')
+    if budget is None or nbytes <= budget:
+        return
+    raise FI.PhaseJResourceError(
+        f'{what} needs {FI._fmt_gb(nbytes)}, over the memory budget of '
+        f'{FI._fmt_budget(budget, rule)}; nothing was allocated.  Use the '
+        f'blocks (.blocks[i].triple()) or raise the budget: {FI._BUDGET_HOW}.',
+        {'bytes': nbytes, 'budget_bytes': budget})
+
+
+def _form_cache_release(nbytes):
+    with _FORM_CACHE_LOCK:
+        _FORM_CACHE['bytes'] -= nbytes
+
+
+def _form_cache_admit(owner, form):
+    """Whether ``form`` (a tuple of arrays) may be cached on ``owner``: its
+    bytes are charged to the cache total until ``owner`` is collected."""
+    import weakref
+    from engine.integration.time_domain.final_integral import mem_budget
+    nbytes = int(sum(getattr(a, 'nbytes', 0) for a in form))
+    budget = mem_budget('PHASE_J_MEM_BUDGET_GB')[0]
+    with _FORM_CACHE_LOCK:
+        if (budget is not None and _FORM_CACHE['bytes'] + nbytes
+                > FORM_CACHE_BUDGET_FRACTION * budget):
+            return False
+        _FORM_CACHE['bytes'] += nbytes
+    weakref.finalize(owner, _form_cache_release, nbytes)
+    return True
+
+
+class MEUnavailable(DaedalusError, ValueError):
     """The matrix-exponential triple of this result is not available (the
     message lists the reasons)."""
 
@@ -115,7 +161,7 @@ class MEBlock:
 
     __slots__ = ('weight', 'seg', 'beta', 'x0', 'c', 'rows', 'dtype',
                  'diagram_index', 'subset_index', 'perm_index', '_tri',
-                 '_triple')
+                 '_triple', '__weakref__')
 
     def __init__(self, ray, weight, dtype, diagram_index, subset_index,
                  perm_index):
@@ -198,7 +244,7 @@ class MEBlock:
                 x = np.kron(x, _row_start(ent, r0, 'orig'))
                 c = np.kron(c, ent.c)
             trip = (G, np.asarray(x), self.weight * np.asarray(c))
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, trip):
                 return trip
             self._triple = trip
         return self._triple
@@ -234,7 +280,7 @@ class MEBlock:
                 xt = np.kron(xt, _row_start(ent, r0, 'tri'))
                 ct = np.kron(ct, ent.ct)
             tri = (np.asarray(T, dtype=complex), xt, self.weight * ct)
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, tri):
                 return tri              # large: rebuilt on demand
             self._tri = tri
         return self._tri
@@ -284,7 +330,7 @@ class MEBlock:
 
 class MEChainBlock:
     """One subset on a FINITE chamber where several segments move (a k >= 3
-    slice whose swept leg lies between two other legs; item 54):
+    slice whose swept leg lies between two other legs):
     ``weight · const · Π_r g_r(ρ0 + ρ1 s) · c e^{G_M L_M(s)} M_{M-1} …
     M_1 e^{G_1 L_1(s)} x0`` with ``L_j(s) = L0_j + β_j s``, ``0 <= s <=
     u_max`` (``SubsetSS.me_chain``).
@@ -301,7 +347,7 @@ class MEChainBlock:
 
     __slots__ = ('weight', 'chain', 'rows', 'dtype', 'u_max',
                  'diagram_index', 'subset_index', 'perm_index', '_tri',
-                 '_triple')
+                 '_triple', '__weakref__')
 
     def __init__(self, ray, weight, dtype, diagram_index, subset_index,
                  perm_index, u_max):
@@ -436,7 +482,7 @@ class MEChainBlock:
         expm(G s) @ x0`` for ``0 <= s <= u_max``."""
         if self._triple is None:
             trip = self._forms('orig')
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, trip):
                 return trip
             self._triple = trip
         return self._triple
@@ -446,7 +492,7 @@ class MEChainBlock:
             T, x, c = self._forms('tri')
             tri = (np.asarray(T, dtype=complex), x.astype(complex),
                    c.astype(complex))
-            if self.n > CACHE_MAX:
+            if self.n > CACHE_MAX or not _form_cache_admit(self, tri):
                 return tri
             self._tri = tri
         return self._tri
@@ -511,6 +557,28 @@ class MEChainBlock:
 
 
 _DECOMP = {}
+_DECOMP_BYTES = [0]
+
+
+def _decomp_put(key, hit):
+    """Cache a segment decomposition: at most 256 entries and, in bytes,
+    ``FORM_CACHE_BUDGET_FRACTION`` of the memory budget (each holds two
+    dense ``n x n`` transformations; by count alone 256 of them could be
+    tens of GB, audit MEM-09).  A full cache is cleared; an entry larger
+    than the whole allowance is not cached."""
+    from engine.integration.time_domain.final_integral import mem_budget
+    _seg, S, Si, cl, _cond = hit
+    nbytes = S.nbytes + Si.nbytes + sum(c[3].nbytes for c in cl)
+    budget = mem_budget('PHASE_J_MEM_BUDGET_GB')[0]
+    cap = None if budget is None else FORM_CACHE_BUDGET_FRACTION * budget
+    if cap is not None and nbytes > cap:
+        return
+    if len(_DECOMP) >= 256 or (cap is not None
+                               and _DECOMP_BYTES[0] + nbytes > cap):
+        _DECOMP.clear()
+        _DECOMP_BYTES[0] = 0
+    _DECOMP[key] = hit
+    _DECOMP_BYTES[0] += nbytes
 
 
 def _seg_decomposition(seg, rtol, horizon):
@@ -580,9 +648,8 @@ def _seg_decomposition(seg, rtol, horizon):
             lam = complex(np.mean(np.diag(A)))
             cl.append((r0, r1, lam, A - lam * np.eye(r1 - r0),
                        float(np.max(np.abs(np.diag(A) - lam)))))
-        if len(_DECOMP) > 256:
-            _DECOMP.clear()
-        hit = _DECOMP[key] = (seg, S, Si, cl, cond)
+        hit = (seg, S, Si, cl, cond)
+        _decomp_put(key, hit)
     _seg, S, Si, cl, cond = hit
     trunc = 0.0
     for r0, r1, lam, _N, delta in cl:
@@ -713,6 +780,9 @@ class SideME:
                                 f'block-diagonal triple is not formed '
                                 f'(MAX_DENSE_TOTAL={MAX_DENSE_TOTAL}); use '
                                 f'the blocks (.blocks[i].triple())')
+        _check_dense_bytes(16 * self.n_states ** 2,
+                           f'the dense block-diagonal triple of '
+                           f'{self.n_states:,} states')
         parts = [b.triple() for b in self.blocks]
         G = sl.block_diag(*[p[0] for p in parts])
         x = np.concatenate([p[1] for p in parts])
@@ -864,7 +934,7 @@ def _clusters(d, rtol, atol=0.0):
             i = parent[i]
         return i
     if n > _CLUSTER_DENSE_MAX:
-        # row by row (the n x n comparison would not fit: item 54's middle
+        # row by row (the n x n comparison would not fit: the middle
         # chambers give tens of thousands of terms)
         ad = np.abs(d)
         for i in range(n - 1):
@@ -1032,7 +1102,7 @@ def _as_list(kernel):
 
 
 def kernel_value(kernel, s, values=None):
-    """``L(s)`` of a ``symbolic_out.Kernel``, a :class:`RationalKernel` or
+    """``L(s)`` of a ``symbolic_out.PairingKernel``, a :class:`RationalKernel` or
     a list of them (s != 0)."""
     s = float(s)
     tot = 0j
@@ -1046,23 +1116,29 @@ def kernel_value(kernel, s, values=None):
     return tot
 
 
-def kernel_at_zero(kernel, values=None):
-    """``(L(0+), L(0-))``."""
+def kernel_at_zero(kernel, values=None, with_scale=False):
+    """``(L(0+), L(0-))``; with ``with_scale``, ``(L(0+), L(0-), scale)``,
+    ``scale`` the sum of the magnitudes of the terms that make them up (the
+    size against which a jump at 0 is judged)."""
     lp = lm = 0j
+    scale = 0.0
     for k_ in _as_list(kernel):
         if isinstance(k_, RationalKernel):
+            v = k_.at_zero()
+            scale += abs(v)
             if k_.side == '+':
-                lp += k_.at_zero()
+                lp += v
             else:
-                lm += k_.at_zero()
+                lm += v
             continue
         for a, _r, q, side in _kernel_terms(k_, values):
             if q == 0:
+                scale += abs(a)
                 if side == '+':
                     lp += a
                 else:
                     lm += a
-    return lp, lm
+    return (lp, lm, scale) if with_scale else (lp, lm)
 
 
 def quad_pairing(C, kernel, values, epsabs=1e-12, epsrel=1e-10, limit=400):
@@ -1082,7 +1158,7 @@ def quad_pairing(C, kernel, values, epsabs=1e-12, epsrel=1e-10, limit=400):
 
 
 def _kernel_terms(kernel, values):
-    """``[(a, rate, power, side)]`` numeric terms of a ``symbolic_out.Kernel``
+    """``[(a, rate, power, side)]`` numeric terms of a ``symbolic_out.PairingKernel``
     (``side`` '+' / '-')."""
     out = []
     for t in kernel.terms:
@@ -1116,7 +1192,7 @@ def _num(x, values):
 class ExactDelayTreeSide:
     """One side of the EXACT delayed tree (``api._delay_exact.ExactTree``,
     installed by ``api.delay`` as the k = 2 tree level) with the interface of
-    :class:`SideME` where it has one (item 54): values, Laplace transforms
+    :class:`SideME` where it has one: values, Laplace transforms
     (so the pairings ``integrate_against``) and the spectrum.  It is not one
     matrix exponential (a delay system has infinitely many characteristic
     roots), so it has no triple and no finite mode list.
@@ -1412,7 +1488,7 @@ class CumulantME:
 
     def integrate_smooth(self, kernel, ell=None, values=None):
         """``∫ L(τ) C_smooth(τ) dτ`` (no δ part) for a
-        ``symbolic_out.Kernel`` (exponential / polynomial × exponential
+        ``symbolic_out.PairingKernel`` (exponential / polynomial × exponential
         terms), a :class:`RationalKernel`, or a list of them."""
         if isinstance(kernel, (list, tuple)):
             return sum((self.integrate_smooth(k_, ell, values)
@@ -1485,10 +1561,11 @@ def _global_reasons(result, FI):
     # the triples are built now, with the live Phase J flags: they must be
     # the run's (``config['phase_j_flags']``)
     st = _stamped_flags(cfg)
-    for name in ('PHASE_J_T_MIN', 'THETA0_CONST_ROW_MODE'):
-        if name in st and str(getattr(FI, name, '<absent>')) != st[name]:
-            out.append(f'{name} changed since the run ({st[name]} -> '
-                       f'{getattr(FI, name, "<absent>")})')
+    name = 'PHASE_J_T_MIN'
+    if name in st and str(getattr(FI, name, '<absent>')) != st[name]:
+        out.append(f'{name} changed since the run ({st[name]} -> '
+                   f'{getattr(FI, name, "<absent>")})')
+    # a result made before the 'legacy_clip' mode was retired (audit W7)
     if st.get('THETA0_CONST_ROW_MODE') == 'legacy_clip':
         out.append("THETA0_CONST_ROW_MODE='legacy_clip'")
     if int((result.get('phase_j_engine') or {}).get('fallback_evals') or 0):
@@ -1557,7 +1634,7 @@ def from_result(result) -> CumulantME:
         exact_tree = ell == 0 and _exact_delay_tree(result)
         tree_obj = _exact_tree_object(result) if exact_tree else None
         if tree_obj is not None:
-            # item 54: the exact delayed tree's own values, Laplace
+            # the exact delayed tree's own values, Laplace
             # transforms and spectrum (not from the Pade copy's closures)
             sides[ell] = {s: ExactDelayTreeSide(tree_obj, s, ell)
                           for s in ('+', '-')}
@@ -1681,7 +1758,7 @@ def _line_blocks(parts, diagram_index, line, out, rs, counts, FI, scale=1.0):
                     if exc.reason not in ('several_lags', 'row_crosses_zero') \
                             or not math.isfinite(t_end):
                         raise
-                    # a finite chamber (item 54): several moving segments
+                    # a finite chamber: several moving segments
                     ray = sub.me_chain(fb, fd, t_anchor, t_ref, t_end, tie)
                     chain = True
             except SS.SSIneligible as exc:

@@ -1,14 +1,21 @@
 """M5 (P6): the per-diagram setup levers are pure speed-ups.
 
-Every result with a lever on must be bit-identical (``np.array_equal``, never
-a tolerance) to the same run with the lever off, in ONE process:
+* L1  a numerically-zero prefactor returns before any setup;
+* L2  model-level data built once per ``compute_correction_td`` call;
+* L3  SR objects built on demand;
+* L5  shared automorphism work (``engine.diagrams.symmetry``).
 
-* L1 ``USE_SETUP_ZERO_EXIT``  a numerically-zero prefactor returns before any setup;
-* L2 ``USE_SETUP_PROP_TD``    model-level data built once per ``compute_correction_td`` call;
-* L3 ``USE_SETUP_LAZY_SR``    SR objects built on demand;
-* L5 ``USE_AUT_MEMO``         shared automorphism work (``engine.diagrams.symmetry``).
-
-``DAEDALUS_PHASE_J_LEGACY_SETUP=1`` forces all of them off.
+Every lever is always on: their switches (``USE_SETUP_ZERO_EXIT``,
+``USE_SETUP_PROP_TD``, ``USE_SETUP_LAZY_SR``, ``symmetry.USE_AUT_MEMO``, the
+``DAEDALUS_SETUP_*`` variables and the umbrella
+``DAEDALUS_PHASE_J_LEGACY_SETUP``) were retired in audit W7, after every
+result with a lever on had been checked bit-identical (``np.array_equal``)
+to the lever off on these models.  What is checked now: the levers fire,
+the zero exit gives the structure and values of the full path (still
+reachable through ``integrate_diagram(_setup_full=...)``), a shared
+``PropagatorTD`` gives the values of a per-diagram build, the lazy SR
+objects equal the eager ones (``G_t_entry``), and the memo the uncached
+order.
 
 Run with::
 
@@ -36,8 +43,6 @@ import engine.integration.time_domain.pipeline as PL
 _TAUS = np.linspace(0.0, 3.0, 7)
 _P2 = [(0.0, 0.7), (0.0, 1.9), (0.0, -1.1)]
 _P4 = [(0.0, 0.3, 0.6, 0.9), (0.0, 0.5, 0.4, 0.7)]
-_ALL_FLAGS = ('USE_SETUP_ZERO_EXIT', 'USE_SETUP_PROP_TD',
-              'USE_SETUP_LAZY_SR')
 import engine.diagrams.symmetry as SYM
 _LH_PARAMS = {'E': [0.78, 0.81], 'w': [[0.30, 0.25], [0.30, 0.35]],
               'tau': 10.0, 'a': 1.0, 'tau_g': 2.5}
@@ -48,14 +53,15 @@ def _model(key):
     return dd.load_model(key)[0]
 
 
-def _run(key, k, ell, ext_field='dx', **kw):
+def _run(key, k, ell, ext_field='dx', model=None, **kw):
     """``compute_cumulants`` -> dict of arrays (per-ell totals, per-diagram
     values at fixed points) and the Phase J counters."""
     FI._reset_runtime_counters()
     ext = [(ext_field, 1)] * k
     with contextlib.redirect_stdout(io.StringIO()):
         res = AC.compute_cumulants(
-            _model(key), k=k, max_ell=ell, tau_grid=_TAUS, use_cache=True,
+            _model(key) if model is None else model, k=k, max_ell=ell,
+            tau_grid=_TAUS, use_cache=True,
             parallel=False, verbose=False, external_fields=ext, **kw)
     pts = _P2 if k == 2 else _P4
     out = {}
@@ -82,12 +88,8 @@ def _same(a, b):
 
 
 @pytest.fixture(autouse=True)
-def _flags(monkeypatch):
-    """Every lever on by default; the umbrella unset; counters zeroed."""
-    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP', raising=False)
-    for name in _ALL_FLAGS:
-        monkeypatch.setattr(FI, name, True)
-    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', True)
+def _fresh():
+    """An empty automorphism memo and zeroed counters."""
     SYM._aut_memo_clear()
     FI._reset_runtime_counters()
     yield
@@ -121,41 +123,57 @@ def captured_ou():
     return calls
 
 
-def _lever(monkeypatch, name, on):
-    monkeypatch.setattr(FI, name, on)
+def _full_path(c):
+    """``integrate_diagram`` without the zero exit (the full setup: what the
+    lazy keys of a zero-exit result re-run)."""
+    return FI.integrate_diagram(_setup_full=FI._next_diagram_serial(), **c)
 
 
 # ── L1: zero-prefactor early exit ──────────────────────────────────────────
 @pytest.mark.parametrize('key,k,ell', [('ou_quartic', 2, 2),
                                        ('ou_quartic', 4, 1),
                                        ('ou_quartic_colored', 2, 1)])
-def test_l1_on_vs_off_array_equal(monkeypatch, key, k, ell):
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', False)
+def test_l1_fires_and_two_runs_agree(key, k, ell):
+    """The zero exit fires, and the values (every per-diagram slot kept)
+    are main's: frozen at dca8804, where the retired DAEDALUS_SETUP_ZERO_EXIT
+    off path gave them bit for bit (tests/fixtures/w7_default_values.npz)."""
+    from tests.test_phase_j_structural_zeros import _frozen_close
     _run(key, k, ell)                          # warm the disk cache
-    off, c_off = _run(key, k, ell)
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', True)
     on, c_on = _run(key, k, ell)
-    assert _same(off, on)
-    assert c_off['setup_zero_exit'] == 0
+    again, _c = _run(key, k, ell)
+    assert _same(on, again)
+    _frozen_close(f'l1|{key}|{k}|{ell}|', on)
     assert c_on['setup_zero_exit'] > 0                 # it fired
-    # the diagrams stay in the list, at their positions (a zero entry)
-    for name in off:
-        assert off[name].shape == on[name].shape
+
+
+def _two_field_ou():
+    """A plain two-field coupled OU with quartic terms, inline."""
+    from api.model import TemporalModelBuilder
+    return (TemporalModelBuilder('two-field OU quartic (test)', n_populations=0)
+            .physical_field('x', indexed=True)
+            .physical_field('y', indexed=True)
+            .parameter('mu1', default=1.0, domain='real')
+            .parameter('mu2', default=1.0, domain='real')
+            .parameter('eps1', default=0.05, domain='positive')
+            .parameter('eps2', default=0.05, domain='positive')
+            .parameter('J1', default=0.5, domain='real')
+            .parameter('J2', default=0.5, domain='real')
+            .parameter('D1', default=1.0, domain='positive')
+            .parameter('D2', default=1.0, domain='positive')
+            .set_action_text('xt*((Dt+mu1)*x + eps1*x^3 - J1*y) - D1*xt^2 '
+                             '+ yt*((Dt+mu2)*y + eps2*y^3 - J2*x) - D2*yt^2')
+            .equation(lhs='(Dt+mu1)*x', rhs='-eps1*x^3 + J1*y')
+            .equation(lhs='(Dt+mu2)*y', rhs='-eps2*y^3 + J2*x')
+            .stability_analysis(True)
+            .build())
 
 
 def test_l1_counts_on_the_two_field_ou(monkeypatch):
     """The two-field OU is the motivating case (most diagrams have a zero
-    prefactor).  Its model file is git-ignored, so skip without it."""
-    path = os.path.join(os.path.dirname(__file__), '..', 'models',
-                        'ou_quartic_two_dim.model.py')
-    if not os.path.exists(path):
-        pytest.skip('models/ou_quartic_two_dim.model.py is not in this checkout')
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', False)
-    _run('ou_quartic_two_dim', 2, 1)
-    off, _ = _run('ou_quartic_two_dim', 2, 1)
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', True)
-    on, c = _run('ou_quartic_two_dim', 2, 1)
-    assert _same(off, on)
+    prefactor); an inline plain model, so it runs in every checkout."""
+    m = _two_field_ou()
+    _run('two_field_ou', 2, 1, model=m)
+    _on, c = _run('two_field_ou', 2, 1, model=m)
     assert c['setup_zero_exit'] > 10
 
 
@@ -209,11 +227,9 @@ def _zero_diagram(calls):
     raise AssertionError('no zero-prefactor diagram captured')
 
 
-def test_l1_result_has_the_structure_of_the_full_path(monkeypatch, captured_ou):
+def test_l1_result_has_the_structure_of_the_full_path(captured_ou):
     c = _zero_diagram(captured_ou)
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', False)
-    full = FI.integrate_diagram(**c)
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', True)
+    full = _full_path(c)
     FI._reset_runtime_counters()
     fast = FI.integrate_diagram(**c)
     assert FI._RUNTIME_COUNTERS['setup_zero_exit'] == 1
@@ -251,9 +267,8 @@ def test_l1_result_has_the_structure_of_the_full_path(monkeypatch, captured_ou):
         fast['contribution'](0.0)
 
 
-def test_l1_lazy_keys_stay_present_and_resolve(monkeypatch, captured_ou):
+def test_l1_lazy_keys_stay_present_and_resolve(captured_ou):
     c = _zero_diagram(captured_ou)
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', True)
     fast = FI.integrate_diagram(**c)
     assert {'edge_info', 'constraints', 'stripped_integrand'} <= set(fast)
     assert len(dict(fast)) == len(fast)               # dict(...) resolves
@@ -278,45 +293,6 @@ def test_l1_declines_without_external_fields_or_poles(captured_ou):
                                      c['external_fields'], leaves)
 
 
-def test_l1_flag_and_umbrella(monkeypatch, captured_ou):
-    c = _zero_diagram(captured_ou)
-    FI.integrate_diagram(**c)
-    assert FI._RUNTIME_COUNTERS['setup_zero_exit'] == 1
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
-    FI.integrate_diagram(**c)
-    assert FI._RUNTIME_COUNTERS['setup_zero_exit'] == 1       # flag off
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', True)
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
-    FI.integrate_diagram(**c)
-    assert FI._RUNTIME_COUNTERS['setup_zero_exit'] == 1       # umbrella
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '0')
-    FI.integrate_diagram(**c)
-    assert FI._RUNTIME_COUNTERS['setup_zero_exit'] == 2
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', 'yes')
-    with pytest.raises(ValueError):
-        FI.integrate_diagram(**c)
-
-
-def test_setup_flags_from_the_environment():
-    f = FI._initial_setup_flag
-    assert f('X', {}) is True
-    for v in ('1', 'true', 'YES', 'on', ''):
-        assert f('X', {'X': v}) is True
-    for v in ('0', 'false', 'No', 'off'):
-        assert f('X', {'X': v}) is False
-    with pytest.raises(ValueError):
-        f('X', {'X': 'maybe'})
-
-
-def test_the_legacy_umbrella_is_not_the_setup_umbrella(monkeypatch, captured_ou):
-    """``DAEDALUS_PHASE_J_LEGACY_SETUP`` only restores the old setup path; it
-    is a different switch from ``DAEDALUS_PHASE_J_LEGACY`` (older numbers)."""
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY', '0')
-    assert FI._setup_lever_on('USE_SETUP_ZERO_EXIT') is True
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
-    assert FI._setup_lever_on('USE_SETUP_ZERO_EXIT') is False
-
-
 def test_l1_threads_see_the_same_results(monkeypatch, captured_ou):
     calls = captured_ou[:40]
     serial = [FI.integrate_diagram(**c)['contribution'](*_P2[0])
@@ -338,17 +314,11 @@ def _l2_inputs(captured):
     return c['propagator_data'], c['num_params']
 
 
-def test_l2_on_vs_off_array_equal(monkeypatch):
+def test_l2_fires_on_models():
     for key, k, ell in [('ou_quartic', 2, 2), ('ou_quartic', 4, 1),
                         ('ou_quartic_colored', 2, 1)]:
-        _lever(monkeypatch, 'USE_SETUP_PROP_TD', False)
         _run(key, k, ell)                                   # warm the cache
-        off, c_off = _run(key, k, ell)
-        _lever(monkeypatch, 'USE_SETUP_PROP_TD', True)
         on, c_on = _run(key, k, ell)
-        assert _same(off, on), (key, k, ell)
-        assert c_off['setup_prop_td_used'] == 0
-        assert c_off['setup_prop_td_g_t_builds'] == 0
         assert c_on['setup_prop_td_used'] > 0
         assert c_on['setup_prop_td_stale'] == 0
         # one G(t) build per compute_correction_td call (one per ell), not
@@ -356,23 +326,10 @@ def test_l2_on_vs_off_array_equal(monkeypatch):
         assert 0 < c_on['setup_prop_td_g_t_builds'] <= ell + 1
 
 
-def test_l2_alone_and_with_l1_off(monkeypatch):
-    """The two levers are independent: L2 on / L1 off equals both off."""
-    _lever(monkeypatch, 'USE_SETUP_ZERO_EXIT', False)
-    _lever(monkeypatch, 'USE_SETUP_PROP_TD', False)
-    _run('ou_quartic', 2, 2)
-    base, _ = _run('ou_quartic', 2, 2)
-    _lever(monkeypatch, 'USE_SETUP_PROP_TD', True)
-    only_l2, c = _run('ou_quartic', 2, 2)
-    assert _same(base, only_l2)
-    assert c['setup_prop_td_used'] > 0 and c['setup_zero_exit'] == 0
-
-
 def test_l2_prop_td_none_builds_locally(monkeypatch, captured_ou):
     """No ``prop_td`` (the default): the per-diagram path of before.  A
     shared ``PropagatorTD`` gives the same contribution values."""
     calls = _nonzero_diagrams(captured_ou)[:30]
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)   # exercise setup
     FI._reset_runtime_counters()
     plain = [FI.integrate_diagram(**c)['contribution'](*_P2[1]) for c in calls]
     assert FI._RUNTIME_COUNTERS['setup_prop_td_used'] == 0
@@ -411,7 +368,6 @@ def test_l2_stale_propagator_data_is_not_served(monkeypatch, captured_ou):
     result is that of an independent call (the pole engine's poles: the
     state-space route reads K_ft, not the pole list)."""
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
     c = _nonzero_diagrams(captured_ou)[-1]
     pdata, nps = c['propagator_data'], c['num_params']
     ptd = FI.PropagatorTD(pdata, nps)
@@ -443,7 +399,9 @@ def test_l2_stale_propagator_data_is_not_served(monkeypatch, captured_ou):
 def test_l2_two_successive_calls_are_independent_calls(monkeypatch):
     """The spatial bridge calls ``compute_correction_td`` once per q with the
     propagator re-solved in between.  Each call must give what an
-    independent call gives (a per-call object, no state kept across)."""
+    independent call gives (a per-call object, no state kept across): the
+    same q twice gives the same values.  (Until audit W7 also checked
+    against the lever off, bit for bit.)"""
     from sage.all import SR
     import tests.test_spatial_pipeline_bridge as T
     from engine.integration.spatial import pipeline_bridge as PB
@@ -466,24 +424,17 @@ def test_l2_two_successive_calls_are_independent_calls(monkeypatch):
         return PB.pipeline_C_q_tau(prop, records[ell], ext, nps, q, taus)
 
     qs = [0.7, 1.5, 0.0, 0.7, 3.0]
-    monkeypatch.setattr(FI, 'USE_SETUP_PROP_TD', False)
-    off = [[C(q, ell) for ell in (0, 1)] for q in qs]
-    monkeypatch.setattr(FI, 'USE_SETUP_PROP_TD', True)
     FI._reset_runtime_counters()
     on = [[C(q, ell) for ell in (0, 1)] for q in qs]
     assert FI._RUNTIME_COUNTERS['setup_prop_td_used'] > 0
     assert FI._RUNTIME_COUNTERS['setup_prop_td_stale'] == 0
-    for a, b in zip(off, on):
-        for x, y in zip(a, b):
-            assert np.array_equal(x, y)
     # the same q twice in one process: equal results
     assert all(np.array_equal(x, y) for x, y in zip(on[0], on[3]))
     # different q: different values (the propagator really changed)
     assert not np.array_equal(on[0][0], on[1][0])
 
 
-def test_l2_threads_share_one_object(monkeypatch, captured_ou):
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
+def test_l2_threads_share_one_object(captured_ou):
     calls = _nonzero_diagrams(captured_ou)[:30]
     serial = [FI.integrate_diagram(**c)['contribution'](*_P2[2]) for c in calls]
     c0 = calls[0]
@@ -500,38 +451,6 @@ def test_l2_threads_share_one_object(monkeypatch, captured_ou):
     for r in results:
         assert all(np.array_equal(r[id(c)], v) for c, v in zip(calls, serial))
     assert FI._RUNTIME_COUNTERS['setup_prop_td_g_t_builds'] == 1
-
-
-def test_l2_flag_umbrella_and_env(monkeypatch, captured_ou):
-    c = captured_ou[3]
-    ptd = FI.PropagatorTD(c['propagator_data'], c['num_params'])
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
-    FI.integrate_diagram(prop_td=ptd, **c)
-    assert FI._RUNTIME_COUNTERS['setup_prop_td_used'] == 1
-    monkeypatch.setattr(FI, 'USE_SETUP_PROP_TD', False)
-    FI.integrate_diagram(prop_td=ptd, **c)
-    assert FI._RUNTIME_COUNTERS['setup_prop_td_used'] == 1
-    monkeypatch.setattr(FI, 'USE_SETUP_PROP_TD', True)
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
-    FI.integrate_diagram(prop_td=ptd, **c)
-    assert FI._RUNTIME_COUNTERS['setup_prop_td_used'] == 1
-    monkeypatch.setattr(FI, 'USE_SETUP_PROP_TD', 'maybe')
-    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP')
-    with pytest.raises(ValueError):
-        FI.integrate_diagram(prop_td=ptd, **c)
-
-
-def test_umbrella_forces_every_lever_off(monkeypatch):
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
-    on = _run('ou_quartic', 2, 2)
-    out, c = on
-    for key in ('setup_zero_exit', 'setup_prop_td_used',
-                'setup_prop_td_g_t_builds'):
-        assert c[key] == 0, key
-    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP')
-    out2, c2 = _run('ou_quartic', 2, 2)
-    assert c2['setup_zero_exit'] > 0 and c2['setup_prop_td_used'] > 0
-    assert _same(out, out2)
 
 
 # ── L3: lazy SR ────────────────────────────────────────────────────────────
@@ -575,49 +494,38 @@ def _delta_values(res, pts):
     return np.array(out, complex)
 
 
-def test_l3_shotnoise_branch_with_smooth_edges_array_equal(monkeypatch):
+def test_l3_shotnoise_branch_builds_the_smooth_factors_on_demand():
     """The shot-noise branch multiplies the leftover smooth edges'
-    ``smooth_factor`` in; with the lever on they are built there, on demand."""
+    ``smooth_factor`` in; they are built there, on demand."""
     kw = _pair_tree(3)
     pts = [(0.0, 0.5, 1.5), (0.0, 1.0, 1.0), (0.0, 0.7, 2.3)]
-    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
-    FI._reset_runtime_counters()
-    off = FI.integrate_diagram(**kw)
-    off_vals = _delta_values(off, pts)
-    assert FI._RUNTIME_COUNTERS['setup_lazy_sr_deferred'] == 0
-    assert off['n_shotnoise_skipped'] > 0 and len(off['delta_contributions']) > 0
-    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
     FI._reset_runtime_counters()
     on = FI.integrate_diagram(**kw)
     on_vals = _delta_values(on, pts)
-    assert np.array_equal(off_vals, on_vals)
+    # the eager path's values (the retired DAEDALUS_SETUP_LAZY_SR=0), frozen
+    # at main dca8804
+    from tests.test_phase_j_structural_zeros import _frozen_close
+    _frozen_close('l3_shotnoise|', {'vals': on_vals})
     assert FI._RUNTIME_COUNTERS['setup_lazy_sr_deferred'] == 3
     assert FI._RUNTIME_COUNTERS['setup_lazy_sr_built'] > 0      # it was needed
-    assert on['n_shotnoise_skipped'] == off['n_shotnoise_skipped']
-    assert on['subset_diagnostics'] == off['subset_diagnostics']
+    assert on['n_shotnoise_skipped'] > 0 and len(on['delta_contributions']) > 0
 
 
-def test_l3_sr_integrand_branch_array_equal(monkeypatch):
+def test_l3_sr_integrand_branch_builds_the_smooth_factors():
     """No mode-sum cache (the builder answers ``None``): every subset takes
     the SR integrand + scipy path, which multiplies the ``smooth_factor``s."""
     kw = dict(_pair_tree(2), edge_mode_sums_builder=lambda ei, pd: None)
     pts = [(0.0, 0.5), (0.0, 1.5), (0.0, 0.2)]
-    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
-    off = FI.integrate_diagram(**kw)
-    off_vals = _delta_values(off, pts)
-    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
     FI._reset_runtime_counters()
     on = FI.integrate_diagram(**kw)
     on_vals = _delta_values(on, pts)
     assert FI._RUNTIME_COUNTERS['setup_lazy_sr_built'] > 0
-    assert np.array_equal(off_vals, on_vals)
-    assert on['status'] == off['status'] == 'ok'
+    from tests.test_phase_j_structural_zeros import _frozen_close
+    _frozen_close('l3_sr|', {'vals': on_vals}, rtol=1e-12)   # scipy path
+    assert on['status'] == 'ok'
 
 
-def test_l3_analytic_path_never_builds_the_smooth_factor(monkeypatch,
-                                                         captured_ou):
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
-    monkeypatch.setattr(FI, 'USE_SETUP_LAZY_SR', True)
+def test_l3_analytic_path_never_builds_the_smooth_factor(captured_ou):
     FI._reset_runtime_counters()
     for c in _nonzero_diagrams(captured_ou)[:20]:
         FI.integrate_diagram(**c)
@@ -626,24 +534,25 @@ def test_l3_analytic_path_never_builds_the_smooth_factor(monkeypatch,
     assert FI._RUNTIME_COUNTERS['setup_lazy_display_built'] == 0
 
 
-def test_l3_keys_stay_present_and_resolve_to_the_eager_values(monkeypatch,
-                                                              captured_ou):
+def test_l3_keys_stay_present_and_resolve_to_the_eager_values(captured_ou):
+    """Each lazy ``smooth_factor`` is the eager one (``G_t_entry`` on the
+    same G(t) matrix, as the retired eager path built it)."""
     c = _nonzero_diagrams(captured_ou)[0]
-    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
-    eager = FI.integrate_diagram(**c)
-    _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
     lazy = FI.integrate_diagram(**c)
-    assert list(lazy) == list(eager)
-    assert type(eager) is dict
     assert 'stripped_integrand' in lazy and 'edge_info' in lazy
-    for ea, eb in zip(eager['edge_info'], lazy['edge_info']):
-        assert list(ea) == list(eb) and 'smooth_factor' in eb
-    # the display product, expression for expression
-    assert bool(eager['stripped_integrand'] == lazy['stripped_integrand'])
-    for ea, eb in zip(eager['edge_info'], lazy['edge_info']):
-        assert bool(ea['smooth_factor'] == eb['smooth_factor'])
-        assert dict(ea) == dict(eb) or all(
-            bool(ea[k] == eb[k]) for k in ea)
+    G = FI.build_G_t_matrix(c['propagator_data'], FI.SR.var('_t_td_'),
+                            num_params=c['num_params'])
+    sf_all = FI.SR(1)
+    for eb in lazy['edge_info']:
+        assert list(eb) == ['u', 'v', 'lbl', 'ri', 'pi', 'dt_sym',
+                            'delta_coeff', 'smooth_factor']
+        eager = FI.G_t_entry(G, eb['pi'], eb['ri'], eb['dt_sym'],
+                             include_heaviside=False)
+        assert bool(eager == eb['smooth_factor'])
+        sf_all = sf_all * eb['smooth_factor']
+    # the display product: the prefactor times every smooth factor
+    assert bool((lazy['stripped_integrand'] / sf_all).simplify_full()
+                .is_constant())
     # copies and plain-dict views resolve everything
     assert all(v is not None for v in dict(lazy['edge_info'][0]).values())
     import copy
@@ -657,25 +566,18 @@ def test_l3_failed_results_carry_the_eager_display_value(monkeypatch):
     a real ``stripped_integrand``, not a placeholder."""
     kw = dict(_pair_tree(2), edge_mode_sums_builder=lambda ei, pd: None,
               combined_prefactor=FI.SR.var('stray_symbol'))
-    for on in (False, True):
-        monkeypatch.setattr(FI, 'USE_SETUP_LAZY_SR', on)
-        res = FI.integrate_diagram(**kw)
-        assert res['status'] == 'failed'
-        assert res['stripped_integrand'] is not None
-        assert 'stray_symbol' in str(res['stripped_integrand'])
-        assert type(res['stripped_integrand']).__name__ == 'Expression'
+    res = FI.integrate_diagram(**kw)
+    assert res['status'] == 'failed'
+    assert res['stripped_integrand'] is not None
+    assert 'stray_symbol' in str(res['stripped_integrand'])
+    assert type(res['stripped_integrand']).__name__ == 'Expression'
 
 
-def test_l3_on_vs_off_array_equal_on_models(monkeypatch):
+def test_l3_fires_on_models():
     for key, k, ell in [('ou_quartic', 2, 2), ('ou_quartic', 4, 1),
                         ('ou_quartic_colored', 2, 1)]:
-        _lever(monkeypatch, 'USE_SETUP_LAZY_SR', False)
         _run(key, k, ell)
-        off, c_off = _run(key, k, ell)
-        _lever(monkeypatch, 'USE_SETUP_LAZY_SR', True)
-        on, c_on = _run(key, k, ell)
-        assert _same(off, on), (key, k, ell)
-        assert c_off['setup_lazy_sr_deferred'] == 0
+        _on, c_on = _run(key, k, ell)
         assert c_on['setup_lazy_sr_deferred'] > 0
 
 
@@ -699,9 +601,7 @@ def test_l3_lazy_dict_basics():
     assert {**d6} == {'a': 1, 'b': 10} and d6.copy() == {'a': 1, 'b': 10}
 
 
-def test_l3_threads_resolve_the_same_values(monkeypatch, captured_ou):
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
-    monkeypatch.setattr(FI, 'USE_SETUP_LAZY_SR', True)
+def test_l3_threads_resolve_the_same_values(captured_ou):
     c = _nonzero_diagrams(captured_ou)[0]
     res = FI.integrate_diagram(**c)
     ref = [str(e['smooth_factor']) for e in
@@ -771,31 +671,6 @@ def test_l5_counters_hits_and_misses(captured_ou):
     assert FI._RUNTIME_COUNTERS['setup_aut_memo_hits'] == 1
 
 
-def test_l5_off_does_not_touch_the_table(monkeypatch, captured_ou):
-    td = captured_ou[0]['typed_diagram']
-    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', False)
-    SYM._automorphism_order(td, True)
-    assert not SYM._aut_memo
-    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', True)
-    monkeypatch.setenv('DAEDALUS_PHASE_J_LEGACY_SETUP', '1')
-    SYM._automorphism_order(td, True)
-    assert not SYM._aut_memo
-    monkeypatch.delenv('DAEDALUS_PHASE_J_LEGACY_SETUP')
-    SYM._automorphism_order(td, True)
-    assert len(SYM._aut_memo) == 1
-    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', 'on')
-    with pytest.raises(ValueError):
-        SYM._automorphism_order(td, True)
-
-
-def test_l5_env_flag():
-    f = SYM._initial_aut_memo_flag
-    assert f({}) is True and f({'DAEDALUS_SETUP_AUT_MEMO': '0'}) is False
-    assert f({'DAEDALUS_SETUP_AUT_MEMO': 'Off'}) is False
-    with pytest.raises(ValueError):
-        f({'DAEDALUS_SETUP_AUT_MEMO': '2'})
-
-
 def test_l5_the_table_is_bounded_and_holds_its_diagrams(monkeypatch,
                                                         captured_ou):
     monkeypatch.setattr(SYM, '_AUT_MEMO_MAX', 5)
@@ -842,10 +717,8 @@ def test_l5_single_mapping_compensation_is_exactly_one(captured_lh):
     assert n >= 2
 
 
-def test_l5_the_shortcut_fires_only_for_a_single_mapping(monkeypatch,
-                                                         captured_ou,
+def test_l5_the_shortcut_fires_only_for_a_single_mapping(captured_ou,
                                                          captured_lh):
-    monkeypatch.setattr(FI, 'USE_SETUP_ZERO_EXIT', False)
     FI._reset_runtime_counters()
     for c in captured_lh:
         FI.integrate_diagram(**c)
@@ -855,14 +728,9 @@ def test_l5_the_shortcut_fires_only_for_a_single_mapping(monkeypatch,
     for c in _nonzero_diagrams(captured_ou)[:8]:
         FI.integrate_diagram(**c)
     assert FI._RUNTIME_COUNTERS['setup_aut_wick_skipped'] == 0
-    # flag off / umbrella: never skipped
-    monkeypatch.setattr(SYM, 'USE_AUT_MEMO', False)
-    for c in captured_lh:
-        FI.integrate_diagram(**c)
-    assert FI._RUNTIME_COUNTERS['setup_aut_wick_skipped'] == 0
 
 
-def test_l5_on_vs_off_array_equal(monkeypatch):
+def test_l5_fires_on_models():
     cases = [('ou_quartic', 2, 2, {}), ('ou_quartic', 4, 1, {}),
              ('linear_hawkes', 2, 1, {'parameters': _LH_PARAMS})]
     for key, k, ell, extra in cases:
@@ -889,16 +757,12 @@ def test_l5_on_vs_off_array_equal(monkeypatch):
                 arrs['C'] = np.asarray(res['C_tau'])
             return arrs, dict(FI._RUNTIME_COUNTERS), res
 
-        monkeypatch.setattr(SYM, 'USE_AUT_MEMO', False)
         SYM._aut_memo_clear()
         run()
-        off, c_off, _ = run()
-        assert not SYM._aut_memo
-        monkeypatch.setattr(SYM, 'USE_AUT_MEMO', True)
         SYM._aut_memo_clear()
         on, c_on, _ = run()
-        assert _same(off, on), key
-        assert c_off['setup_aut_memo_misses'] == 0
+        again, _c, _ = run()
+        assert _same(on, again), key
         assert c_on['setup_aut_memo_misses'] > 0
         if key == 'linear_hawkes':
             assert c_on['setup_aut_wick_skipped'] > 0
@@ -936,9 +800,7 @@ def test_l1_declines_for_incomplete_residues_and_symbolic_zero(captured_ou):
     assert not FI._zero_exit_applies(td, pd, sym0, ef, leaves)
 
 
-def test_compute_correction_td_with_no_diagrams_needs_no_propagator(monkeypatch):
-    for on in (False, True):
-        monkeypatch.setattr(FI, 'USE_SETUP_PROP_TD', on)
-        res = PL.compute_correction_td(typed_diagrams=[], prefactors=[],
-                                       propagator_data=None, k=2)
-        assert res['total_C'](0.0, 1.0) == 0
+def test_compute_correction_td_with_no_diagrams_needs_no_propagator():
+    res = PL.compute_correction_td(typed_diagrams=[], prefactors=[],
+                                   propagator_data=None, k=2)
+    assert res['total_C'](0.0, 1.0) == 0

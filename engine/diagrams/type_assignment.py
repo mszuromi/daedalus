@@ -369,38 +369,6 @@ def _try_build_diagram_no_internal(prediagram, edges, ext_assignment,
                        dict(ext_assignment), prop_indices)
 
 
-def _try_build_diagram(prediagram, edges, ext_assignment, vert_assignment,
-                        ordered_internal, leaf_set, leaf_directions,
-                        out_edges_of, in_edges_of,
-                        G_ft, resp_index, phys_index,
-                        g_zero_mask=None):
-    """
-    Given fixed external and vertex-type assignments, enumerate all valid
-    leg matchings and check propagator consistency.
-
-    For each internal vertex, enumerate all bijections from the vertex
-    type's legs to its incident edges.  Use backtracking with early
-    propagator checks.
-    """
-    # Precompute leg matching options per internal vertex
-    per_vertex_options = []
-    for v in ordered_internal:
-        vtype = vert_assignment[v]
-        options = list(_leg_matchings(vtype, out_edges_of[v], in_edges_of[v]))
-        if not options:
-            return
-        per_vertex_options.append(options)
-
-    # Backtrack over vertices
-    yield from _backtrack(
-        prediagram, edges, ext_assignment, vert_assignment,
-        ordered_internal, leaf_set, leaf_directions,
-        per_vertex_options, G_ft, resp_index, phys_index,
-        vertex_idx=0, assigned_resp={}, assigned_phys={},
-        g_zero_mask=g_zero_mask,
-    )
-
-
 def _leg_matchings(vertex_type, out_edges, in_edges):
     """
     Enumerate all DISTINCT bijections from a vertex type's legs to edges.
@@ -733,7 +701,8 @@ def _joint_backtrack(prediagram, edges, ext_assignment, order, candidates,
 # is pickled, and ``TypedDiagram`` has explicit ``__getstate__`` /
 # ``__setstate__`` via ``__slots__`` for that purpose.
 #
-# Windows support deferred — same constraints as
+# Linux only: macOS never forks (``engine.fork_safety.fork_unsafe``; the
+# call runs serially there) and Windows has no fork -- same constraints as
 # ``engine/integration/time_domain/pipeline.py``'s ``total_C_batch``.
 
 _ENUM_WORKER_STATE = {}
@@ -785,7 +754,9 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     start_method : {'fork'}, default 'fork'
         Multiprocessing start method.  Only ``'fork'`` is supported:
         ``'spawn'`` would require pickling Sage graph / matrix inputs
-        across workers, which is not guaranteed to work cleanly.
+        across workers, which is not guaranteed to work cleanly.  On
+        macOS the call runs serially (one warning per process);
+        ``DAEDALUS_PARALLEL=0`` makes it serial everywhere.
 
     Returns
     -------
@@ -801,42 +772,62 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     ``test_enumerate_all_parallel_matches_serial`` in
     ``tests/test_type_assignment.py``.
     """
-    # Fork-safety guard: forking after Cocoa/BLAS init inside a macOS Jupyter
-    # kernel can hard-crash the kernel AND the OS.  Degrade to serial there
-    # (mirrors the temporal Phase-J path); fork stays available in scripts,
-    # pytest, Linux, and terminal IPython.
-    from engine.fork_safety import fork_unsafe_in_notebook, warn_fork_fallback_once
+    # Kill switch (DAEDALUS_PARALLEL=0), then the fork guard: macOS never
+    # forks (a fork there has hard-crashed a Jupyter kernel and the OS), so
+    # the enumeration runs serially with one warning per process.
+    from engine.fork_safety import (fork_unsafe, parallel_disabled,
+                                    warn_fork_fallback_once)
+    if parallel and parallel_disabled():
+        parallel = False
     if (parallel and len(prediagrams) > 1
-            and fork_unsafe_in_notebook(start_method)):
+            and fork_unsafe(start_method)):
         warn_fork_fallback_once('diagram type-assignment enumeration')
         parallel = False
 
-    if not parallel or len(prediagrams) <= 1:
-        # Serial path.  Keeps 'prediagrams' iteration for back-compat
-        # with any downstream code that relies on yield ordering.
-        results = []
-        mask = _zero_mask(G_ft)
-        for pd in prediagrams:
-            for td in enumerate_typed_diagrams(
-                pd, external_fields, vertex_types, source_types,
-                G_ft, resp_index, phys_index, g_zero_mask=mask,
-            ):
-                results.append(td)
-        return results
+    if parallel and len(prediagrams) > 1:
+        out = _enumerate_all_forked(prediagrams, external_fields, vertex_types,
+                                    source_types, G_ft, resp_index,
+                                    phys_index, n_workers, start_method)
+        if out is not None:
+            return out
+    # Serial path (also when the workers would not fit the memory
+    # budget, or one outgrew its share).  Keeps 'prediagrams' order.
+    results = []
+    mask = _zero_mask(G_ft)
+    from engine.integration.time_domain.final_integral import (
+        growth_guard)
+    for i_pd, pd in enumerate(prediagrams):
+        if i_pd % 64 == 0:
+            growth_guard(f'type assignment (prediagram {i_pd}, '
+                         f'{len(results):,} typed diagrams so far)')
+        for td in enumerate_typed_diagrams(
+            pd, external_fields, vertex_types, source_types,
+            G_ft, resp_index, phys_index, g_zero_mask=mask,
+        ):
+            results.append(td)
+    return results
 
+
+def _enumerate_all_forked(prediagrams, external_fields, vertex_types,
+                          source_types, G_ft, resp_index, phys_index,
+                          n_workers, start_method):
+    """The fork-pool path of :func:`enumerate_all` (Linux): ``None`` when the
+    workers would not fit the run's memory budget, or when one outgrew its
+    share (``engine.worker_budget``) -- the caller then works serially."""
     import multiprocessing as mp
     import os
-    # Needed for fork to proceed at all on macOS (objc otherwise aborts).  Only
-    # reached for a LEGITIMATE fork — the notebook case fell back to serial
-    # above, so this never runs in the lethal darwin+Jupyter context.
-    os.environ.setdefault(
-        'OBJC_DISABLE_INITIALIZE_FORK_SAFETY', 'YES'
-    )
+    from engine import worker_budget as _wb
+
+    n_w_cap = (n_workers if n_workers is not None
+               else min(os.cpu_count() or 4, len(prediagrams)))
+    n_w_cap, share = _wb.workers_that_fit(
+        n_w_cap, _wb.FORK_WORKER_FLOOR, 'parallel_workers_capped_by_budget')
+    if n_w_cap < 2:
+        return None
 
     # Populate _ENUM_WORKER_STATE BEFORE forking so children inherit it.
-    # Not thread-safe — ``enumerate_all`` should not be called from two
-    # threads concurrently.  In the Sage Phase J workflow this is a
-    # single-threaded notebook call, so that's fine.
+    # Not thread-safe -- ``enumerate_all`` should not be called from two
+    # threads concurrently.
     _ENUM_WORKER_STATE['prediagrams'] = list(prediagrams)
     _ENUM_WORKER_STATE['external_fields'] = external_fields
     _ENUM_WORKER_STATE['vertex_types'] = vertex_types
@@ -847,14 +838,12 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     _ENUM_WORKER_STATE['g_zero_mask'] = _zero_mask(G_ft)
 
     ctx = mp.get_context(start_method)
-    n_w_cap = (n_workers if n_workers is not None
-               else min(os.cpu_count() or 4, len(prediagrams)))
-
     with ctx.Pool(processes=n_w_cap) as pool:
-        per_pd_results = pool.map(
-            _worker_enumerate_one_prediagram,
-            range(len(prediagrams)),
-        )
+        per_pd_results = _wb.watched_map(
+            pool, _worker_enumerate_one_prediagram,
+            range(len(prediagrams)), share)
+    if per_pd_results is None:
+        return None
 
     # Flatten in prediagram-index order (Pool.map preserves input
     # order in the output), so the final list matches the serial path.

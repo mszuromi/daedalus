@@ -33,7 +33,6 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 import daedalus as dd                                                # noqa: E402
 from api import compute_cumulants                                    # noqa: E402
 from api import me_output as ME                                      # noqa: E402
-from api.compute import _ITO_EPS                                     # noqa: E402
 from api.noise import Gaussian                                       # noqa: E402
 from api.sde import SDE                                              # noqa: E402
 from api.symbolic_out import Kernel                                  # noqa: E402
@@ -146,7 +145,7 @@ def test_chain_block_kronecker_forms_equal_the_chain():
             continue
         G, x, c = b.triple()
         T, xt, ct = b.tri()
-        assert np.allclose(np.tril(T, -1), 0)
+        assert np.allclose(np.tril(T, -1), 0, rtol=0, atol=1e-12)
         dv = np.array([c @ sl.expm(G * s) @ x for s in u])
         tv = np.array([ct @ sl.expm(T * s) @ xt for s in u])
         assert _rel(dv, v) <= 1e-11 and _rel(tv, v) <= 1e-11
@@ -216,7 +215,7 @@ def test_exact_tree_spectrum_closed_form(delayed_ou):
     Sl = np.array([me.sides[0]['+'].resolvent(1j * w)
                    + me.sides[0]['-'].resolvent(-1j * w) for w in om])
     assert _rel(Sl, ref) <= 1e-13
-    TT = np.where(T == 0, -_ITO_EPS, T)
+    TT = T          # C_tau's τ = 0 point: the exact Itô left limit (at_zero='-')
     assert _rel(me(TT, ell=0), r['C_tau_by_ell'][0]) <= 1e-15
 
 

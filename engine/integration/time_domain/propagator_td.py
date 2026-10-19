@@ -47,7 +47,7 @@ Conventions (fixed pipeline-wide)
    K and its inverse G = K^{-1} both have layout [resp_row, phys_col], so
    to obtain `G^R_{j ← i}` we read `G[j, i]` (physical row, response col).
    `G_t_entry(phys_idx=j, resp_idx=i, ...)` applies this transpose — it
-   matches `_get_propagator_entry` in `engine/integration/symbolic.py`.
+   matches `_get_propagator_entry` in `tests/oracles/symbolic.py`.
 """
 
 from sage.all import SR, I, exp, heaviside, matrix, CDF
@@ -167,7 +167,7 @@ def build_G_t_matrix(propagator_data, t_var, num_params=None):
         SageMath matrices, one per pole), and 'G_ft' (the full
         frequency-domain propagator, required to compute the
         ω→∞ limits for the delta coefficients). This is the same dict
-        consumed by `engine.integration.symbolic`.
+        consumed by `tests.oracles.symbolic`.
     t_var : SR variable
         The symbolic time variable to build the smooth G(t) in.
     num_params : dict or None
@@ -392,16 +392,17 @@ def G_t_entry(G_t_obj, phys_idx, resp_idx, t_expr,
     This reads the (phys, resp) entry — i.e., the TRANSPOSE of the
     (resp, phys) convention natural to the kernel matrix K. This
     transpose matches `_get_propagator_entry` in
-    `engine/integration/symbolic.py` line ~305; both paths (Phase I and
+    `tests/oracles/symbolic.py` line ~305; both paths (Phase I and
     Phase J) must use the same transpose convention.
 
     Parameters
     ----------
     G_t_obj : dict or SageMath matrix (SR)
         Output of `build_G_t_matrix`. If a dict (the current format),
-        the `'smooth'` entry is used. If a bare SR matrix is passed,
-        it is treated as the smooth part directly (backward compat for
-        tests and external callers).
+        the `'smooth'` entry is used, in its recorded `'t_var'`. If a
+        bare SR matrix is passed, it is treated as the smooth part
+        directly and its time variable is guessed (its only free
+        variable: give numeric parameters or pass the dict).
     phys_idx : int
         Row index (physical field at the head of the edge).
     resp_idx : int
@@ -418,10 +419,15 @@ def G_t_entry(G_t_obj, phys_idx, resp_idx, t_expr,
     """
     if isinstance(G_t_obj, dict):
         G_t_matrix = G_t_obj['smooth']
+        t_var = G_t_obj.get('t_var')
     else:
         G_t_matrix = G_t_obj
-
-    t_var = _infer_time_variable(G_t_matrix)
+        t_var = None
+    if t_var is None:
+        # a bare matrix (or a dict without 't_var'): guessed from the free
+        # variables, which is right only when the time is the one left
+        # (numeric parameters; audit LOUD-09)
+        t_var = _infer_time_variable(G_t_matrix)
     entry = SR(G_t_matrix[phys_idx, resp_idx])
     if t_var is not None:
         entry = entry.subs({t_var: t_expr})

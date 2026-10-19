@@ -43,3 +43,48 @@ def test_trees_respect_sharpened_bound():
             assert len(d3) <= k + j - 2
             assert len(d2) <= k + 3 * ell - 2 * j - 1
             assert tree.order() <= 3 * k + 3 * ell - 3
+
+
+# -- lift the bound (audit W5, TST-08): the v2_max bound must not drop any prediagram -------------
+
+def _lifted_trees(k, ell, extra=2):
+    """``generate_trees_with_constraints`` with the |V2^T| bound removed: no per-tree degree-2
+    check, and the vertex range opened ``extra`` beyond the orientability cap (which the v2 bound
+    implies).  The other filters (leaf count, |V3^T| <= k + j - 2, the 2-path endpoint condition)
+    are unchanged."""
+    from sage.all import graphs
+    out = []
+    cap = L.v_max_orientable_bound(k, ell) + extra
+    for j in range(0, ell + ell // 2 + 1):
+        num_leaves = k + j
+        v3_max = k + j - 2
+        min_n = num_leaves if num_leaves == 1 else num_leaves + 1
+        for n in range(min_n, cap + 1):
+            for tree in graphs.trees(n):
+                leaves, _int, degree_2, degree_3plus = L.classify_vertices_sage(tree)
+                if len(leaves) != num_leaves or len(degree_3plus) > v3_max:
+                    continue
+                if not L.endpoint_condition_holds(tree, degree_2, j, ell):
+                    continue
+                out.append((tree, j, num_leaves))
+    return out
+
+
+@pytest.mark.parametrize('k,ell', [(2, 1), (3, 1), (2, 2)])
+def test_lifting_the_v2_bound_drops_no_prediagram(monkeypatch, k, ell):
+    def certs():
+        return {L._iso_cert(D) for D, _G, _lv, _in in L.enumerate_all(k, ell, verbose=False)[2]}
+    bounded = certs()
+    assert len(bounded) == TABLE[(k, ell)]
+    bounded_trees = L.generate_trees_with_constraints(k, ell)
+    lifted_trees = _lifted_trees(k, ell)
+    assert len(lifted_trees) > len(bounded_trees), 'the lifted search must look at more trees'
+    # the comparison is sensitive: one less degree-2 vertex allowed drops prediagrams (the bound
+    # is attained)
+    tight = [t for t in bounded_trees
+             if len(L.classify_vertices_sage(t[0])[2]) < k + 3 * ell - 2 * t[1] - 1]
+    monkeypatch.setattr(L, 'v_max_orientable_bound', lambda _k, _l: 10 ** 6)
+    monkeypatch.setattr(L, 'generate_trees_with_constraints', lambda _k, _l, _m=50: tight)
+    assert certs() < bounded
+    monkeypatch.setattr(L, 'generate_trees_with_constraints', lambda _k, _l, _m=50: lifted_trees)
+    assert certs() == bounded

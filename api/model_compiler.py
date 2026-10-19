@@ -35,11 +35,13 @@ where ``pop = range(N_pop)`` is pre-bound in the namespace.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from sage.all import (
     SR, sage_eval, exp, log, sin, cos, tan, sqrt,
     heaviside, dirac_delta, I, pi, function as sr_function, diff, ZZ,
+    kronecker_delta as _kronecker_delta,
 )
 
 
@@ -855,7 +857,16 @@ def _normalize_expr_text(text: str) -> str:
     # parses as one expression.  Sage syntax doesn't depend on
     # newlines, so this is safe.
     text = ' '.join(text.split())
+    # numpy >= 2 scalar reprs (``f'{x!r}'`` of an ``np.float64``) are
+    # ``np.float64(0.25)``: read them as the number they print
+    text = _NUMPY_SCALAR_REPR.sub(r'(\1)', text)
     return text
+
+
+_NUMPY_SCALAR_REPR = re.compile(
+    r'\b(?:np|numpy)\.(?:float(?:16|32|64|128)?|longdouble|double|'
+    r'u?int(?:8|16|32|64)?)\(\s*([-+]?(?:\d+\.?\d*|\.\d+)'
+    r'(?:[eE][-+]?\d+)?)\s*\)')
 
 
 def _safe_eval(text: str, locals_dict: dict, what: str) -> Any:
@@ -915,11 +926,25 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     s = apply_linearity(s, flucts)
     # Homogeneous/stationary saddle (v2.0): annihilate operators acting purely
     # on the mean.  The action's field unwrapped to ``phistar + fluctuation``,
-    # so the saddle symbols are the ``*star*`` variables now present.  (For a
-    # future inhomogeneous saddle this kill becomes opt-out.)
-    saddles = [v for v in SR(s).variables() if 'star' in str(v)]
-    if saddles:
-        s = kill_means(s, saddles)
+    # so the saddle symbols are those of the declared saddle parameters
+    # (``mf_parameters``: the builder's mean_field flag, not a spelling).
+    # (For a future inhomogeneous saddle this kill becomes opt-out.)
+    # Any operator argument free of the dynamical fields and the coordinates
+    # is a space/time constant (saddle values and parameters), so
+    # Lap(lam*pstar^2) = 0 as lam*Lap(pstar^2) is (``keep_syms``).
+    declared = set()
+    for name in (naming_convention or {}).get('mf_parameters') or []:
+        arr = getattr(ns, name, None)
+        stack = [arr] if arr is not None else []
+        while stack:
+            a = stack.pop()
+            if isinstance(a, (list, tuple)):
+                stack.extend(a)
+            else:
+                declared.add(SR(a))
+    saddles = [v for v in SR(s).variables() if v in declared]
+    s = kill_means(s, saddles,
+                   keep_syms=list(flucts) + [SR.var(c) for c in ('x', 'y', 'z', 't')])
     s, genmap = to_derived_generators(s, flucts)
     ns._operator_ir_genmap = genmap
 
@@ -927,8 +952,6 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # propagator kernel; derivative-VERTEX generators (degree ≥3) carry per-leg
     # momentum form factors into the integrator.
     bilinear, vertex = classify_generators(s, genmap, flucts)
-    ns._operator_ir_bilinear = bilinear
-    ns._operator_ir_vertex = vertex
 
     # Phase 3b-i: lower the BILINEAR generators back to the v1 bare-symbol form
     # (Lap → ns.Laplacian, Dt → ns.Dt; composed for chains, so ∇⁴ → Laplacian²),
@@ -1135,21 +1158,8 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
     return _action
 
 
-def _iter_multi_indices(n_args, max_total):
-    """Yield every multi-index (k_1, ..., k_{n_args}) of non-negative
-    integers with  sum k_j  ≤ ``max_total``.
-
-    Iterative implementation (via ``itertools.product``) so it is
-    safe under ``%autoreload`` — a self-recursive generator would
-    fail to find itself in module globals after a hot-swap.
-    """
-    if n_args == 0:
-        yield ()
-        return
-    from itertools import product
-    for combo in product(range(max_total + 1), repeat=n_args):
-        if sum(combo) <= max_total:
-            yield combo
+# one copy (audit W7, RED-07)
+from engine.core.field_theory import _iter_multi_indices  # noqa: E402
 
 
 def _augment_saddle_renames(ns, functions, *,
@@ -1541,7 +1551,7 @@ def make_mf_bg_conditions_lambda(mf_eqs: dict[str, str],
                                  *,
                                  field_names, param_names, kernel_names,
                                  functions, n_pop,
-                                 iteration_saddle: str = 'nstar',
+                                 iteration_saddle: str = 'AUTO',
                                  saddle_map: dict | None = None):
     """Build the **action-side** ``mf_bg_conditions`` lambda.
 
@@ -1680,7 +1690,7 @@ def make_mf_bg_solver_lambda(mf_eqs: dict[str, str],
                              *,
                              field_names, param_names, kernel_names,
                              functions, n_pop,
-                             iteration_saddle: str = 'nstar'):
+                             iteration_saddle: str = 'AUTO'):
     """Build the **solver-friendly** ``mf_bg_conditions`` lambda.
 
     Returns a dict with EVERY saddle entry (both compound and
@@ -1862,6 +1872,40 @@ def _delta_term_image(term, facs, deltas, t):
     return img
 
 
+def _decays(rate, positive):
+    """The term ``e^{-rate t}`` of a causal kernel decays: ``rate`` positive
+    (by declaration, or Sage's sign with ``positive=None``) or, for a
+    complex rate, its REAL part positive -- the convergence condition of the
+    transform at real omega.  A damped oscillation written as complex
+    exponentials, ``e^{(-r + i r) t}``, has rate ``(1 - i) r``: refused
+    before (audit W4b CI review: on a stack where Sage's own integral of it
+    fails, the kernel then had no image, and the mean-field check took it
+    as normalised).  The real part treats the declared-positive symbols as
+    real; any other symbol in a complex rate leaves it undecided."""
+    def ok(x):
+        return (x.is_positive() if positive is None
+                else _positive_by_declaration(x, positive))
+    if ok(rate):
+        return True
+    syms = rate.variables()
+    if not syms:
+        try:
+            return complex(rate).real > 0
+        except (TypeError, ValueError):
+            return False
+    pos = set(positive or ())
+    if any(str(v) not in pos for v in syms):
+        return False
+    try:
+        conj = rate.conjugate().subs({v.conjugate(): v for v in syms})
+        re_rate = ((rate + conj) / 2).expand()
+    except Exception:
+        return False
+    if 'conjugate' in str(re_rate):
+        return False
+    return bool(ok(re_rate))
+
+
 def causal_exponential_ft(f, t, omega, positive=None):
     r"""Fourier image ``\int_0^\infty f(t) e^{-i\omega t} dt`` of a causal
     sum of exponentials, by the closed form term by term:
@@ -1920,8 +1964,7 @@ def causal_exponential_ft(f, t, omega, positive=None):
         if causal != 1:
             raise ValueError(f'term {term} does not carry heaviside({t}) '
                              f'exactly once')
-        if not (rate.is_positive() if positive is None
-                else _positive_by_declaration(rate, positive)):
+        if not _decays(rate, positive):
             raise ValueError(f'decay rate {rate} of term {term} is not '
                              f'known to be positive')
         out += coeff * factorial(n) / (rate + I * omega) ** (n + 1)
@@ -2190,6 +2233,28 @@ def _parse_response_legs(term: dict, order: int) -> list[str]:
     return list(legs)
 
 
+def _cgf_index_names(order: int) -> tuple:
+    """The names a CGF row's coefficient / kernel text may use for the leg
+    indices at cumulant order ``order``: ``i1 .. i<order>`` always, ``i`` and
+    ``j`` at order 2 (``i`` = ``i1``, ``j`` = ``i2``)."""
+    names = tuple(f'i{k}' for k in range(1, int(order) + 1))
+    return (('i', 'j') + names) if int(order) == 2 else names
+
+
+def _shared_units(*_indices):
+    """``shared(i, j)``: 1 for every leg-index tuple -- a CGF row's explicit
+    statement that its noise is common to all units of a population."""
+    return 1
+
+
+_IDENT_RE = re.compile(r'[A-Za-z_][A-Za-z_0-9]*')
+
+
+def _identifiers(text: str) -> set:
+    """The identifier tokens of an expression text."""
+    return set(_IDENT_RE.findall(text or ''))
+
+
 class _CGFKernelCallable:
     """Picklable callable that evaluates a CGF row's
     ``coeff_text * kernel_text`` against a FieldTheory namespace.
@@ -2205,26 +2270,74 @@ class _CGFKernelCallable:
 
     ``ns`` is the FieldTheory namespace (carries parameter SR vars as
     attributes).  ``leg_indices`` is an n-tuple of integer leg positions
-    (ignored by most kernels — they only depend on ``ns`` and τ).
+    (0-based unit indices into each leg's response field, as ``xt[i]`` in
+    the action text).  The texts see them as ``i1 .. in`` (and ``i``,
+    ``j`` at order 2), with ``kronecker_delta`` and ``shared``:
+    ``kronecker_delta(i, j)`` makes the noise independent per unit,
+    ``shared(i, j)`` (= 1) common to all units.  On a response field with
+    more than one unit a row whose texts use no index is refused (it used
+    to give every pair the auto cumulant: common noise where independent
+    per-unit noise was meant).
     ``tau_syms`` is the (order-1)-tuple of relative-time SR variables.
+
+    An empty kernel text is the fully local ``prod_k dirac_delta(tau_k)``
+    (white noise, as ``declare_cgf_term`` documents), not a constant.
     """
-    __slots__ = ('_coeff_text', '_kernel_text', '_order')
+    __slots__ = ('_coeff_text', '_kernel_text', '_order', '_cross_field')
 
     def __init__(self, coeff_text: str, kernel_text: str | None,
-                 order: int):
+                 order: int, legs=None):
         self._coeff_text  = (coeff_text or '').strip() or '0'
         self._kernel_text = (kernel_text or '').strip()
         self._order       = int(order)
+        # legs on different response fields: the framework also evaluates
+        # the row with the fields (and so the leg indices) permuted
+        self._cross_field = bool(legs) and len(set(legs)) > 1
 
     def __call__(self, ns, *args):
         order = self._order
-        leg_indices = args[:order]    # noqa: F841 — accepted for API uniformity
+        leg_indices = args[:order]
         tau_syms    = args[order:]
         if len(tau_syms) != order - 1:
             raise ValueError(
                 f"CGF kernel expects {order - 1} τ symbol(s) at order "
                 f"{order}; got {len(tau_syms)}."
             )
+        value, uses_index = self._evaluate(ns, leg_indices, tau_syms)
+        if self._cross_field and uses_index:
+            # The framework evaluates a cross-field row once per distinct
+            # order of its fields, passing the leg indices in that order,
+            # so ``i`` reads the second field's unit on the reversed pass.
+            # Exact only when the index expression is symmetric: refuse
+            # anything else rather than average it silently.
+            from itertools import permutations
+            for perm in permutations(range(order)):
+                if list(perm) == list(range(order)):
+                    continue
+                swapped = [leg_indices[p] for p in perm]
+                try:
+                    other, _ = self._evaluate(ns, swapped, tau_syms)
+                    diff = SR(value - other).expand()
+                    same = diff.is_trivial_zero() or bool(diff.simplify_full().is_zero())
+                except Exception:
+                    same = False
+                if not same:
+                    raise ValueError(
+                        f"cross-field CGF row (coefficient {self._coeff_text!r}, "
+                        f"kernel {self._kernel_text or None!r}): its leg-index "
+                        f"expression is not symmetric under exchanging the legs "
+                        f"(leg indices {tuple(int(x) for x in leg_indices)} vs "
+                        f"{tuple(int(x) for x in swapped)}).  A cross-field row is "
+                        f"evaluated for both orders of its fields, so only "
+                        f"index-symmetric expressions (kronecker_delta(i, j), "
+                        f"shared(i, j), functions of both) are exact; write "
+                        f"other unit structures with per-unit fields or rows.")
+        return value
+
+    def _evaluate(self, ns, leg_indices, tau_syms):
+        """``(coefficient * kernel, whether the texts used a leg index)``
+        at the given leg indices."""
+        order = self._order
 
         eval_ns: dict = {}
         for attr in dir(ns):
@@ -2240,8 +2353,45 @@ class _CGFKernelCallable:
         for k, t in enumerate(tau_syms, start=1):
             eval_ns[f't{k}'] = t
 
+        # leg indices (a declared name of the same spelling keeps its meaning)
+        idx_names = _cgf_index_names(order)
+        idx_vals = [int(x) for x in leg_indices]
+        used = _identifiers(self._coeff_text) | _identifiers(self._kernel_text)
+        bound = set()
+        shadowed = set()
+        for nm in idx_names:
+            if nm in eval_ns:
+                shadowed.add(nm)
+                continue
+            pos = {'i': 0, 'j': 1}.get(nm)
+            eval_ns[nm] = ZZ(idx_vals[pos if pos is not None else int(nm[1:]) - 1])
+            bound.add(nm)
+        if any(v != 0 for v in idx_vals):
+            names = ', '.join(idx_names)
+            pair = 'i, j' if order == 2 else ', '.join(f'i{k}' for k in range(1, order + 1))
+            if used & shadowed:
+                raise ValueError(
+                    f"CGF row (coefficient {self._coeff_text!r}, kernel "
+                    f"{self._kernel_text or None!r}): {sorted(used & shadowed)} "
+                    f"is a declared name and also a leg-index name on this "
+                    f"multi-unit field; rename the declaration (leg indices: "
+                    f"{names}).")
+            if not (used & bound):
+                raise ValueError(
+                    f"CGF row (coefficient {self._coeff_text!r}, kernel "
+                    f"{self._kernel_text or None!r}) sits on a response field with "
+                    f"more than one unit but does not say how the units' noises "
+                    f"are related (its texts use no leg index).  Write the unit "
+                    f"structure explicitly: multiply by kronecker_delta({pair}) "
+                    f"for independent per-unit noise (each unit its own copy), "
+                    f"or by shared({pair}) for one noise common to all units; "
+                    f"leg indices are 0-based ({names})."
+                )
+
         eval_ns.setdefault('dirac_delta', dirac_delta)
         eval_ns.setdefault('delta_function', dirac_delta)
+        eval_ns.setdefault('kronecker_delta', _kronecker_delta)
+        eval_ns.setdefault('shared', _shared_units)
         eval_ns.setdefault('heaviside', heaviside)
         eval_ns.setdefault('exp', exp)
         eval_ns.setdefault('log', log)
@@ -2254,9 +2404,13 @@ class _CGFKernelCallable:
 
         coeff_val = _safe_eval(self._coeff_text, eval_ns, 'CGF coefficient')
         if not self._kernel_text:
-            return SR(coeff_val)
-        kernel_val = _safe_eval(self._kernel_text, eval_ns, 'CGF kernel')
-        return SR(coeff_val) * SR(kernel_val)
+            # no kernel: the fully local cumulant prod_k delta(tau_k)
+            kernel_val = SR(1)
+            for t in tau_syms:
+                kernel_val = kernel_val * dirac_delta(t)
+        else:
+            kernel_val = _safe_eval(self._kernel_text, eval_ns, 'CGF kernel')
+        return SR(coeff_val) * SR(kernel_val), bool(used & bound)
 
     def __repr__(self):
         return (f'<_CGFKernelCallable order={self._order} '
@@ -2285,7 +2439,7 @@ class _CGFKernelSum:
 
 
 def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
-                               order: int):
+                               order: int, legs=None):
     """Build a picklable callable evaluating ``coeff_text * kernel_text``.
 
     Thin factory wrapping ``_CGFKernelCallable``.  Kept as a function
@@ -2293,7 +2447,7 @@ def _build_cgf_kernel_callable(coeff_text: str, kernel_text: str | None,
     previous closure-based form.  See the class docstring for the
     runtime signature.
     """
-    return _CGFKernelCallable(coeff_text, kernel_text, order)
+    return _CGFKernelCallable(coeff_text, kernel_text, order, legs)
 
 
 def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
@@ -2390,13 +2544,15 @@ def make_correlated_noises_block(cgf_terms: list[dict], *, param_names):
     # multi-row inputs (e.g. GTaS κ² with auto + cross terms) merge
     # cleanly into one κ² kernel_fn the framework can call.
     for (name, order), rows in acc.items():
+        legs = out[name]['response_legs'][order]
         if len(rows) == 1:
             r = rows[0]
             out[name]['cumulants'][order] = _build_cgf_kernel_callable(
-                r['coefficient'], r['kernel'], order)
+                r['coefficient'], r['kernel'], order, legs)
         else:
             kernels = [
-                _build_cgf_kernel_callable(r['coefficient'], r['kernel'], order)
+                _build_cgf_kernel_callable(r['coefficient'], r['kernel'], order,
+                                           legs)
                 for r in rows
             ]
             # Use the picklable _CGFKernelSum class instead of a local

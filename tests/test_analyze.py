@@ -97,13 +97,15 @@ GOLDEN = {
     'ou_quartic_two_dim_color_corr': (4, True, _CM, True, 'rational', 3, True, _LIN, True, 1, False,
                                       frozenset({'G4_MARKOV_CONSENT_MISSING'})),
     'linear_hawkes':           (4, False, _W, False, 'rational', 4, True, 'poles', True, 1, True, _HAWKES),
-    'single_population_quad_exp_test': (4, False, _W, False, 'rational', 4, True, 'poles', True, 1, True,
+    # two saddles (the quadratic transfer function's low and high rate; every
+    # root is searched since audit W6 / GEN-02; the low one is selected)
+    'single_population_quad_exp_test': (4, False, _W, False, 'rational', 4, True, 'poles', True, 2, True,
                                         _HAWKES | {'G0_DOMAIN_BOUNDARY'}),
     'single_population_linear_delta_spikes_test': (4, False, _W, False, 'rational', 2, True, 'poles', True, 1,
                                                    True, _HAWKES | {'G0_DOMAIN_BOUNDARY'}),
     'single_population_spike_reset_test': (4, False, _W, False, 'rational', 2, True, 'poles', True, 1, True,
                                            _HAWKES),
-    'quadratic_hawkes_alpha':  (4, False, _W, False, 'rational', 8, True, 'poles', True, 1, True, _HAWKES),
+    'quadratic_hawkes_alpha':  (4, False, _W, False, 'rational', 8, True, 'poles', True, 2, True, _HAWKES),
     # two pole clusters (kappa ~ 1e2): G3_CLOSE_POLES is info since they are resolved (api._pole_clusters)
     'multipopulation_test':    (8, False, _W, False, 'rational', 16, True, 'poles', True, 1, True, _HAWKES),
     'dendritic_quad_soma_sigmoid': (8, False, _W, False, 'rational', 4, True, 'poles', True, 1, True, _HAWKES),
@@ -116,9 +118,11 @@ GOLDEN = {
     'edwards_wilkinson_1d':               (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
     'kpz_1d':                             (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
     'linear_diffusion_test':              (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
-    'reaction_diffusion_2d':              (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
+    # two saddles: phi = 0 (selected) and the unstable negative root, which
+    # the mirrored seeds reach and which is selectable since audit W6
+    'reaction_diffusion_2d':              (1, True, _W, True, _SP, None, True, _LIN, True, 2, False, frozenset()),
     'reaction_diffusion_conserved_1d':    (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
-    'reaction_diffusion_quadratic_1d':    (1, True, _W, True, _SP, None, True, _LIN, True, 1, False, frozenset()),
+    'reaction_diffusion_quadratic_1d':    (1, True, _W, True, _SP, None, True, _LIN, True, 2, False, frozenset()),
     # SDE front-end references
     'sde_ou_quartic':     (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, False, frozenset()),
     'sde_multiplicative': (1, True, _W, True, 'rational', 1, True, _LIN, True, 1, True,
@@ -347,7 +351,7 @@ def test_two_stable_saddles_confirmed():
     f = [f for f in r.findings if f.code == 'G2_MULTISTABLE'][0]
     assert f.level == 'info' and r.ok
     assert r.traits.n_saddles == 3 and r.traits.n_stable_saddles == 2 and r.traits.saddle_index == 1
-    assert dict(r.traits.saddle)['xstar'][0] == pytest.approx(10 ** 0.5, rel=1e-8)
+    assert dict(r.traits.saddle)['xstar'][0] == pytest.approx(10 ** 0.5, rel=1e-12)
     r = analyze(model, question=dict(q, fixed_point_index=2))
     assert 'G2_FIXED_POINT_INDEX' in r.codes
 
@@ -396,6 +400,17 @@ def test_fast_and_leaves_model_unchanged(name):
     wall = time.perf_counter() - t0
     _same(model, before)
     assert wall < BUDGET_S, f'{name}: {wall:.2f}s'
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('name', sorted(HEAVY))
+def test_heavy_models_unchanged_cold(name):
+    """The cold-cache counterpart of the HEAVY skips above (CI's cache is always cold, so those
+    skip there): the analyzer leaves the model unchanged with a fresh expansion (no wall budget)."""
+    model, q = _build(name)
+    before = copy.deepcopy(model)
+    analyze(model, question=q, use_cache=False)
+    _same(model, before)
 
 
 def test_analyze_never_writes_the_cache(tmp_path, monkeypatch):

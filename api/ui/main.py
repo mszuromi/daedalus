@@ -29,11 +29,8 @@ from IPython.display import display, HTML
 
 from api.ui.widgets import (
     DynamicTable,
-    expression_input,
-    matrix_input,
     paste_button,
     textarea_input,
-    vector_input,
 )
 from api.model_serialize import (
     save_model_to_file,
@@ -1274,22 +1271,23 @@ class ModelUI:
             style={'description_width': '150px'},
             layout=W.Layout(width='250px'),
         )
-        # Recommended external fields — one row per leaf (field +
-        # 1-based leaf index).  Up to k rows typically; UI lets users
-        # add / remove freely.
+        # Recommended external fields — one row per external leg (field +
+        # 1-based POPULATION index: the unit of the field the leg sits on;
+        # 1 for a single-unit field).  Up to k rows typically; UI lets
+        # users add / remove freely.
         self._tbl_ext_fields = DynamicTable(
             columns=[
                 {'name': 'field',       'kind': 'text',
                  'placeholder': 'phi',  'width': '120px'},
-                {'name': 'leaf_index',  'kind': 'int',
+                {'name': 'population',  'kind': 'int',
                  'default': 1,          'width': '100px'},
             ],
             initial=[
-                # Two leaves on the same scalar field ``phi`` matches the
-                # default ``k_default = 2`` (auto-correlator) and is the
-                # most common k-point setup the runner cares about.
-                {'field': 'phi', 'leaf_index': 1},
-                {'field': 'phi', 'leaf_index': 2},
+                # Two legs on the same scalar field ``phi`` (population 1)
+                # matches the default ``k_default = 2`` (auto-correlator)
+                # and is the most common k-point setup the runner cares about.
+                {'field': 'phi', 'population': 1},
+                {'field': 'phi', 'population': 1},
             ],
         )
         tab_defaults = W.VBox([
@@ -1328,10 +1326,12 @@ class ModelUI:
                 "Which observables to correlate.  Add one row per "
                 "external leg; the list length should equal <b>k</b> "
                 "above.  Use the field's name (matching the Fields tab) "
-                "and a 1-based <code>leaf_index</code> to label which "
-                "leg you mean.  Two legs on the same field "
-                "(<code>phi[1], phi[2]</code>) compute the <i>auto</i>-"
-                "correlation; legs on different fields "
+                "and the 1-based <code>population</code> (unit) of the "
+                "field the leg sits on (1 for a single-unit field).  Two "
+                "legs on the same field and population "
+                "(<code>phi[1], phi[1]</code>) compute the <i>auto</i>-"
+                "correlation; legs on different units "
+                "(<code>n[1], n[2]</code>) or different fields "
                 "(<code>phi[1], psi[1]</code>) compute a <i>cross</i>-"
                 "correlation."
                 '</p>'),
@@ -1627,7 +1627,7 @@ class ModelUI:
         self._save_hint = W.HTML(value='')
         self._save_hint.add_class('tb-save-hint')
 
-        # "Open in runner" bridge (item 5).  After Save, the user can
+        # "Open in runner" bridge.  After Save, the user can
         # click this to open ``model_runner.ipynb`` and have the just-
         # saved MODEL_NAME picked up automatically via a tiny scratch
         # file written by ``_on_save``.
@@ -2259,7 +2259,7 @@ class ModelUI:
             return True
         return False
 
-    # ── Open in runner notebook (item 5) ──────────────────────────
+    # ── Open in runner notebook ──────────────────────────
     def _on_open_in_runner(self, _btn) -> None:
         """Write a tiny scratch file with the last-saved model name
         and emit JS to open ``model_runner.ipynb`` in a new tab.
@@ -2365,20 +2365,6 @@ class ModelUI:
 
     # ── Form-state collection ─────────────────────────────────────
     def _collect(self) -> dict:
-        # Parse default-fundamental and metadata as Python literals.
-        def _eval_dict(text: str, label: str) -> dict:
-            text = (text or '').strip()
-            if not text:
-                return {}
-            try:
-                obj = eval(text, {'__builtins__': {}}, {})
-            except Exception as e:
-                raise ValueError(f'Could not parse {label}: {e}')
-            if not isinstance(obj, dict):
-                raise ValueError(f'{label} must be a dict literal; got '
-                                 f'{type(obj).__name__}')
-            return obj
-
         _NONE = '—'
 
         def _index_list(row: dict) -> list[str]:
@@ -2657,7 +2643,7 @@ class ModelUI:
             if not name:
                 continue
             try:
-                idx = int(r.get('leaf_index') or 1)
+                idx = int(r.get('population') or 1)
             except (TypeError, ValueError):
                 idx = 1
             ext_rows.append((name, idx))
@@ -3156,7 +3142,7 @@ class ModelUI:
                     name, idx = entry[0], entry[1]
                     self._tbl_ext_fields.add_row(values={
                         'field': str(name),
-                        'leaf_index': int(idx),
+                        'population': int(idx),
                     })
 
             self._w_fpi_default.value = int(

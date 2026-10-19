@@ -28,13 +28,13 @@ from sage.all import SR
 import importlib.util
 
 from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-from engine.integration.spatial.generic_evaluator import (
+from tests.oracles.generic_evaluator import (
     loop_self_energy, bubble_delta_C, tadpole_delta_C,
 )
-from engine.integration.spatial.temporal_integrate import (
+from tests.oracles.temporal_integrate import (
     sigma_parametric, bubble_edges,
 )
-from engine.integration.spatial import loop_dyson
+from tests.oracles import loop_dyson
 from engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
@@ -93,7 +93,7 @@ def test_bubble_loop_kinematics_match_oracle(rd_ell1):
         for t in (0.05, 0.4, 1.2):
             got_R = loop_self_energy(sR, q, t, mu, D, T)
             ref_R = sigma_parametric(bubble_edges('R'), q, t, mu, D, T)
-            assert abs(got_R - ref_R) <= 1e-9 * (abs(ref_R) + 1e-12), \
+            assert abs(got_R - ref_R) <= 1e-12 * (abs(ref_R) + 1e-12), \
                 f"Σ_R mismatch at q={q},t={t}: {got_R} vs {ref_R}"
 
             got_K = loop_self_energy(sK, q, t, mu, D, T)

@@ -42,6 +42,7 @@ import warnings
 import numpy as np
 
 from engine.integration.spatial.causal_chambers import causal_chambers
+from engine.errors import DaedalusError
 
 
 class BesselUnequalTimesWarning(RuntimeWarning):
@@ -378,6 +379,166 @@ def _gl_on(lower, upper, n):
     return t, w
 
 
+def _gl_on_split(lower, upper, n, breaks, n_short=None):
+    """:func:`_gl_on` on ``[lower, upper]`` split at the fixed ``breaks`` (each
+    clipped into the interval; a segment of zero width gets zero weight), so
+    a kink of the integrand at a break is a segment end, not an interior
+    point.  The lowest segment (the long retarded tail) gets ``n`` nodes, the
+    segments between breaks ``n_short`` (default ``n``).  Returns
+    ``(t_nodes, t_w)`` of shape ``lower.shape + (n + n_short·len(breaks),)``."""
+    if not breaks:
+        return _gl_on(lower, upper, n)
+    n_short = n if n_short is None else int(n_short)
+    cuts = [lower] + [np.clip(np.full_like(lower, b), lower, upper)
+                      for b in sorted(breaks)] + [upper]
+    ts, ws = [], []
+    for i_seg, (lo_, hi_) in enumerate(zip(cuts[:-1], cuts[1:])):
+        t, w = _gl_on(lo_, hi_, n if i_seg == 0 else n_short)
+        ts.append(t)
+        ws.append(w)
+    return np.concatenate(ts, axis=-1), np.concatenate(ws, axis=-1)
+
+
+def _leaf_ties(edges, idx, external_times, n_V):
+    """Per internal vertex: (C-edge leaf times, leaf upper bound or None,
+    static lower bound, static upper bound) from the R/C edges to leaves."""
+    own = [set() for _ in range(n_V)]
+    up = [None] * n_V
+    s_lo = [-math.inf] * n_V
+    s_up = [math.inf] * n_V
+    for e in edges:
+        ui, vi = e.u in idx, e.v in idx
+        if e.kind == 'C' and e.u != e.v:
+            if ui and not vi:
+                own[idx[e.u]].add(float(external_times[e.v]))
+            elif vi and not ui:
+                own[idx[e.v]].add(float(external_times[e.u]))
+        elif e.kind == 'R':
+            if ui and not vi:
+                t = float(external_times[e.v])
+                s_up[idx[e.u]] = min(s_up[idx[e.u]], t)
+                up[idx[e.u]] = s_up[idx[e.u]]
+            elif vi and not ui:
+                s_lo[idx[e.v]] = max(s_lo[idx[e.v]],
+                                     float(external_times[e.u]))
+    return own, up, s_lo, s_up
+
+
+def _chamber_breaks(order, ties):
+    """Per internal vertex (index), for one causal chamber ``order``: the
+    external times where its time integrand can have a kink, inside its
+    static leaf bounds.
+
+    * its own C edges to leaves: ``C(|t_v − t_leaf|)`` kinks at ``t_leaf``;
+    * every vertex integrated INSIDE it (later in ``reversed(order)``):
+      that vertex's leaf bounds (its limit ``min(s_up, t_v)`` switches branch
+      when ``t_v`` crosses ``s_up``; its interval ``[s_lo, t_v]`` opens at
+      ``t_v = s_lo``) and its own kink times.
+
+    None of these is a causal-chamber boundary (chambers order the internal
+    vertices only), so the time grid splits there."""
+    own, up, s_lo, s_up = ties
+    rev = list(reversed(order))
+    out = {}
+    acc = set()
+    for vi in reversed(rev):                      # innermost first
+        bl = set(own[vi]) | acc
+        out[vi] = sorted(b_ for b_ in bl if s_lo[vi] < b_ < s_up[vi])
+        acc |= own[vi]
+        if up[vi] is not None:
+            acc.add(up[vi])
+        if s_lo[vi] > -math.inf:
+            acc.add(s_lo[vi])
+    return out
+
+
+def _spatial_mem_budget():
+    """``(bytes, rule)``: SPATIAL_MEM_BUDGET_GB if set (``engine._env.
+    budget_gb``: a positive number of GB, or ``off`` = no limit, ``inf``
+    bytes; ``0`` / negative raise), else the RAM-aware default of the Phase
+    J guards."""
+    from engine import _env
+    gb = _env.budget_gb('SPATIAL_MEM_BUDGET_GB')
+    if gb is not None:
+        return gb * 1e9, f'SPATIAL_MEM_BUDGET_GB={gb:g}'
+    from engine.integration.time_domain.final_integral import default_mem_budget
+    return default_mem_budget()
+
+
+class SpatialMemoryBudgetError(DaedalusError, MemoryError):
+    """A spatial chamber evaluation would exceed the memory budget."""
+
+
+def chamber_peak_bytes(P, *, n_V, n_leaf, n_C, E, L, n_ext, n_x=0,
+                       spatial_dim=1, formfactor=None, gh_order=6):
+    """Peak bytes of ONE causal chamber of :func:`diagram_kinematic` with
+    ``P`` quadrature samples (grid or MC), counted from its arrays and
+    calibrated against tracemalloc peaks (audit MEM-04: plain and derivative
+    vertices, k = 2 and 3, d = 1-3, one and two loops; every measured peak
+    sits at 0.4-0.9 of this estimate):
+
+    * per sample: the vertex / leaf / σ times, the edge weights, amplitude and
+      temporaries, and the Symanzik blocks (``Lam``, ``N``, ``Q``, their
+      masked copies and solves);
+    * the analytic IFT (``n_x`` output points): the ``(P, n_x)`` heat kernel
+      and its temporaries; a derivative form factor adds its ``(P, n_x)``
+      complex moments (``moment_x`` / ``moment_x_multi``);
+    * the q-path form-factor average: the ``(P, G, L, d)`` loop-momentum
+      Gauss–Hermite grid, ``G = gh^{L·d}``, and its ``(P, G)`` complex
+      evaluations."""
+    f8 = (2.0 * (n_V + n_leaf + n_C + E) + 4.0 * L * L + 3.0 * L * n_ext
+          + 4.0 * n_ext * n_ext + 10.0)
+    ff = formfactor is not None
+    if n_x:
+        if n_ext == 1:
+            f8 += 2.5 * n_x + ((30.0 + 10.0 * n_x) if ff else 0.0)
+        else:
+            f8 += (2.0 * n_ext * n_ext + 4.0 * n_x
+                   + ((40.0 + 12.0 * n_x) if ff else 0.0))
+    elif ff and L > 0:
+        gh = int(getattr(formfactor, 'gh_order_needed', None) or gh_order)
+        G = float(gh) ** (L * int(spatial_dim))
+        f8 += G * (2.0 * L * int(spatial_dim) + 2.0)
+    return 8.0 * float(P) * f8
+
+
+def _refuse_chamber_memory(need, P, what):
+    bud, rule = _spatial_mem_budget()
+    if need > bud:
+        raise SpatialMemoryBudgetError(
+            f'spatial {what}: one causal chamber needs ~{need / 1e9:.2f} GB '
+            f'(P = {P:.3g} quadrature samples) over the budget '
+            f'{bud / 1e9:.2f} GB ({rule}).  Lower max_ell or the number of '
+            f'output points, coarsen SPATIAL_GRID_NT / SPATIAL_GRID_NS (or '
+            f'SPATIAL_MC_N), or raise SPATIAL_MEM_BUDGET_GB if the RAM is '
+            f'there.')
+
+
+def time_grid_split_factor(descr, external_times, n_t=None, n_short=8):
+    """How many times larger the causal-chamber time grid is because each
+    vertex interval splits at the external times inside its static leaf
+    bounds (:func:`_chamber_breaks`, worst chamber): ``∏_v (n_t + n_short·#breaks_v)/n_t``
+    (``∏_v (1 + #breaks_v)`` when ``n_t`` is None).  For memory guards (the
+    grid is ``n_t^{n_V}·n_s^{n_C}`` times this, per chamber; an upper bound —
+    zero-width segments are dropped)."""
+    internal = list(descr.internal_vertices)
+    idx = {v: i for i, v in enumerate(internal)}
+    n_V = len(internal)
+    if not n_V:
+        return 1.0
+    internal_R = [(idx[e.u], idx[e.v]) for e in descr.edges
+                  if e.kind == 'R' and e.u in idx and e.v in idx]
+    ties = _leaf_ties(descr.edges, idx, external_times, n_V)
+    worst = 1.0
+    for order in causal_chambers(n_V, internal_R):
+        f = 1.0
+        for vi, bl in _chamber_breaks(order, ties).items():
+            nb = len(bl)
+            f *= (1 + nb) if n_t is None else (n_t + min(n_t, n_short) * nb) / n_t
+        worst = max(worst, f)
+    return worst
+
+
 def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
                        xs, mu, D, spatial_dim, formfactor, N, seed):
     """``method='bessel'`` — the radial-Bessel-K × angular-MC backend for `δC(x)`.
@@ -500,6 +661,429 @@ def _diagram_bessel_xs(a, b, edges, internal, idx, internal_R, external_times,
     return total / norm
 
 
+class SpatialUVDivergenceError(DaedalusError, NotImplementedError):
+    """A loop subgraph is UV-divergent at this spatial dimension: its value
+    would be set by the quadrature grid, not by the model."""
+
+
+def _form_factor_degree(formfactor, descr, sub):
+    """Even part of the degree of a derivative-vertex form factor along the
+    loop momenta that flow only through the edges ``sub`` (the directions
+    that grow when the subgraph shrinks); 0 for no / a plain form factor.
+    Odd powers average out over the loop-momentum Gaussian, so the count
+    uses ``2 * floor(r / 2)``.  Cached on the form factor."""
+    R = getattr(formfactor, 'rcal', None)
+    if formfactor is None or R is None:
+        return 0
+    cache = formfactor.__dict__.setdefault('_uv_degree_cache', {})
+    key = (tuple((e.u, e.v, e.kind, tuple(e.a)) for e in descr.edges), sub)
+    if key in cache:
+        return cache[key]
+    import sympy as _sp
+    # exact arithmetic: the routing coefficients are integers, and a float
+    # direction leaves ~1e-17 residues of cancelled powers in the degree
+    E = len(descr.edges)
+    rows = [[_sp.Rational(int(round(c))) for c in np.atleast_1d(e.a)]
+            for i, e in enumerate(descr.edges) if i not in set(sub)]
+    L = len(np.atleast_1d(descr.edges[0].a)) if E else 0
+    basis = (_sp.Matrix(rows).nullspace() if rows
+             else [_sp.Matrix([1 if j == i else 0 for j in range(L)])
+                   for i in range(L)])
+    r = 0
+    if basis:
+        rng = np.random.default_rng(12345)
+        v = sum((int(rng.integers(1, 7)) * bv for bv in basis),
+                _sp.zeros(L, 1))
+        t = _sp.Symbol('_uv_t')
+        sub_map = {}
+        for sym in R.free_symbols:
+            nm = str(sym)
+            c0 = _sp.Rational(int(rng.integers(-9, 10)), int(rng.integers(1, 9)))
+            if nm[:1] == 'l':
+                parts = nm[1:].split('_')
+                i = int(parts[0])
+                ax = int(parts[1]) if len(parts) > 1 else 0
+                u_ax = (_sp.Integer(1), _sp.Rational(3, 5), _sp.Rational(-2, 7))[ax % 3]
+                sub_map[sym] = c0 + t * v[i] * u_ax
+            else:
+                sub_map[sym] = c0
+        Rx = _sp.nsimplify(R, rational=True)
+        try:
+            r = int(_sp.Poly(_sp.expand(Rx.subs(sub_map)), t).degree())
+        except Exception:
+            r = 0
+    cache[key] = 2 * (max(r, 0) // 2)
+    return cache[key]
+
+
+def uv_divergent_subgraphs(descr, spatial_dim, formfactor=None):
+    """Connected loop subgraphs of ``descr`` that are UV-divergent at
+    ``spatial_dim`` by dynamic power counting (plain vertices).
+
+    Scaling the relative vertex times and the correlation Schwinger
+    parameters of a subgraph ``γ`` as ``λ`` (momenta as ``λ^{−1/2}``) gives
+    ``λ^{ω(γ)}`` with ``ω = (V_γ − 1) + n_C(γ) − (d/2)·L_γ``; ``ω ≤ 0`` is a
+    divergence at the coincident-time corner (``U^{−d/2}`` non-integrable).
+    E.g. the self-loop (tadpole) ``ω = 1 − d/2`` diverges for ``d ≥ 2``, the
+    one-loop bubble ``ω = 2 − d/2`` only for ``d ≥ 4``, the φ⁴ sunset
+    ``ω = 3 − d`` for ``d ≥ 3``.  Only internal (loop-momentum-carrying)
+    edges form subgraphs.  A derivative-vertex ``formfactor`` adds its
+    momentum powers along the subgraph's own loop directions,
+    ``ω -= r_γ / 2`` (:func:`_form_factor_degree`; e.g. the KPZ C–C bubble
+    ``ℓ²(ℓ+q)²``: ``ω = 3 − d/2 − 2``, finite at d = 1 but with a
+    ``ρ^{−1/2}`` loop-shrink singularity).  Returns a list of
+    ``(edge_indices, ω)``."""
+    import itertools as _it
+    d = float(spatial_dim)
+    if d <= 0:
+        return []
+    cand = [i for i, e in enumerate(descr.edges)
+            if not e.external and e.couples_loop()]
+    out = []
+    for r in range(1, len(cand) + 1):
+        for sub in _it.combinations(cand, r):
+            es = [descr.edges[i] for i in sub]
+            verts = {e.u for e in es} | {e.v for e in es}
+            # connectivity (union–find over the subgraph's vertices)
+            parent = {v: v for v in verts}
+
+            def _find(v):
+                while parent[v] != v:
+                    parent[v] = parent[parent[v]]
+                    v = parent[v]
+                return v
+            for e in es:
+                parent[_find(e.u)] = _find(e.v)
+            if len({_find(v) for v in verts}) != 1:
+                continue
+            L = len(es) - len(verts) + 1
+            if L < 1:
+                continue
+            n_C = sum(1 for e in es if e.kind == 'C')
+            omega = ((len(verts) - 1) + n_C - 0.5 * d * L
+                     - 0.5 * _form_factor_degree(formfactor, descr, sub))
+            if omega <= 0:
+                out.append((sub, omega))
+    return out
+
+
+def _refuse_uv_divergent(descr, spatial_dim, formfactor=None):
+    if spatial_dim is None:
+        return
+    if spatial_dim < 2 and getattr(formfactor, 'rcal', None) is None:
+        return                       # plain vertices never diverge at d = 1
+    bad = uv_divergent_subgraphs(descr, spatial_dim, formfactor)
+    if bad:
+        sub, om = min(bad, key=lambda t: t[1])
+        kinds = [descr.edges[i].kind + ('(self-loop)' if descr.edges[i].u ==
+                                         descr.edges[i].v else '')
+                 for i in sub]
+        raise SpatialUVDivergenceError(
+            f'spatial loop diagram is UV-divergent at d={spatial_dim}: the '
+            f'subgraph with edges {kinds} has superficial degree '
+            f'omega={om:g} <= 0 (e.g. a tadpole <phi^2>_0 for d>=2; a '
+            f'derivative vertex counts its momentum powers).  Its '
+            f'value would be set by the quadrature grid (it grows without '
+            f'limit as SPATIAL_GRID_NS increases), not by the model.  A '
+            f'declared UV cutoff / renormalized mass is not implemented; use '
+            f'd=1, max_ell=0, or a model without this subgraph.')
+
+
+# ── equal external times: the radial-simplex rule ─────────────────────
+# When every external time coincides, every edge weight is homogeneous of
+# degree 1 in y = (the gaps between the vertex times inside a causal chamber,
+# the Schwinger sigmas).  With y = lam*s (s on the standard simplex) the
+# Symanzik polynomials scale (U -> lam^L U, B -> lam B) and the radial
+# lam-integral is the closed form
+#     int_0^inf lam^(P-1) e^(-a lam - c/lam) dlam = 2 (c/a)^(P/2) K_P(2 sqrt(a c)),
+# a = mu * sum_e w_e(s), c = |x|^2 / (4 B(s)) (k = 2) or X^T B(s)^-1 X / 4
+# (k >= 3), P = n - (L + n_ext) d / 2 (Gamma(P)/a^P at x = 0).  That radial
+# direction carries the steep heat-kernel factor e^(-x^2/4B) that a product
+# grid resolves only jointly in (t, sigma).  The remaining simplex is
+# integrated by stick-breaking (Duffy) coordinates with a tanh-sinh rule per
+# coordinate (spectral for the integrable power singularities on its faces),
+# at an adaptive order: the order grows until two successive orders agree to
+# EQTIME_RTOL.  Plain vertices; up to EQTIME_MAX_DIM simplex dimensions
+# (cost m^dim per chamber); derivative vertices keep the grid.
+DERIV_SIGMA_POWER = 6.0           # sigma = s_cap v^p for derivative vertices
+EQTIME_RTOL = float(__import__('os').environ.get('SPATIAL_EQTIME_RTOL', '1e-9'))
+EQTIME_MAX_DIM = 4
+EQTIME_NODE_CAP = 2e7            # simplex nodes x chambers, per call
+_EQTIME_ORDERS = {1: (32, 48, 72, 108, 160), 2: (24, 36, 54, 80, 120),
+                  3: (18, 27, 40, 60, 90), 4: (14, 21, 32, 48)}
+_EQTIME_CHUNK = 200000
+EQTIME_GRID_P_CAP = 2e7          # samples per chamber for the 2x grid bump
+EQTIME_GRID_NOTE = (
+    'equal external times above the radial-simplex dimension: product grid '
+    '(algebraic convergence at equal times; measured 1e-5 relative at the '
+    '(22, 24) grid and 1e-4 at (16, 16) on one-loop diagrams; not certified)')
+
+import threading as _threading
+_EQTIME_LEDGER = _threading.local()
+
+
+def eqtime_ledger_reset():
+    """Start collecting equal-time accuracy records (per thread)."""
+    _EQTIME_LEDGER.rows = []
+
+
+def eqtime_ledger_collect():
+    """The records since :func:`eqtime_ledger_reset`, summarized:
+    ``{'calls', 'max_rel_change', 'unconverged', 'grid_calls',
+    'grid_note'}`` (``None`` if nothing was collected)."""
+    rows = getattr(_EQTIME_LEDGER, 'rows', None)
+    _EQTIME_LEDGER.rows = None
+    if not rows:
+        return None
+    simplex = [r for r in rows if r['rule'] == 'radial-simplex']
+    grid = [r for r in rows if r['rule'] == 'grid']
+    out = {'calls': len(simplex), 'grid_calls': len(grid)}
+    if simplex:
+        out['max_rel_change'] = max(r['rel_change'] for r in simplex)
+        out['unconverged'] = sum(1 for r in simplex if not r['converged'])
+        out['max_order'] = max(r['m'] for r in simplex)
+    if grid:
+        out['grid_note'] = grid[0]['note']
+        out['grid_sizes'] = sorted({(r['n_t'], r['n_s']) for r in grid})
+    return out
+
+
+def _eqtime_record(row):
+    rows = getattr(_EQTIME_LEDGER, 'rows', None)
+    if rows is not None:
+        rows.append(row)
+
+
+def _tanh_sinh_unit(m):
+    """tanh-sinh nodes on [0, 1], their exact complements and weights; the
+    range grows with m (truncation balanced against the step)."""
+    tmax = max(2.4, 1.2 * math.log(m) - 0.7)
+    t = np.linspace(-tmax, tmax, m)
+    h = t[1] - t[0]
+    sv = 0.5 * math.pi * np.sinh(t)
+    x = 1.0 / (1.0 + np.exp(-2.0 * sv))
+    xc = 1.0 / (1.0 + np.exp(2.0 * sv))
+    w = h * math.pi * np.cosh(t) * x * xc
+    return x, xc, w
+
+
+def _simplex_chunk(n, m, start, stop):
+    """Stick-breaking nodes ``(P, n)`` on the standard simplex and weights
+    (total ``1/(n-1)!``) for the flat tensor indices ``[start, stop)``."""
+    if n == 1:
+        return np.ones((1, 1)), np.ones(1)
+    x1, c1, w1 = _tanh_sinh_unit(m)
+    flat = np.arange(start, min(stop, m ** (n - 1)))
+    ii = np.unravel_index(flat, (m,) * (n - 1))
+    S = np.zeros((flat.size, n))
+    W = np.ones(flat.size)
+    rest = np.ones(flat.size)
+    for i in range(n - 1):
+        S[:, i] = rest * x1[ii[i]]
+        W = W * w1[ii[i]] * c1[ii[i]] ** (n - 2 - i)
+        rest = rest * c1[ii[i]]
+    S[:, n - 1] = rest
+    return S, W
+
+
+def eqtime_simplex_dim(descr):
+    """The simplex dimension of the equal-time rule for ``descr``."""
+    n_C = sum(1 for e in descr.edges if e.kind == 'C')
+    return len(descr.internal_vertices) + n_C - 1
+
+
+def eqtime_eligible(descr, formfactor=None, method='grid'):
+    """True when the radial-simplex rule takes ``descr`` at equal external
+    times: the grid backend, plain vertices, no leaf feeding a vertex, simplex
+    dimension 1..``EQTIME_MAX_DIM``, ``SPATIAL_EQTIME`` not 0."""
+    import os as _os
+    if method != 'grid' or formfactor is not None:
+        return False
+    if _os.environ.get('SPATIAL_EQTIME', '1').strip() == '0':
+        return False
+    iv = set(descr.internal_vertices)
+    if any(e.kind == 'R' and e.v in iv and e.u not in iv for e in descr.edges):
+        return False                        # a leaf feeding a vertex
+    return 1 <= eqtime_simplex_dim(descr) <= EQTIME_MAX_DIM
+
+
+def _eqtime_applies(descr, external_times, xs, formfactor, method):
+    if xs is None or len({float(t) for t in external_times.values()}) != 1:
+        return False
+    return eqtime_eligible(descr, formfactor, method)
+
+
+def _radial_bessel(Pp, aa, c):
+    """``2 (c/a)^(P/2) K_P(2 sqrt(a c))`` for arrays ``aa (P,)``, ``c (P, n_x)``.
+    Integer and half-integer orders (every spatial diagram: ``P = n - (L +
+    n_ext) d / 2``) by the stable upward recurrence ``K_{v+1} = K_{v-1} +
+    (2v/z) K_v`` from the exponentially scaled ``k0e``/``k1e`` (or the
+    elementary ``K_{1/2}``), several times cheaper than the general ``kv``;
+    other orders use ``kv``."""
+    from scipy.special import kv as _kv, k0e as _k0e, k1e as _k1e
+    z = 2.0 * np.sqrt(aa[:, None] * c)
+    pref = 2.0 * (c / aa[:, None]) ** (0.5 * Pp)
+    twoP = 2.0 * Pp
+    if abs(twoP - round(twoP)) > 1e-12 or Pp < 0:
+        return pref * _kv(Pp, z)
+    ez = np.exp(-z)
+    if abs(Pp - round(Pp)) < 1e-12:                      # integer order
+        nu, km, k = 0.0, _k0e(z), _k1e(z)                # scaled K0, K1
+        target = int(round(Pp))
+        if target == 0:
+            return pref * km * ez
+        nu = 1.0
+    else:                                                # half-integer
+        km = np.sqrt(0.5 * np.pi / z)                    # scaled K_{1/2}
+        k = km * (1.0 + 1.0 / z)                         # scaled K_{3/2}
+        target = Pp
+        if abs(target - 0.5) < 1e-12:
+            return pref * km * ez
+        nu = 1.5
+    while nu < target - 1e-12:
+        km, k = k, km + (2.0 * nu / z) * k
+        nu += 1.0
+    return pref * k * ez
+
+
+def _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m, a, b, internal_R):
+    """One order ``m`` of the radial-simplex rule: ``(n_x,)`` (all external
+    times equal; plain vertices)."""
+    from scipy.special import kv as _kv, gamma as _gamma
+    edges = list(descr.edges)
+    internal = list(descr.internal_vertices)
+    idx = {v: i for i, v in enumerate(internal)}
+    n_V = len(internal)
+    n_C = sum(1 for e in edges if e.kind == 'C')
+    n = n_V + n_C
+    L, n_ext, d = a.shape[1], b.shape[1], int(spatial_dim)
+    xs = np.asarray(xs, dtype=float)
+    n_x = xs.shape[0]
+    total = np.zeros(n_x)
+    Pp = n - (L + n_ext) * d / 2.0               # the radial power (P + 1)
+    n_nodes = m ** (n - 1) if n > 1 else 1
+    bb = np.einsum('ej,ek->ejk', b, b).reshape(len(edges), -1)
+    aa2 = np.einsum('el,em->elm', a, a).reshape(len(edges), -1) if L else None
+    ab = np.einsum('el,ej->elj', a, b).reshape(len(edges), -1) if L else None
+    for order in (causal_chambers(n_V, internal_R) if n_V else [()]):
+        Ug = np.zeros((n_V, n))                  # u_v from the chamber gaps
+        rank = {}
+        for k, vi in enumerate(reversed(order)):
+            Ug[vi, :k + 1] = 1.0
+            rank[vi] = k                         # larger rank = earlier
+        # edge weights are LINEAR in (gaps, sigmas) inside a chamber
+        Aw = np.zeros((len(edges), n))
+        ci = 0
+        for ei, e in enumerate(edges):
+            ru = Ug[idx[e.u]] if e.u in idx else np.zeros(n)
+            rv = Ug[idx[e.v]] if e.v in idx else np.zeros(n)
+            if e.kind == 'R':
+                Aw[ei] = ru - rv
+            else:
+                ku = rank.get(idx.get(e.u), -1) if e.u in idx else -1
+                kv_ = rank.get(idx.get(e.v), -1) if e.v in idx else -1
+                Aw[ei] = (ru - rv) if ku >= kv_ else (rv - ru)
+                Aw[ei, n_V + ci] = 1.0
+                ci += 1
+        for c0 in range(0, n_nodes, _EQTIME_CHUNK):
+            S, Ws = _simplex_chunk(n, m, c0, c0 + _EQTIME_CHUNK)
+            w = S @ Aw.T
+            P_ = S.shape[0]
+            Q = (w @ bb).reshape(P_, n_ext, n_ext)
+            if L == 0:
+                Uh = np.ones(P_)
+                Bm = D * Q
+            else:
+                Lam = (w @ aa2).reshape(P_, L, L)
+                Nn = (w @ ab).reshape(P_, L, n_ext)
+                if L == 1:
+                    Uh = Lam[:, 0, 0]
+                    LiN = Nn / np.where(Uh > 0, Uh, 1.0)[:, None, None]
+                elif L == 2:
+                    Uh = Lam[:, 0, 0] * Lam[:, 1, 1] - Lam[:, 0, 1] * Lam[:, 1, 0]
+                    inv = np.empty_like(Lam)
+                    Us = np.where(Uh > 0, Uh, 1.0)
+                    inv[:, 0, 0] = Lam[:, 1, 1] / Us
+                    inv[:, 1, 1] = Lam[:, 0, 0] / Us
+                    inv[:, 0, 1] = -Lam[:, 0, 1] / Us
+                    inv[:, 1, 0] = -Lam[:, 1, 0] / Us
+                    LiN = np.einsum('plm,pmj->plj', inv, Nn)
+                else:
+                    Uh = np.linalg.det(Lam)
+                    okU = Uh > 1e-300
+                    LiN = np.zeros_like(Nn)
+                    LiN[okU] = np.linalg.solve(Lam[okU], Nn[okU])
+                Bm = D * (Q - np.einsum('plj,plk->pjk', Nn, LiN))
+            detB = Bm[:, 0, 0] if n_ext == 1 else np.linalg.det(Bm)
+            good = (Uh > 1e-300) & (detB > 1e-300)
+            if not np.any(good):
+                continue
+            Wg, Uh, Bm, detB = Ws[good], Uh[good], Bm[good], detB[good]
+            aa = mu * w[good].sum(axis=1)
+            c_pref = Wg * ((4.0 * math.pi * D) ** (-0.5 * L * d)
+                           * Uh ** (-0.5 * d) * (4.0 * math.pi) ** (-0.5 * n_ext * d)
+                           * detB ** (-0.5 * d))
+            if n_ext == 1:
+                x2 = xs ** 2 if xs.ndim == 1 else np.sum(xs ** 2, axis=-1)
+                cc = x2[None, :] / (4.0 * Bm[:, 0, 0][:, None])
+            else:
+                Binv = np.linalg.inv(Bm)
+                cc = (0.25 * np.einsum('xj,pjk,xk->px', xs, Binv, xs)
+                      if xs.ndim == 2 else
+                      0.25 * np.einsum('xjc,pjk,xkc->px', xs, Binv, xs))
+            zero = ~np.any(cc > 0.0, axis=0)                 # equal points
+            if np.any(zero):
+                if Pp <= 0:
+                    raise SpatialUVDivergenceError(
+                        'equal-time equal-point radial integral diverges '
+                        '(P <= 0): a UV-divergent coincident point.')
+                total[zero] += float(np.sum(c_pref * _gamma(Pp) / aa ** Pp))
+            if np.any(~zero):
+                rad = _radial_bessel(Pp, aa, cc[:, ~zero])
+                total[~zero] += c_pref @ rad
+    return total
+
+
+def _eqtime_kinematic_adaptive(descr, xs, mu, D, spatial_dim, a, b,
+                               internal_R, n_chambers):
+    """The radial-simplex rule at growing orders until two successive orders
+    agree to :data:`EQTIME_RTOL` (relative to the largest value), or the node
+    cap.  Records the outcome in the equal-time ledger."""
+    dim = eqtime_simplex_dim(descr)
+    xs = np.asarray(xs, dtype=float)
+    # the order is chosen on a few representative points (the smallest and
+    # largest |x| and the middle one: the convergence is governed by the
+    # simplex singularities, which every x shares), then evaluated once on all
+    n_x = xs.shape[0]
+    if n_x > 3:
+        r = (np.abs(xs) if xs.ndim == 1 else
+             np.sqrt(np.sum(xs.reshape(n_x, -1) ** 2, axis=1)))
+        o = np.argsort(r, kind='stable')
+        probe = xs[np.unique([o[0], o[n_x // 2], o[-1]])]
+    else:
+        probe = xs
+    prev, m_used, change = None, None, float('inf')
+    for m in _EQTIME_ORDERS[dim]:
+        if prev is not None and (m ** dim) * n_chambers > EQTIME_NODE_CAP:
+            break
+        val = _eqtime_kinematic_x(descr, probe, mu, D, spatial_dim, m, a, b,
+                                  internal_R)
+        if prev is not None:
+            scale = max(float(np.max(np.abs(val))), 1e-300)
+            change = float(np.max(np.abs(val - prev))) / scale
+            if change <= EQTIME_RTOL:
+                prev, m_used = val, m
+                break
+        prev, m_used = val, m
+    out = (prev if probe is xs else
+           _eqtime_kinematic_x(descr, xs, mu, D, spatial_dim, m_used, a, b,
+                               internal_R))
+    _eqtime_record({'rule': 'radial-simplex', 'dim': dim, 'm': m_used,
+                    'rel_change': change,
+                    'converged': change <= EQTIME_RTOL})
+    return out
+
+
 def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                       W=None, n_t=22, n_s=24, formfactor=None, gh_order=6,
                       xs=None, method='grid', mc_n=1000000, mc_seed=0):
@@ -513,11 +1097,20 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
     from :func:`causal_chambers`, nested latest→earliest with each level bounded
     by the next-later time and the external retarded legs), Gauss–Legendre per
     level (√-concentrated at the upper bound); correlation Schwinger params
-    ``σ_e∈[0,∞)`` by Gauss–**Laguerre** (which integrates ``e^{−μσ}`` exactly).
+    ``σ_e∈[0,∞)`` by Gauss–Legendre on ``σ = s_cap·v²`` (nodes concentrated
+    near ``σ = 0``, the ``e^{−μσ}`` folded into the weights).
     The Symanzik reduction is batched over the whole grid.
 
     ``q_vec`` : external momenta (length ``n_ext=k−1``; ``[q]`` for ``k=2``).
-    Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber."""
+    Returns a float.  Grid size ``≈ n_t^{n_V}·n_s^{n_C}`` per chamber.
+    Refuses (:class:`SpatialUVDivergenceError`) a diagram with a UV-divergent
+    loop subgraph at ``spatial_dim`` (:func:`uv_divergent_subgraphs`)."""
+    if getattr(formfactor, 'identically_zero', False):
+        # the conservation law makes this diagram vanish exactly
+        if xs is not None:
+            return np.zeros(np.asarray(xs).shape[0])
+        return 0j
+    _refuse_uv_divergent(descr, spatial_dim, formfactor)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)
     n_V = len(internal)
@@ -549,14 +1142,26 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             s_lo[idx[e.v]] = max(s_lo[idx[e.v]], external_times[e.u])
 
     # Correlation Schwinger param σ_e∈[0,∞): substitute σ = s_cap·v² (v∈[0,1]) so
-    # the nodes CONCENTRATE near σ=0 — that resolves the integrable U^{−d/2}∼σ^{−d/2}
-    # singularity of a self-loop (U=σ) that plain Gauss–Laguerre under-resolves.
+    # the nodes CONCENTRATE near σ=0 — that resolves the U^{−d/2}∼σ^{−d/2}
+    # singularity of a self-loop (U=σ), integrable at d=1 only (d≥2 is refused
+    # above as UV-divergent).
     # The e^{−μσ} weight is folded into ``s_w``; ``mu_resid`` excludes σ.
     s_cap = 32.0 / mu
     xv, wv = np.polynomial.legendre.leggauss(n_s)
     vv = 0.5 * (xv + 1.0)
-    s_nodes = s_cap * vv * vv
-    s_w = wv * s_cap * vv * np.exp(-mu * s_nodes)            # w·s_cap·v·e^{−μσ}
+    if formfactor is None:
+        s_nodes = s_cap * vv * vv
+        s_w = wv * s_cap * vv * np.exp(-mu * s_nodes)        # w·s_cap·v·e^{−μσ}
+    else:
+        # a derivative vertex's form factor turns the loop-shrink corner into
+        # an integrable rho^(-1/2) singularity: sigma = s_cap v^p with
+        # p = DERIV_SIGMA_POWER smooths it (KPZ C-C bubble at the default
+        # grid: 6e-2 -> ~1e-4 relative; still algebraic, the result stays
+        # 'approximate')
+        _p = DERIV_SIGMA_POWER
+        s_nodes = s_cap * vv ** _p
+        s_w = (wv * s_cap * 0.5 * _p * vv ** (_p - 1)
+               * np.exp(-mu * s_nodes))
     # the correlation Schwinger grid (n_s^{n_C} points), shared across chambers
     if n_C > 0:
         sg = np.meshgrid(*([s_nodes] * n_C), indexing='ij')
@@ -585,7 +1190,43 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             a, b, edges, internal, idx, internal_R, external_times, xs_arr,
             mu, D, spatial_dim, formfactor, int(mc_n), mc_seed)
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    if _eqtime_applies(descr, external_times, xs_arr, formfactor, method):
+        # equal external times: the exact-radial simplex rule (spectral)
+        return _eqtime_kinematic_adaptive(descr, xs_arr, mu, D, spatial_dim,
+                                          a, b, internal_R, len(chambers))
+    if (method == 'grid' and xs_arr is not None and formfactor is None
+            and len({float(t) for t in external_times.values()}) == 1
+            and eqtime_simplex_dim(descr) > EQTIME_MAX_DIM):
+        # equal times above the simplex rule's dimension: the product grid
+        # converges only algebraically there (the heat-kernel feature lies
+        # on a diagonal of (t, sigma)); refine it 2x when the chamber fits
+        # the memory budget and EQTIME_GRID_P_CAP samples, else keep it and
+        # say so (ledger -> result['spatial_info']['equal_time'])
+        n_t2, n_s2 = 2 * n_t, 2 * n_s
+        P2 = (n_t2 ** n_V) * (n_s2 ** n_C)
+        need = chamber_peak_bytes(
+            P2, n_V=n_V, n_leaf=len(external_times), n_C=n_C, E=len(edges),
+            L=a.shape[1], n_ext=b.shape[1], n_x=int(xs_arr.shape[0]),
+            spatial_dim=spatial_dim)
+        bump = P2 <= EQTIME_GRID_P_CAP and need <= 0.5 * _spatial_mem_budget()[0]
+        if bump:
+            n_t, n_s = n_t2, n_s2
+        _eqtime_record({'rule': 'grid', 'n_t': n_t, 'n_s': n_s,
+                        'note': EQTIME_GRID_NOTE})
+    _ties = _leaf_ties(edges, idx, external_times, n_V)
+    # the long tail segment keeps n_t nodes; the short smooth segments between
+    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t) --
+    # n_t for a derivative vertex, whose segments are not smooth enough for 8
+    n_short = (n_t if formfactor is not None else
+               min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8))))
     _use_mc = method == 'mc' and (n_V + n_C) > 0
+
+    def _chamber_bytes(P_):
+        return chamber_peak_bytes(
+            P_, n_V=n_V, n_leaf=len(external_times), n_C=n_C, E=len(edges),
+            L=a.shape[1], n_ext=b.shape[1],
+            n_x=(0 if xs_arr is None else int(xs_arr.shape[0])),
+            spatial_dim=spatial_dim, formfactor=formfactor, gh_order=gh_order)
     _rng = np.random.default_rng(mc_seed) if _use_mc else None
     for order in chambers:
         if _use_mc:
@@ -596,6 +1237,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
             #    e^{−μσ} is consumed by its proposal.  (Validated for PLAIN vertices;
             #    derivative-vertex form factors are biased — det Lam→0 singularity.)
             P = int(mc_n)
+            _refuse_chamber_memory(_chamber_bytes(P), P, 'Monte-Carlo chamber')
             placed = {}
             later = None
             Sgap = np.zeros(P)
@@ -611,6 +1253,7 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 tvals[v] = placed[idx[v]]
             sig = [(-np.log(_rng.random(P)) / mu) for _ in range(n_C)]
         else:
+            c_breaks = _chamber_breaks(order, _ties)
             # ── deterministic causal-chamber PRODUCT GRID (the validated path) ──
             # nested internal-time grid (latest→earliest; each level bounded above
             # by the next-later time and its external scalar bound), × the σ-grid.
@@ -622,14 +1265,24 @@ def diagram_kinematic(descr, q_vec, external_times, mu, D, spatial_dim=1,
                 upper = np.full(Pt, s_up[vi]) if later is None \
                     else np.minimum(s_up[vi], later)
                 lower = np.full(Pt, s_lo[vi])
-                tnode, wnode = _gl_on(lower, upper, n_t)       # (Pt, n_t)
+                upper = np.maximum(upper, lower)      # empty interval → zero weight
+                # split at the kink times (see _chamber_breaks)
+                tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi], n_short)
                 for k in placed:
-                    placed[k] = np.repeat(placed[k], n_t)
+                    placed[k] = np.repeat(placed[k], tnode.shape[-1])
                 placed[vi] = tnode.ravel()
                 wt = (wt[:, None] * wnode).ravel()
+                keep = wt != 0.0                      # zero-width segments
+                if not keep.all():
+                    wt = wt[keep]
+                    for k in placed:
+                        placed[k] = placed[k][keep]
                 later = placed[vi]
             Pt = wt.size
             P = Pt * Ps
+            # memory guard, every caller (k=2, k-point, q-path): the exact
+            # sample count of THIS chamber, before its arrays exist
+            _refuse_chamber_memory(_chamber_bytes(P), P, 'chamber quadrature')
             tvals = {leaf: np.full(P, tt) for leaf, tt in external_times.items()}
             for i, v in enumerate(internal):
                 tvals[v] = np.repeat(placed[idx[v]], Ps)
@@ -879,6 +1532,7 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     coupled v1 surface.  The single-field/diagonal path is untouched
     (:func:`diagram_kinematic`); this function is additive.
     """
+    _refuse_uv_divergent(descr, spatial_dim)
     edges = list(descr.edges)
     internal = list(descr.internal_vertices)
     n_V = len(internal)
@@ -968,12 +1622,33 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     Ps = s_wflat.size
 
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
+    # memory guard: per chamber the (P, n_assign) exponent and amplitude plus
+    # the (P, n_x) heat-kernel arrays, P = n_t^{n_V}·split·n_s^{n_C}
+    _P = (n_t ** n_V) * time_grid_split_factor(
+        descr, external_times, n_t,
+        int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8))) * Ps
+    _nx = 1 if xs_arr is None else max(1, len(xs_arr))
+    _need = _P * (3 * n_assign + 2 * _nx) * 16.0
+    _bud, _rule = _spatial_mem_budget()
+    if _need > _bud:
+        raise SpatialMemoryBudgetError(
+            f'coupled spectral kinematic would allocate ~{_need / 1e9:.1f} GB per '
+            f'chamber (P={_P:.2e} samples x {n_assign} spectral assignments, '
+            f'{_nx} output points) over the budget {_bud / 1e9:.2f} GB ({_rule}).  '
+            f'Lower max_ell, coarsen SPATIAL_GRID_NT/NS, or raise '
+            f'SPATIAL_MEM_BUDGET_GB if the RAM is there.')
     L = a.shape[1]
     total = (np.zeros((n_assign, len(xs_arr)), dtype=complex)
              if xs_arr is not None else np.zeros(n_assign, dtype=complex))
     chambers = causal_chambers(n_V, internal_R) if n_V else [()]
+    _ties = _leaf_ties(edges, idx, external_times, n_V)
+    # the long tail segment keeps n_t nodes; the short smooth segments between
+    # external times get SPATIAL_SEGMENT_NODES (default 8, at most n_t)
+    n_short = min(n_t, int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8)))
     for order in chambers:
-        # deterministic causal-chamber product grid (as diagram_kinematic)
+        # deterministic causal-chamber product grid (as diagram_kinematic),
+        # split at the kink times (_chamber_breaks)
+        c_breaks = _chamber_breaks(order, _ties)
         placed = {}
         wt = np.array([1.0])
         later = None
@@ -982,11 +1657,17 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
             upper = np.full(Pt, s_up[vi]) if later is None \
                 else np.minimum(s_up[vi], later)
             lower = np.full(Pt, s_lo[vi])
-            tnode, wnode = _gl_on(lower, upper, n_t)
+            upper = np.maximum(upper, lower)          # empty interval → zero weight
+            tnode, wnode = _gl_on_split(lower, upper, n_t, c_breaks[vi], n_short)
             for k in placed:
-                placed[k] = np.repeat(placed[k], n_t)
+                placed[k] = np.repeat(placed[k], tnode.shape[-1])
             placed[vi] = tnode.ravel()
             wt = (wt[:, None] * wnode).ravel()
+            keep = wt != 0.0                          # zero-width segments
+            if not keep.all():
+                wt = wt[keep]
+                for k in placed:
+                    placed[k] = placed[k][keep]
             later = placed[vi]
         Pt = wt.size
         P = Pt * Ps
@@ -1263,7 +1944,7 @@ def correlator_2pt(descrs_prefactors, q, tau, mu, D, spatial_dim=1, **kw):
     Returns the momentum-space ``C(q,τ)`` (FT to position is done by the caller)."""
     total = 0.0
     for descr, pre in descrs_prefactors:
-        if abs(float(pre)) < 1e-14:
+        if float(pre) == 0.0:                 # exact zero only (no unit-scale cut)
             continue
         total += diagram_correlator(descr, pre, q, tau, mu, D,
                                     spatial_dim=spatial_dim, **kw)
@@ -1303,7 +1984,7 @@ def correlator_2pt_x(descrs_prefactors, xs, tau, mu, D, spatial_dim=1, **kw):
     xs_arr = np.asarray(xs, dtype=float)
     total = np.zeros(len(xs_arr))
     for descr, pre in descrs_prefactors:
-        if abs(float(pre)) < 1e-14:
+        if float(pre) == 0.0:                 # exact zero only (no unit-scale cut)
             continue
         total = total + diagram_correlator_x(descr, pre, xs_arr, tau, mu, D,
                                              spatial_dim=spatial_dim, **kw)

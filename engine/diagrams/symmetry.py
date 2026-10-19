@@ -38,7 +38,6 @@ expansion of the action.
 Build Phase G.
 """
 
-import os as _os
 import sys as _sys
 import threading as _threading
 from collections import Counter
@@ -48,72 +47,10 @@ from operator import mul
 
 from sage.all import SR
 
+from engine import _env
+
 
 # ── Combinatorial factor ────────────────────────────────────────────────────
-
-def _vertex_combinatorial_factor(vertex, typed_diagram):
-    """
-    Count the number of response-leg permutations at *vertex* that
-    preserve the same typed diagram.
-
-    Each external leaf is treated as a UNIQUE endpoint (distinguished
-    by its position in the prediagram leaf list), because different
-    leaf positions correspond to different spacetime points.  Internal
-    (non-leaf) targets are identified by their (resp, phys) field-type
-    pairing as before.
-
-    M_v = [∏_r  n_r! / ∏_t n[r][t]!]  ×  [∏_t  m_t!]
-
-    where t ranges over unique targets (leaf positions for external
-    edges, (resp, phys) field types for internal edges).
-
-    Parameters
-    ----------
-    vertex : hashable
-        Vertex id within the typed diagram.
-    typed_diagram : TypedDiagram
-
-    Returns
-    -------
-    int
-        Per-vertex combinatorial factor (always >= 1).
-    """
-    edge_types = typed_diagram.edge_types
-
-    # Collect (resp_type, phys_type) for every outgoing edge from vertex.
-    # M counts response-leg permutations that preserve the (resp, phys)
-    # field-type pairing — i.e. within-vertex Wick contractions that
-    # give the same integrand by commutativity.
-    pairings = []
-    for edge_key, (resp_leg, phys_leg) in edge_types.items():
-        u = edge_key[0]
-        if u == vertex:
-            pairings.append((resp_leg, phys_leg))
-
-    if not pairings:
-        return 1
-
-    # n_r: total count of each response type
-    resp_counts = Counter(r for r, t in pairings)
-    # n[r][t]: count of each (resp, target) pairing
-    pair_counts = Counter(pairings)
-    # m_t: count of each target across outgoing edges
-    target_counts = Counter(t for r, t in pairings)
-
-    m = 1
-    # ∏_r [ n_r! / ∏_t n[r][t]! ]
-    for r, n_r in resp_counts.items():
-        m *= factorial(n_r)
-        for t in target_counts:
-            n_rt = pair_counts.get((r, t), 0)
-            if n_rt > 1:
-                m //= factorial(n_rt)
-    # ∏_t m_t!
-    for m_t in target_counts.values():
-        m *= factorial(m_t)
-
-    return m
-
 
 def _wick_leg_factor(typed_diagram):
     """
@@ -334,9 +271,9 @@ def vertex_role_signature(vertex, typed_diagram):
 # group is built from scratch each time.  The memo returns the value the first
 # call computed, so nothing changes: a hit is bit-identical by construction.
 #
-# ``USE_AUT_MEMO`` (bool, read at call time); environment
-# ``DAEDALUS_SETUP_AUT_MEMO`` = 1 | 0 (default 1); the umbrella
-# ``DAEDALUS_PHASE_J_LEGACY_SETUP=1`` forces it off.  Key: the diagram's
+# Always on (its switches, ``USE_AUT_MEMO`` / ``DAEDALUS_SETUP_AUT_MEMO`` and
+# the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP``, were retired in audit W7:
+# set, each warns once and is ignored).  Key: the diagram's
 # ``id`` and ``fix_external``; the VALUE holds the diagram object itself, so
 # its ``id`` cannot be reused while the entry lives (a hit also checks
 # ``entry diagram is diagram`` and a fingerprint of the diagram's containers,
@@ -351,32 +288,11 @@ _AUT_LOCK = _threading.Lock()
 _AUT_MISS = object()
 
 
-def _initial_aut_memo_flag(environ=None):
-    """The import-time value of ``USE_AUT_MEMO`` from ``environ`` (default
-    ``os.environ``).  An unknown value raises."""
-    env = _os.environ if environ is None else environ
-    v = env.get('DAEDALUS_SETUP_AUT_MEMO', '').strip().lower()
-    if v in ('', '1', 'true', 'yes', 'on'):
-        return True
-    if v in ('0', 'false', 'no', 'off'):
-        return False
-    raise ValueError(f'DAEDALUS_SETUP_AUT_MEMO={v!r}: expected 1 or 0')
-
-
-USE_AUT_MEMO = _initial_aut_memo_flag()
-
-
-def _aut_memo_on():
-    """``USE_AUT_MEMO`` (call time, validated) unless the umbrella
-    ``DAEDALUS_PHASE_J_LEGACY_SETUP`` is set."""
-    if (_os.environ.get('DAEDALUS_PHASE_J_LEGACY_SETUP', '').strip().lower()
-            not in ('', '0', 'false', 'no', 'off')):
-        return False
-    flag = USE_AUT_MEMO
-    if flag is True or flag is False:
-        return flag
-    raise ValueError(f'symmetry.USE_AUT_MEMO={flag!r}: '
-                     f'expected True or False')
+_env.retired('DAEDALUS_SETUP_AUT_MEMO',
+             'the automorphism-order memo is always on (audit W7)')
+_env.retired('DAEDALUS_PHASE_J_LEGACY_SETUP',
+             'the fast setup path is the only one; it gives the same numbers '
+             '(audit W7)')
 
 
 def _aut_count(name):
@@ -408,10 +324,8 @@ def _automorphism_order(typed_diagram, fix_external=True):
     convention used by Phase J, where the external Wick permutations
     are handled separately by the per-prediagram enumeration loop).
 
-    Memoised per ``(diagram, fix_external)`` (``USE_AUT_MEMO``, see above).
+    Memoised per ``(diagram, fix_external)`` (see above).
     """
-    if not _aut_memo_on():
-        return _automorphism_order_uncached(typed_diagram, fix_external)
     try:
         key = (id(typed_diagram), bool(fix_external))
         fp = _aut_fingerprint(typed_diagram)
@@ -539,11 +453,14 @@ def combinatorial_factor(typed_diagram):
     numer = _wick_leg_factor(typed_diagram)
     aut = _automorphism_order(typed_diagram, fix_external=True)
     if aut <= 0 or numer % aut != 0:
-        # Defensive: numerator should always be divisible by Aut order
-        # (it's a finite group acting freely on a finite set).  Fall
-        # back to integer floor division if some Sage edge case yields
-        # a non-divisor; downstream tests will catch any drift.
-        return numer // max(aut, 1)
+        # The automorphism group acts freely on the Wick pairings, so its
+        # order divides the numerator; a remainder means the group or the
+        # numerator is wrong, and a floored factor would be a silently wrong
+        # weight (``external_wick_compensation`` raises likewise).
+        raise RuntimeError(
+            f'combinatorial_factor: the Wick numerator {numer} is not '
+            f'divisible by the automorphism order {aut} (internal error: '
+            f'the symmetry factor would be a fraction); report this diagram.')
     return numer // aut
 
 
@@ -800,14 +717,26 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     noise_amp_prefixes = list(ns.get('amplitude_params', []))
 
     Scal = combinatorial_factor(typed_diagram)
+    # ``bool``'s zero verdict without Maxima for a coefficient with floats or
+    # assumption symbols (seconds per call on a large one, audit W8)
+    from engine.core.field_theory import _sr_nonzero
+
+    def _is_zero(c):
+        return not _sr_nonzero(c)
 
     scalar_parts = [SR(Scal)]
     vertex_time_factors = {}
     source_time_info = {}
+    # each factor is the vertex's own ``-coefficient`` (no time-dependent
+    # part split off): the product is then a function of ``Scal`` and the
+    # ordered vertex types alone (``_PREFACTOR_MEMO``)
+    plain_parts = True
+    vtypes_in_order = []
 
     for v, vtype in typed_diagram.vertex_assignments.items():
         # Z = ∫ exp(-S), so each vertex factor from S_V acquires (-1).
         coeff = -SR(vtype.coefficient)
+        vtypes_in_order.append(vtype)
 
         if _is_source_type(vtype):
             n_legs = len(vtype.response_legs)
@@ -825,8 +754,9 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
             # holds only the part left INSIDE (1 unless time-dependent), so
             # nothing is ever counted twice.
             if amp_td_syms:
+                plain_parts = False
                 const_part = coeff.subs({s: SR(1) for s in amp_td_syms})
-                if const_part.is_zero():
+                if _is_zero(const_part):
                     const_part = SR(1)
             else:
                 const_part = coeff
@@ -836,7 +766,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
                 'n_legs': n_legs,
                 'temporal_type': noise_type,
                 'amplitude': (coeff / const_part
-                              if not const_part.is_zero() else SR(1)),
+                              if not _is_zero(const_part) else SR(1)),
                 'amplitude_is_time_dep': amp_is_td,
                 'in_integrand': not can_pull_out,
             }
@@ -847,15 +777,32 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
             if not td_syms:
                 scalar_parts.append(coeff)
             else:
+                plain_parts = False
                 const_part = coeff.subs({s: SR(1) for s in td_syms})
-                td_part = coeff / const_part if not const_part.is_zero() else coeff
+                td_part = coeff / const_part if not _is_zero(const_part) else coeff
 
-                if not const_part.is_one() and not const_part.is_zero():
+                if not const_part.is_one() and not _is_zero(const_part):
                     scalar_parts.append(const_part)
 
                 vertex_time_factors[v] = td_part.simplify_rational()
 
-    scalar_prefactor = reduce(mul, scalar_parts, SR(1))
+    if plain_parts:
+        # the same ordered product recurs across typed diagrams (44k
+        # diagrams, ~8 ms per product of large float coefficients on a
+        # three-field jump model at two loops); same operands in the same
+        # order give the same expression
+        key = (repr(Scal), tuple(id(vt) for vt in vtypes_in_order))
+        hit = _PREFACTOR_MEMO.get(key)
+        if hit is not None and all(a is b for a, b in
+                                   zip(hit[0], vtypes_in_order)):
+            scalar_prefactor = hit[1]
+        else:
+            scalar_prefactor = reduce(mul, scalar_parts, SR(1))
+            if len(_PREFACTOR_MEMO) >= _PREFACTOR_MEMO_MAX:
+                _PREFACTOR_MEMO.clear()
+            _PREFACTOR_MEMO[key] = (tuple(vtypes_in_order), scalar_prefactor)
+    else:
+        scalar_prefactor = reduce(mul, scalar_parts, SR(1))
 
     is_stationary = (
         len(vertex_time_factors) == 0
@@ -872,3 +819,10 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
         'source_time_info': source_time_info,
         'is_stationary': is_stationary,
     }
+
+
+#: ``classify_coefficient_factors``: ``(repr(Scal), ordered vertex-type
+#: ids) -> (the vertex types, the product)`` (the types are kept so an id
+#: is never reused while its entry lives)
+_PREFACTOR_MEMO: dict = {}
+_PREFACTOR_MEMO_MAX = 8192

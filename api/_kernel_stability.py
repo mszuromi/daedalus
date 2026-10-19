@@ -154,14 +154,17 @@ def numeric_K(K_ft, omega, num_params):
 def lambert_roots(alpha, beta, gamma, X, branches=None):
     """Roots of ``alpha s + beta + gamma e^{-s X} = 0`` on the Lambert branches
     ``-K..K``.  ``K`` (default) covers every root with ``|Im s| <= R``,
-    ``R = |beta/alpha| + |gamma/alpha| + 1`` (the bound on right-half-plane
-    roots; ``Im W_k ~ 2 pi k``), at least 60.  ``z = -(gamma/alpha) X
+    ``R = |beta/alpha| + |gamma/alpha|`` (the bound on right-half-plane
+    roots; ``Im W_k ~ 2 pi k``), plus 10, at least 60.  ``z = -(gamma/alpha) X
     e^{beta X/alpha}`` is formed in mpmath (no overflow for large ``beta X``)."""
     import mpmath as mp
     alpha, beta, gamma, X = complex(alpha), complex(beta), complex(gamma), float(X)
     if gamma == 0:
         return [(-beta / alpha)]
-    R = abs(beta / alpha) + abs(gamma / alpha) + 1.0
+    # every root with Re s >= 0 has |s| <= R (|alpha s + beta| = |gamma e^{-sX}|
+    # <= |gamma| there); ``R X`` is unit free (the former ``+ 1.0`` made the
+    # branch count grow with the time unit: 8e7 branches at a 1e9 rescaling)
+    R = abs(beta / alpha) + abs(gamma / alpha)
     K = int(branches) if branches is not None else max(60, int(R * X / (2 * math.pi)) + 10)
     with mp.workdps(30):
         z = -(mp.mpc(gamma) / mp.mpc(alpha)) * X * mp.exp(mp.mpc(beta) * X / mp.mpc(alpha))
@@ -208,22 +211,65 @@ def _refined_phase(chi, path, t0, t1, n0, budget):
     return float(dphi.sum()), float(np.abs(v[i])), complex(path(np.array([t[i]]))[0]), n_eval
 
 
-def _leading(chi):
-    """``(c, m)`` with ``chi(s) ~ c s^m`` at large real ``s``: the first scale
-    ``x0`` in 1e3 .. 1e13 where three successive doublings give the same
-    integer power (the rates of the model set where that regime starts)."""
-    for x0 in 10.0 ** np.arange(3, 14):
-        xs = x0 * np.array([1.0, 2.0, 4.0, 8.0])
-        with np.errstate(all='ignore'):
-            v = chi(xs)
+#: Real scales probed for the large-``s`` law of ``chi``, from the top down
+#: (decades; a scale where ``chi`` overflows is skipped).
+_LEAD_DECADES = np.arange(40, -13, -1)
+_LEAD_SLOPE_TOL = 0.02     # local power within 0.02 of an integer
+_LEAD_C_TOL = 0.05         # the same coefficient one decade lower
+
+
+def _power_law_at(chi, x0):
+    """``(c, m)`` when ``chi`` is ``c s^m`` (integer ``m``) at real ``s`` from
+    ``x0`` to ``8 x0`` (three doublings with the same local power), else
+    ``None``."""
+    xs = x0 * np.array([1.0, 2.0, 4.0, 8.0])
+    with np.errstate(all='ignore'):
+        v = chi(xs)
         if not np.all(np.isfinite(v)) or np.any(v == 0):
-            continue
+            return None
         ms = np.log(np.abs(v[1:] / v[:-1])) / math.log(2.0)
         m = int(round(float(ms[-1])))
-        if np.max(np.abs(ms - m)) > 0.02:
+        if np.max(np.abs(ms - m)) > _LEAD_SLOPE_TOL:
+            return None
+        c = complex(v[-1]) / xs[-1] ** m
+    if not (np.isfinite(c.real) and np.isfinite(c.imag)) or c == 0:
+        return None
+    return c, m
+
+
+def _asymptotic(chi):
+    """``(c, m, sigma)`` with ``chi(s) ~ c s^m`` at large real ``s``, or
+    ``None``.  The law is read from the top of a wide range of scales down
+    (the first law that holds at two successive decades), so it is the
+    large-``s`` law whatever the model's time unit: an upward scan from a
+    fixed scale takes the constant regime ``chi ~ chi(0)`` below the model's
+    rates for the leading term (``s - r`` read as ``-r`` for ``r > 2e5``).
+    ``sigma``: the lowest decade where that law still holds (the scale of
+    the model's rates; the contour radius is searched relative to it)."""
+    laws = [(x0, _power_law_at(chi, x0)) for x0 in 10.0 ** _LEAD_DECADES]
+
+    def same(a, b):
+        return (a is not None and b is not None and a[1] == b[1]
+                and abs(b[0] / a[0] - 1.0) <= _LEAD_C_TOL)
+
+    for i in range(len(laws) - 1):
+        x0, law = laws[i]
+        if not same(law, laws[i + 1][1]):
             continue
-        return complex(v[-1]) / xs[-1] ** m, m
+        sigma = laws[i + 1][0]
+        for x1, law1 in laws[i + 2:]:
+            if not same(law, law1):
+                break
+            sigma = x1
+        return law[0], law[1], float(sigma)
     return None
+
+
+def _leading(chi):
+    """``(c, m)`` with ``chi(s) ~ c s^m`` at large real ``s`` (see
+    :func:`_asymptotic`), or ``None``."""
+    a = _asymptotic(chi)
+    return None if a is None else (a[0], a[1])
 
 
 def _ratio_ok(chi, c, m, R):
@@ -265,7 +311,7 @@ def _polish(chi, s0, h):
         c = b - fb * (b - a) / (fb - fa)
         a, fa = b, fb
         b, fb = c, complex(chi(np.array([c]))[0])
-        if abs(b - a) <= 1e-14 * max(1.0, abs(b)):
+        if abs(b - a) <= 1e-14 * abs(b) or b == a:
             break
     return b
 
@@ -280,10 +326,10 @@ def _locate(chi, R, n_expect, budget, max_roots=6):
         if cnt <= 0:
             continue
         w = max(x1 - x0, y1 - y0)
-        if cnt == 1 and w < 1e-2 * max(R, 1.0):
-            roots.append(_polish(chi, complex(0.5 * (x0 + x1), 0.5 * (y0 + y1)), 1e-3 * w + 1e-9))
+        if cnt == 1 and w < 1e-2 * R:
+            roots.append(_polish(chi, complex(0.5 * (x0 + x1), 0.5 * (y0 + y1)), 1e-3 * w))
             continue
-        if w < 1e-9 * max(R, 1.0):
+        if w < 1e-9 * R:
             roots.append(complex(0.5 * (x0 + x1), 0.5 * (y0 + y1)))
             continue
         # off-centre splits: a real root never sits on a box edge
@@ -307,16 +353,19 @@ def count_rhp_roots(chi, *, budget=_MAX_PTS, d_max=0.0):
     resolves ``e^{-s d_max}`` (a phase step of 0.3 rad), so the refinement
     cannot alias over whole periods."""
     t0 = time.perf_counter()
-    lead = _leading(chi)
+    lead = _asymptotic(chi)
     if lead is None:
         return KernelStability('undetermined', method='argument_principle',
                                detail='det K(s) has no power-law leading term '
                                       'at large real s', wall_s=time.perf_counter() - t0)
-    c, m = lead
-    R = 1.0
+    c, m, sigma = lead
+    # the radius search runs relative to the model's rate scale ``sigma``
+    # (a fixed start at 1 and a fixed cap would make the answer depend on
+    # the time unit)
+    R = sigma * 2.0 ** -20
     while not _ratio_ok(chi, c, m, R):
         R *= 2.0
-        if R > 1e7:
+        if R > sigma * 1e7:
             return KernelStability(
                 'neutral', method='argument_principle',
                 detail='det K(s)/(c s^m) does not approach 1 along the imaginary '
@@ -334,7 +383,10 @@ def count_rhp_roots(chi, *, budget=_MAX_PTS, d_max=0.0):
     ph_ax, vmin_ax, s_min, n1 = _refined_phase(chi, lambda t: 1j * t, R, -R, n_ax, budget)
     ph_arc, _, _, n2 = _refined_phase(chi, lambda t: R * np.exp(1j * t),
                                       -math.pi / 2, math.pi / 2, n_arc, budget)
-    scale = max(abs(complex(chi(np.array([0.0]))[0])), abs(c) * max(1.0, abs(s_min)) ** m)
+    # the size of chi near s_min on the model's own scale (R / 1.5: twice the
+    # largest root's modulus, about), so a zero at s = 0 is still marginal
+    scale = max(abs(complex(chi(np.array([0.0]))[0])),
+                abs(c) * max(abs(s_min), R / 1.5) ** m)
     w = (ph_ax + ph_arc) / (2 * math.pi)
     if not math.isfinite(w):
         out = KernelStability('marginal', method='argument_principle', radius=R,
@@ -426,7 +478,7 @@ def _acausal_images(K_ft, omega, num_params):
         r = np.roots(co[::-1]) if len(co) > 1 else []
         for w in r:
             s = 1j * w
-            if s.real > 1e-9 * max(1.0, abs(s)):
+            if s.real > 1e-9 * abs(s):                 # relative, no unit floor
                 bad.append(s)
     return bad
 
@@ -444,7 +496,7 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                 xv = float(Xv)
             except TypeError:
                 return KernelStability('undetermined', detail=f'delay {X} has no value')
-            if not any(abs(xv - y) <= 1e-14 * max(1.0, abs(y)) for y in delays):
+            if not any(abs(xv - y) <= 1e-14 * max(abs(xv), abs(y)) for y in delays):
                 delays.append(xv)
     delays = [x for x in delays if x != 0.0]             # exp(0) = 1: no delay
     if any(x < 0 for x in delays):
@@ -470,15 +522,28 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                     gamma = complex(K1)
                     Xv = float(SR(X).subs(num_params))
                     rts = lambert_roots(alpha, beta, gamma, Xv)
-                    rhp = sorted([z for z in rts if z.real > 0], key=lambda z: -z.real)
-                    marg = [z for z in rts if abs(z.real) <= _MARGINAL_REL * max(1.0, abs(z))]
+                    # the marginal band is relative to the root, plus the
+                    # rounding of W_k(z)/d - beta/alpha (formed at 30 digits)
+                    # on the model's own rates; never relative to 1 (an
+                    # absolute 1e-9 band called a stable model in slow time
+                    # units marginal); a root strictly to the right of it is
+                    # unstable whatever else sits on the axis (UNIT-04)
+                    rate = max(abs(beta / alpha), abs(gamma / alpha))
+                    band = [_MARGINAL_REL * abs(z) + 1e-25 * rate for z in rts]
+                    rhp = sorted([z for z, b in zip(rts, band) if z.real > b],
+                                 key=lambda z: -z.real)
+                    marg = [z for z, b in zip(rts, band) if abs(z.real) <= b]
                     right = max(rts, key=lambda z: z.real)
-                    st = ('marginal' if marg else 'unstable' if rhp else 'stable')
+                    st = ('unstable' if rhp else 'marginal' if marg else 'stable')
+                    nb = (len(rts) - 1) // 2
                     return KernelStability(
                         st, n_rhp=len(rhp), roots=tuple(rhp or marg), rightmost=right,
                         method='lambert_w', delays=(Xv,),
                         detail=f'Lambert W roots s_k = W_k(z)/d - beta/alpha, '
-                               f'branches -60..60; rightmost {right:.8g}',
+                               f'branches -{nb}..{nb}; rightmost {right:.8g}'
+                               + (f'; also on the imaginary axis: '
+                                  f'{", ".join(f"{z:.6g}" for z in marg[:4])}'
+                                  if rhp and marg else ''),
                         wall_s=time.perf_counter() - t0)
             except (TypeError, ValueError, ZeroDivisionError, OverflowError, ArithmeticError):
                 pass                                # the argument principle below

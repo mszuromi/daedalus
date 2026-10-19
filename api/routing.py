@@ -17,7 +17,8 @@ one :func:`register` call and touches no existing backend::
         run=my_runner, description='...'))
 
 The built-in backends reproduce the dispatch of ``compute_cumulants`` as of
-0.2.0 exactly (``tests/test_analyzer_routing.py`` prints the table):
+0.2.0 (``tests/test_analyzer_routing.py`` prints the table), less the
+retired grouped Phase J and frequency-domain Phase H entries (audit W7):
 
 =====================  ========  ==============================================
 backend                priority  applies when
@@ -25,11 +26,7 @@ backend                priority  applies when
 spatial_integrator     10        spatial model and ``spatial_grid`` (k = 2,
                                  ``max_ell <= 2``, stationary initial state) or
                                  ``spatial_points`` (k != 2)
-phase_j_grouped        20        temporal model, ``use_grouped_phase_j=True``,
-                                 propagator rational in omega (or unknown)
 phase_j_per_diagram    30        temporal model, propagator rational (or unknown)
-phase_h_symbolic       90        never automatically: registered so that it is
-                                 listed; it has no ``compute_cumulants`` runner
 =====================  ========  ==============================================
 
 Honest failure: when no backend applies, :class:`NoBackendError` names the
@@ -46,6 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+from engine.errors import DaedalusError
 
 __all__ = ['Backend', 'Reason', 'RouteRequest', 'Route', 'NoBackendError',
            'NoBackendValueError', 'NoBackendNotImplementedError',
@@ -77,7 +75,6 @@ class RouteRequest:
     max_ell: int
     has_spatial_grid: bool = False
     has_spatial_points: bool = False
-    grouped: bool = False
     initial_mode: str = 'stationary'
     requested: Optional[str] = None      # an explicit backend name
     traits: dict = field(default_factory=dict)
@@ -118,7 +115,7 @@ class Route:
                              for n, rs in self.rejected]}
 
 
-class NoBackendError(Exception):
+class NoBackendError(DaedalusError, Exception):
     """No registered backend applies.  Raised through :func:`_raise_none`
     as a subclass of the reported trait's exception type."""
 
@@ -262,15 +259,6 @@ def _applies_phase_j_per_diagram(req):
     return (not reasons), tuple(reasons)
 
 
-def _applies_phase_j_grouped(req):
-    reasons = [r for r in (_temporal_domain(req), _rational_reason(req)) if r]
-    if not req.grouped:
-        reasons.append(Reason('use_grouped_phase_j',
-                              'use_grouped_phase_j=False (the grouped path '
-                              'is opt-in)', domain=True))
-    return (not reasons), tuple(reasons)
-
-
 def _applies_spatial(req):
     """The spatial short-circuit of ``compute_cumulants`` (0.2.0), its
     checks in their original order and with their original messages."""
@@ -285,8 +273,9 @@ def _applies_spatial(req):
             f"spatial_dim>=1): compute_cumulants requires spatial_grid="
             f"... to route to the spatial integrator.  The temporal pole-finder/"
             f"Phase-J path cannot consume the Laplacian operator.  Pass "
-            f"spatial_grid (e.g. the model's METADATA['spatial_grid'], or a "
-            f"numpy array like np.linspace(0.0, 6.0, 25))."),)
+            f"spatial_grid (a numpy array like np.linspace(0.0, 6.0, 25); "
+            f"a model's METADATA['spatial_grid'] (lo, hi, n) range as "
+            f"np.linspace(*METADATA['spatial_grid']))."),)
     k = req.k
     if k != 2 and not req.has_spatial_points:
         return False, (Reason(
@@ -319,13 +308,6 @@ def _applies_spatial(req):
     return True, ()
 
 
-def _applies_phase_h(req):
-    return False, (Reason(
-        'runner', 'the symbolic frequency-domain integrator '
-        '(engine.integration.symbolic, Phase H) is a library without a '
-        'compute_cumulants runner; it is never selected', domain=True),)
-
-
 def _run_lazy(name):
     def run(state):
         from api import compute as _compute
@@ -334,27 +316,14 @@ def _run_lazy(name):
     return run
 
 
-def _run_phase_h(state):              # pragma: no cover - never selected
-    raise NotImplementedError('phase_h_symbolic has no compute_cumulants runner')
-
-
 register(Backend(
     name='spatial_integrator', priority=10, applies=_applies_spatial,
     run=_run_lazy('_run_spatial'),
     description='full-diagram momentum integrator (Symanzik, causal '
                 'chambers, q->x transform); k=2 grid or k>=3 events'))
 register(Backend(
-    name='phase_j_grouped', priority=20, applies=_applies_phase_j_grouped,
-    run=_run_lazy('_run_phase_j_grouped'), standard_tail=True,
-    description='Phase J, typed diagrams grouped by parent prediagram '
-                '(api._grouped_phase_j)'))
-register(Backend(
     name='phase_j_per_diagram', priority=30,
     applies=_applies_phase_j_per_diagram,
     run=_run_lazy('_run_phase_j_per_diagram'), standard_tail=True,
     description='Phase J, one time-domain integral per typed diagram '
                 '(engine.integration.time_domain.pipeline)'))
-register(Backend(
-    name='phase_h_symbolic', priority=90, applies=_applies_phase_h,
-    run=_run_phase_h,
-    description='symbolic residue integration in omega (library only)'))

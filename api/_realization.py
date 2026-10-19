@@ -60,7 +60,7 @@ Construction (all exact, then rounded once)
 5. Rounded once to double precision, then balanced by an exact power-of-two
    diagonal similarity (``scipy.linalg.matrix_balance``, Parlett-Reinsch):
    ``A_bal = T^{-1} A T``, ``B_bal = T^{-1} B``, ``C_bal = C T``.
-6. Model reduction (item 45): every per-entry realization (and every
+6. Model reduction: every per-entry realization (and every
    conductance kernel, ``realize_kernel``) is balanced-truncated
    (``balanced_truncation``) to the fewest states whose H-infinity error
    bound ``2 sum(discarded Hankel singular values)`` is at most ``tol``
@@ -175,6 +175,7 @@ from typing import Any, Optional
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = [
     'Realization', 'EntryRealization', 'RealizationRefused', 'realize',
@@ -191,7 +192,7 @@ _REASONS = ('non_rational', 'unbound_symbol', 'spatial', 'improper_entry',
             'kernel_not_hurwitz', 'kernel_shifted_step')
 
 
-class RealizationRefused(ValueError):
+class RealizationRefused(DaedalusError, ValueError):
     """The propagator has no (supported) finite state-space realization.
 
     ``reason`` is one of ``non_rational``, ``unbound_symbol``, ``spatial``,
@@ -439,7 +440,7 @@ class Realization:
 #: multi-population model at 1e-10 moved by 8e-11).
 TRUNCATION_TOL_DEFAULT = 1e-12
 #: ``DAEDALUS_REALIZATION_TRUNCATION``: a tolerance, or ``0`` / ``off`` /
-#: ``exact`` for none (the exact minimal realizations, as before item 45).
+#: ``exact`` for none (the exact minimal realizations, as before the balanced truncation).
 TRUNCATION_ENV = 'DAEDALUS_REALIZATION_TRUNCATION'
 
 # the innermost truncation_scope (process-wide, not thread-local: the
@@ -1273,17 +1274,12 @@ def _kalman_minimal(A, B, C, F):
     return Am, Bm, Cm
 
 
-def _routh_hurwitz(A, F):
-    """Exact Routh test of the characteristic polynomial: True iff every root
-    has negative real part (no roots computed).  None for complex fields."""
-    S = _sage()
-    n = A.nrows()
-    if n == 0:
-        return True
-    if F is not S.QQ:
-        return None
-    p = A.charpoly()
-    a = list(reversed(p.list()))                          # a0 s^n + a1 s^{n-1} + ...
+def _routh_real(a):
+    """Routh test of a real polynomial given by its coefficients ``a``
+    (``a0 s^n + a1 s^{n-1} + ...``, exact rationals): True iff every root
+    has negative real part."""
+    if a and a[0] < 0:
+        a = [-x for x in a]
     if any(x <= 0 for x in a):
         return False
     row0 = a[0::2]
@@ -1297,6 +1293,34 @@ def _routh_hurwitz(A, F):
             new.append(row0[k + 1] - row0[0] * nxt / row1[0])
         row0, row1 = row1, new
     return True
+
+
+def _routh_hurwitz(A, F):
+    """Exact Routh test of the characteristic polynomial: True iff every root
+    has negative real part (no roots computed).  Over ``QQ[I]`` the test runs
+    on ``p(s) conj(p)(s)``: real rational coefficients, and the roots of
+    ``conj(p)`` are the conjugates of those of ``p`` (same real parts), so it
+    is Hurwitz iff ``p`` is.  (Returned None for complex fields: a complex
+    realization never got the a-posteriori check, audit GEN-15.)"""
+    S = _sage()
+    n = A.nrows()
+    if n == 0:
+        return True
+    p = A.charpoly()
+    if F is S.QQ:
+        return _routh_real(list(reversed(p.list())))
+    try:
+        pbar = p.map_coefficients(lambda c: c.conjugate())
+        q = p * pbar
+        coeffs = []
+        for c in reversed(q.list()):
+            re, im = (list(c.list()) + [0, 0])[:2]
+            if im != 0:
+                return None
+            coeffs.append(S.QQ(re))
+    except (AttributeError, TypeError, ValueError, ArithmeticError):
+        return None
+    return _routh_real(coeffs)
 
 
 def _balance(A, B, C):
@@ -1363,7 +1387,9 @@ def _aposteriori_check(A, B, C, rtol=1e-2):
     dec = max(1.0, np.log10(hi / lo))
     nodes = [np.geomspace(lo, hi, int(40 * dec) + 2)]
     for z in lam:
-        if abs(z.imag) > abs(z.real) and z.imag >= 0:
+        # every underdamped eigenvalue (a complex-coefficient system has
+        # resonances at negative frequencies with no conjugate partner)
+        if abs(z.imag) > abs(z.real):
             nodes.append(abs(z.imag) + abs(z.real) * np.sinh(np.linspace(-8, 8, 81)))
     w = np.unique(np.concatenate(nodes))
     w = w[(w >= lo) & (w <= hi)]
@@ -1387,7 +1413,7 @@ def _aposteriori_check(A, B, C, rtol=1e-2):
 
 
 def _aposteriori_error(A, B, C):
-    """Item 60 (G6 realization term): the relative disagreement of the
+    """The G6 realization term: the relative disagreement of the
     rounded realization's stationary output variances (Lyapunov,
     ``lyapunov_refined``) with the same variances integrated over frequency
     from its transfer function by adaptive quadrature in ``ln w``
@@ -1610,7 +1636,7 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         'balance_min': float(sca.min()) if sca.size else 1.0,
         'balance_max': float(sca.max()) if sca.size else 1.0,
         'n_pencil': n, 'n_kernel_states': NR, 'n_before_reduction': n_pre,
-        # item 60: the a posteriori check of a graded / not numerically
+        # the a posteriori check of a graded / not numerically
         # Hurwitz rounded realization, and its measured relative error
         'aposteriori_checked': aposteriori['checked'],
         'aposteriori_err_rel': aposteriori['err_rel'],
@@ -1657,7 +1683,7 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
     """Minimal SISO realization of a causal conductance kernel
     ``g(t) = Theta(t) c e^{a t} b`` (S3: the state-space route's kernel
     edges and dressed lines), as an ``EntryRealization`` with ``d = 0``.
-    ``direct=True`` (item 56): also a kernel with a direct term, ``g = d
+    ``direct=True``: also a kernel with a direct term, ``g = d
     delta + Theta c e^{a t} b`` (image ``d + (strictly proper)``: the
     all-pass Pade (n, n) image of a bare delay), with ``d`` in the
     realization; a polynomial part of degree >= 1 is refused as before.

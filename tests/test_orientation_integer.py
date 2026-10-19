@@ -5,7 +5,8 @@ The (E3) orientation stage now runs the causal checks on plain integers and
 builds a Sage DiGraph only for the orientations that pass
 (``enumerate_orientations_integer``).  It must return exactly the prediagrams
 of the former Sage-checked path (``enumerate_orientations_sage``), which is
-kept and selectable with ``DAEDALUS_ORIENTATION_CHECKER=sage``.
+kept as the reference (``L.ORIENTATION_CHECKER = 'sage'``; the env switch
+``DAEDALUS_ORIENTATION_CHECKER`` was retired in audit W7).
 
 Measured stage time, serial: (3,2) 1.1 s -> 0.6 s, (4,2) 20.0 s -> 9.9 s,
 (2,3) 7.0 s -> 2.7 s; of what remains, the survivors' certificates are ~60%.

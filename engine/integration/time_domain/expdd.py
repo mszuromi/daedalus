@@ -75,17 +75,17 @@ Python otherwise (also under ``NUMBA_DISABLE_JIT=1``).  ``BACKEND`` says which
 one is active.  The two agree to rounding (FMA contraction and libm
 differences), not bit for bit.
 
-Nothing in Phase J calls this module by default.  The opt-ins are
-``final_integral.CHAIN_UPPERS_KERNEL = 'transfer'`` (M6), which routes
-``_chain_with_intermediate_uppers`` to ``chain_with_uppers``, and
-``final_integral.USE_PHASE_J_DD_KERNELS`` with its box-free companions (M7),
-which route the Phase J closed forms here through ``boxfree``.
+Phase J evaluates every closed form here, through ``boxfree`` (M7; since
+audit W7 the only route: the switches ``final_integral.CHAIN_UPPERS_KERNEL``
+and ``USE_PHASE_J_DD_KERNELS``, which selected the pre-0.2.0 chain-simplex
+and boxed routines, were retired).
 """
 import cmath
 import math
 from fractions import Fraction
 
 import numpy as np
+from engine.errors import DaedalusError
 
 try:
     import numba as _numba
@@ -132,7 +132,7 @@ _RESCALE_EXP = 500
 _LN2 = math.log(2.0)
 
 
-class DivergentIntegralError(ValueError):
+class DivergentIntegralError(DaedalusError, ValueError):
     """A semi-infinite (``L = -inf``) chain whose integral diverges (some
     prefix sum of the alphas has ``Re P_j <= 0``)."""
 
@@ -538,8 +538,8 @@ def dd_exp(z):
 
 def unit_triangle(p, q):
     """``J(p, q) = int_0^1 du int_0^{1-u} dw exp(p u + q w) = exp[0, p, q]``
-    (the quantity of ``final_integral._exp_over_unit_triangle``); ``None``
-    on overflow."""
+    (the quantity of the retired ``final_integral._exp_over_unit_triangle``);
+    ``None`` on overflow."""
     return dd_exp((0j, p, q))
 
 
@@ -581,8 +581,8 @@ def triangle_log(v0, v1, v2, alpha, beta, gamma=0j):
 
 def triangle(v0, v1, v2, alpha, beta, gamma=0j):
     """``int_T exp(alpha x + beta y + gamma) dA``; ``None`` only if the
-    result itself overflows (no bail on a large exponent, unlike the legacy
-    ``final_integral._exp_over_triangle``)."""
+    result itself overflows (no bail on a large exponent, unlike the
+    pre-0.2.0 ``final_integral._exp_over_triangle``, retired in audit W7)."""
     return _finish(*triangle_log(v0, v1, v2, alpha, beta, gamma))
 
 
@@ -677,9 +677,9 @@ def chain_simplex(alphas, L, U):
 
 def chain_with_uppers_log(alphas_chain, L, upper_per_position, U_chain_top):
     """``(status, log_scale, mant)`` for the chain integral with scalar
-    uppers at arbitrary positions -- the quantity of
-    ``final_integral._chain_with_intermediate_uppers_uncached``, with the
-    same argument conventions:
+    uppers at arbitrary positions -- the quantity of the pre-0.2.0
+    ``final_integral._chain_with_intermediate_uppers_uncached`` (retired in
+    audit W7), with the same argument conventions:
 
     * ``upper_per_position[k]`` bounds chain position ``k`` (0-indexed);
       keys outside ``0..m-1`` are ignored and a ``None`` value is absent;

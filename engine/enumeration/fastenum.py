@@ -35,7 +35,9 @@ nauty_reason = ''
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-if os.environ.get('DAEDALUS_FASTENUM', '1') == '0':
+from engine import _env as _env_mod                       # noqa: E402
+
+if not _env_mod.flag('DAEDALUS_FASTENUM', True):
     reason = 'disabled by DAEDALUS_FASTENUM=0'
 else:
     try:

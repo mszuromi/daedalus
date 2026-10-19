@@ -2,7 +2,7 @@
 tests/test_propagator_spatial.py
 ================================
 Phase 2 + 3 acceptance tests for the spatial heat-kernel propagator
-(docs/spatial_implementation_plan.md Phases 2-3).
+(the internal design notes (not distributed) Phases 2-3).
 
 Covers:
   * build_propagator on a spatial model produces the spatial block
@@ -133,7 +133,7 @@ def test_pbc_approaches_infinite_as_L_grows():
         if prev is not None:
             assert diff < prev  # monotone convergence
         prev = diff
-    assert abs(G(1.0, 0.0, **dict(_NUM, L=16.0)) - ginf) < 1e-6
+    assert abs(G(1.0, 0.0, **dict(_NUM, L=16.0)) - ginf) < 1e-12
 
 
 # ── precompute + cache round-trip ─────────────────────────────────

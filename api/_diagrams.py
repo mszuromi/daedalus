@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 
+from api._propagator import cache_signature_stale, model_cache_signature
 from engine.core.cache import PipelineCache
 from engine.core.vertices import ConvVertexType
 from engine.diagrams.causality import filter_causal
@@ -71,6 +72,17 @@ def _model_cache_dir(model, taylor_order, cache_dir_root):
     """
     prop_tag = re.sub(r'[^A-Za-z0-9]+', '_', model['name']).strip('_').lower()
     return f'{cache_dir_root}/{prop_tag}'
+
+
+def enumeration_procs(parallel, n_workers):
+    """Worker processes of a streamed prediagram enumeration (a cache miss of
+    an unshipped cell): ``n_workers`` when ``parallel`` and it was given,
+    else 1 -- a streamed cell is usually small, so the pool is not started
+    unasked.  ``DAEDALUS_PREDIAGRAM_PROCS`` still overrides (scripts); macOS
+    never forks, so there it is serial."""
+    if not parallel or n_workers is None:
+        return 1
+    return max(1, int(n_workers))
 
 
 def enumerate_unique_diagrams(
@@ -139,11 +151,13 @@ def enumerate_unique_diagrams(
         If True, fan the per-prediagram type-assignment stage across a
         fork-based ``multiprocessing.Pool`` (see
         ``engine.diagrams.type_assignment.enumerate_all``).  Skipped on
-        cache hits.
+        cache hits; serial on macOS, which never forks.
     n_workers : int or None, default None
         Worker count when ``parallel=True``.  ``None`` lets the
         underlying enumerator pick
-        ``min(os.cpu_count(), len(prediagrams))``.
+        ``min(os.cpu_count(), len(prediagrams))``.  Given, it is also the
+        process count of a streamed prediagram enumeration (a cache miss;
+        :func:`enumeration_procs`).
     verbose : bool
 
     Returns
@@ -193,7 +207,7 @@ def enumerate_unique_diagrams(
     # classes at k=3 for OU+ax^2+bx^3), silently dropping their
     # integrals.  Loading a v2 cache would resurrect that bug.
     stage_name = f'unique_typed_mult_v3_{ext_tag}_taylor{ft.taylor_order}'
-    # Conductance vertices (item 27): before it a warm expand cache built
+    # Conductance vertices: before it a warm expand cache built
     # plain vertices for them and the typed-diagram cache stored those, so
     # a file under the plain name is not trusted for a model whose vertex
     # list has a ``ConvVertexType``.  Every other model keeps its name.
@@ -209,13 +223,12 @@ def enumerate_unique_diagrams(
         if use_cache and cache.exists(stage_name, k=k, loop_order=ell):
             try:
                 cached = cache.load(stage_name, k=k, loop_order=ell)
-                sig = cached.get('spec_signature')
-                if (sig is not None and model.get('spec_signature') is not None
-                        and sig != model.get('spec_signature')):
-                    # another model text under the same name (e.g. a
-                    # different kernel image): rebuild
-                    raise ValueError('typed-diagram cache: spec_signature '
-                                     'mismatch')
+                # another model text or population size under the same
+                # name (or a file without a signature): rebuild
+                stale = cache_signature_stale(
+                    model, cached.get('cache_signature'))
+                if stale is not None:
+                    raise ValueError(f'typed-diagram cache {stale}')
                 unique = cached['unique']
                 multiplicities = cached['multiplicities']
                 if verbose:
@@ -234,6 +247,7 @@ def enumerate_unique_diagrams(
         prediagrams, _pd_source = pd_format.load_prediagrams(
             prediagram_cache_root, k, ell,
             use_cache=use_cache, verbose=False, stream=stream_prediagrams,
+            n_procs=enumeration_procs(parallel, n_workers),
         )
         if verbose:
             _how = {'computed': f'computed and written to '
@@ -264,7 +278,8 @@ def enumerate_unique_diagrams(
                 cache.save(stage_name,
                            {'unique': unique,
                             'multiplicities': multiplicities,
-                            'spec_signature': model.get('spec_signature')},
+                            'spec_signature': model.get('spec_signature'),
+                            'cache_signature': model_cache_signature(model)},
                            k=k, loop_order=ell)
                 if verbose:
                     print(f'             cached to '

@@ -525,7 +525,6 @@ def test_delay_kernel_model_refuses_t_min():
     (dict(times=[[1.0, 1.0]]), ValueError, 'need t_min'),
     (dict(t_min=float('-inf'), times=[[1.0, 1.0]]), ValueError, 'finite'),
     (dict(t_min=0.0, times=[[1.0, 1.0, 1.0]]), ValueError, 'shape'),
-    (dict(t_min=0.0, times=[[1.0, 1.0]], use_grouped_phase_j=True), ValueError, 'grouped'),
     (dict(t_min=0.0, times=[[1.0, 1.0]], output_npz='x.npz'), ValueError, 'output_npz'),
     (dict(t_min=0.0, times=[[1.0, 1.0]], max_ell=1, initial_covariance=np.eye(1)), NotImplementedError, 'loops'),
     (dict(t_min=0.0, times=[[1.0, 1.0]], tau_grid=np.array([0.5])), ValueError, 'tau_grid'),
@@ -537,6 +536,18 @@ def test_argument_refusals(kw, exc, match):
     with pytest.raises(exc, match=match):
         AC.compute_cumulants(_ou_cubic(), k=2, max_ell=max_ell, external_fields=[X, X], parameters=OU_P,
                              use_cache=False, parallel=False, verbose=False, **kw)
+
+
+def test_retired_grouped_flag_only_warns_with_t_min():
+    """Grouped Phase J is retired: ``use_grouped_phase_j=True`` with ``t_min`` is no longer refused, it
+    warns (FutureWarning) and runs the per-diagram route, with the same numbers."""
+    kw = dict(k=2, max_ell=0, external_fields=[X, X], parameters=OU_P, t_min=0.0,
+              times=[[1.0, 1.0], [0.5, 2.0]], use_cache=False, parallel=False, verbose=False)
+    ref = AC.compute_cumulants(_ou_cubic(), **kw)
+    with pytest.warns(FutureWarning, match='use_grouped_phase_j is retired'):
+        res = AC.compute_cumulants(_ou_cubic(), use_grouped_phase_j=True, **kw)
+    assert np.array_equal(np.asarray(res['C_times']), np.asarray(ref['C_times']))
+    assert res['config']['use_grouped_phase_j'] is False
 
 
 def test_initial_state_needs_identity_response():

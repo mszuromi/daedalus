@@ -2,8 +2,8 @@
 
 This is the reference for what the MSR-JD pipeline's correlated-noise
 machinery (the CGF tab in the theory builder, equivalently
-`TheoryBuilder.declare_cgf_term` and the lower-level
-`TheoryBuilder.correlated_noise`) can and can't express, with rough
+`ModelBuilder.declare_cgf_term` and the lower-level
+`ModelBuilder.correlated_noise`) can and can't express, with rough
 estimates for what it'd take to lift the limitations.
 
 If your noise model doesn't fit, the doc lists the workarounds.  If
@@ -50,12 +50,25 @@ shapes:
 | Lagged δ | `dirac_delta(tau - Delta)` | implicitly symmetrized to `½[δ(τ−Δ) + δ(τ+Δ)]` |
 | Any analytic Sage expression | as above | as long as Sage can extract the δ part vs. smooth part |
 
+An empty `kernel` (`None` / `''`) is the white kernel `∏_k δ(τ_k)`.
+
+**Population (multi-unit) fields.**  A CGF row on a response field with
+more than one unit must say how the units' noises are related: its
+coefficient / kernel text sees the 0-based leg indices `i`, `j` (order 2;
+`i1 … in` at any order), `kronecker_delta(i, j)` (independent per-unit
+noise, each unit its own copy, as `-D*xt[i]^2` in the action) and
+`shared(i, j)` (= 1: one noise common to all units).  For example
+`coefficient='2*D*(kronecker_delta(i, j) + rho*(1 - kronecker_delta(i, j)))'`
+gives unit variance `2D` and cross-unit correlation `rho`.  A row whose
+texts use no index is refused on such a field (it used to give every
+pair of units the auto cumulant, i.e. silently common noise).
+
 ### 1.5 Markovian embedding (auto, v1)
 
 For the most common smooth-kernel case — a single Lorentzian
 `c · exp(-|τ|/τc)` driving a Gaussian noise on one or two response
 fields — the framework now applies an **automatic Markovian
-embedding** at `TheoryBuilder.build()` time.  Instead of leaving the
+embedding** at `ModelBuilder.build()` time.  Instead of leaving the
 smooth kernel in place (which forces the time-domain integrator
 through the slow `scipy.nquad` fallback at `max_ell ≥ 1`), the
 preprocessor rewrites your colored noise as a white-noise-driven
@@ -90,9 +103,16 @@ For each matched row the preprocessor:
 * adds `(Dt + 1/τc) · xi = 0` to the DAE equations;
 * replaces the colored CGF row with a white-noise row on the
   auxiliaries: `coefficient = 2c/τc`, `kernel = dirac_delta(tau)`;
-* appends `- xi` to the original `xt*(...)` block in your action text
-  (encoding `dx/dt = ... + ξ`) and adds the new kinetic term
-  `xit*(Dt + 1/τc)*xi`.
+* adds the coupling `- xt*xi` to your action as a separate term
+  (encoding `dx/dt = ... + ξ`) together with the new kinetic term
+  `xit*(Dt + 1/τc)*xi`; your own action text is kept verbatim.  Because
+  integrating the Gaussian `ξ` out of these terms gives back exactly
+  `-(1/2) xt κ xt`, the embedding is correct for any layout of the
+  action (`xt*(...)`, `(...)*xt`, split operators, an overall factor).
+
+Only single-unit fields are embedded (the auxiliary is one scalar
+process).  A colored row on a population field passes through to the
+colored-kernel route (and `markovianize=True` on such a row raises).
 
 The cross-correlated 2D case (3 CGF rows: Cxx, Cyy, Cxy) becomes
 3 white-noise rows on the auxiliaries (auxXX, auxYY, auxXY), all with
@@ -135,10 +155,11 @@ on a circle (`api._pole_clusters`; Cauchy mean value, trapezoid rule,
 `result['pole_clusters']` reports the clusters and an accuracy
 estimate), so `τc = 1/μ` and any nearby value give the exact result to
 about 1e-12.  A cluster it cannot resolve (no exact rational
-propagator, a cluster too close to the stability boundary, or
-`DAEDALUS_POLE_CLUSTERS=0`) is reported in `result['pole_clusters']`
+propagator, or a cluster too close to the stability boundary) is
+reported in `result['pole_clusters']`
 with a lost-digit estimate, and a `PoleClusterWarning` is issued when
-more than 10 digits may be lost.
+more than 10 digits may be lost.  (The switch that turned the
+deformation off, `DAEDALUS_POLE_CLUSTERS=0`, was retired in audit W7.)
 
 ### 2. Cross-field cumulants (κ², any kernel)
 
@@ -225,7 +246,7 @@ of cumulants involving these vertices doesn't run.
    `NoiseSourceType` extraction to confirm n > 2 sources flow into
    the diagram enumerator the same way 2-leg sources do.
 2. *Phase B — integrator (1-2 weeks).*  Extend
-   `msrjd/integration/time_domain/grouped_integral.py` +
+   `engine/integration/time_domain/grouped_integral.py (retired in audit W7)` +
    `final_integral.py` to thread n − 1 relative-time variables per
    noise vertex through the diagram's time-integration plan.  Derive
    and implement 2D analytic mode-sum templates for the κ³ smooth
@@ -359,15 +380,15 @@ Is your noise stationary (time-translation invariant)?
 
 | Component | File | Lines (approx) |
 |---|---|---|
-| `make_correlated_noises_block` (text-row → callable) | `pipeline/theory_compiler.py` | `_build_cgf_kernel_callable` ~1500 |
-| `_build_cumulant_action` (action injection) | `msrjd/core/field_theory.py` | ~330–560 |
-| `extract_source_types` (diagram extraction) | `msrjd/core/vertices.py` | `NoiseSourceType` ~595 |
-| Phase J integrator hooks for κ² smooth | `msrjd/integration/time_domain/grouped_integral.py`, `final_integral.py` | search for `kernel_fn` |
-| `declare_cgf_term` (TheoryBuilder API) | `pipeline/theory.py` | ~654 |
-| CGF tab (UI) | `pipeline/ui/main.py` | ~404 |
-| Spec serialize / parse | `pipeline/theory_serialize.py` | `_emit_cgf_term` ~227, load ~623 |
-| **Markovian embedding preprocessor (v1)** | `pipeline/colored_to_markovian.py` | whole file |
-| Markovianize wiring into `build()` | `pipeline/theory.py` | search for `markovianize_spec` |
+| `make_correlated_noises_block` (text-row → callable) | `api/model_compiler.py` | `_build_cgf_kernel_callable` ~1500 |
+| `_build_cumulant_action` (action injection) | `engine/core/field_theory.py` | ~330–560 |
+| `extract_source_types` (diagram extraction) | `engine/core/vertices.py` | `NoiseSourceType` ~595 |
+| Phase J integrator hooks for κ² smooth | `engine/integration/time_domain/grouped_integral.py (retired in audit W7)`, `final_integral.py` | search for `kernel_fn` |
+| `declare_cgf_term` (ModelBuilder API) | `api/model.py` | ~654 |
+| CGF tab (UI) | `api/ui/main.py` | ~404 |
+| Spec serialize / parse | `api/model_serialize.py` | `_emit_cgf_term` ~227, load ~623 |
+| **Markovian embedding preprocessor (v1)** | `api/colored_to_markovian.py` | whole file |
+| Markovianize wiring into `build()` | `api/model.py` | search for `markovianize_spec` |
 
 The warning that fires when you hit §1 (smooth n ≥ 3) is in
 `_build_cumulant_action`'s smooth-residual `if order == 2` branch's
