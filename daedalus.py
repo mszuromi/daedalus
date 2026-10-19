@@ -113,6 +113,8 @@ _PIPELINE_EXPORTS = {
     'backends':                  'api.routing',
     'params_slug':               'api',
     'MeanField':                 'api',
+    # the common base of every exception the package raises on purpose
+    'DaedalusError':             'api',
     'Parameters':                'api',
     'normalize_external_fields': 'api',
     # δ components of a cumulant (Feature B): dd.cumulant(result)
@@ -134,7 +136,8 @@ _PIPELINE_EXPORTS = {
     'TreeCovariance':            'api.symbolic_out',
     'tree_modes':                'api.symbolic_out',
     'ModeSum':                   'api.symbolic_out',
-    'Kernel':                    'api.symbolic_out',
+    'PairingKernel':             'api.symbolic_out',
+    'Kernel':                    'api.symbolic_out',   # deprecated alias of PairingKernel
     'KernelIntegral':            'api.symbolic_out',
     'integrate_against':         'api.symbolic_out',
     'inverse_transform':         'api.symbolic_out',
@@ -343,7 +346,10 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
     also surface its docstring + ``METADATA`` run recommendations.
 
     This is the canonical "what is this model?" cell for the example
-    notebooks — it reads only the model dict, so it stays model-independent."""
+    notebooks — it reads only the model dict, so it stays model-independent.
+    An unbuilt ``api.sde.SDE`` / builder is built first."""
+    from api.compute import as_model_dict
+    model = as_model_dict(model)
     out = []
     bar = '─' * 72
     out.append(bar)
@@ -536,6 +542,13 @@ class Config:
     # the route's defaults (automatic order).
     delay: Optional[dict] = None
 
+    # ── numerical knobs shared with compute_cumulants (None = its default) ──
+    taylor_order: Optional[int] = None      # vertex Taylor order (None: max(k + 2 max_ell, 2))
+    use_cache: Optional[bool] = None        # on-disk caches (None: on)
+    accuracy: Optional[float] = None        # target relative accuracy of the G6 estimate
+    backend: Optional[str] = None           # an explicit backend name (api.routing)
+    discard: Any = None                     # False | True | 'auto': release each diagram after evaluating it
+
     # ── Dyson dressing (coupled unequal-D) ──
     dyson_order: Optional[int] = None       # None=leave model; int≥0=override
     reference_diffusion: Optional[float] = None
@@ -613,7 +626,8 @@ class Config:
         deep inside the run."""
         from api.compute import _entry_int
         for _n, _lo in (('k', 1), ('max_ell', 0), ('n_workers', 1),
-                        ('fixed_point_index', 0), ('mf_dae_n_starts', 1)):
+                        ('fixed_point_index', 0), ('mf_dae_n_starts', 1),
+                        ('taylor_order', 1)):
             _v = getattr(self, _n)
             if _v is None:
                 continue
@@ -623,6 +637,25 @@ class Config:
             _v = getattr(self, _n)
             if _v is not None and not np.isfinite(float(_v)):
                 raise ValueError(f"Config.{_n} must be finite; got {_v!r}.")
+        if self.use_cache is not None and not isinstance(
+                self.use_cache, (bool, np.bool_)):
+            raise ValueError(
+                f"Config.use_cache must be True, False or None; got "
+                f"{self.use_cache!r}.")
+        if self.accuracy is not None and not (
+                isinstance(self.accuracy, (int, float, np.integer, np.floating))
+                and not isinstance(self.accuracy, bool)
+                and np.isfinite(float(self.accuracy))
+                and float(self.accuracy) > 0):
+            raise ValueError(
+                f"Config.accuracy must be a finite number > 0; got "
+                f"{self.accuracy!r}.")
+        if self.discard is not None and not (
+                isinstance(self.discard, (bool, np.bool_))
+                or self.discard == 'auto'):
+            raise ValueError(
+                f"Config.discard must be False, True or 'auto'; got "
+                f"{self.discard!r}.")
         if self.tau_step is not None and not float(self.tau_step) > 0:
             raise ValueError(
                 f"Config.tau_step must be > 0; got {self.tau_step!r}.")
@@ -662,47 +695,17 @@ class Config:
     @staticmethod
     def _resolve_grid(g, name='grid'):
         """``(lo, hi, n)`` TUPLE → ``linspace``; list/array → literal points;
-        None → None.
-
-        A 3-element *list* whose last entry is an integer count (e.g.
-        ``[-5, 5, 51]``) is the classic "I meant a range" slip — a list is taken
-        literally, so that would be the 3 points {-5, 5, 51} (note the 51!).
-        Rather than silently mis-grid, we raise and point at the tuple form."""
-        if g is None:
-            return None
-        if isinstance(g, tuple):
-            if len(g) != 3:
-                raise ValueError(
-                    f"{name} tuple must be (lo, hi, n); got a {len(g)}-tuple "
-                    f"{g!r}. For an arbitrary grid pass a list/array instead.")
-            arr = np.linspace(g[0], g[1], int(g[2]))
-            Config._require_finite(arr, name)
-            return arr
-        if (isinstance(g, list) and len(g) == 3
-                and isinstance(g[2], (int, float))
-                and float(g[2]) >= 2 and float(g[2]) == int(g[2])):
-            lo, hi, n = g[0], g[1], int(g[2])
-            raise ValueError(
-                f"{name}={g!r} is a 3-element LIST, so it is read as 3 literal "
-                f"grid points {{{float(lo)}, {float(hi)}, {float(n)}}} — note the "
-                f"{n}!  For a linspace RANGE of {n} points from {lo} to {hi}, use "
-                f"a TUPLE: {name}=({lo}, {hi}, {n}).  For {n} literal points, pass "
-                f"a numpy array: {name}=np.array({g!r}).")
-        arr = np.asarray(g, dtype=float)
-        if arr.size == 0:
-            raise ValueError(
-                f"{name} is empty — pass a non-empty grid, or omit it (None) to use "
-                f"the default.")
-        Config._require_finite(arr, name)
-        return arr
+        None → None.  The rule is shared with ``compute_cumulants``
+        (:func:`api._grids.resolve_grid`); a 3-element *list* ending in an
+        integer count (``[-5, 5, 51]``) is the "I meant a range" slip and
+        raises, pointing at the tuple form."""
+        from api._grids import resolve_grid
+        return resolve_grid(g, name)
 
     @staticmethod
     def _require_finite(arr, name):
-        bad = ~np.isfinite(arr)
-        if bad.any():
-            raise ValueError(
-                f"{name} must be finite: {int(bad.sum())} of {arr.size} "
-                f"entries are NaN or infinite.")
+        from api._grids import require_finite
+        require_finite(arr, name)
 
 
 def _meta(mod, key, default=None):
@@ -779,7 +782,7 @@ def config_options(spatial=None):
             ('k',               'correlator order: 1=mean ⟨φ⟩, 2=correlation, ≥3=cumulant'),
             ('max_ell',         'loop order: 0=tree, 1=+1-loop, 2=+2-loop, …'),
             ('external_fields', "the k legs, e.g. [('x',1),('x',1)]; sets k if k is None"),
-            ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → model defaults"),
+            ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → model defaults  [alias: fundamental]"),
             ('output',          "'cumulant' | 'moment' | 'central_moment'"),
         ]),
     ]
@@ -794,7 +797,7 @@ def config_options(spatial=None):
         ('initial_covariance', 'with t_min, k=2, tree: covariance C0 of the fluctuations at t_min (adds R C0 Rᵀ)'),
     ])
     spatial_grid_ = ('spatial grid / slicing (χ and τ axes)', [
-        ('chi_grid',      'grid χ=x_j−x_k: (lo,hi,n) TUPLE→linspace, or array; [χ0] fixes χ'),
+        ('chi_grid',      'grid χ=x_j−x_k: (lo,hi,n) TUPLE→linspace, or array; [χ0] fixes χ  [alias: spatial_grid]'),
         ('tau_grid',      'τ grid: (lo,hi,n) TUPLE→linspace, or array; [0.0] → equal-time C(χ,0)'),
         ('tau_max',       'under-the-hood: τ extent if no tau_grid (0.0 → equal-time)'),
         ('tau_step',      'under-the-hood: τ spacing (paired with tau_max)'),
@@ -805,6 +808,16 @@ def config_options(spatial=None):
             ('fixed_point_index', 'which stable saddle root to expand around (0,1,…)'),
             ('mf_dae_n_starts',   'multi-start Newton count for the saddle solve'),
             ('mf_dae_seed_box',   '{field: (lo,hi)} start range for the saddle search'),
+        ]),
+        ('numerics (the compute_cumulants options)', [
+            ('taylor_order', 'vertex Taylor order; None → max(k + 2 max_ell, 2)'),
+            ('use_cache',    'on-disk caches (diagram, propagator, expand); None → on'),
+            ('accuracy',     'target relative accuracy of the G6 error estimate; None → 1e-10'),
+            ('backend',      'an explicit backend name (api.routing); None → the router picks'),
+            ('discard',      "False | True | 'auto': release each diagram after evaluating it (memory)"),
+        ]),
+        ('delay kernels (api.delay)', [
+            ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
         ]),
         ('Dyson dressing (coupled unequal-D)', [
             ('dyson_order',         'None=leave model; int≥0 overrides the Dyson order'),
@@ -1433,6 +1446,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 f"the model file (or pass Config(mf_dae_seed_box=...)).")
     if seed_box is not None:
         kw['mf_dae_seed_box'] = seed_box
+    for _opt in ('taylor_order', 'use_cache', 'accuracy', 'backend', 'discard'):
+        if getattr(cfg, _opt) is not None:
+            kw[_opt] = getattr(cfg, _opt)
     if cfg.policy is not None:
         kw['policy'] = cfg.policy
     if getattr(cfg, 'delay', None) is not None:

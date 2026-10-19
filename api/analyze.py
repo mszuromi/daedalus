@@ -218,6 +218,7 @@ _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
 # (api._pole_clusters.CLUSTER_RTOL; a cluster is deformed when its
 # cancellation factor exceeds KAPPA_MAX, see _g3_pole_findings)
 from api._pole_clusters import CLUSTER_RTOL as _CLOSE_POLE_RTOL  # noqa: E402
+from engine.errors import DaedalusError
 _STIFF_RATIO = 1e3         # fast/slow decay-rate ratio flagged as stiff
 _EXACT_POLE_BUDGET_SEC = 5  # SIGALRM budget for the exact CF[omega] inverse
 _SUPPORTED_DOMAINS = ('positive', 'real', 'integer', 'complex')
@@ -3033,7 +3034,7 @@ def _ledger_common(ctx):
 #   (run)         after the backend: G6 run diagnostics, never raises
 
 
-class AnalyzerError(ValueError):
+class AnalyzerError(DaedalusError, ValueError):
     """``compute_cumulants`` stopped at an analyzer gate.  ``report``: the
     :class:`ModelReport` so far; ``findings``: the error findings;
     ``stage``: the gate boundary (a ``ValueError``, so callers that caught
@@ -3562,6 +3563,17 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         # Lyapunov solution measured exact to 5e-13), not the realization's
         if float(rc['err_rel']) > _G6_REALIZATION_FLOOR:
             real_rel = float(rc['err_rel'])
+    # CON-09: the balanced truncation of the propagator entries and of the
+    # dressed lines (api._realization; default tolerance 1e-12) moves the
+    # cumulant by up to its relative H-infinity bound; the bound enters the
+    # estimate like the a posteriori error above
+    trunc = (rc or {}).get('truncation') if rc else None
+    trunc_rel = 0.0
+    if trunc and int(c.get('ss_estimated', 0)):
+        trunc_rel = float(trunc.get('max_bound_rel') or 0.0)
+        d['truncation_rel'] = trunc_rel
+        d['truncated_entries'] = (int(trunc.get('n_truncated') or 0)
+                                  + int(trunc.get('n_dressed_truncated') or 0))
     pc = result.get('pole_clusters') if isinstance(result, dict) else None
     if pc and pc.get('status') == 'resolved' and pc.get('node_runs'):
         # the counters add up every node run of the pole-cluster deformation
@@ -3584,6 +3596,8 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         R = 0.0 if E == 0 else float('inf')
     if real_rel and complete and R is not None:
         R = R + real_rel
+    if trunc_rel and complete and R is not None:
+        R = R + trunc_rel
     # Near-degenerate / repeated poles (api._pole_clusters): a resolved
     # cluster adds the deformation's own estimate (grid-L1, Fourier tail of
     # the node values); an unresolved one its lost-digit estimate.
@@ -3614,6 +3628,8 @@ def _g6(ctx, pf, result, c, complete, evaluated):
             f'sum_tau |C(tau)| = {S:.6g} over the tau grid'
             + (f' plus the realization\'s a posteriori relative error '
                f'{real_rel:.3g}' if real_rel else '')
+            + (f' plus the balanced-truncation bound {trunc_rel:.3g}'
+               if trunc_rel else '')
             + f' (threshold {thr:g}, {src}){why}.',
             'pass parallel=False for the accuracy estimate'
             if (R is None and not complete) else '')

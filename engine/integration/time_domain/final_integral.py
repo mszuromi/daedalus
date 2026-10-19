@@ -73,6 +73,7 @@ from engine.integration.time_domain.propagator_td import (
 )
 from engine.core.vertices import NoiseSourceType, ConvVertexType
 from engine import _env
+from engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -296,7 +297,7 @@ def _is_exact_zero(x):
         return False
 
 
-class PoleFreePropagatorError(ValueError):
+class PoleFreePropagatorError(DaedalusError, ValueError):
     r"""Phase J was handed a propagator WITHOUT any pole
     (``propagator_data['pole_vals']`` is empty) and a diagram needs an
     entry whose smooth (non-instantaneous) part cannot be shown to vanish.
@@ -802,7 +803,7 @@ PLAN_BYTES_PER_TUPLE = 1100
 PHASE_J_PREPASS_REFUSE_FACTOR = 8
 
 
-class PhaseJResourceError(MemoryError):
+class PhaseJResourceError(DaedalusError, MemoryError):
     r"""Phase J would hold more modesum-plan memory than the budget
     ``PHASE_J_MEM_BUDGET_GB`` (default: ``default_mem_budget``) allows: raised
     BEFORE the plan that crosses it is allocated (and, from
@@ -2311,7 +2312,7 @@ def _is_divergence_verdict(reason):
     return reason in _DIVERGENT_BAIL_REASONS
 
 
-class PhaseJDivergenceError(ArithmeticError):
+class PhaseJDivergenceError(DaedalusError, ArithmeticError):
     """A Phase J subset integral diverges (an open direction in which the
     integrand does not decay) and the divergence policy is 'raise'."""
 
@@ -5382,7 +5383,7 @@ def _zero_exit_result(D, leaves, ext_time_vars, diag_serial, rerun):
 # Θ(0) rule).
 
 
-class DeltaSolveValidationError(AssertionError):
+class DeltaSolveValidationError(DaedalusError, AssertionError):
     """``VALIDATE_DELTA``: the exact δ-elimination and ``sage_solve``
     disagree on a substitution, a residual verdict or a constraint row."""
 

@@ -246,8 +246,8 @@ _KW = dict(k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)])
 @pytest.mark.parametrize('bad, exc, match', [
     (dict(parameters={'muu': 5.0}), ValueError, 'unknown parameter'),
     (dict(fundamental={'muu': 5.0}), ValueError, 'unknown parameter'),
-    (dict(tau_grid=(-5, 5, 51)), ValueError, 'ambiguous'),
-    (dict(tau_grid=[-5, 5, 51]), ValueError, 'ambiguous'),
+    (dict(tau_grid=[-5, 5, 51]), ValueError, '3-element LIST'),
+    (dict(tau_grid=(-5, 5)), ValueError, r'\(lo, hi, n\)'),
     (dict(accuracy=0), ValueError, 'accuracy'),
     (dict(accuracy=-1e-8), ValueError, 'accuracy'),
     (dict(accuracy=float('nan')), ValueError, 'accuracy'),

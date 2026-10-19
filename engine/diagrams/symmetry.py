@@ -453,11 +453,14 @@ def combinatorial_factor(typed_diagram):
     numer = _wick_leg_factor(typed_diagram)
     aut = _automorphism_order(typed_diagram, fix_external=True)
     if aut <= 0 or numer % aut != 0:
-        # Defensive: numerator should always be divisible by Aut order
-        # (it's a finite group acting freely on a finite set).  Fall
-        # back to integer floor division if some Sage edge case yields
-        # a non-divisor; downstream tests will catch any drift.
-        return numer // max(aut, 1)
+        # The automorphism group acts freely on the Wick pairings, so its
+        # order divides the numerator; a remainder means the group or the
+        # numerator is wrong, and a floored factor would be a silently wrong
+        # weight (``external_wick_compensation`` raises likewise).
+        raise RuntimeError(
+            f'combinatorial_factor: the Wick numerator {numer} is not '
+            f'divisible by the automorphism order {aut} (internal error: '
+            f'the symmetry factor would be a fraction); report this diagram.')
     return numer // aut
 
 

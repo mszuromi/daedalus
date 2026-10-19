@@ -816,7 +816,7 @@ class Cumulant:
                           limit=400):
         """``∫ L(τ) C(τ) dτ`` (k = 2): the smooth part plus the δ components.
 
-        ``kernel``: a ``symbolic_out.Kernel`` (``Kernel.exponential``,
+        ``kernel``: a ``symbolic_out.PairingKernel`` (``Kernel.exponential``,
         ``Kernel.two_sided_exponential``, sums; polynomial × exponential
         terms), an :class:`api.me_output.RationalKernel`, or a list of them;
         ``values`` substitutes the kernel's symbols.  ``method='exact'``: one
