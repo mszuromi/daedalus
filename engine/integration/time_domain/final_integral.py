@@ -78,6 +78,7 @@ from engine.integration.time_domain.propagator_td import (
 )
 from engine.core.vertices import NoiseSourceType, ConvVertexType
 from engine import _env
+from engine.core.detnum import numeric_subs
 from engine.errors import DaedalusError
 
 
@@ -5504,7 +5505,7 @@ def integrate_diagram(
         _cp_pre = SR(combined_prefactor) if combined_prefactor is not None \
             else SR(1)
         if num_params:
-            _cp_pre = _cp_pre.subs(num_params)
+            _cp_pre = numeric_subs(_cp_pre, num_params)
         if _zero_exit_applies(typed_diagram, propagator_data, _cp_pre,
                               external_fields, leaves):
             return _zero_exit_result(
@@ -6292,7 +6293,7 @@ def integrate_diagram(
         cp = SR(combined_prefactor) if combined_prefactor is not None \
             else SR(1)
         if num_params:
-            cp = cp.subs(num_params)
+            cp = numeric_subs(cp, num_params)
 
     # ── 3b. Non-local cumulant kernel substitution ────────────────
     # For each NoiseSourceType vertex, replace each placeholder
@@ -6342,7 +6343,7 @@ def integrate_diagram(
                 # Re-substitute num_params now that kernel symbols
                 # like ns.lambda_X, ns.mu_shift_diff have been
                 # introduced via kernel_fn evaluation.
-                cp = cp.subs(num_params)
+                cp = numeric_subs(cp, num_params)
             # Try to combine like terms (e.g. ordered pairs (i,j) and
             # (j,i) with symmetric kernels collapse to a single term).
             # simplify_full can be expensive but the cumulant prefactor
@@ -6366,7 +6367,7 @@ def integrate_diagram(
                     else SR(_conv_kernel_local_weight(att, num_params)))
         cp = cp.subs(g_subs)
         if num_params:
-            cp = cp.subs(num_params)
+            cp = numeric_subs(cp, num_params)
 
     # The hardened fallback's decay certificate for an integrand without
     # mode data: the slowest line and kernel rate (``None``: unknown), and
@@ -11348,7 +11349,7 @@ def _prefactor_exact_zero(cp, num_params):
     try:
         cp = SR(cp)
         if num_params:
-            cp = cp.subs(num_params)
+            cp = numeric_subs(cp, num_params)
         return bool(cp.is_numeric() and complex(CDF(cp)) == 0)
     except Exception:
         return False
