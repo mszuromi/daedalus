@@ -23,5 +23,11 @@ Exactly rescaled twins of two tracked models picked a different mean-field root,
   The saddle was then right to only 1e-10 .. 2e-9, and two symmetric populations came out different by up to 1e-12.
   It is now right to round-off (1.8e-16).
 
-Numbers that move: the saddle's last digits on models whose variables differ greatly in size. A model whose roots
-were previously reached from the largest-parameter box may find a different root set. ZOO_RESULT
+Numbers that move: the saddle's last digits, and therefore the cumulants at round-off level times the problem's
+conditioning. A model whose roots were previously reached from the largest-parameter box may find more roots: they
+are listed in `mf_all_roots`, and the selected root comes from the stable-first order. Zoo A/B (23 runnable public
+entries, `use_cache=False`, base main a46ddcf): 12 bit-identical; `dendritic_quad_soma_sigmoid` 6.3e-16,
+`linear_hawkes` 2.2e-16, `linear_delta_spikes` 2.1e-16, `spike_reset` k=1 3.7e-16 relative. `spike_reset` k=2 moves
+by 9.0e-14 at one loop: its saddle moves by 1-2 ulp, and a 40-digit solve puts both main's and this saddle within
+2e-16 of the exact root, so this is round-off amplified about 400x by that diagram, not an error in either. Analyzer
+codes are identical, and the same roots are selected.
