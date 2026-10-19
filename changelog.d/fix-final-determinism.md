@@ -18,3 +18,11 @@
   systems (two rows disagreeing by a relative 3e-5 / 3e-3, the same in units of 1e9 and 1e-9, and a 1e-8 gap that must be
   accepted) and kills the mutants 1e-4, 1e-2 (too loose) and 1e-9, 1e-12 (too tight).
 - `docs/phase_j_unbounded_exact.md` no longer describes the retired Phase J switches in the present tense (FINAL N10).
+- **The deduplication representative no longer depends on `PYTHONHASHSEED` (FINAL decision W3, audit CON-10).** The external-leg
+  permutations of a typed-diagram enumeration came from a `set` of tuples of strings, whose iteration order changes with the
+  hash seed; the deduplication keeps the first diagram of each class, so a two-field model's loop cumulant took two byte
+  variants across seeds 0-5. `type_assignment._distinct_permutations` now returns them in a canonical content order
+  (`sorted`). Verified: the two-field one-loop and two-loop cumulants are byte-identical across seeds 0-5 (two variants
+  before); eight zoo entries (spike_reset, linear_hawkes, multipopulation_test, quad_exp, dendritic, ou_quartic_colored,
+  quadratic_hawkes_alpha, ou_quartic k3 l2) identical across seeds 0-3. No frozen baseline needed refreezing: every
+  baseline test passes at its tolerance. New test in `tests/test_audit_w9_determinism.py` (six processes, seeds 0-5).
