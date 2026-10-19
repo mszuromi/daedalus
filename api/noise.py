@@ -537,11 +537,14 @@ class CGF(NoiseSource):
         self._K = parse_expr(expression, what='CGF(expression)')
         if THETA not in self._K.variables():
             raise NoiseError('CGF: the expression must depend on theta.')
-        super().__init__()
+        # Analyticity first: the generic K(0) check in the base constructor
+        # evaluates the expression at 0 and used to let the raw Sage error
+        # (e.g. 'division by zero' for CGF('1/theta')) escape unnamed.
         try:
             self._K.subs({THETA: 0})
         except Exception as exc:                       # noqa: BLE001
             raise NoiseError(f'CGF: not analytic at theta = 0 ({exc}).') from exc
+        super().__init__()
 
     def _cgf(self):
         return self._K
@@ -718,7 +721,13 @@ class FinitePMF(JumpDistribution):
         for j in range(self._n):
             self._require(f'p{j}', _nonneg, f'need probs[{j}] >= 0')
         total = sum(self.params[f'p{j}'] for j in range(self._n))
-        if total.is_numeric() or not total.variables():
+        x = _numeric(total)
+        if x is not None:
+            # the same round-off allowance as Hyperexponential: float
+            # probabilities that sum to 1 up to 1e-12 are a distribution
+            if abs(x - 1) > 1e-12:
+                raise NoiseError(f'FinitePMF: probabilities sum to {total}, not 1.')
+        elif not total.variables():
             if not (SR(total) - 1).simplify_full().is_zero():
                 raise NoiseError(f'FinitePMF: probabilities sum to {total}, not 1.')
 

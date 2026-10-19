@@ -169,6 +169,7 @@ import logging
 import lzma
 import os
 import pickle
+import uuid
 
 from sage.all import DiGraph, Graph
 
@@ -296,21 +297,37 @@ def read_cert_file(path, k=None, ell=None):
                      f'packed certs, got {type(obj).__name__}')
 
 
+def _unique_tmp(path):
+    """A temp name beside *path* that no other writer (thread or process)
+    shares, so concurrent cold-cache runs never clobber each other's file."""
+    return f'{path}.{os.getpid()}.{uuid.uuid4().hex[:10]}.tmp'
+
+
 def write_cert_file(path, k, ell, certs, cert_backend=None):
-    """Atomically write a stamped v2 file; returns the stamp."""
+    """Atomically write a stamped v2 file; returns the stamp.
+
+    The bytes go to a writer-private temp name and are renamed over *path*
+    at the end; the temp file is removed on any failure."""
     certs = set(certs)
     stamp = make_stamp(k, ell, certs, cert_backend)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.tmp'
-    if str(path).endswith('.xz'):
-        with lzma.open(tmp, 'wb', preset=9 | lzma.PRESET_EXTREME) as f:
-            pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
-                        protocol=pickle.HIGHEST_PROTOCOL)
-    else:
-        with open(tmp, 'wb') as f:
-            pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
-                        protocol=pickle.HIGHEST_PROTOCOL)
-    os.replace(tmp, path)
+    tmp = _unique_tmp(path)
+    try:
+        if str(path).endswith('.xz'):
+            with lzma.open(tmp, 'wb', preset=9 | lzma.PRESET_EXTREME) as f:
+                pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            with open(tmp, 'wb') as f:
+                pickle.dump({'stamp': stamp, 'certs': sorted(certs)}, f,
+                            protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     return stamp
 
 
@@ -427,7 +444,7 @@ def fetch_cache(cells='core', dest=None, base_url=None, *, manifest=None,
                              f'{FETCH_URL_ENV} (file {e["name"]} is not in git)')
         os.makedirs(outdir, exist_ok=True)
         final = os.path.join(outdir, e['name'])
-        tmp = final + '.part'
+        tmp = _unique_tmp(final)
         h = hashlib.sha256()
         size = 0
         try:
@@ -827,6 +844,20 @@ def save_v2_certs(root, k, ell, certs, cert_backend=None):
     return path
 
 
+def _save_v2_best_effort(root, k, ell, certs, cert_backend=None):
+    """Save the local v2 copy of a cell that is already in memory.  The copy
+    is only a speed-up for the next run, so a cache root that cannot be
+    written (read-only mount, no permission) must not fail the run that
+    already holds the data."""
+    try:
+        return save_v2_certs(root, k, ell, certs, cert_backend)
+    except OSError as exc:
+        _log.warning('prediagram cache root %s is not writable (%s); cell '
+                     '(%d, %d) is served from memory and not copied locally',
+                     root, exc, int(k), int(ell))
+        return None
+
+
 def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
                      stream=True):
     """Prediagram records for ``(k, ell)``, cheapest available source first.
@@ -908,14 +939,14 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
 
     if fmt in ('auto', 'v2') and shipped_exists(k, ell):
         certs, stamp = read_cert_file(shipped_path(k, ell), k, ell)
-        save_v2_certs(root, k, ell, certs,
-                      (stamp or {}).get('cert_backend', 'sage'))
+        _save_v2_best_effort(root, k, ell, certs,
+                             (stamp or {}).get('cert_backend', 'sage'))
         return records_from_certs(certs), 'shipped'
 
     certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
                                     verbose=verbose)
     if fmt in ('auto', 'v2'):
-        save_v2_certs(root, k, ell, certs)
+        _save_v2_best_effort(root, k, ell, certs)
     return records_from_certs(certs), 'computed'
 
 

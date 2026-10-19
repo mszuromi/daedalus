@@ -103,22 +103,50 @@ def _vertex_label(vtype, show_factors, symbol_map):
         _latex_coefficient(getattr(vtype, 'coefficient', None)), symbol_map)
 
 
-def _field_symbol(leg):
+def _field_symbol(leg, kind=None):
     """Physics symbol for a leg ``(field_base, pop_idx)``.
 
     Response bases carry a trailing ``t`` (``yt`` = y-tilde) and physical
     bases a leading ``d`` (``dx`` = delta-x); strip the marker so the
     subscript reads as the field name.
+
+    ``kind`` is the role the caller KNOWS the leg has: ``'response'`` strips
+    only a trailing ``t``, ``'physical'`` only a leading ``d``.  Pass it
+    wherever the role is known (an edge's ``(response, physical)`` pair, an
+    external leg, a source's response legs): the bare name alone cannot say,
+    so a physical ``dinput`` read by the marker-sniffing fallback would lose
+    its last letter.  ``kind=None`` sniffs the marker and keeps the old
+    behaviour for hand-built stand-ins.
     """
     if not leg:
         return ''
     base = leg[0] if isinstance(leg, (tuple, list)) else str(leg)
     base = str(base)
-    if base.endswith('t') and len(base) > 1:
+    if kind == 'response':
+        if base.endswith('t') and len(base) > 1:
+            base = base[:-1]
+    elif kind == 'physical':
+        if base.startswith('d') and len(base) > 1:
+            base = base[1:]
+    elif base.endswith('t') and len(base) > 1:
         base = base[:-1]
     elif base.startswith('d') and len(base) > 1:
         base = base[1:]
     return base
+
+
+def _edge_type_key(diagram, u, v, copy, label):
+    """The key under which ``diagram.edge_types`` holds the edge ``u -> v``.
+
+    Real typed diagrams file an edge under ``(u, v, label)`` with the graph's
+    own edge label (a global edge index).  Hand-built stand-ins may instead
+    count the parallel copies of ``(u, v)`` from zero; that spelling is the
+    fallback, so neither kind of diagram silently loses its labels.
+    """
+    edge_types = getattr(diagram, 'edge_types', None) or {}
+    if (u, v, label) in edge_types:
+        return (u, v, label)
+    return (u, v, copy)
 
 
 def _edge_label(diagram, edge_key, propagator_label):
@@ -135,7 +163,8 @@ def _edge_label(diagram, edge_key, propagator_label):
     legs = edge_types.get(edge_key)
     if not legs:
         return 'G'
-    resp, phys = _field_symbol(legs[0]), _field_symbol(legs[1])
+    resp = _field_symbol(legs[0], 'response')
+    phys = _field_symbol(legs[1], 'physical')
     if not resp or not phys or resp == phys:
         return 'G' if not resp else 'G_{%s}' % resp
     return 'G_{%s%s}' % (resp, phys)
@@ -564,7 +593,8 @@ def _field_pair(diagram, edge_key):
     legs = (getattr(diagram, 'edge_types', None) or {}).get(edge_key)
     if not legs:
         return None
-    return (_field_symbol(legs[0]), _field_symbol(legs[1]))
+    return (_field_symbol(legs[0], 'response'),
+            _field_symbol(legs[1], 'physical'))
 
 
 def edge_style_map(diagrams):
@@ -586,7 +616,7 @@ def edge_style_map(diagrams):
     pairs = set()
     for dia in diagrams:
         et = getattr(dia, 'edge_types', None) or {}
-        pairs.update((_field_symbol(a), _field_symbol(b))
+        pairs.update((_field_symbol(a, 'response'), _field_symbol(b, 'physical'))
                      for a, b in et.values())
     return {p: _EDGE_STYLES[i % len(_EDGE_STYLES)]
             for i, p in enumerate(sorted(pairs))}
@@ -628,7 +658,7 @@ def _source_n_legs(vtype):
 def _source_field(vtype):
     """The field a source's legs belong to, or '' if they are not all one."""
     legs = getattr(vtype, 'response_legs', None) or []
-    syms = {_field_symbol(l) for l in legs}
+    syms = {_field_symbol(l, 'response') for l in legs}
     return syms.pop() if len(syms) == 1 else ''
 
 
@@ -845,7 +875,13 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     lines.append(indent + r'\begin{feynman}')
 
     # ── vertices ────────────────────────────────────────────────────
-    edge_list = sorted(D.edges(labels=False))
+    # The labelled edges carry the key the typed diagram's ``edge_types`` is
+    # filed under -- ``(u, v, label)`` with the GLOBAL edge index as label --
+    # so remember it next to the (u, v) pair the geometry uses.
+    _labelled = sorted(D.edges(labels=True),
+                       key=lambda e: (e[0], e[1], str(e[2])))
+    edge_list = [(a, b) for a, b, _l in _labelled]
+    edge_label_key = [lbl for _a, _b, lbl in _labelled]
     style_of = ((edge_styles if edge_styles is not None
                  else edge_style_map(diagram))
                 if style_by_field else {})
@@ -862,7 +898,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
     ext_text = {}
     for idx, v in enumerate(sorted(leaves), start=1):
         if external_label == 'auto':
-            sym = _field_symbol(ext_legs.get(v)) or r'\phi'
+            sym = _field_symbol(ext_legs.get(v), 'physical') or r'\phi'
             ext_text[v] = r'\delta %s(y_{%d})' % (sym, idx)
         else:
             ext_text[v] = external_label % idx
@@ -985,7 +1021,8 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
                 if b else '')
         # Per-edge label: with ``propagator_label='auto'`` different lines
         # are different matrix elements of G and must be named separately.
-        lab = _edge_label(diagram, (u, v, j), propagator_label)
+        ekey = _edge_type_key(diagram, u, v, j, edge_label_key[i])
+        lab = _edge_label(diagram, ekey, propagator_label)
         if lab and propagator_label == 'auto':
             if lab in _seen_edge_labels:
                 lab = None
@@ -999,7 +1036,7 @@ def to_tikz_feynman(diagram, *, propagator_label='G',
         opts = (['fermion'] if abs(t - 0.5) < 1e-9
                 else ['plain', 'with arrow=%.3f' % t])
         if style_of:
-            st = style_of.get(_field_pair(diagram, (u, v, j)))
+            st = style_of.get(_field_pair(diagram, ekey))
             if st:
                 opts.append(st)
         if lab:
