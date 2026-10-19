@@ -8,7 +8,8 @@
   the last bit of the prefactor, and of everything built from it, differed between processes. `engine.core.detnum.numeric_subs`
   now evaluates a closed form in the parameters itself: Python doubles, product operands in a canonical order (sorted by
   text), sums rounded exactly (`math.fsum`); an expression with a symbol the substitution does not cover falls back to
-  `.subs`. The prefactor sites of `final_integral.py` use it. Verified: spike_reset one loop 9 of 9 processes byte-identical
+  `.subs`. The prefactor sites of `final_integral.py` use it, and so do the other numeric substitutions there (kernel rates, noise-kernel
+  coefficients, the retardation probe); the ones with a free time or frequency symbol keep `.subs`. Verified: spike_reset one loop 9 of 9 processes byte-identical
   (3 variants before), dendritic and quad_exp 6 of 6 (4 and 2 before). Zoo values against the previous main
   (one process each): dendritic 1.5e-16, quad_exp 1.4e-16, quadratic_hawkes_alpha 1.2e-16 relative, every other entry
   bit-identical; three separate serial processes of the whole zoo agree to the byte on every entry that runs. New tests (`tests/test_audit_w9_determinism.py`) run separate processes
