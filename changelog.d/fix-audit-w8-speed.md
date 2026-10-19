@@ -1,11 +1,9 @@
-#### Cheaper Taylor norm bounds, one-matmul mode products, lazy plotting imports (audit wave W8, part 3)
+#### Cheaper Taylor norm bounds, lazy plotting imports (audit wave W8, part 3)
 
 - **SPD-03.** The state-space Taylor action's parameters (`_onenorm_powers`) now take `||A||_1` and `||A^2||_1`
   exactly (an estimate above 300 states, as before) and bound `||A^p||` for p > 2 by
   `min(||A||^p, ||A^2||^(p//2) ||A||^(p%2))`, a rigorous upper bound, which is what the Taylor fragment needs.
   The seven further matrix powers or 1-norm estimates were about half of a state-space run.
-- **SPD-05 (the `_mode` part).** A mode product is one batched matmul on the `(pre, n, post)` view instead of
-  `tensordot` + `moveaxis`. The matrix-free Kronecker application itself is unchanged.
 - **SPD-06.** matplotlib (`api.report`) and IPython (`engine.core.field_theory._show`) are imported when first
   needed. `from api import compute_cumulants` no longer imports them (numba was already gone after audit W7):
   3.84 -> 3.34 s (median of 5, vs main c1cff54), and ~0.1 GB less peak footprint per run.

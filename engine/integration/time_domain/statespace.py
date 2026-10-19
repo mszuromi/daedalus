@@ -695,14 +695,8 @@ def _clear_caches():
 # ─── per-entry operators ──────────────────────────────────────────────────
 
 def _mode(x, M, ax):
-    """``M`` applied along axis ``ax`` of tensor ``x``: one batched matmul on
-    the ``(pre, n, post)`` view (``tensordot`` + ``moveaxis`` cost ~6 % more
-    per call on small tensors; audit SPD-05)."""
-    sh = x.shape
-    pre = int(np.prod(sh[:ax], dtype=np.int64))
-    post = int(np.prod(sh[ax + 1:], dtype=np.int64))
-    out = np.matmul(M, x.reshape(pre, sh[ax], post))
-    return out.reshape(sh[:ax] + (M.shape[0],) + sh[ax + 1:])
+    """``M`` applied along axis ``ax`` of tensor ``x``."""
+    return np.moveaxis(np.tensordot(M, x, axes=(1, ax)), 0, ax)
 
 
 def _balance_siso(a, b, c):
