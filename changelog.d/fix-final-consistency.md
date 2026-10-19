@@ -9,4 +9,4 @@
 - Library comments and messages no longer carry internal stage or audit labels (`audit W7`, `W8p S4`, `ACC-61`,
   `S3:`, `stage S4`, ...); the sentences keep their content, and the retired-switch notes no longer end in
   "(audit W7)". `tests/test_audit_w9_docs.py` now also fails on these patterns and on placeholder tokens in
-  `changelog.d/` fragments (a leftover `ZOO_MOVES_PR2` in the W7 environment-switch fragment is fixed).
+  `changelog.d/` fragments (a leftover `a leftover placeholder` in the W7 environment-switch fragment is fixed).
