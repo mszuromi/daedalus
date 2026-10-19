@@ -308,7 +308,7 @@ def _trees_of_order_fast(n, res, mod, k, ell, spec):
     # the exit status is checked: a generator that dies mid-stream (OOM,
     # signal, broken install) would otherwise leave a silently truncated
     # tree list, hence missing prediagrams in a correctly stamped cache file
-    # (audit B1).  stderr goes to a file (a pipe could fill and block).
+    #.  stderr goes to a file (a pipe could fill and block).
     with tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
         try:
@@ -428,7 +428,7 @@ def check_topology_constraints(G, k, ell=None):
 # All three yield the same set of topologies (tests/test_degree_first_edges.py,
 # tests/test_canonical_cotree.py): the other two are kept as the canonical
 # generator's independent references (tests set this attribute).  The env
-# switch ``DAEDALUS_EDGE_GENERATOR`` is retired (audit W7: it only warns).
+# switch ``DAEDALUS_EDGE_GENERATOR`` is retired (it only warns).
 
 from engine import _env
 _env.retired('DAEDALUS_EDGE_GENERATOR',
@@ -585,7 +585,7 @@ def _realizations(vs, rem, forbidden):
 # vector).  Worth it without the co-tree filter; with it, the filter already
 # removes most repeats and the per-vector labelling costs more than the extra
 # certificates it saves (measured: see tests/test_canonical_cotree.py header).
-# 'auto' | '1' | '0' (tests set it; the env switch is retired, audit W7).
+# 'auto' | '1' | '0' (tests set it; the env switch is retired).
 _env.retired('DAEDALUS_DELTA_ORBIT_DEDUP',
              "'auto' (on only without the co-tree filter) is the only setting")
 DELTA_ORBIT_DEDUP = 'auto'
@@ -989,7 +989,7 @@ def check_orientation_constraints(D, leaves):
 # Same output (tests/test_orientation_integer.py); measured 2-2.6x faster
 # stage at (3,2), (4,2), (2,3).  'sage' is kept as the reference (tests set
 # this attribute); the env switch ``DAEDALUS_ORIENTATION_CHECKER`` is retired
-# (audit W7: it only warns).
+# (it only warns).
 _env.retired('DAEDALUS_ORIENTATION_CHECKER',
              "the 'integer' checker is the only route; 'sage' remains as a "
              "test reference")

@@ -507,7 +507,7 @@ class GTaSNoise:
 
         ``m`` the number of distinct cells: legs on one cell are one spike
         (a delta), legs on different cells are joined by the shift law
-        (audit GEN-05: the mixed-cell kappa3 / kappa4 were 0 and kappa2
+        (the mixed-cell kappa3 / kappa4 were 0 and kappa2
         ignored the leg order, ``k_ij(tau) != k_ji(-tau)``).  Without the
         shift parameters (``None``) the cells are independent: every
         mixed-cell cumulant is 0.

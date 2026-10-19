@@ -91,7 +91,7 @@ Routh test on the exact characteristic polynomial (no roots), plus the
 Lyapunov margin ``A X + X A^H = -I`` (``X > 0`` <=> Hurwitz; Bartels-Stewart
 on a Schur form, no eigenvalue-gap sensitivity).
 
-Why exact at the parameter point.  S2 needs numbers at ``num_params``;
+Why exact at the parameter point.  The state-space integrator needs numbers at ``num_params``;
 doing the algebra over ``QQ`` and rounding only the final matrices makes
 ``D`` exact (it is compared exactly with the pipeline's ``D_delta``), makes
 every rank decision (index, minimality) tolerance-free, and recovers the
@@ -100,7 +100,7 @@ expanded (e.g. ``1 + 2 tau s + tau^2 s^2``).  The algebra is generic over the
 field ``F``; the symbolic route (``F = QQ(params)``, wanted later for a
 symbolic one-loop stage) needs only a different conversion in step 1.
 
-Interface contract (consumed by the state-space subset integrator, S2)
+Interface contract (consumed by the state-space subset integrator)
 ---------------------------------------------------------------------
 ``Realization`` (frozen):
 
@@ -187,7 +187,7 @@ __all__ = [
 
 _REASONS = ('non_rational', 'unbound_symbol', 'spatial', 'improper_entry',
             'singular_pencil', 'index_gt_1', 'no_kernel', 'ill_conditioned',
-            # realize_kernel (S3)
+            # realize_kernel
             'no_kernel_image', 'kernel_not_strictly_proper',
             'kernel_not_hurwitz', 'kernel_shifted_step')
 
@@ -591,7 +591,7 @@ def _prebalance_siso(a, b, c):
     before the Gramians: the entry as given, ``a`` balanced alone, and the
     augmented matrix ``[[a, b], [c, 0]]`` balanced (``scipy.linalg.
     matrix_balance``), each with ``b`` / ``c`` equalised; the candidate with
-    the smallest ``max(|a|_1, |b|_1 |c|_inf)`` is kept (S1's per-entry
+    the smallest ``max(|a|_1, |b|_1 |c|_inf)`` is kept (the per-entry
     realizations balance ``a`` alone, which leaves ``b`` and ``c`` graded in
     opposite directions on Pade entries: |b| ~ 1e12, |c| ~ 1e-12 at n = 16,
     where the Gramians then lose everything below ~1e-16 relative).  The
@@ -935,7 +935,7 @@ def _entries_to_field(K_ft, omega, subs):
                 if any(_spatial_symbol(f) for f in free):
                     raise RealizationRefused(
                         'spatial', f'K[{i},{j}] carries the spatial symbol(s) '
-                        f'{sorted(free)} (a per-momentum realization is not part of S1)')
+                        f'{sorted(free)} (a per-momentum realization is not part of the realization)')
                 raise RealizationRefused(
                     'unbound_symbol', f'K[{i},{j}] has symbols {sorted(free)} '
                     'without a value in num_params (or a kernel without a '
@@ -1301,7 +1301,7 @@ def _routh_hurwitz(A, F):
     on ``p(s) conj(p)(s)``: real rational coefficients, and the roots of
     ``conj(p)`` are the conjugates of those of ``p`` (same real parts), so it
     is Hurwitz iff ``p`` is.  (Returned None for complex fields: a complex
-    realization never got the a-posteriori check, audit GEN-15.)"""
+    realization never got the a-posteriori check.)"""
     S = _sage()
     n = A.nrows()
     if n == 0:
@@ -1348,7 +1348,7 @@ def _lyapunov_margin(A):
 
 #: Balancing range ``max T / min T`` above which ``realize_K`` checks the
 #: rounded realization a posteriori (high-order rational kernels: Pade-n,
-#: long Erlang chains); ordinary models stay within [0.125, 8] (S1 census).
+#: long Erlang chains); ordinary models stay within [0.125, 8] (census).
 GRADED_BALANCE_RANGE = 1e6
 
 
@@ -1792,7 +1792,7 @@ def realize(prop, num_params, **kw):
         raise RealizationRefused('no_kernel', 'propagator data has no K_ft / omega')
     if prop.get('G_tx_sym') is not None or int(prop.get('spatial_dim') or 0) > 0:
         raise RealizationRefused('spatial', 'spatial propagator (per-momentum '
-                                 'realization is not part of S1)')
+                                 'realization is not part of the realization)')
     nf = int(prop.get('nf') or prop['K_ft'].nrows())
     names = list(prop.get('ring_gen_names') or [])
     resp = names[:nf] if len(names) >= 2 * nf else None
@@ -1812,7 +1812,7 @@ def try_realize(prop, num_params, **kw):
 def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
                    direct=False):
     """Minimal SISO realization of a causal conductance kernel
-    ``g(t) = Theta(t) c e^{a t} b`` (S3: the state-space route's kernel
+    ``g(t) = Theta(t) c e^{a t} b`` (the state-space route's kernel
     edges and dressed lines), as an ``EntryRealization`` with ``d = 0``.
     ``direct=True``: also a kernel with a direct term, ``g = d
     delta + Theta c e^{a t} b`` (image ``d + (strictly proper)``: the

@@ -1,7 +1,7 @@
 """
 engine._env
 ===========
-One parser for the package's environment switches (audit W7, RED-05: the
+One parser for the package's environment switches (the
 values were parsed seven different ways at 32 sites, garbage silently meant
 "on" at some and "off" at others, and the two memory budgets gave ``0``
 opposite meanings).
@@ -140,8 +140,7 @@ def retired(name, note, environ=None):
     return True
 
 
-#: ``DAEDALUS_PHASE_J_ENGINE``: the Phase J engine (the ONE reader; audit
-#: RED-05 found five, four of them unvalidated).
+#: ``DAEDALUS_PHASE_J_ENGINE``: the Phase J engine (the ONE reader; there used to be five, four of them unvalidated).
 PHASE_J_ENGINE_ENV = 'DAEDALUS_PHASE_J_ENGINE'
 _ENGINE_WORDS = {'': 'statespace', 'default': 'statespace',
                  'statespace': 'statespace', 'poles': 'poles'}

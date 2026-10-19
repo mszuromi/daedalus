@@ -34,7 +34,7 @@ The spectrum is ``S(ω) = ∫ dτ e^{-iωτ} C(τ)`` with the same τ, so the δ
 weights add the flat floor ``Σ w`` (times ``e^{-iω τ0}`` for a spike off
 τ = 0).
 
-C0 output (state-space stage S4, ``api.me_output``).  For a k = 2 result
+C0 output (state-space route, ``api.me_output``).  For a k = 2 result
 computed on the state-space route the smooth part is also held as
 matrix-exponential triples, one per loop order and side, assembled from the
 same subsets, prefactors and Wick permutations as ``C_tau``::
@@ -792,7 +792,7 @@ class Cumulant:
             if contact is None:
                 # a jump relative to the kernel's own size at 0 (the former
                 # floor of 1.0 took a jump of a small kernel for round-off
-                # and silently used L(0+): audit GEN-14)
+                # and silently used L(0+))
                 if abs(lp - lm) > 1e-14 * kscale:
                     raise ValueError(
                         f'the cumulant has a δ(τ) component (weight {w:.6g}) '

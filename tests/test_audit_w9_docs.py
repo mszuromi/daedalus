@@ -55,8 +55,16 @@ def test_docs_use_the_current_package_names():
     assert not bad, bad
 
 
+_LABELS = re.compile(
+    r'\b(?:[Ii]tem|[Bb]ug) ?#?\d+\b'                  # "item 61", "bug 14"
+    r'|\b[Aa]udit W\d|\bW8p\b'                        # wave labels
+    r'|\b(?:ACC|RED|MEM|SPD|LOUD|CON|GEN|UNIT)-\d+\b'  # audit finding ids
+    r'|\baudit [A-Z0-9]\w*-\w+|\baudit [A-Z]\d\w*[ -]\d'   # "audit 3B-02", "audit G1-symbolic 2"
+    r'|\bS[1-6]: |\bstage S[1-6]\b|\(S[1-6]\)')          # stage labels
+
+
 def test_no_internal_ticket_numbers_in_library_text():
-    pat = re.compile(r'\b(?:[Ii]tem|[Bb]ug) ?#?\d+\b')
+    pat = _LABELS
     hits = []
     for f in _tracked():
         if not f.endswith('.py') or not f.startswith(('api/', 'engine/', 'simulations/', 'models/')) \
@@ -66,3 +74,12 @@ def test_no_internal_ticket_numbers_in_library_text():
             if pat.search(line):
                 hits.append(f'{f}:{i}: {line.strip()[:80]}')
     assert not hits, hits[:10]
+
+
+def test_changelog_fragments_have_no_placeholders():
+    bad = []
+    for f in _tracked():
+        if f.startswith('changelog.d/') and f.endswith('.md'):
+            for m in re.finditer(r'\b[A-Z]+_[A-Z]+_PR\d\b|\bTODO\b|\bXXX\b', _read(f)):
+                bad.append(f'{f}: {m.group(0)}')
+    assert not bad, bad

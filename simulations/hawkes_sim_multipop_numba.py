@@ -1422,7 +1422,7 @@ def build_sim_arrays(model, fundamental, mf_values):
 
     # ── Per-pair coupling W and filter τ_g ────────────────────────
     # W[i, j] is the weight w_ij with the sign it enters the model's own
-    # v-saddle equation (d v*_i / d w_ij at the saddle; audit GEN-16: the
+    # v-saddle equation (d v*_i / d w_ij at the saddle; the
     # sign was taken from the literal population names 'E' / 'I' and any
     # other names got +1).  The time constant: ``taug<post><pre>``,
     # ``tau_g<post><pre>``, ``taug`` or ``tau_g`` (a scalar applies to every

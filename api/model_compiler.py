@@ -1158,7 +1158,7 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
     return _action
 
 
-# one copy (audit W7, RED-07)
+# one copy
 from engine.core.field_theory import _iter_multi_indices  # noqa: E402
 
 
@@ -1878,7 +1878,7 @@ def _decays(rate, positive):
     complex rate, its REAL part positive -- the convergence condition of the
     transform at real omega.  A damped oscillation written as complex
     exponentials, ``e^{(-r + i r) t}``, has rate ``(1 - i) r``: refused
-    before (audit W4b CI review: on a stack where Sage's own integral of it
+    before (on a stack where Sage's own integral of it
     fails, the kernel then had no image, and the mean-field check took it
     as normalised).  The real part treats the declared-positive symbols as
     real; any other symbol in a complex rate leaves it undecided."""

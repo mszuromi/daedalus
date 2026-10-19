@@ -18,7 +18,7 @@ one :func:`register` call and touches no existing backend::
 
 The built-in backends reproduce the dispatch of ``compute_cumulants`` as of
 0.2.0 (``tests/test_analyzer_routing.py`` prints the table), less the
-retired grouped Phase J and frequency-domain Phase H entries (audit W7):
+retired grouped Phase J and frequency-domain Phase H entries:
 
 =====================  ========  ==============================================
 backend                priority  applies when

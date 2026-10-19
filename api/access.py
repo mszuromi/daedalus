@@ -23,8 +23,7 @@ This produces::
     }
 
 Without a naming convention only the internal names are accepted (no
-built-in letter table: every ModelBuilder model declares its convention,
-audit GEN-04).
+built-in letter table: every ModelBuilder model declares its convention).
 
 User-facing primitives
 ----------------------

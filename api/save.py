@@ -101,9 +101,9 @@ import numpy as np
 #: external times, the external-time tie order for coincident times).
 PHASE_J_CONVENTION = 'theta0_ito_const_rows'
 
-# The retired (audit W7) ``final_integral.THETA0_CONST_ROW_MODE`` -> the
+# The retired ``final_integral.THETA0_CONST_ROW_MODE`` -> the
 # stamp label it wrote; 'legacy_clip' files (``DAEDALUS_PHASE_J_LEGACY=1``
-# etc., before W7) still load, with a warning.
+# etc., before the retirement) still load, with a warning.
 _PHASE_J_CONVENTION_BY_MODE = {
     'ito':         PHASE_J_CONVENTION,
     'legacy_clip': 'theta0_legacy_clip',
@@ -154,7 +154,7 @@ def _daedalus_version() -> str:
 
 def _phase_j_convention() -> str:
     """Label of the Phase J convention in force: ``PHASE_J_CONVENTION``, the
-    only one since the 'legacy_clip' Θ(0) mode was retired (audit W7; the
+    only one since the 'legacy_clip' Θ(0) mode was retired (the
     labels of ``_LEGACY_PHASE_J_CONVENTIONS`` remain for loading files
     written before)."""
     return PHASE_J_CONVENTION
@@ -169,7 +169,7 @@ _PHASE_J_STAMP_FLAGS = (
     'USE_1D_INTEGRATOR', 'USE_POSET_INTEGRATOR', 'TAU_KERNEL_CAP',
     'QUAD_OPTS', 'NQUAD_EPSABS_FACTOR', 'NQUAD_EPSREL', 'NQUAD_LIMIT',
     'NQUAD_TAIL_K', 'NQUAD_UNCERTIFIED_CAP')
-# (Audit W7 retired the switches ``THETA0_CONST_ROW_MODE``,
+# (The retired switches ``THETA0_CONST_ROW_MODE``,
 # ``STRUCTURAL_ZEROS``, ``NQUAD_HARDENED``, ``USE_DBM_FALLBACK``,
 # ``USE_PHASE_J_DD_KERNELS``, ``CHAIN_UPPERS_KERNEL``, ``SEMIINF_CHAIN``,
 # ``UNBOUNDED_2D``, ``USE_SHOTNOISE_INTEGRATED`` and the boxed-route
@@ -808,8 +808,7 @@ def save_csv(result: dict, path: str) -> str:
         if len(col_data) > 1 and len(col_data[0]) > 0:
             n_rows = len(col_data[0])
             for i in range(n_rows):
-                # round-trip exact (.10g rounded to 5e-11 relative; audit
-                # G2-outputs 2)
+                # round-trip exact (.10g rounded to 5e-11 relative)
                 row = [f'{col_data[j][i]:.17g}'
                        for j in range(len(col_data))]
                 f.write(','.join(row) + '\n')
