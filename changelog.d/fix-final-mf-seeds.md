@@ -1,0 +1,20 @@
+#### Mean field: seed boxes from the model's own equations, equilibrated Newton steps (final check)
+
+Exactly rescaled twins of two tracked models picked a different mean-field root, or the right root to only ~1e-10.
+
+- **Seed boxes** (`api._mean_field_dae._equation_scales`): each state variable's box now comes from the zero of its
+  own equations. Starting from 0, each variable in turn is set to the zero of its rows nearest to 0 along that line,
+  bracketed over the decades 1e-30 .. 1e30 and then bisected to full precision, for three sweeps. This scale moves
+  exactly with the variable's units, so the seeds do not depend on them. The largest-parameter heuristic is kept
+  only for a variable whose rows have no sign change. Before: `single_population_spike_reset_test` with the voltage
+  in units of 1e3 (Em, w times 1e3) seeded the spike rates around 1e4 and returned the negative-rate root
+  n1* = -3.345, which stopped the run with `G4_NEGATIVE_VARIANCE`. `dendritic_quad_soma_sigmoid` with time in units
+  of 1e-3 returned an unstable root (`G2_UNSTABLE_SADDLE`). Both now return the same root as in the original units,
+  to 1e-14.
+- **Newton refinement**: the correction is solved on the Jacobian scaled by powers of two (rows and columns to unit
+  maxima). With spike rates ~1e8 next to voltages ~1, the plain least-squares cutoff dropped the small directions.
+  The saddle was then right to only 1e-10 .. 2e-9, and two symmetric populations came out different by up to 1e-12.
+  It is now right to round-off (1.8e-16).
+
+Numbers that move: the saddle's last digits on models whose variables differ greatly in size. A model whose roots
+were previously reached from the largest-parameter box may find a different root set. ZOO_RESULT

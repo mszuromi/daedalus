@@ -466,7 +466,99 @@ def _build_residual(model: dict, params_np: dict,
 # ── Initial-guess sampling ───────────────────────────────────────────
 
 
-def _seed_box_default(state_vars, model, fundamental):
+#: Decades scanned for the zero of a variable's own equations
+#: (``_equation_scales``) and the Gauss-Seidel sweeps over the variables.
+_SCALE_DECADES = 30
+_SCALE_SWEEPS = 3
+
+
+def _domains(model):
+    return {p['natural_name']: p.get('domain')
+            for p in model.get('parameters', [])
+            if p.get('mean_field') and p.get('natural_name')}
+
+
+def _equation_scales(R, state_vars, slices, model, seed_box=None):
+    """``{var: scale}``: the size of each state variable read off its own
+    equations, unit free.  Starting from 0, each variable in turn (its block
+    of components moved together, the others at their current values) is set
+    to the zero of its own rows nearest to 0 along that line: bracketed on
+    the decades ``10^-30 .. 10^30`` (both signs unless the saddle's domain is
+    'positive'), then bisected to full precision; three sweeps.  The scale
+    is the largest such zero met.  It moves exactly with the variable's
+    units (a field in units s: s times the scale; a time unit: unchanged),
+    so seed boxes built on it do not depend on the units.  A variable whose
+    rows have no sign change on the line keeps no scale (the default box).
+
+    (The default box scaled with the LARGEST PARAMETER VALUE, which is not a
+    field scale: a voltage in mV (Em = 3500) put the spike-rate seeds around
+    1e4, and the solver returned an unphysical negative-rate root that the
+    same model in volts never reached.)"""
+    dom = _domains(model)
+    total = sum(size for _, _, size in state_vars)
+    x = np.zeros(total)
+    scales = {}
+    grid = 10.0 ** np.arange(-_SCALE_DECADES, _SCALE_DECADES + 1)
+
+    def rows_at(var, t):
+        a, b = slices[var]
+        y = x.copy()
+        y[a:b] = t
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            with np.errstate(all='ignore'):
+                f = R(y)
+        f = np.asarray(f[a:b], dtype=float)
+        if not np.all(np.isfinite(f)) or np.any(np.abs(f) >= _PENALTY):
+            return None
+        return float(np.mean(f))
+
+    for _ in range(_SCALE_SWEEPS):
+        for var, _, _ in state_vars:
+            if seed_box and var in seed_box:
+                continue
+            signs = (1.0,) if dom.get(var) == 'positive' else (1.0, -1.0)
+            best = None
+            for sg in signs:
+                prev_t, prev_g = 0.0, rows_at(var, 0.0)
+                for t in sg * grid:
+                    g = rows_at(var, t)
+                    if g is None:
+                        prev_t, prev_g = t, None
+                        continue
+                    if g == 0.0:
+                        root = t
+                    elif prev_g is not None and prev_g != 0.0 and (g > 0) != (prev_g > 0):
+                        lo, hi, glo = prev_t, t, prev_g
+                        for _ in range(200):
+                            mid = 0.5 * (lo + hi)
+                            if mid in (lo, hi):
+                                break
+                            gm = rows_at(var, mid)
+                            if gm is None:
+                                break
+                            if gm == 0.0:
+                                lo = hi = mid
+                                break
+                            if (gm > 0) == (glo > 0):
+                                lo, glo = mid, gm
+                            else:
+                                hi = mid
+                        root = 0.5 * (lo + hi)
+                    else:
+                        prev_t, prev_g = t, g
+                        continue
+                    if root != 0.0 and (best is None or abs(root) < abs(best)):
+                        best = root
+                    break
+            if best is not None:
+                a, b = slices[var]
+                x[a:b] = best
+                scales[var] = max(scales.get(var, 0.0), abs(best))
+    return scales
+
+
+def _seed_box_default(state_vars, model, fundamental, scales=None):
     """Per-variable default sampling box derived from the variable's
     declared ``domain`` and a heuristic scale.
 
@@ -477,8 +569,12 @@ def _seed_box_default(state_vars, model, fundamental):
     field's saddle explicitly declares ``domain='real'``/``'symmetric'`` (a
     double-well opting into the negative half-line).
 
+    ``scales``: per-variable scales from ``_equation_scales``, which replace
+    the parameter heuristic where given (unit free).
+
     Returns ``{var_name: (low, high)}``.
     """
+    scales = scales or {}
     scale = 0.0
     for pname, pval in fundamental.items():
         arr = np.asarray(pval, dtype=float).ravel()
@@ -504,21 +600,22 @@ def _seed_box_default(state_vars, model, fundamental):
         # preserves the historical seed box of every existing model: widening
         # an undeclared field's box (e.g. a voltage) destabilises its
         # multi-start saddle solve and was an env-sensitive regression.
+        sc = scales.get(var) or scale
         if saddle_domain.get(var) in ('real', 'symmetric'):
-            boxes[var] = (-3.0 * scale, 3.0 * scale)
+            boxes[var] = (-3.0 * sc, 3.0 * sc)
         else:
-            boxes[var] = (0.0, 5.0 * scale)
+            boxes[var] = (0.0, 5.0 * sc)
     return boxes
 
 
 def _sample_seeds(state_vars, slices, model, fundamental,
-                  n_starts, seed_box, rng):
+                  n_starts, seed_box, rng, scales=None):
     """Generate ``n_starts`` initial guesses for the state vector.
 
     Each variable gets sampled uniformly in its box.  ``seed_box``
     overrides defaults per-variable (``{var_name: (low, high)}``).
     """
-    boxes = _seed_box_default(state_vars, model, fundamental)
+    boxes = _seed_box_default(state_vars, model, fundamental, scales)
     if seed_box:
         boxes.update(seed_box)
     total = sum(size for _, _, size in state_vars)
@@ -571,14 +668,14 @@ _RESCALE_ROUNDS = 3
 
 
 def _rescale_seeds(roots, state_vars, slices, model, fundamental, seed_box,
-                   n_starts, rng, used=None):
+                   n_starts, rng, used=None, scales=None):
     """Second-pass guesses: ``n_starts`` on the default box shape scaled to
     each root found whose size (per variable, its largest component) lies
     below a fifth of the default box (or above it); one box per decade of
     root size.  Variables with an explicit ``seed_box``, and variables at 0
     in that root, keep their default box.  Empty when every root is on the
     default box's scale (the existing models: their seeds are unchanged)."""
-    default = _seed_box_default(state_vars, model, fundamental)
+    default = _seed_box_default(state_vars, model, fundamental, scales)
     if seed_box:
         default.update(seed_box)
     unit = _seed_box_default(state_vars, model, {})
@@ -781,6 +878,22 @@ def _fd_jacobian(R, x, f, c):
     return J, res
 
 
+def _equilibrated_lstsq(J, f):
+    """``J^+ f`` with ``J`` scaled by powers of two first (rows and columns
+    to unit maxima; exact): with variables of very different sizes (spike
+    rates ~1e8 next to voltages ~1, a model in fast time units) the plain
+    least-squares cutoff, relative to the largest singular value, dropped
+    the small directions and the Newton correction stopped at ~1e-12."""
+    J = np.asarray(J)
+    rm = np.max(np.abs(J), axis=1) if J.size else np.ones(0)
+    r = np.where(rm > 0, 2.0 ** -np.round(np.log2(np.where(rm > 0, rm, 1.0))), 1.0)
+    Jr = r[:, None] * J
+    cm = np.max(np.abs(Jr), axis=0) if J.size else np.ones(0)
+    c = np.where(cm > 0, 2.0 ** -np.round(np.log2(np.where(cm > 0, cm, 1.0))), 1.0)
+    y = np.linalg.lstsq(Jr * c[None, :], r * f, rcond=None)[0]
+    return c * y
+
+
 def _refine_root(R, x, c):
     """Refine a converged point and decide whether it is a root.
 
@@ -810,7 +923,7 @@ def _refine_root(R, x, c):
         if q == 0.0:
             break
         try:
-            d = np.linalg.lstsq(J, f, rcond=None)[0]
+            d = _equilibrated_lstsq(J, f)
         except (np.linalg.LinAlgError, ValueError):
             break
         if not np.all(np.isfinite(d)):
@@ -1245,8 +1358,10 @@ def solve_mean_field_dae(
         )
 
     rng = np.random.default_rng(rng_seed)
+    scales = _equation_scales(R, state_vars, slices, model, seed_box)
     seeds = _sample_seeds(
-        state_vars, slices, model, fundamental, n_starts, seed_box, rng)
+        state_vars, slices, model, fundamental, n_starts, seed_box, rng,
+        scales)
     undeclared = _undeclared_domain_vars(state_vars, model, seed_box)
     mirror_cols = (np.concatenate([np.arange(*slices[v]) for v in undeclared])
                    if undeclared else None)
@@ -1291,7 +1406,8 @@ def solve_mean_field_dae(
     used = set()
     for _ in range(_RESCALE_ROUNDS):
         extra = _rescale_seeds(deduped, state_vars, slices, model,
-                               fundamental, seed_box, n_starts, rng, used)
+                               fundamental, seed_box, n_starts, rng, used,
+                               scales)
         if not len(extra):
             break
         n_before = len(deduped)
