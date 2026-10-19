@@ -159,7 +159,9 @@ def test_pade8_kernel_balanced_schwarz_block():
     assert R.cls == 'C' and R.n_states == 9
     assert any('Schwarz form: 1' in p for p in R.provenance)
     cond = R.conditioning
-    assert cond['norm_A'] < 1e-3 * cond['norm_A_unbalanced']          # balancing is not optional
+    # balancing is not optional (the realization is formed in s / w0 first, which already
+    # takes out the time unit's grading: 280x left for balancing here, was > 1000x)
+    assert cond['norm_A'] < 1e-2 * cond['norm_A_unbalanced']
     assert np.all(np.log2(R.balance) == np.round(np.log2(R.balance)))   # exact powers of two
     v = RZ.verify_against_K(R, prop['K_ft'], prop['omega'], params, n_points=20, seed=4)
     assert v['max_err'] <= 1e-13 and v['max_err_exact'] <= 1e-40
