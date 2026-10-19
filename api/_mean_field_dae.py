@@ -479,13 +479,14 @@ def _domains(model):
 
 
 def _equation_scales(R, state_vars, slices, model, seed_box=None):
-    """``{var: scale}``: the size of each state variable read off its own
-    equations, unit free.  Starting from 0, each variable in turn (its block
-    of components moved together, the others at their current values) is set
-    to the zero of its own rows nearest to 0 along that line: bracketed on
+    """``{var: (largest, smallest)}``: the sizes of each state variable read
+    off its own equations, unit free.  Starting from 0, each variable in
+    turn (its block of components moved together, the others at their
+    current values) is set to the zero of its own rows nearest to 0 along
+    that line, every zero on the line being recorded: bracketed on
     the decades ``10^-30 .. 10^30`` (both signs unless the saddle's domain is
-    'positive'), then bisected to full precision; three sweeps.  The scale
-    is the largest such zero met.  It moves exactly with the variable's
+    'positive'), then bisected to full precision; three sweeps.  The scales
+    are the largest and smallest such zeros met.  They move exactly with the variable's
     units (a field in units s: s times the scale; a time unit: unchanged),
     so seed boxes built on it do not depend on the units.  A variable whose
     rows have no sign change on the line keeps no scale (the default box).
@@ -497,7 +498,7 @@ def _equation_scales(R, state_vars, slices, model, seed_box=None):
     dom = _domains(model)
     total = sum(size for _, _, size in state_vars)
     x = np.zeros(total)
-    scales = {}
+    found = {}
     grid = 10.0 ** np.arange(-_SCALE_DECADES, _SCALE_DECADES + 1)
 
     def rows_at(var, t):
@@ -526,6 +527,7 @@ def _equation_scales(R, state_vars, slices, model, seed_box=None):
                     if g is None:
                         prev_t, prev_g = t, None
                         continue
+                    root = None
                     if g == 0.0:
                         root = t
                     elif prev_g is not None and prev_g != 0.0 and (g > 0) != (prev_g > 0):
@@ -545,17 +547,19 @@ def _equation_scales(R, state_vars, slices, model, seed_box=None):
                             else:
                                 hi = mid
                         root = 0.5 * (lo + hi)
-                    else:
-                        prev_t, prev_g = t, g
+                    prev_t, prev_g = t, g
+                    if root is None or root == 0.0:
                         continue
-                    if root != 0.0 and (best is None or abs(root) < abs(best)):
+                    found.setdefault(var, []).append(abs(root))
+                    if best is None or abs(root) < abs(best):
                         best = root
-                    break
             if best is not None:
                 a, b = slices[var]
                 x[a:b] = best
-                scales[var] = max(scales.get(var, 0.0), abs(best))
-    return scales
+    # every zero met on the lines: the box spans the largest; the smallest
+    # gets seeds of its own when it is more than a decade below (a small
+    # root's basin is a small part of the big box)
+    return {v: (max(r), min(r)) for v, r in found.items()}
 
 
 def _seed_box_default(state_vars, model, fundamental, scales=None):
@@ -600,7 +604,7 @@ def _seed_box_default(state_vars, model, fundamental, scales=None):
         # preserves the historical seed box of every existing model: widening
         # an undeclared field's box (e.g. a voltage) destabilises its
         # multi-start saddle solve and was an env-sensitive regression.
-        sc = scales.get(var) or scale
+        sc = (scales.get(var) or (None,))[0] or scale
         if saddle_domain.get(var) in ('real', 'symmetric'):
             boxes[var] = (-3.0 * sc, 3.0 * sc)
         else:
@@ -892,6 +896,16 @@ def _equilibrated_lstsq(J, f):
     c = np.where(cm > 0, 2.0 ** -np.round(np.log2(np.where(cm > 0, cm, 1.0))), 1.0)
     y = np.linalg.lstsq(Jr * c[None, :], r * f, rcond=None)[0]
     return c * y
+
+
+def _equilibrate_square(J):
+    """``D^-1 J D`` with ``D`` powers of two balancing ``J`` (same
+    eigenvalues; ``scipy.linalg.matrix_balance``)."""
+    import scipy.linalg as _sl
+    J = np.asarray(J, dtype=float)
+    if not J.size or not np.all(np.isfinite(J)):
+        return J
+    return _sl.matrix_balance(J, permute=False)[0]
 
 
 def _refine_root(R, x, c):
@@ -1362,6 +1376,13 @@ def solve_mean_field_dae(
     seeds = _sample_seeds(
         state_vars, slices, model, fundamental, n_starts, seed_box, rng,
         scales)
+    small = {v: (lo, lo) for v, (hi, lo) in scales.items() if lo < 0.1 * hi}
+    if small:
+        # the smallest zeros on their own box too (the big box reaches a
+        # small root's basin rarely)
+        seeds = np.vstack([seeds, _sample_seeds(
+            state_vars, slices, model, fundamental, n_starts, seed_box, rng,
+            {**scales, **small})])
     undeclared = _undeclared_domain_vars(state_vars, model, seed_box)
     mirror_cols = (np.concatenate([np.arange(*slices[v]) for v in undeclared])
                    if undeclared else None)
@@ -1557,6 +1578,29 @@ def solve_mean_field_dae(
                     raise
                 except Exception:                        # noqa: BLE001
                     pass
+        if not stable_first and len(deduped) > 1:
+            # No linearization decides (algebraic rows, or saddles declared
+            # with .set_mf_equation): the relaxation x' = -R(x) of the
+            # saddle equations as written (``lhs - rhs``, ``s - rhs(s)``)
+            # orders them -- a root is first when every eigenvalue of
+            # -dR/dx has a negative real part (the static stability of a
+            # rate fixed point n = F(n): eig(dF/dn) < 1).  Unit free.  (A
+            # complete root search found the unstable roots of such models
+            # too, and the ascending order put one first.)
+            c_typ = _typical_scale(deduped)
+            for q, x in enumerate(deduped):
+                try:
+                    f = R(x)
+                    fd = _fd_jacobian(R, x, f, c_typ)
+                    if fd is None:
+                        continue
+                    ev = np.linalg.eigvals(-_equilibrate_square(fd[0]))
+                    if ev.size and np.all(ev.real < 0):
+                        stable_first.add(q)
+                except Exception:                        # noqa: BLE001
+                    pass
+            if len(stable_first) == len(deduped):
+                stable_first = set()
         if stable_first:
             # each group nearest to 0 first (ties ascending): invariant under
             # a change of the field's units, and the root the old search
