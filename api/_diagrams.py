@@ -74,6 +74,17 @@ def _model_cache_dir(model, taylor_order, cache_dir_root):
     return f'{cache_dir_root}/{prop_tag}'
 
 
+def enumeration_procs(parallel, n_workers):
+    """Worker processes of a streamed prediagram enumeration (a cache miss of
+    an unshipped cell): ``n_workers`` when ``parallel`` and it was given,
+    else 1 -- a streamed cell is usually small, so the pool is not started
+    unasked.  ``DAEDALUS_PREDIAGRAM_PROCS`` still overrides (scripts); macOS
+    never forks, so there it is serial."""
+    if not parallel or n_workers is None:
+        return 1
+    return max(1, int(n_workers))
+
+
 def enumerate_unique_diagrams(
     ft,
     model: dict,
@@ -144,7 +155,9 @@ def enumerate_unique_diagrams(
     n_workers : int or None, default None
         Worker count when ``parallel=True``.  ``None`` lets the
         underlying enumerator pick
-        ``min(os.cpu_count(), len(prediagrams))``.
+        ``min(os.cpu_count(), len(prediagrams))``.  Given, it is also the
+        process count of a streamed prediagram enumeration (a cache miss;
+        :func:`enumeration_procs`).
     verbose : bool
 
     Returns
@@ -234,6 +247,7 @@ def enumerate_unique_diagrams(
         prediagrams, _pd_source = pd_format.load_prediagrams(
             prediagram_cache_root, k, ell,
             use_cache=use_cache, verbose=False, stream=stream_prediagrams,
+            n_procs=enumeration_procs(parallel, n_workers),
         )
         if verbose:
             _how = {'computed': f'computed and written to '

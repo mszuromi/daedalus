@@ -595,9 +595,21 @@ def cache_format():
     return _env.choice(_FORMAT_ENV, ('auto', 'v1', 'v2'), 'auto')
 
 
-def _enum_procs():
+def _enum_procs(n_procs=None):
+    """Worker count of a streamed enumeration: ``DAEDALUS_PREDIAGRAM_PROCS``
+    when set (an override kept for scripts; prefer ``n_workers``), else
+    ``n_procs`` (``compute_cumulants``' ``n_workers`` / ``parallel``,
+    see ``api._diagrams.enumeration_procs``), else 1.  macOS never forks:
+    there the enumeration is serial whatever this says."""
     from engine import _env
-    return _env.integer(_PROCS_ENV, 1, minimum=1)
+    if os.environ.get(_PROCS_ENV, '').strip():
+        return _env.integer(_PROCS_ENV, 1, minimum=1)
+    if n_procs is None:
+        return 1
+    n = int(n_procs)
+    if n < 1:
+        raise ValueError(f'n_procs={n_procs!r}: expected >= 1')
+    return n
 
 
 def _cache_off_source(stream):
@@ -640,14 +652,15 @@ def clear_streamed_memo():
     _STREAMED_MEMO.clear()
 
 
-def _streamed_certs(k, ell, verbose=False):
+def _streamed_certs(k, ell, verbose=False, n_procs=None):
     """The packed-cert set of ``(k, ell)`` from :func:`stream_prediagram_certs`,
-    memoised in process (see :data:`_STREAMED_MEMO`)."""
+    memoised in process (see :data:`_STREAMED_MEMO`; the set does not depend
+    on the worker count)."""
     key = _streamed_memo_key(k, ell)
     certs = _STREAMED_MEMO.get(key)
     if certs is None:
         certs = frozenset(stream_prediagram_certs(
-            k, ell, n_procs=_enum_procs(), verbose=verbose))
+            k, ell, n_procs=_enum_procs(n_procs), verbose=verbose))
         if len(certs) <= _STREAMED_MEMO_MAX_CERTS:
             while len(_STREAMED_MEMO) >= _STREAMED_MEMO_MAX_CELLS:
                 _STREAMED_MEMO.pop(next(iter(_STREAMED_MEMO)))
@@ -885,7 +898,7 @@ def _save_v2_best_effort(root, k, ell, certs, cert_backend=None,
 
 
 def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
-                     stream=True):
+                     stream=True, n_procs=None):
     """Prediagram records for ``(k, ell)``, cheapest available source first.
 
     Lookup order is local v2, then local v1, then the shipped v2 file, then
@@ -919,7 +932,8 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     streaming existed, and what the temporal compute path still asks for
     (:data:`TEMPORAL_CACHE_OFF_STREAMS`).  ``DAEDALUS_PREDIAGRAM_EAGER``
     overrides ``stream`` either way (:data:`_EAGER_ENV`).  ``stream`` is
-    ignored when ``use_cache`` is true.
+    ignored when ``use_cache`` is true.  ``n_procs``: worker processes of a
+    streamed enumeration (Linux; :func:`_enum_procs`).
 
     Streamed records are NOT in general the records a cache-on run or the
     eager enumerator uses.  The eager enumerator, the shipped files
@@ -948,7 +962,7 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
         if _cache_off_source(stream) == 'eager':
             return (list(_enumerate_eager(k=k, ell=ell, verbose=verbose)[2]),
                     'eager')
-        certs = _streamed_certs(k, ell, verbose)
+        certs = _streamed_certs(k, ell, verbose, n_procs)
         _load_guard(k, ell, len(certs))
         return records_from_certs(certs), 'streamed'
 
@@ -978,7 +992,7 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
             copy_from=src_path if str(src_path).endswith('.xz') else None)
         return records_from_certs(certs), 'shipped'
 
-    certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(),
+    certs = stream_prediagram_certs(k, ell, n_procs=_enum_procs(n_procs),
                                     verbose=verbose)
     if fmt in ('auto', 'v2'):
         _save_v2_best_effort(root, k, ell, certs)
