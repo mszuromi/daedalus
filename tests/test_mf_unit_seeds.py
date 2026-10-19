@@ -76,3 +76,23 @@ def test_dendritic_time_units_keep_the_stable_root_to_round_off(a):
             fac * np.asarray(base['mf_values'][f]), rel=2e-15), f
     nS = np.asarray(twin['mf_values']['nSstar'])
     assert abs(nS[0] - nS[1]) <= 4e-16 * abs(nS[0])
+
+
+def test_two_population_kernel_model_selects_the_stable_root():
+    """The two-population exponential-rate model of the kernel front-end test
+    (``tests/test_frontend_function_kernel_ft.py``, saddles declared with
+    .set_mf_equation, so no linearization classifies its roots): the stable
+    fixed point is selected, not the unstable one nearer to 0 (G2_UNSTABLE_
+    SADDLE, a propagator pole at -0.30i, since the one-solver change).  The
+    roots are ordered by the relaxation of their saddle equations."""
+    from tests.test_frontend_function_kernel_ft import _kernel_model
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r = compute_cumulants(_kernel_model('freq', 2), k=2, max_ell=0,
+                              external_fields=[('dn', 1), ('dn', 2)],
+                              tau_grid=np.array([0.0, 1.0]), parallel=False,
+                              verbose=False, use_cache=False)
+    assert r['status'] == 'ok'
+    assert len(r['mf_all_roots']) >= 2
+    codes = {f.code for f in r['analysis'].findings}
+    assert 'G2_UNSTABLE_SADDLE' not in codes

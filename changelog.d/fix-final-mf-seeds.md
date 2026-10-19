@@ -11,6 +11,13 @@ Exactly rescaled twins of two tracked models picked a different mean-field root,
   n1* = -3.345, which stopped the run with `G4_NEGATIVE_VARIANCE`. `dendritic_quad_soma_sigmoid` with time in units
   of 1e-3 returned an unstable root (`G2_UNSTABLE_SADDLE`). Both now return the same root as in the original units,
   to 1e-14.
+- **Root order without a linearization**: for saddles declared with `.set_mf_equation`, or `.equation` rows
+  without Dt terms, nothing classified stability. The roots were then ordered by their value nearest to 0, which
+  can select an unstable root now that the search finds every root. They are now ordered by the relaxation
+  x' = -R(x) of the saddle equations as written: a root comes first when every eigenvalue of -dR/dx has a negative
+  real part (for a rate fixed point n = F(n), eig(dF/dn) < 1). This fixes a regression of the one-solver change:
+  the two-population kernel model of `test_frontend_function_kernel_ft.py` was refused with `G2_UNSTABLE_SADDLE`
+  (a propagator pole at -0.30i).
 - **Newton refinement**: the correction is solved on the Jacobian scaled by powers of two (rows and columns to unit
   maxima). With spike rates ~1e8 next to voltages ~1, the plain least-squares cutoff dropped the small directions.
   The saddle was then right to only 1e-10 .. 2e-9, and two symmetric populations came out different by up to 1e-12.
