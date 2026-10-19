@@ -2,7 +2,7 @@
 engine.integration.spatial.diagram_descriptor
 =============================================
 Backend C — **Phase 1 of the generic spatial loop pipeline**
-(``docs/spatial_generic_pipeline_plan.md``): map an enumerated typed diagram onto
+(the internal design notes (not distributed)): map an enumerated typed diagram onto
 the C-stack's representation — internal interaction vertices (integrated times),
 external legs (fixed times), and a flat edge list ``[(a, b, kind, (u, v))]`` ready
 for the Symanzik momentum reduction (C0/C1) + causal-chamber time integral (C2).
@@ -12,7 +12,7 @@ sunset alike.  There is no bubble/tadpole branch: the distinction is whether the
 edge momenta couple the loop ``ℓ`` to the external ``q`` (a property of the
 Symanzik ``F``, downstream), not a property of this descriptor.
 
-The representation (see ``docs/spatial_loop_diagram_inventory.md``): the shared
+The representation (see the internal design notes (not distributed)): the shared
 enumerator uses **all-``G_R`` propagators + explicit noise sources**.  A
 correlation line ``C`` is two ``G_R`` edges meeting at a 2-point noise source
 (``SourceType`` with two response legs, the ``⟨φ̃φ̃⟩`` insertion).  So the mapping:

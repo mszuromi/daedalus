@@ -9,7 +9,7 @@ Test-only reference (was ``engine.integration.spatial.generic_evaluator``; moved
 the library in audit W7: no production module imports it).
 
 Backend C — **Phase 2 of the generic spatial loop pipeline**
-(``docs/spatial_generic_pipeline_plan.md``): evaluate one
+(the internal design notes (not distributed)): evaluate one
 :class:`~engine.integration.spatial.diagram_descriptor.CStackDiagram`'s
 contribution to the correlator, by the momentum-first route
 

@@ -157,8 +157,8 @@ _RUNTIME_COUNTERS = _CounterDict({
     'scipy_nquad_called_m1': 0,
     'scipy_nquad_called_m2': 0,
     'scipy_nquad_called_mge3': 0,
-    # ── M0.1 observational counters (the internal Phase J plan (not distributed)
-    # §2.4 item 8, §4.1).  Purely observational: nothing reads them to
+    # ── M0.1 observational counters (the internal Phase J plan, not
+    # distributed).  Purely observational: nothing reads them to
     # decide control flow.
     #
     # Entries into the scipy.nquad fallback: ``_integrate_polytope`` calls
@@ -166,7 +166,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     # always.  (An entry may still return before invoking
     # scipy.integrate.nquad, and an invoked quadrature integrates the real
     # and imaginary parts separately: invocations <= 2 * nquad_calls.)
-    # The plan's "0 nquad calls on the model zoo" gate (§2.4 item 8, M9) is
+    # The plan's "0 nquad calls on the model zoo" gate (M9) is
     # keyed on this counter.
     'nquad_calls': 0,
     # ``_integrate_polytope`` entries with m = 0: a direct constraint check
@@ -186,7 +186,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     # constant after δ-elimination) processed by ``_polygon_from_2d_
     # constraints`` or ``_extract_causal_poset``.
     'zero_normal_rows_seen': 0,
-    # ── M1 Θ(0) counters (plan §2.4 item 8).  One count per
+    # ── M1 Θ(0) counters (M1).  One count per
     # ``_const_row_verdict`` call (i.e. per zero-normal row per
     # evaluation):
     #   theta0_const_empty -- verdict EMPTY (c_eff < 0, or a tie decided
@@ -357,18 +357,18 @@ _RUNTIME_COUNTERS = _CounterDict({
     # calls declined (the subset goes on to ``_integrate_polytope``): a row
     # that is not a difference row (e.g. a ConvVertex 3-term row):
     'dbm_declined_rows': 0,
-    # item 27: ill-conditioned closed forms re-evaluated at MP_DPS digits
+    # ill-conditioned closed forms re-evaluated at MP_DPS digits
     'dbm_mp_attempted': 0,
     'dbm_mp_answered': 0,
-    # item 27: conductance kernels folded into lines / exact-zero modes
+    # conductance kernels folded into lines / exact-zero modes
     'conv_lines_dressed': 0,
     'conv_dress_zero_modes_dropped': 0,
     'conv_kernel_leg_edges': 0,
-    # item 56: lines dressed with a kernel that has a direct term (c δ + a
+    # lines dressed with a kernel that has a direct term (c δ + a
     # pole sum), and such kernels refused on a kernel edge
     'conv_lines_dressed_direct': 0,
     'conv_kernel_direct_refused': 0,
-    # item 35: exact-zero residue modes left out of the modesum plans
+    # exact-zero residue modes left out of the modesum plans
     # (modes, and the pole tuples of the full product that took one), the
     # plans built pruned, and pruned plans whose group order could not be
     # replayed from the full product (beyond ``PRUNE_ORDER_MAX_TUPLES``)
@@ -377,7 +377,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     'zero_mode_plans_pruned': 0,
     'zero_mode_order_unreplayed': 0,
     'zero_mode_order_mismatch': 0,
-    # item 35 F2: pole-tuple groups whose folded coefficient is 0, skipped
+    # F2: pole-tuple groups whose folded coefficient is 0, skipped
     # by the batched poset kernels before any chain is computed
     'dd_batch_zero_groups_skipped': 0,
     # ... a final term beyond the log-overflow limit:
@@ -429,7 +429,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     'dbm_box_free': 0,
     'dbm_slow_mode_box': 0,
     'dbm_declined_divergent': 0,
-    # legacy ``_chain_with_intermediate_uppers`` evaluations (M6 F7) in which
+    # legacy ``_chain_with_intermediate_uppers`` evaluations in which
     # at least one cut case returned None while others did not, and those
     # returning a finite value beyond e^700 (that evaluator was retired in
     # audit W7: always 0):

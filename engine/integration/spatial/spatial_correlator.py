@@ -21,12 +21,12 @@ heat-kernel mode with mass ``A_i`` and diffusion ``B_i``) the spatial
 with the integral evaluated by ``heat_kernel.erf_time_integral``
 (Rescue A).  Verified 3 ways (closed form vs 2-D quadrature vs the
 analytic ``C(x,0) = D^noise/(2√(AB)) e^{-|x|√(A/B)}``) in
-``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
+the internal design notes (not distributed).
 
 This is the **tree-level / Gaussian** correlator: exact for the free
 model, and the leading term for an interacting one (the λφ³ vertex
 enters at 1-loop, which is the remaining Phase-5 work — see
-``docs/spatial_implementation_plan.md`` §5).  Off-diagonal field
+the internal design notes (not distributed) §5).  Off-diagonal field
 coupling and loops are deferred to v2.
 """
 from __future__ import annotations
@@ -366,7 +366,7 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
             'block).  This model is not Tier-1 — the usual causes are '
             'off-diagonal / coupled multi-field structure OR a higher-'
             'derivative operator (k⁴+, e.g. Laplacian²).  Both are v2 '
-            'features — see docs/spatial_phase5_rearchitecture_plan.md. '
+            'features — see the internal design notes (not distributed). '
             f'(reason: {why})')
 
     A_expr, B_expr = prop['G_tx_sym'][(fi, fi)]
@@ -495,7 +495,7 @@ def periodic_inverse_ft(q_grid, Cq, x, spatial_dim, L, n_cut=None):
     #     S(n1) = Σ_{n_⊥} C(|k_n|)   (n_⊥: the other d-1 axes),
     # built one n1 slab at a time: memory O(n^{d-1}), not O(n^d) (the whole
     # d=3 lattice was ~9 arrays of (2 n_cut + 1)^3 doubles, 13.6 GB at
-    # n_cut = 288; item 53).  The lattice magnitudes are exact integers
+    # n_cut = 288).  The lattice magnitudes are exact integers
     # before the square root, so each term is as before; only the order of
     # the additions changed.
     n_sq1 = ns.astype(float) ** 2

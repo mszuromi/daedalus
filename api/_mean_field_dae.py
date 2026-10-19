@@ -1545,7 +1545,7 @@ def solve_mean_field_dae(
 
 def _pure_integrator_rows(model, expanded) -> list:
     """The residual rows of the equations whose LHS is a pure time
-    derivative (item 35): the LHS at Dt = 0 is identically zero as a
+    derivative: the LHS at Dt = 0 is identically zero as a
     symbolic expression, the parameters kept as symbols (the builder's
     test, ``ModelBuilder._lhs_vanishes_at_dt0``; an LHS such as
     ``(Dt + mu)*x`` is not one even where mu = 0).  Rows follow

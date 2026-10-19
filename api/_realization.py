@@ -60,7 +60,7 @@ Construction (all exact, then rounded once)
 5. Rounded once to double precision, then balanced by an exact power-of-two
    diagonal similarity (``scipy.linalg.matrix_balance``, Parlett-Reinsch):
    ``A_bal = T^{-1} A T``, ``B_bal = T^{-1} B``, ``C_bal = C T``.
-6. Model reduction (item 45): every per-entry realization (and every
+6. Model reduction: every per-entry realization (and every
    conductance kernel, ``realize_kernel``) is balanced-truncated
    (``balanced_truncation``) to the fewest states whose H-infinity error
    bound ``2 sum(discarded Hankel singular values)`` is at most ``tol``
@@ -440,7 +440,7 @@ class Realization:
 #: multi-population model at 1e-10 moved by 8e-11).
 TRUNCATION_TOL_DEFAULT = 1e-12
 #: ``DAEDALUS_REALIZATION_TRUNCATION``: a tolerance, or ``0`` / ``off`` /
-#: ``exact`` for none (the exact minimal realizations, as before item 45).
+#: ``exact`` for none (the exact minimal realizations, as before the balanced truncation).
 TRUNCATION_ENV = 'DAEDALUS_REALIZATION_TRUNCATION'
 
 # the innermost truncation_scope (process-wide, not thread-local: the
@@ -1413,7 +1413,7 @@ def _aposteriori_check(A, B, C, rtol=1e-2):
 
 
 def _aposteriori_error(A, B, C):
-    """Item 60 (G6 realization term): the relative disagreement of the
+    """The G6 realization term: the relative disagreement of the
     rounded realization's stationary output variances (Lyapunov,
     ``lyapunov_refined``) with the same variances integrated over frequency
     from its transfer function by adaptive quadrature in ``ln w``
@@ -1636,7 +1636,7 @@ def realize_K(K_ft, omega, num_params, *, phys_names=None, resp_names=None,
         'balance_min': float(sca.min()) if sca.size else 1.0,
         'balance_max': float(sca.max()) if sca.size else 1.0,
         'n_pencil': n, 'n_kernel_states': NR, 'n_before_reduction': n_pre,
-        # item 60: the a posteriori check of a graded / not numerically
+        # the a posteriori check of a graded / not numerically
         # Hurwitz rounded realization, and its measured relative error
         'aposteriori_checked': aposteriori['checked'],
         'aposteriori_err_rel': aposteriori['err_rel'],
@@ -1683,7 +1683,7 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
     """Minimal SISO realization of a causal conductance kernel
     ``g(t) = Theta(t) c e^{a t} b`` (S3: the state-space route's kernel
     edges and dressed lines), as an ``EntryRealization`` with ``d = 0``.
-    ``direct=True`` (item 56): also a kernel with a direct term, ``g = d
+    ``direct=True``: also a kernel with a direct term, ``g = d
     delta + Theta c e^{a t} b`` (image ``d + (strictly proper)``: the
     all-pass Pade (n, n) image of a bare delay), with ``d`` in the
     realization; a polynomial part of degree >= 1 is refused as before.

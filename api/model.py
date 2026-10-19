@@ -99,7 +99,7 @@ class _SpatialMethods:
         """Bulk-set the spatial dimension of every physical field.
 
         Convenience for the common single-dimension case (D1 in
-        ``docs/spatial_design_decisions_v1.md``).  Sets ``spatial_dim
+        the internal design notes (not distributed)).  Sets ``spatial_dim
         = d`` on every physical field already declared AND establishes
         ``d`` as the default for fields declared afterwards.  Per-field
         ``physical_field(spatial_dim=...)`` still overrides this.
@@ -136,7 +136,7 @@ class _SpatialMethods:
             ``length='L'`` with ``.parameter('L', default=20.0)``).
             A **number** is an inline shortcut: ``build()`` auto-
             creates a hidden positive parameter to back it.  See D2 in
-            ``docs/spatial_design_decisions_v1.md``.
+            the internal design notes (not distributed).
 
         Stored as ``model['boundary']`` and consumed by the propagator
         builder (Phase 2/3).  Only meaningful once at least one field
@@ -147,7 +147,7 @@ class _SpatialMethods:
             raise ValueError(
                 f"boundary(mode={mode!r}): v1 supports only 'infinite' "
                 f"and 'periodic'.  Dirichlet/Neumann/Robin are v2 "
-                f"(see docs/spatial_implementation_plan.md §scope).")
+                f"(see the internal design notes (not distributed) §scope).")
         if mode == 'periodic' and 'length' not in params:
             raise ValueError(
                 "boundary('periodic', ...): a 'length' is required "
@@ -175,7 +175,7 @@ class _SpatialMethods:
             raise ValueError(
                 f"initial(mode={mode!r}): v1 supports only 'stationary'.  "
                 f"Transient ICs are v1.5 (see "
-                f"docs/spatial_implementation_plan.md §scope).")
+                f"the internal design notes (not distributed) §scope).")
         self._initial = {'mode': mode, **params}
         return self
 
@@ -1284,8 +1284,9 @@ class _BaseModelBuilder:
 
     # ── Lambda hooks (optional escape hatch for the harder stuff) ───
     def set_action(self, fn: Callable):
-        """``fn(ns) -> SR``  — the model action.  See
-        simulations/hawkes_quad_expg_gtas.py for examples."""
+        """``fn(ns) -> SR``  — the model action, as a function of the
+        field-theory namespace ``ns`` (an escape hatch: prefer
+        :meth:`set_action_text`)."""
         self._action = fn
         return self
 
@@ -1369,7 +1370,7 @@ class _BaseModelBuilder:
             lhs_text   = eq['lhs_text']
             rhs_text   = eq['rhs_text']
 
-            # A pure integrator (item 35): the LHS vanishes at Dt = 0
+            # A pure integrator: the LHS vanishes at Dt = 0
             # (``Dt*h[i]``), so the saddle condition is the constraint
             # 0 = RHS on the OTHER fields.  The saddle text is derived as
             # for the equivalent form with the RHS moved to the LHS
@@ -2017,7 +2018,7 @@ class _BaseModelBuilder:
                 f'support mixed spatial dimensions; physical fields '
                 f'declare dims {sorted(nonzero_dims)}.  All spatial '
                 f'fields must share one dimension (mixed-dim is a v2 '
-                f'feature — see docs/spatial_implementation_plan.md '
+                f'feature — see the internal design notes (not distributed) '
                 f'§"Out of v1 scope").')
         return next(iter(nonzero_dims), 0)
 
@@ -2166,7 +2167,7 @@ class _BaseModelBuilder:
         # single-dim constraint, resolve the inline-number boundary
         # ``length`` shortcut, and build the operators list (adding a
         # ``Laplacian`` symbol when spatial).  See
-        # ``docs/spatial_design_decisions_v1.md``.
+        # the internal design notes (not distributed).
         model_spatial_dim = self._resolve_spatial_dim()
         is_spatial = model_spatial_dim > 0
 
@@ -2184,7 +2185,7 @@ class _BaseModelBuilder:
         # (also the C(x,τ) output axis) are reserved only when the
         # model is spatial.  Time-only models keep ``x`` free — it's
         # the conventional default field name.  See
-        # ``docs/spatial_design_decisions_v1.md`` (Decision: reserved
+        # the internal design notes (not distributed) (Decision: reserved
         # names).
         _reserved_always = {'t', 'omega', 'Dt', 'delta_D', 'delta_Dp'}
         _reserved_spatial = {'k', 'Laplacian', 'x', 'y', 'z'}
@@ -2221,7 +2222,7 @@ class _BaseModelBuilder:
                     f'In a spatial model, x/y/z are the spatial '
                     f'coordinates, k is the wavevector, and Laplacian is '
                     f'the diffusion operator — see '
-                    f'docs/spatial_design_decisions_v1.md.')
+                    f'the internal design notes (not distributed).')
 
         # Operators list: default [Dt]; append a Laplacian symbol when
         # the model is spatial so ``field_theory._build_namespace``

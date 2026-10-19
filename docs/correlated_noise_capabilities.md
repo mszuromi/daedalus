@@ -2,8 +2,8 @@
 
 This is the reference for what the MSR-JD pipeline's correlated-noise
 machinery (the CGF tab in the theory builder, equivalently
-`TheoryBuilder.declare_cgf_term` and the lower-level
-`TheoryBuilder.correlated_noise`) can and can't express, with rough
+`ModelBuilder.declare_cgf_term` and the lower-level
+`ModelBuilder.correlated_noise`) can and can't express, with rough
 estimates for what it'd take to lift the limitations.
 
 If your noise model doesn't fit, the doc lists the workarounds.  If
@@ -68,7 +68,7 @@ pair of units the auto cumulant, i.e. silently common noise).
 For the most common smooth-kernel case — a single Lorentzian
 `c · exp(-|τ|/τc)` driving a Gaussian noise on one or two response
 fields — the framework now applies an **automatic Markovian
-embedding** at `TheoryBuilder.build()` time.  Instead of leaving the
+embedding** at `ModelBuilder.build()` time.  Instead of leaving the
 smooth kernel in place (which forces the time-domain integrator
 through the slow `scipy.nquad` fallback at `max_ell ≥ 1`), the
 preprocessor rewrites your colored noise as a white-noise-driven
@@ -246,7 +246,7 @@ of cumulants involving these vertices doesn't run.
    `NoiseSourceType` extraction to confirm n > 2 sources flow into
    the diagram enumerator the same way 2-leg sources do.
 2. *Phase B — integrator (1-2 weeks).*  Extend
-   `msrjd/integration/time_domain/grouped_integral.py` +
+   `engine/integration/time_domain/grouped_integral.py (retired in audit W7)` +
    `final_integral.py` to thread n − 1 relative-time variables per
    noise vertex through the diagram's time-integration plan.  Derive
    and implement 2D analytic mode-sum templates for the κ³ smooth
@@ -380,15 +380,15 @@ Is your noise stationary (time-translation invariant)?
 
 | Component | File | Lines (approx) |
 |---|---|---|
-| `make_correlated_noises_block` (text-row → callable) | `pipeline/theory_compiler.py` | `_build_cgf_kernel_callable` ~1500 |
-| `_build_cumulant_action` (action injection) | `msrjd/core/field_theory.py` | ~330–560 |
-| `extract_source_types` (diagram extraction) | `msrjd/core/vertices.py` | `NoiseSourceType` ~595 |
-| Phase J integrator hooks for κ² smooth | `msrjd/integration/time_domain/grouped_integral.py`, `final_integral.py` | search for `kernel_fn` |
-| `declare_cgf_term` (TheoryBuilder API) | `pipeline/theory.py` | ~654 |
-| CGF tab (UI) | `pipeline/ui/main.py` | ~404 |
-| Spec serialize / parse | `pipeline/theory_serialize.py` | `_emit_cgf_term` ~227, load ~623 |
-| **Markovian embedding preprocessor (v1)** | `pipeline/colored_to_markovian.py` | whole file |
-| Markovianize wiring into `build()` | `pipeline/theory.py` | search for `markovianize_spec` |
+| `make_correlated_noises_block` (text-row → callable) | `api/model_compiler.py` | `_build_cgf_kernel_callable` ~1500 |
+| `_build_cumulant_action` (action injection) | `engine/core/field_theory.py` | ~330–560 |
+| `extract_source_types` (diagram extraction) | `engine/core/vertices.py` | `NoiseSourceType` ~595 |
+| Phase J integrator hooks for κ² smooth | `engine/integration/time_domain/grouped_integral.py (retired in audit W7)`, `final_integral.py` | search for `kernel_fn` |
+| `declare_cgf_term` (ModelBuilder API) | `api/model.py` | ~654 |
+| CGF tab (UI) | `api/ui/main.py` | ~404 |
+| Spec serialize / parse | `api/model_serialize.py` | `_emit_cgf_term` ~227, load ~623 |
+| **Markovian embedding preprocessor (v1)** | `api/colored_to_markovian.py` | whole file |
+| Markovianize wiring into `build()` | `api/model.py` | search for `markovianize_spec` |
 
 The warning that fires when you hit §1 (smooth n ≥ 3) is in
 `_build_cumulant_action`'s smooth-residual `if order == 2` branch's

@@ -390,7 +390,7 @@ def sim_ou_quartic_two_dim_corr_numba(
     WHITE, CROSS-CORRELATED Gaussian noise.  Same dynamics as
     ``sim_ou_quartic_two_dim_numba`` but with non-zero noise
     correlation ρ between the η_x and η_y drivers — matches the κ²
-    block in ``models/ou_quartic_two_dim_corr.model.py``.
+    block in the matching model file.
 
     System
     ------

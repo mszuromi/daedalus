@@ -20,7 +20,7 @@ decay
     G(t, x) = θ(t) · (4π B t)^(-1/2) · exp[ -x²/(4 B t) - A t ]   (d=1)
 
 verified to machine precision (incl. complex A, B) in
-``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
+the internal design notes (not distributed).
 
 This module provides:
   * ``gaussian_heat_kernel`` — the closed-form kernel above (complex
@@ -106,7 +106,7 @@ def erf_time_integral(alpha, beta, L_lo, U_hi=None, dps: int = 30):
     semi-infinite ``U → ∞`` limit (valid for Re √α > 0).
 
     Verified to machine precision (incl. complex α) in
-    ``docs/spatial_spikes/phase5_erfsplit_semigroup_spike.py``.
+    the internal design notes (not distributed).
     """
     if U_hi is None and not complex(alpha).real > 0.0:
         raise SpatialPropagatorError(

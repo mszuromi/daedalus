@@ -207,7 +207,7 @@ _NEVER_DOWNGRADE = frozenset({
 #: as ``final_integral.NQUAD_EPSREL`` for the quadrature fallback), applied
 #: to the cumulant.  ``Question.accuracy``, when declared, replaces it.
 _G6_DEFAULT_RTOL = 1e-10
-#: item 60: the a posteriori realization error (api._realization.
+#: the a posteriori realization error (api._realization.
 #: _aposteriori_error) enters the G6 estimate above this value (the
 #: realization is refused outright above 1e-2)
 _G6_REALIZATION_FLOOR = 1e-6
@@ -1957,7 +1957,7 @@ def _g3_propagator(ctx):
 
 
 def _standalone_route_prediction(ctx):
-    """Item 60: ``analyze()`` outside ``compute_cumulants`` makes the run's
+    """``analyze()`` outside ``compute_cumulants`` makes the run's
     state-space route prediction itself (``compute._ss_route_prediction`` on
     the same operator, parameter point and vertex types), so the G3 pole
     findings get the levels the in-run analyzer gives them.  Left unset
@@ -3547,7 +3547,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     # routes' sums
     E = (float(c.get('dd_err_abs_sum', 0.0)) + float(c.get('dbm_err_abs_sum', 0.0))
          + float(c.get('ss_err_abs_sum', 0.0)))
-    # item 60: the per-subset estimates above assume the ROUNDED realization
+    # the per-subset estimates above assume the ROUNDED realization
     # represents G; a graded / not numerically Hurwitz one was checked a
     # posteriori (api._realization: refused above 1e-2) and its measured
     # relative error enters the estimate, so a realization that passes the

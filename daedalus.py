@@ -108,7 +108,7 @@ _PIPELINE_EXPORTS = {
     'PhaseJIncompleteError':     'api.compute',
     # Phase J over its memory budget (PHASE_J_MEM_BUDGET_GB)
     'PhaseJResourceError':       'api.compute',
-    # a discard=True run asked for a point it did not evaluate (item 61)
+    # a discard=True run asked for a point it did not evaluate
     'DiscardedDiagramsError':    'api.compute',
     'backends':                  'api.routing',
     'params_slug':               'api',
@@ -1638,7 +1638,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             # The k−1 axis-parallel slices through ``base``.  When total_C is
             # the plain sum of the per-ell callables (``api.compute``), its
             # slice is that sum of their slices, in total_C's order, instead
-            # of a second evaluation of every diagram (item 35, F3: half the
+            # of a second evaluation of every diagram (half the
             # Phase J evaluations of a k≥3 run).
             slices_by_ell = {j: {e: _slice(f, j) for e, f in tcb.items()}
                              for j in range(1, k)}

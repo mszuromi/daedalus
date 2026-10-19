@@ -42,7 +42,7 @@ From the triple, without poles:
 Conventions (k = 2) are those of ``C_tau``: ``C(τ) = κ(x_1(0), x_2(τ))``;
 side ``'+'`` is τ > 0, ``'-'`` is τ < 0; a :class:`~api.cumulant.ModeTerm`
 ``(coeff, rate, power, side)`` is ``coeff · τ**power · exp(rate · τ)`` in the
-signed τ (as item 23's ``ModeSum``).  At τ = 0 the default is the Itô left
+signed τ (as the ``ModeSum``).  At τ = 0 the default is the Itô left
 limit (side '-', exactly), as ``C_tau``'s τ = 0 point (exact by default;
 ``τ = −api.compute._ITO_EPS`` under DAEDALUS_TAU0=nudge).
 
@@ -330,7 +330,7 @@ class MEBlock:
 
 class MEChainBlock:
     """One subset on a FINITE chamber where several segments move (a k >= 3
-    slice whose swept leg lies between two other legs; item 54):
+    slice whose swept leg lies between two other legs):
     ``weight · const · Π_r g_r(ρ0 + ρ1 s) · c e^{G_M L_M(s)} M_{M-1} …
     M_1 e^{G_1 L_1(s)} x0`` with ``L_j(s) = L0_j + β_j s``, ``0 <= s <=
     u_max`` (``SubsetSS.me_chain``).
@@ -934,7 +934,7 @@ def _clusters(d, rtol, atol=0.0):
             i = parent[i]
         return i
     if n > _CLUSTER_DENSE_MAX:
-        # row by row (the n x n comparison would not fit: item 54's middle
+        # row by row (the n x n comparison would not fit: the middle
         # chambers give tens of thousands of terms)
         ad = np.abs(d)
         for i in range(n - 1):
@@ -1192,7 +1192,7 @@ def _num(x, values):
 class ExactDelayTreeSide:
     """One side of the EXACT delayed tree (``api._delay_exact.ExactTree``,
     installed by ``api.delay`` as the k = 2 tree level) with the interface of
-    :class:`SideME` where it has one (item 54): values, Laplace transforms
+    :class:`SideME` where it has one: values, Laplace transforms
     (so the pairings ``integrate_against``) and the spectrum.  It is not one
     matrix exponential (a delay system has infinitely many characteristic
     roots), so it has no triple and no finite mode list.
@@ -1634,7 +1634,7 @@ def from_result(result) -> CumulantME:
         exact_tree = ell == 0 and _exact_delay_tree(result)
         tree_obj = _exact_tree_object(result) if exact_tree else None
         if tree_obj is not None:
-            # item 54: the exact delayed tree's own values, Laplace
+            # the exact delayed tree's own values, Laplace
             # transforms and spectrum (not from the Pade copy's closures)
             sides[ell] = {s: ExactDelayTreeSide(tree_obj, s, ell)
                           for s in ('+', '-')}
@@ -1758,7 +1758,7 @@ def _line_blocks(parts, diagram_index, line, out, rs, counts, FI, scale=1.0):
                     if exc.reason not in ('several_lags', 'row_crosses_zero') \
                             or not math.isfinite(t_end):
                         raise
-                    # a finite chamber (item 54): several moving segments
+                    # a finite chamber: several moving segments
                     ray = sub.me_chain(fb, fd, t_anchor, t_ref, t_end, tie)
                     chain = True
             except SS.SSIneligible as exc:

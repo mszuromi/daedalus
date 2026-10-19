@@ -113,7 +113,7 @@ direction is damped by an active Hurwitz edge.  (d) At an external time the
 rows with that head/tail change the integrand only by completing/opening
 factors, and a vertex whose window ends there must already be placed.  ∎
 
-Switch-on transients (item 44)
+Switch-on transients
 ------------------------------
 A finite ``t_min`` starts the fluctuations about the saddle at zero at
 ``t_min``: every internal vertex time is ``> t_min``, so the sweep starts at
@@ -182,7 +182,7 @@ diagrams with the closures' own weights (``_contrib.ss_prefactor``; the
 contribution's ``phase_j_parts``) into ``Cumulant.me``; nothing here changes
 a value.  On a finite chamber where several segments move (a k >= 3 slice
 whose swept leg lies between two legs) ``SubsetSS.me_chain`` returns the
-moving segments and the dense maps between them (item 54).
+moving segments and the dense maps between them.
 
 Error estimate (analyzer G6; S3).  Every evaluation adds to the counter
 ``ss_err_abs_sum`` the estimate ``|P s| M (1e-15 (1 + n_steps) + rho)``:
@@ -196,7 +196,7 @@ routes' ``1e-15 * sum|term|`` it is an estimate, not a bound.
 
 Memory: before a subset's stationary states are allocated their size (the
 product of the per-edge dimensions over each downset's active edges, summed)
-is charged against ``PHASE_J_MEM_BUDGET_GB`` through item 35's running total
+is charged against ``PHASE_J_MEM_BUDGET_GB`` through the Phase J memory pre-pass's running total
 (``final_integral.phase_j_memory_scope``); over budget raises
 ``PhaseJResourceError`` before anything is allocated.  A segment system is
 checked the same way (its working set alone) when it is first built, at the
@@ -382,7 +382,7 @@ class SwitchOnUnsupported(DaedalusError, ValueError):
     """A switch-on run (``compute_cumulants(t_min=...)``,
     :func:`switch_on_scope`) met a subset this route does not take, or one it
     refused at call time: such runs are computed on the state-space route
-    only (item 44), so it raises instead of using the pole route."""
+    only, so it raises instead of using the pole route."""
 
     def __init__(self, reason, detail=''):
         self.reason = reason
@@ -396,7 +396,7 @@ class SwitchOnUnsupported(DaedalusError, ValueError):
             f'yet; drop t_min for the stationary result.')
 
 
-# switch-on scope (item 44): the bound of the current thread (None: none)
+# switch-on scope: the bound of the current thread (None: none)
 _SO_TL = threading.local()
 
 
@@ -909,7 +909,7 @@ class _ModelOps:
             return hit
         from api._realization import realize_kernel, RealizationRefused
         try:
-            # item 56: a direct term (g = d delta + smooth) is realized too;
+            # a direct term (g = d delta + smooth) is realized too;
             # only a dressed line takes it (kernel_entry refuses it)
             ent, fname = realize_kernel(att, self.num_params, direct=True)
             out = ((None, 'kernel_complex') if fname != 'QQ' and self.is_real
@@ -934,7 +934,7 @@ class _ModelOps:
         ent, why = self._kernel_real(att)
         if ent is not None and ent.d != 0:
             # a kernel edge s -> anchor is a smooth row: a direct term
-            # (c delta: s = anchor) has no place in it (item 56: dressed
+            # (c delta: s = anchor) has no place in it (dressed
             # lines take such kernels)
             ent, why = None, 'kernel_direct_term'
         out = why if ent is None else _EntryOps(ent, self.dtype)
@@ -948,7 +948,7 @@ class _ModelOps:
         """For the run-level predictions (``run_route``, ``diagram_route``,
         ``diagram_estimate``): the kernel's ``EntryRealization`` when the
         route takes it -- a strictly proper kernel as a kernel edge or a
-        dressed line, one with a direct term (item 56) as a dressed line
+        dressed line, one with a direct term as a dressed line
         only (Phase J refuses it on a kernel edge by name) -- or a decline
         reason (str).  A direct term counts only where Phase J dresses it: a
         frequency image whose strictly proper part has separated modes
@@ -972,13 +972,13 @@ class _ModelOps:
         """The ``_EntryOps`` of a dressed line ``(g * G)(t) = int_0^t
         g(t - x) G(x) dx``: the series connection of the propagator entry
         ``G[pi, ri]`` (``a1, b1, c1``, delta part ``d1``) and the kernel
-        (``a2, b2, c2``, direct term ``d2``; item 56), ``A = [[a1, 0],
+        (``a2, b2, c2``, direct term ``d2``), ``A = [[a1, 0],
         [b2 c1, a2]]``, ``B = [b1; b2 d1]``, ``C = [d2 c1, c2]`` (smooth
         impulse response ``d2 G_smooth(t) + d1 g_smooth(t) + (g_smooth *
         G_smooth)(t)``; the delta part ``d1 d2`` is the dispatch's, as for
         every edge).  Or a reason.
 
-        Item 61: the cascade is reduced by balanced truncation at the
+        the cascade is reduced by balanced truncation at the
         truncation tolerance in effect (``api._realization.truncation_tol``;
         ``0``, the exact setting: not reduced).  When the propagator cancels
         the kernel's poles (a closed loop through the vertex: one
@@ -2522,7 +2522,7 @@ class SubsetSS:
                  tie_ctx=None):
         """:meth:`me_line` on a FINITE chamber ``t`` between ``t_anchor`` and
         ``t_end`` (the one containing ``t_ref``) where several segments may
-        move (item 54: a k >= 3 slice whose swept leg lies between two other
+        move (a k >= 3 slice whose swept leg lies between two other
         legs: the segment before it grows while the one after it shrinks)::
 
             I(s) = const * prod_r g_r(rho0_r + rho1_r s)
@@ -3211,7 +3211,7 @@ def _check_dense_map(d_to, d_from):
 
 
 def _charge(sub):
-    """Charge the subset's stationary-state bytes against item 35's running
+    """Charge the subset's stationary-state bytes against the memory pre-pass's running
     budget (``PHASE_J_MEM_BUDGET_GB``) before anything is allocated."""
     FI = _FI()
     nbytes = sub.state_bytes()
@@ -3320,7 +3320,7 @@ PREFETCH_BYTES_PER_POINT = 24
 def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
                      n_tau=1, n_perm=1):
     """Upper bound (bytes) of what the route holds for one diagram (item
-    35's pre-pass, S3; item 61): ``(stationary, transient)``.
+    35's pre-pass, S3): ``(stationary, transient)``.
 
     The diagram DAG (prediagram edges ``u -> v``: ``Δt = t_v - t_u``; the
     leaves, the external times, are its sinks) is rebuilt as Phase J builds
@@ -3401,7 +3401,7 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
             if FI._conv_kernel_local_weight(att, num_params) is not None:
                 hit = ('local',)
             else:
-                # (item 56: a kernel with a direct term c delta is taken
+                # (a kernel with a direct term c delta is taken
                 # dressed only; its dressed line keeps c x the line's delta)
                 e = model.kernel_route(att)
                 if isinstance(e, str):
@@ -3430,7 +3430,7 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
         for att in vt.kernel_attachments:
             if kernel_info(att)[0] == 'refused':
                 return None
-    # item 60: a coefficient that sums terms with different powers of the
+    # a coefficient that sums terms with different powers of the
     # kernel symbols is integrated once per choice of one term (grouped by
     # those powers) per vertex, each with exactly its power's slots (a plain
     # term none), and all of them are held (``_conv_monomial_split``)
@@ -3560,7 +3560,7 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
                 if info[0] == 'dress':
                     de = model.dressed_entry(pi, ri, att)
                     nd = de.n if not isinstance(de, str) else n + info[1]
-                    # a direct term keeps c x the line's delta part (item 56)
+                    # a direct term keeps c x the line's delta part
                     edges.append((u, v, nd, dl and info[3]))
                 elif info[0] == 'leg':
                     s_ = nv

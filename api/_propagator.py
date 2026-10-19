@@ -350,7 +350,7 @@ def _exact_route_fallback(G_ft_F, Q_poly, nf, tau_max, analysis_out,
 
 def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
     """A posteriori relative error of the tier-1 double-precision residues
-    ``C_mats`` (stored unclipped since item 53):
+    ``C_mats`` (stored unclipped):
     each pole Newton-refined on the exact Q at ``_CERT_DPS`` digits, each
     nonzero residue ``i P_ij(p) / Q_ij'(p)`` recomputed there, compared
     with the double value; per entry relative to its largest residue.
@@ -661,7 +661,7 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
             # reduced entry is exactly nonzero, so a small value here is a
             # genuine residue -- the old 1e-12 clip relative to the LARGEST
             # entry at pk dropped it when the fields have very different
-            # units (item 53).  Its accuracy is what _residue_error certifies.
+            # units.  Its accuracy is what _residue_error certifies.
             C_np = np.array(C_entries)
             C_raw.append(C_np)
             C_mats.append(matrix(CDF, C_np.tolist()))

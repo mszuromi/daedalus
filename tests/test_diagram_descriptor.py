@@ -4,7 +4,7 @@ tests/test_diagram_descriptor.py
 Generic spatial loop pipeline — **Phase 1**: ``diagram_descriptor.diagram_to_cstack``
 maps an enumerated typed diagram onto the C-stack edge list.  Validated on the
 reaction-diffusion (φ̃φ²) model, whose ell=1 inventory is known
-(``docs/spatial_loop_diagram_inventory.md``): 2 bubbles + 1 tadpole.
+(the internal design notes (not distributed)): 2 bubbles + 1 tadpole.
 
 Asserts (classifying by STRUCTURE, not diagram index):
   * tree (ell=0): no internal vertices, a single external C edge between the

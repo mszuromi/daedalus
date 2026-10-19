@@ -2,7 +2,7 @@
 tests/test_model_spatial_basics.py
 ===================================
 Phase 1 acceptance tests for the spatial field-theory extension
-(``docs/spatial_implementation_plan.md`` Phase 1).
+(the internal design notes (not distributed) Phase 1).
 
 Covers the model-side wiring only — no propagator (Phase 2) or
 (t, x) integration (Phase 5):
