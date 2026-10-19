@@ -42,3 +42,12 @@ truncated (by at most the truncation bound, <= 1e-12 at the default tolerance), 
 - **`combinatorial_factor` refuses a fractional symmetry factor (CON-10).** A Wick numerator not divisible by the
   automorphism order was floored silently; it now raises `RuntimeError` like `external_wick_compensation` (the case
   never occurs on the zoo; the check was dead defensive code).
+- **The Taylor norm estimate is reproducible (found by the discard bit-identity test on Linux CI).** Since the cheaper
+  norm bounds (audit SPD-03), `d_2 = ||A^2||_1^(1/2)` of a generator with more than 300 states came from scipy
+  `onenormest`, which draws its start vectors from numpy's UNSEEDED global generator: two identical runs picked
+  different Taylor parameters (estimates differing by ~10 %) and differed in the last bit, so
+  `test_discard_is_bit_identical_and_releases` failed on about half of the Linux processes (current main included).
+  `d_2` is now exact up to 2000 states (`statespace._EXACT_NORM_N`; the dense generator is already held, n^3 flops) and
+  both remaining `onenormest` calls (beyond that size, and the matrix-free operator) run with a fixed seed and restore
+  the caller's random state. Values of models with 301-2000 states move in the last digits against 3776472 (the
+  estimate was random there).

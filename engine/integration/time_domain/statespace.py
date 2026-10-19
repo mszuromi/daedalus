@@ -1344,17 +1344,29 @@ def _taylor_action(apply_A, mu, dnorms, x, t, min_terms=0):
     return F
 
 
+#: largest ``A`` whose ``||A^2||_1`` is formed exactly (n^3 flops, a few seconds
+#: at the limit; ``A`` is already held dense)
+_EXACT_NORM_N = 2000
+#: ``onenormest`` draws its start vectors from numpy's global RandomState: it
+#: is seeded for the call (and the state restored) so an estimate is reproducible
+_ONENORMEST_SEED = 20251018
+_ONENORMEST_LOCK = threading.Lock()
+
+
 def _onenorm_powers(A, pmax=_P_MAX + 1):
     """``d_p = ||A^p||_1^{1/p}``, p = 1..pmax: ``d_1`` exact, ``d_2`` exact for
-    a small dense ``A`` (a 1-norm estimate, scipy ``onenormest``, for larger
-    ones), and ``d_p`` for p > 2 the submultiplicative upper bound
+    a dense ``A`` up to ``_EXACT_NORM_N`` states (a seeded 1-norm estimate,
+    scipy ``onenormest``, beyond: the estimate draws random start vectors, so
+    unseeded it changed the Taylor parameters, and the last bits of the
+    values, from one identical run to the next), and ``d_p`` for p > 2 the
+    submultiplicative upper bound
     ``||A^p|| <= min(||A||^p, ||A^2||^(p//2) ||A||^(p%2))`` (an upper bound is
     what ``_taylor_params`` needs; the seven further powers or estimates were
     about half of a state-space run, audit SPD-03)."""
     d = {1: float(np.abs(A).sum(axis=0).max()) if A.size else 0.0}
     n = A.shape[0]
     if pmax >= 2:
-        if n <= 300:
+        if n <= _EXACT_NORM_N:
             d[2] = float(np.abs(A @ A).sum(axis=0).max()) ** 0.5
         else:
             d[2] = _onenormest_power(A, 2)
@@ -1364,9 +1376,23 @@ def _onenorm_powers(A, pmax=_P_MAX + 1):
     return d
 
 
+def _seeded_onenormest(op):
+    """scipy ``onenormest(op)`` with numpy's global RandomState seeded for the
+    call (and restored after): reproducible, and the caller's stream is
+    untouched."""
+    from scipy.sparse.linalg import onenormest
+    with _ONENORMEST_LOCK:
+        state = np.random.get_state()
+        np.random.seed(_ONENORMEST_SEED)
+        try:
+            return float(onenormest(op))
+        finally:
+            np.random.set_state(state)
+
+
 def _onenormest_power(A, p):
     """scipy ``onenormest`` of ``A^p`` (matrix-free powers), as ``d_p``."""
-    from scipy.sparse.linalg import LinearOperator, onenormest
+    from scipy.sparse.linalg import LinearOperator
     n = A.shape[0]
     AT = A.conj().T
 
@@ -1381,7 +1407,8 @@ def _onenormest_power(A, p):
         return v
     op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
                         matmat=mv, rmatmat=rmv, dtype=A.dtype)
-    return float(onenormest(op)) ** (1.0 / p)
+    est = _seeded_onenormest(op)
+    return est ** (1.0 / p)
 
 
 # ─── geometry ─────────────────────────────────────────────────────────────
@@ -1546,7 +1573,7 @@ class _Segment:
         ``expm_multiply`` does; a crude bound for every p would cost ~60x
         more steps on a graded realization."""
         if self._dnorms_free is None:
-            from scipy.sparse.linalg import LinearOperator, onenormest
+            from scipy.sparse.linalg import LinearOperator
             mu = self.trace() / self.D if self.D else 0.0
             if self.sub.model.is_real:
                 mu = float(np.real(mu))
@@ -1584,7 +1611,7 @@ class _Segment:
                 op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
                                     matmat=mv, rmatmat=rmv, dtype=dt)
                 try:
-                    dn[p] = min(nrm, float(onenormest(op)) ** (1.0 / p))
+                    dn[p] = min(nrm, _seeded_onenormest(op) ** (1.0 / p))
                 except Exception:
                     dn[p] = nrm
             self._dnorms_free = (mu, dn)
