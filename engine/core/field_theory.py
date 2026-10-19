@@ -75,7 +75,7 @@ def fourier_transform(f, t, s):
 
 def _show(expr):
     """Display a SageMath expression or Conv/IP object as rendered LaTeX."""
-    from IPython.display import display, Math as _Math   # on use (SPD-06)
+    from IPython.display import display, Math as _Math   # on use
     display(_Math(latex(expr)))
 
 
@@ -249,7 +249,7 @@ _EXPAND_LEGACY_ENV = 'DAEDALUS_EXPAND_LEGACY'
 def _expand_legacy_requested() -> bool:
     """Always ``False``: ``DAEDALUS_EXPAND_LEGACY`` (the 0.2.1 expansion, one
     multivariate ``taylor()`` of the whole action, which dropped degree-3
-    terms) is retired (audit W7); setting it only warns."""
+    terms) is retired; setting it only warns."""
     from engine import _env
     _env.retired(_EXPAND_LEGACY_ENV,
                  'the per-atom truncated Taylor expansion is the only route')
@@ -1033,7 +1033,7 @@ def _build_cumulant_action(ns, model):
               # order (tau = t_first - t_second); a reconstructed order is
               # read with the indices put back (order 2: K(j, i, -tau)), so
               # every registered spec carries its own orientation (Phase J
-              # evaluates each spec in it; audit W6).
+              # evaluates each spec in it).
               kfn = (kernel_fn if perm_spec['perm'] == tuple(range(order))
                      else _PermutedKernel(kernel_fn, perm_spec['perm']))
               for idx_tuple in _iter_product(*perm_leg_ranges):
@@ -1186,7 +1186,7 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
 #: selected root in ``api._mean_field_dae._check_selected_root``): a wrong
 #: equation leaves a residual of the size of its own terms, a converged
 #: saddle ~1e-16 of it.  (Was an absolute 1e-9 at expand time: valid models
-#: in large field units or fast time units were refused -- audit UNIT-01.)
+#: in large field units or fast time units were refused --.)
 MF_SECTOR_RTOL = 1e-6
 
 
@@ -1391,7 +1391,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
         solve_exc = mf_memo.get('num_params')
         if isinstance(solve_exc, Exception):
             # the numerical check could not run: say why (it was swallowed
-            # into a bare 'N/A' before, audit GEN-01)
+            # into a bare 'N/A' before)
             lines.append(
                 f"  the numerical check could not run: the mean-field solve "
                 f"at the model's default parameter point raised "

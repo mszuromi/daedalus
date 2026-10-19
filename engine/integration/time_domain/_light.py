@@ -430,7 +430,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     'dd_err_abs_sum': 0.0,
     'dbm_err_abs_sum': 0.0,
     # DBM calls without a box, with the slow-mode box ±max(200, 40/κ_min)
-    # wider than ±200 (the pre-0.2.0 DD route, retired in audit W7: always
+    # wider than ±200 (the pre-0.2.0 DD route, retired: always
     # 0), and declined as divergent (box-free):
     'dbm_box_free': 0,
     'dbm_slow_mode_box': 0,
@@ -438,7 +438,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     # legacy ``_chain_with_intermediate_uppers`` evaluations in which
     # at least one cut case returned None while others did not, and those
     # returning a finite value beyond e^700 (that evaluator was retired in
-    # audit W7: always 0):
+    # always 0):
     'chain_uppers_legacy_partial': 0,
     'chain_uppers_legacy_huge': 0,
 })

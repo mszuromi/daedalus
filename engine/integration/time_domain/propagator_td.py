@@ -426,7 +426,7 @@ def G_t_entry(G_t_obj, phys_idx, resp_idx, t_expr,
     if t_var is None:
         # a bare matrix (or a dict without 't_var'): guessed from the free
         # variables, which is right only when the time is the one left
-        # (numeric parameters; audit LOUD-09)
+        # (numeric parameters)
         t_var = _infer_time_variable(G_t_matrix)
     entry = SR(G_t_matrix[phys_idx, resp_idx])
     if t_var is not None:

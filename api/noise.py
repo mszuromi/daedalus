@@ -168,7 +168,7 @@ def _require(who, value, name, ok, why):
 
 def _seq(who, what, arg):
     """``list(arg)``, refusing a string (``list('Dn')`` would silently give
-    the expressions ``D`` and ``n``; audit F2-noise 4)."""
+    the expressions ``D`` and ``n``)."""
     if isinstance(arg, (str, bytes)):
         raise NoiseError(f'{who}: {what} must be a list of expressions, not the '
                          f'string {arg!r}.')
@@ -604,7 +604,7 @@ class JumpDistribution:
         self.params = {k: parse_expr(v, what=f'{type(self).__name__}({k}=...)')
                        for k, v in params.items()}
         for k, v in self.params.items():
-            # as NoiseSource._check_common (audit F2-noise 2, 6): theta in a
+            # as NoiseSource._check_common: theta in a
             # jump parameter would silently make a different CGF
             if THETA in SR(v).variables():
                 raise NoiseError(
@@ -805,7 +805,7 @@ class CompoundPoisson(NoiseSource):
         dimensionless ``M(0)`` is 1 to 1e-12.  (The generic test needs a
         numeric ``K(0)``: float probabilities summing to 1 - 1e-16 times a
         symbolic rate were refused, and the rate's units entered the
-        tolerance -- audit UNIT-05.)"""
+        tolerance --.)"""
         try:
             m0 = _numeric(SR(self.jump.mgf()).subs({THETA: 0}))
         except (ValueError, ZeroDivisionError, ArithmeticError, TypeError,
@@ -873,8 +873,7 @@ class NormalInverseGaussian(NoiseSource):
         # derivative carries the same branch of g.  (The form
         # sqrt(a^2 - b^2) - sqrt(a^2 - (b + theta)^2) was expanded by Maxima
         # into I*sqrt(b^2 - a^2) for the second root when alpha, beta are
-        # symbols, a nonzero K(0) the mean-field check refused: audit
-        # LOUD-01.)
+        # symbols, a nonzero K(0) the mean-field check refused.)
         P = self.params
         a, b = P['alpha'], P['beta']
         g2 = a ** 2 - b ** 2
@@ -1228,7 +1227,7 @@ class PhaseType(JumpDistribution):
             import numpy as _np
             Tm = _np.array(Tn)
             # relative to the matrix's own scale (the floor max(1, |T|)^n
-            # refused every sub-generator with rates below ~1e-4: UNIT-05)
+            # refused every sub-generator with rates below ~1e-4)
             if abs(_np.linalg.det(Tm)) <= 1e-12 * float(_np.abs(Tm).max()) ** n:
                 raise NoiseError('PhaseType: T is singular, so the chain never absorbs '
                                  '(a sub-generator must be invertible).')

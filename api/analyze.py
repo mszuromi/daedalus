@@ -179,7 +179,7 @@ FINDING_CODES = {
     'G6_COUNTERS_INCOMPLETE':    ('G6', 'info'),
     'G6_NOT_EVALUATED':          ('G6', 'info'),
     'G6_DIAGRAMS_SKIPPED':       ('G6', 'warning'),
-    # S3: the Phase J engine census and the state-space route's fallbacks
+    # the Phase J engine census and the state-space route's fallbacks
     'G6_PHASE_J_ENGINE':         ('G6', 'info'),
     'G6_SS_FALLBACK':            ('G6', 'warning'),
     'G6_SS_PARTIAL':             ('G6', 'warning'),
@@ -649,7 +649,7 @@ class _Ctx:
         self.pipeline_ns = None           # the pipeline's namespace (read only)
 
     def add(self, code, message, remedy='', level=None):
-        """``level``: overrides the code's registered level (S3: pole
+        """``level``: overrides the code's registered level (pole
         findings are informational when the state-space route takes the
         run)."""
         gate, lvl = FINDING_CODES[code]
@@ -1517,7 +1517,7 @@ def _classify_eigs(eigs):
     if eigs.size == 0:
         return None, 0
     # relative to the largest eigenvalue, no floor (a floor of 1.0 called
-    # every mode of a model in slow time units marginal: audit UNIT-03)
+    # every mode of a model in slow time units marginal)
     scale = float(np.max(np.abs(eigs)))
     tol = _MARGINAL_RTOL * scale
     re = eigs.real
@@ -2082,7 +2082,7 @@ def _g3_pole_findings(ctx, res):
     if pcr:
         ctx.t['pole_cluster_status'] = status
         ctx.t['pole_cluster_kappa'] = float(pcr.get('kappa_max') or 0.0)
-    # S3: the state-space route takes the whole run -> the pole findings
+    # the state-space route takes the whole run -> the pole findings
     # below are informational (the route uses no poles or residues; the
     # run's census in G6 says whether any subset used the pole route)
     # (strict policy: the levels stay as registered, the strict semantics of
@@ -3239,9 +3239,8 @@ class Preflight:
                                 self.report(), errs, stage) from exc
 
     def poles(self, prop, ss_route=None):
-        """G3 + G5 on the propagator.  ``ss_route`` (S3, ``compute.
-        _ss_route_prediction``): when the state-space Phase J route covers
-        the run, the pole findings (repeated, close, unresolved clusters)
+        """G3 + G5 on the propagator.  ``ss_route`` (``compute._ss_route_prediction``): when the
+        state-space Phase J route covers the run, the pole findings (repeated, close, unresolved clusters)
         are informational: the route uses no poles or residues."""
         ctx = self.ctx
         if ss_route is not None:
@@ -3373,13 +3372,13 @@ G6_COUNTERS = (
     'dd_err_abs_sum', 'dbm_err_abs_sum',
     # the hardened quadrature fallback's QUADPACK error estimates
     'nquad_hardened_calls', 'nquad_hardened_empty', 'nquad_hardened_err_abs_sum',
-    # S3: the state-space route
+    # the state-space route
     'ss_evals', 'ss_estimated', 'ss_err_abs_sum', 'ss_subsets_built',
     'ss_subsets_declined', 'ss_fallback_subsets', 'ss_fallback_evals')
 
 
 def _g6_engine(ctx, d, result, c):
-    """S3: the Phase J engine census (``result['phase_j_engine']``) as a G6
+    """The Phase J engine census (``result['phase_j_engine']``) as a G6
     finding and a ledger entry; a call-time fallback on the pole route is a
     warning (recorded, never raised)."""
     rep = result.get('phase_j_engine') if isinstance(result, dict) else None
@@ -3551,7 +3550,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                 f'estimates ({float(c.get("nquad_hardened_err_abs_sum", 0.0)):.3g} '
                 'summed) are in the accuracy estimate.', '')
     C = result.get('C_tau')
-    # S3: the state-space route's a-posteriori estimates (``statespace``
+    # the state-space route's a-posteriori estimates (``statespace``
     # module docstring: refinement residuals + the Taylor tolerance per
     # step, on the final contraction's magnitude) join the closed-form
     # routes' sums
@@ -3574,7 +3573,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         # Lyapunov solution measured exact to 5e-13), not the realization's
         if float(rc['err_rel']) > _G6_REALIZATION_FLOOR:
             real_rel = float(rc['err_rel'])
-    # CON-09: the balanced truncation of the propagator entries and of the
+    # the balanced truncation of the propagator entries and of the
     # dressed lines (api._realization; default tolerance 1e-12) moves the
     # cumulant by up to its relative H-infinity bound; the bound enters the
     # estimate like the a posteriori error above

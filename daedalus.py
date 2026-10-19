@@ -122,7 +122,7 @@ _PIPELINE_EXPORTS = {
     'Cumulant':                  'api.cumulant',
     'DeltaComponent':            'api.cumulant',
     'ModeTerm':                  'api.cumulant',
-    # matrix-exponential triples of the smooth part (C0, state-space S4):
+    # matrix-exponential triples of the smooth part (C0 output):
     # dd.cumulant(result).me / .modes / .integrate_against / .spectrum
     'CumulantME':                'api.me_output',
     'RationalKernel':            'api.me_output',
@@ -1180,7 +1180,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
 # every leg at its nominal time; a point where the swept leg meets another leg
 # is an exact tie, evaluated with the swept leg listed LAST, which the
 # engine's tie order (a later-listed leg is infinitesimally earlier) makes the
-# left limit of the slice exactly (the k = 2 rule of #48; the k = 3 tree of an
+# left limit of the slice exactly (the k = 2 τ = 0 rule; the k = 3 tree of an
 # OU + quadratic model matches its closed form to 5e-16 at every tie).  Legs of
 # different fields take one more run with the permuted ``external_fields``.
 # What follows describes the DAEDALUS_TAU0=nudge placement
@@ -1319,7 +1319,7 @@ def _kpoint_slice_point(base, j, tau, scale):
     leg counts as infinitesimally EARLIER), so a tied point is evaluated with
     the legs in ``order`` = anchor, pinned legs, then ``j`` LAST: the swept
     leg is then earlier than every leg it meets, and the value is the left
-    limit of the slice, exactly (the k = 2 τ = 0 rule of #48).  Pinned legs
+    limit of the slice, exactly (the k = 2 τ = 0 rule).  Pinned legs
     keep their relative order, so a pinned leg at base lag 0 counts as
     earlier than the anchor, as its 0⁻ placement did.  ``order`` is the
     identity (``range(k)``) at points without a tie."""

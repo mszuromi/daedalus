@@ -1,5 +1,5 @@
 r"""
-State-space subset integrator for Phase J (S2; the default since S3)
+State-space subset integrator for Phase J (the default engine)
 ====================================================================
 
 Evaluates one Phase J subset integral
@@ -8,7 +8,7 @@ Evaluates one Phase J subset integral
 
 without poles, residues or pole tuples.  Each smooth edge ``e`` carries the
 minimal SISO realization ``(a_e, b_e, c_e)`` of ITS propagator entry
-``G[pi_e, ri_e]`` (``api._realization``, S1: ``Realization.entries``), so its
+``G[pi_e, ri_e]`` (``api._realization``, ``Realization.entries``), so its
 state axis has ``n_e = entries[(pi, ri)].n_states`` components, never the
 global state dimension.  ``R`` is the subset's region: every row is
 ``Δt_e = a_int·s + a_ext·f + c0 > 0`` with ``a_int`` one head (+1) and/or one
@@ -20,8 +20,8 @@ subset prefactor.
 
 The engine is chosen by ``DAEDALUS_PHASE_J_ENGINE`` (read for each subset
 when a diagram is integrated): unset, ``default`` or ``statespace`` take this
-route for every eligible subset (the default since S3); ``poles`` restores
-the pole engine everywhere (every number as before S3, bit for bit: this
+route for every eligible subset (the default); ``poles`` restores
+the pole engine everywhere (every number as before the state-space route became the default, bit for bit: this
 module is then not even imported by the dispatch); any other value raises
 (at the first subset).  The route applies to every ``integrate_diagram``
 call: the per-diagram path and grouped Phase J's per-diagram groups
@@ -36,7 +36,7 @@ numeric prefactor, a Hurwitz realization, rows of the shape above, every
 vertex followed by an external time.  Everything else stays on the pole
 routes (counted by reason in ``ss_declined_by_reason``).
 
-**Call-time fallback** (S3).  A routed subset whose evaluation is refused
+**Call-time fallback**.  A routed subset whose evaluation is refused
 late -- a stiff segment beyond the triangular route's size
 (``TRI_DENSE_MAX`` states, ``TAYLOR_S_HARD`` steps), a segment system over
 the memory budget or too large to build, a non-finite value -- is evaluated
@@ -45,7 +45,7 @@ modesum plan) is built the first time it is needed (``fallback``, a lazy
 builder passed by the dispatch), counted (``ss_fallback_evals``,
 ``ss_fallback_subsets``, ``ss_fallback_by_reason``) and reported
 (``compute_cumulants``: ``result['phase_j_engine']``, analyzer G6).
-``DAEDALUS_PHASE_J_SS_FALLBACK=0`` raises the refusal instead (S2).  A
+``DAEDALUS_PHASE_J_SS_FALLBACK=0`` raises the refusal instead.  A
 subset with no pole route (a kernel only this route realizes) raises.
 
 The downset sweep
@@ -144,7 +144,7 @@ Numerics
   nilpotent strictly-upper part: exact after ``1 + Σ(n_e - 1)`` sweeps and
   operation-for-operation the back substitution), then mapped back and,
   when a unitary (complex Schur) factor was used, refined on the residual in
-  the original basis, up to ``REFINE_STEPS`` times, keeping the best (S1: a
+  the original basis, up to ``REFINE_STEPS`` times, keeping the best (a
   plain Schur-basis solve loses up to ~3e-13 on graded realizations).  Divisions are by sums
   of eigenvalues of Hurwitz factors only: no eigenvalue gap enters.
 * **Segments and impulses** ``exp(G L) x`` / ``c e^{a t} b`` by the
@@ -162,7 +162,7 @@ Numerics
   diagonal); with an exact basis (scalar / triangular entries, 2 x 2 Schur
   forms) from ``TAYLOR_S_MAX`` steps, with a Schur basis of a larger
   (graded) entry only from ``TAYLOR_S_MAX_SCHUR``, since such a basis costs
-  accuracy itself (S1).  Beyond ``TRI_DENSE_MAX`` states a segment needing
+  accuracy itself (``api._realization``).  Beyond ``TRI_DENSE_MAX`` states a segment needing
   more than ``TAYLOR_S_HARD`` steps raises.
 * **Per-entry balancing** (``_balance_siso``): of the entry as given, ``a``
   balanced alone, and ``[[a, b], [c, 0]]`` balanced, each followed by an
@@ -172,7 +172,7 @@ Numerics
   that share the order of the external times reuse the stationary state and
   the first event; the last segment is stepped from one length to the next.
 
-C0 output (S4).  On a line of the external times (k = 2: the lag on one
+C0 output.  On a line of the external times (k = 2: the lag on one
 side of 0; a k >= 3 slice whose swept leg is first or last) the order of the
 external times is fixed and exactly one segment moves, so a subset is one
 matrix exponential ``c e^{G s} x0`` there: ``SubsetSS.me_line`` returns the
@@ -184,7 +184,7 @@ a value.  On a finite chamber where several segments move (a k >= 3 slice
 whose swept leg lies between two legs) ``SubsetSS.me_chain`` returns the
 moving segments and the dense maps between them.
 
-Error estimate (analyzer G6; S3).  Every evaluation adds to the counter
+Error estimate (analyzer G6).  Every evaluation adds to the counter
 ``ss_err_abs_sum`` the estimate ``|P s| M (1e-15 (1 + n_steps) + rho)``:
 ``M`` = the final contraction taken in absolute values (``|c| . |X|``: the
 magnitude the last sum cancels from), ``n_steps`` = the Taylor scaling steps
@@ -238,7 +238,7 @@ OP_DENSE_MAX = 2000
 #: over tau = 50, 4.9e-12); stiff segments use the triangular route
 TAYLOR_S_MAX = 50
 #: ... when a unitary (complex Schur) basis of an entry with n >= 3 states is
-#: involved: S1 measured that a Schur basis of a graded realization (Schwarz
+#: involved: it was measured that a Schur basis of a graded realization (Schwarz
 #: / companion blocks of rational kernels) costs accuracy (Pade-24: 3e-13
 #: through this route vs 5e-14 by the Taylor action at a few hundred steps),
 #: so the triangular route is taken only when the Taylor action would need
@@ -248,14 +248,14 @@ TAYLOR_S_MAX_SCHUR = 1000
 #: (triangular ``a``, a 2 x 2 Schur form; n >= 2) takes the triangular route
 #: beyond this many Taylor steps: a graded entry (a fast line cascaded with
 #: a slow kernel: a dressed line) loses up to ~1e-14 in the trace-shifted
-#: action well before ``TAYLOR_S_MAX`` (S3 review: 4e-15 already at 2
+#: action well before ``TAYLOR_S_MAX`` (4e-15 already at 2
 #: steps), the triangular Pade ~3e-16, at a negligible cost for these small
 #: entries
 TAYLOR_S_MAX_IMPULSE = 0
 #: a segment with exact triangular bases whose slowest diagonal rate is below
 #: ``GRADED_RATIO`` of the mean (graded: the trace shift leaves the slow modes
 #: growing fast) takes the triangular route beyond ``TAYLOR_S_MAX_GRADED``
-#: steps (S3 review)
+#: steps
 GRADED_RATIO = 0.1
 TAYLOR_S_MAX_GRADED = 2
 #: the triangular route (dense upper-triangular generator in the per-edge
@@ -270,7 +270,7 @@ REFINE_STEPS = 2
 #: back substitution (``scipy.linalg.solve_triangular`` on the cached
 #: upper-triangular Kronecker sum in the per-edge triangular basis: the
 #: same back substitution the Jacobi sweeps perform, in one call); larger
-#: blocks keep the matrix-free sweeps (S3, walls)
+#: blocks keep the matrix-free sweeps
 DENSE_SOLVE_MAX = 256
 #: a subset with more stationary downsets than this is declined
 MAX_DOWNSETS = 50000
@@ -288,7 +288,7 @@ MAX_EDGES = 50
 #: an ``api._realization.RealizationRefused`` reason (or ``error``),
 #: ``kernel_`` + a kernel's refusal reason, ``numerical_`` + an exception
 #: type.  ``tests/test_ss_decline_reasons.py`` checks that every reason the
-#: code can produce is named here (audit W7, RED-01 stage 1).
+#: code can produce is named here (one reason per decline).
 DECLINE_REASONS = {
     # the run / the model (``model_route``, ``realization_for``)
     'engine_poles': "DAEDALUS_PHASE_J_ENGINE=poles",
@@ -458,7 +458,7 @@ class _Refused:
 
 def engine_requested(environ=None):
     """True when ``DAEDALUS_PHASE_J_ENGINE`` selects the state-space route:
-    unset, ``default`` or ``statespace`` (the default since S3); ``poles``:
+    unset, ``default`` or ``statespace`` (the default); ``poles``:
     False (the pole engine everywhere).  Any other value raises (the one
     parser: ``engine._env.phase_j_engine``)."""
     from engine import _env
@@ -473,7 +473,7 @@ def engine_name(environ=None):
 def fallback_enabled(environ=None):
     """``DAEDALUS_PHASE_J_SS_FALLBACK``: on (default) a late refusal falls
     back to the pole route; off (``0`` / ``off`` / ``false`` / ``no``): it
-    raises (S2's behaviour).  Any other value raises."""
+    raises (the earlier behaviour).  Any other value raises."""
     from engine import _env
     return _env.flag(FALLBACK_ENV, True, environ)
 
@@ -586,7 +586,7 @@ def realization_for(propagator_data, num_params):
     holds strong references, so an id cannot be recycled while cached."""
     K = propagator_data.get('K_ft') if hasattr(propagator_data, 'get') else None
     om = propagator_data.get('omega') if K is not None else None
-    # identity fast path (S3, walls: one lookup per subset): the same K_ft,
+    # identity fast path (one lookup per subset): the same K_ft,
     # omega, num_params dict and value objects as the last call (strong
     # references are held, so no id can be recycled while cached)
     vals = tuple(num_params.values()) if isinstance(num_params, dict) else None
@@ -598,9 +598,9 @@ def realization_for(propagator_data, num_params):
         return last[4], last[5]
     npk = _np_key(num_params)
     key = (id(K), id(om) if K is not None else None, npk)
-    # content key (S3, walls): every compute_cumulants call builds a new
+    # content key: every compute_cumulants call builds a new
     # K_ft; the same propagator text, omega and exact parameter values are
-    # the same realization (S1 is a function of exactly these)
+    # the same realization (the realization is a function of exactly these)
     ckey = None
     with _REAL_LOCK:
         hit = _REAL_CACHE.get(key)
@@ -630,7 +630,7 @@ def realization_for(propagator_data, num_params):
     else:
         try:
             real, exc = try_realize(propagator_data, num_params or {})
-        except Exception as e:                  # never let S1 break a run
+        except Exception as e:                  # never let the realization break a run
             real, exc = None, e
         if real is None:
             reason = getattr(exc, 'reason', None) or 'error'
@@ -670,7 +670,7 @@ def _content_key(K, om):
             return hit[1]
     try:
         # the exact values of float literals (a RealNumber prints ~15
-        # digits): S1's exactification, then the text
+        # digits): the realization's exactification, then the text
         from api._realization import _exactify
         from sage.all import SR as _SR
         ck = (str(om), int(K.nrows()), int(K.ncols()),
@@ -707,7 +707,7 @@ def _balance_siso(a, b, c):
     ``[[a, b], [c, 0]]`` (``scipy.linalg.matrix_balance``, no permutation):
     ``a -> S^{-1} a S``, ``b -> S^{-1} b s``, ``c -> c S / s``, so
     ``c e^{a t} b`` is unchanged bit for bit in exact arithmetic and the
-    rounding of ``a`` is untouched (powers of two).  S1 balances ``a`` alone;
+    rounding of ``a`` is untouched (powers of two).  the realization balances ``a`` alone;
     rational kernels then leave ``b`` and ``c`` graded in opposite directions
     (|b| ~ 1e20, |c| ~ 1e-20 on a Pade-16 entry), which inflates the norms of
     the firing maps and with them the number of Taylor steps.  Candidates:
@@ -725,7 +725,7 @@ def _balance_siso(a, b, c):
     cands = [_equalize_bc(a, b, c)]
     _ba, (sa, _pa) = sl.matrix_balance(a, permute=False, separate=True)
     sa = np.asarray(sa, dtype=float)
-    if not np.all(sa == 1.0):                  # a alone (S1's choice)
+    if not np.all(sa == 1.0):                  # a alone (the realization's choice)
         cands.append(_equalize_bc(a * (sa[None, :] / sa[:, None]), b / sa,
                                   c * sa))
     _bal, (s, _p) = sl.matrix_balance(aug, permute=False, separate=True)
@@ -865,7 +865,7 @@ class _ModelOps:
     """The realization of one model at one parameter point, as per-entry
     operators, plus the resolvent data per active-edge pattern (shared by
     every subset of the model); also the conductance kernels' realizations
-    and the dressed lines' cascades (S3), built on first use."""
+    and the dressed lines' cascades, built on first use."""
 
     def __init__(self, real, num_params=None):
         self.real = real
@@ -1382,7 +1382,7 @@ def _onenorm_powers(A, pmax=_P_MAX + 1):
     submultiplicative upper bound
     ``||A^p|| <= min(||A||^p, ||A^2||^(p//2) ||A||^(p%2))`` (an upper bound is
     what ``_taylor_params`` needs; the seven further powers or estimates were
-    about half of a state-space run, audit SPD-03)."""
+    about half of a state-space run)."""
     d = {1: float(np.abs(A).sum(axis=0).max()) if A.size else 0.0}
     n = A.shape[0]
     if pmax >= 2:
@@ -2379,14 +2379,14 @@ class SubsetSS:
             errors[:] = err
         return out
 
-    # ── C0 output (S4): the subset on a line as one matrix exponential ───
+    # ── C0 output : the subset on a line as one matrix exponential ───
     def me_line(self, free_base, free_dir, t_anchor, t_ref, tie_ctx=None):
         """The subset integral (WITHOUT prefactor) on the line ``free_vals =
         free_base + t * free_dir`` inside the chamber that contains
         ``t_ref`` (an interval of ``t`` on which the order of the external
         times does not change), as a matrix-exponential triple in ``s =
         sigma (t - t_anchor) >= 0``, ``sigma = sign(t_ref - t_anchor)``
-        (S4, item C0)::
+        (C0 output)::
 
             I(s) = const * prod_r g_r(rho0_r + rho1_r s) * c . exp(G beta s) . x0
 
@@ -2736,7 +2736,7 @@ class tau_grid_prefetch:
     from per-point evaluation only by rounding (the last segment is
     stepped from one length to the next).  Per thread; nests.  The memos
     (two arrays per subset and leg mapping: 24 B per point) are released
-    when the context exits (S3)."""
+    when the context exits."""
 
     def __init__(self, points):
         self.points = [tuple(float(x) for x in p) for p in points]
@@ -3003,7 +3003,7 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                     row_kinds=row_kinds, tie_ctx=_tie_ctx)
             return val
         _contrib.ss_subset = sub
-        # C0 output (S4, ``api.me_output``): what the closure multiplies the
+        # C0 output (``api.me_output``): what the closure multiplies the
         # subset integral by, and whether it is pruned to 0
         _contrib.ss_prefactor = pref
         _contrib.ss_theta0_empty = bool(theta0_empty)
@@ -3197,7 +3197,7 @@ def _check_dense_map(d_to, d_from):
     """Refuse (``PhaseJResourceError``) a dense ``d_to x d_from`` complex map
     of a C0 chain output (``_between``) larger than the budget,
     before it is allocated (uncharged above ``OP_DENSE_MAX`` states: 6.4 GB
-    at D = 2e4; audit MEM-07)."""
+    at D = 2e4)."""
     FI = _FI()
     with FI._PLAN_MEM_LOCK:
         _scoped, budget, rule, _used = FI._budget_now()
@@ -3239,7 +3239,7 @@ def _charge(sub):
             FI._PLAN_MEM['used'] += nbytes
 
 
-# ─── route prediction and the memory pre-pass (S3) ────────────────────────
+# ─── route prediction and the memory pre-pass ────────────────────────
 
 def model_route(propagator_data, num_params):
     """``(True, None)`` when the state-space route can take this model's
@@ -3278,7 +3278,7 @@ def diagram_route(typed_diagram, propagator_data, num_params):
 
 
 def run_route(propagator_data, num_params, vertex_types=()):
-    """The run-level prediction of ``compute_cumulants`` (S3): whether the
+    """The run-level prediction of ``compute_cumulants``: whether the
     route takes every subset of a run whose diagrams are built from
     ``vertex_types`` (the model's vertex and source types): the model is
     routable (``model_route``) and no vertex type is one the route declines
@@ -3324,7 +3324,7 @@ PREFETCH_BYTES_PER_POINT = 24
 def diagram_estimate(typed_diagram, propagator_data, num_params, has_delta,
                      n_tau=1, n_perm=1):
     """Upper bound (bytes) of what the route holds for one diagram (item
-    35's pre-pass, S3): ``(stationary, transient)``.
+    35's pre-pass): ``(stationary, transient)``.
 
     The diagram DAG (prediagram edges ``u -> v``: ``Δt = t_v - t_u``; the
     leaves, the external times, are its sinks) is rebuilt as Phase J builds
@@ -3593,7 +3593,7 @@ def _layout_estimate(nv, leaf_mask, edges, item, n_tau, n_perm):
     n_sub = 2 ** len(didx)
     # a stateless delta line (n == 0) is never kept smooth (``_contract``:
     # that subset is never built), so only the delta lines with states
-    # double the subsets built (audit MEM-05: 2^k over-estimate since #38)
+    # double the subsets built (2^k over-estimate since #38)
     n_sub_built = 2 ** sum(1 for i in didx if edges[i][2] > 0)
     cheap_stat = (2 ** n_int) * prod_n
     if (cheap_stat * item <= PREPASS_CHEAP_BYTES

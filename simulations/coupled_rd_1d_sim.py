@@ -151,7 +151,7 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
     (the package convention kappa(phi_i(0), phi_j(tau)), as
     ``api.cumulant``, ``pp_simulate.cross_covariance`` and
     ``delay_sde_sim.autocovariance``; before Oct 2026 this simulator and its
-    oracle used the transpose, audit I-simulators 5)
+    oracle used the transpose)
 
     averaged over x (periodic translational average via FFT), over time
     after burn-in, and over ``n_rep`` independent replicas.
@@ -245,7 +245,7 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
     # the snapshot buffer (8 B) and its FFT (16 B) per sample: refuse before
     # allocating when over ``max_bytes`` (default: the Phase J budget rule,
     # ``PHASE_J_MEM_BUDGET_GB`` else the memory guards' default budget;
-    # ``off`` there means no limit; audit MEM-10)
+    # ``off`` there means no limit)
     need = 24 * n_rec * n_rep * n_f * n_x
     if max_bytes is None:
         from engine.integration.time_domain.final_integral import mem_budget

@@ -356,7 +356,7 @@ def field_symbol_name(base, idx=None):
     ``_`` gets a ``_`` before the index (``dx1`` + 1 -> ``dx1_1``; ``idx``
     ``None``, an un-indexed field: ``dx1_0``), so that
     :func:`_parse_field_name` inverts every name: ``dx1`` + 1 and ``dx`` + 11
-    were both ``dx11`` (audit GEN-07)."""
+    were both ``dx11``."""
     if idx is None:
         return f'{base}_0' if _needs_separator(base) else base
     return f'{base}_{idx}' if _needs_separator(base) else f'{base}{idx}'

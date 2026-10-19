@@ -272,7 +272,7 @@ def vertex_role_signature(vertex, typed_diagram):
 # call computed, so nothing changes: a hit is bit-identical by construction.
 #
 # Always on (its switches, ``USE_AUT_MEMO`` / ``DAEDALUS_SETUP_AUT_MEMO`` and
-# the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP``, were retired in audit W7:
+# the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP``, were retired:
 # set, each warns once and is ignored).  Key: the diagram's
 # ``id`` and ``fix_external``; the VALUE holds the diagram object itself, so
 # its ``id`` cannot be reused while the entry lives (a hit also checks
@@ -289,10 +289,10 @@ _AUT_MISS = object()
 
 
 _env.retired('DAEDALUS_SETUP_AUT_MEMO',
-             'the automorphism-order memo is always on (audit W7)')
+             'the automorphism-order memo is always on')
 _env.retired('DAEDALUS_PHASE_J_LEGACY_SETUP',
              'the fast setup path is the only one; it gives the same numbers '
-             '(audit W7)')
+             '')
 
 
 def _aut_count(name):
@@ -718,7 +718,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
 
     Scal = combinatorial_factor(typed_diagram)
     # ``bool``'s zero verdict without Maxima for a coefficient with floats or
-    # assumption symbols (seconds per call on a large one, audit W8)
+    # assumption symbols (seconds per call on a large one)
     from engine.core.field_theory import _sr_nonzero
 
     def _is_zero(c):
@@ -750,7 +750,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
             # multiply it in), its amplitude does not.  Before Oct 2026 only
             # the white case pulled it out and the colored amplitude was
             # parked in 'amplitude', which nothing reads -> the result was
-            # short by the source coefficient (audit A3a-5).  'amplitude' now
+            # short by the source coefficient.  'amplitude' now
             # holds only the part left INSIDE (1 unless time-dependent), so
             # nothing is ever counted twice.
             if amp_td_syms:

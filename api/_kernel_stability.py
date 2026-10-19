@@ -527,7 +527,7 @@ def kernel_stability(K_ft, omega, num_params) -> KernelStability:
                     # on the model's own rates; never relative to 1 (an
                     # absolute 1e-9 band called a stable model in slow time
                     # units marginal); a root strictly to the right of it is
-                    # unstable whatever else sits on the axis (UNIT-04)
+                    # unstable whatever else sits on the axis
                     rate = max(abs(beta / alpha), abs(gamma / alpha))
                     band = [_MARGINAL_REL * abs(z) + 1e-25 * rate for z in rts]
                     rhp = sorted([z for z, b in zip(rts, band) if z.real > b],

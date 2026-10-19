@@ -90,7 +90,7 @@ def factorial_centered(n_arr, m, mean_count, dt_bin):
     (``n^(j)`` the falling factorial).  Its products with linearly centred
     other legs have the factorial CENTRAL moments as expectations, so for
     k <= 3 their mean is the factorial cumulant and for k = 4 the pair
-    subtraction is exact.  (Oct 2026 audit I-simulators 0/2: the previous
+    subtraction is exact.  (the previous
     ``n^(m)/dt^m - mean`` gave kappa_3 + 2 mu C_2 at a coincident pair.)"""
     from math import comb
     mu = mean_count / dt_bin
@@ -210,8 +210,7 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
         # Natural names: peel off any trailing population suffix and map
         # by the first letter ('nE' → 'n', 'vI' → 'v').  Anything else is
         # refused: it used to fall through to the spike treatment AND the
-        # spike-count array (a continuous field 'x' read from binned_counts;
-        # audit I-simulators 4).
+        # spike-count array (a continuous field 'x' read from binned_counts).
         first = ft[0]
         if first == 'n':
             return 'dn'
@@ -360,7 +359,7 @@ def compute_kpoint_slice(binned_counts, dt_bin, pop_indices, lag_bins,
     # train in the same bin: the FFT product holds n * n there (the shot
     # noise rate/dt_bin at k = 2, rate/dt^2 at k = 3).  Recompute those
     # points with the sweep leg merged into that bin's factorial group
-    # (audit I-simulators 3).
+    #.
     if _is_spike_ft(sweep_ft):
         for lag_val, leg_indices in lag_to_legs.items():
             if abs(lag_val) > max_lag_bins or not any(

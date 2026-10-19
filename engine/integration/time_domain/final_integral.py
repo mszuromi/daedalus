@@ -44,7 +44,7 @@ Integration routes (closed forms on numeric poles; no symbolic integral)
 Module attributes read at call time: ``PHASE_J_T_MIN`` (a finite lower
 bound of every time, for switch-on transients) and the tuning constants
 below.  The pre-0.2.0 rollback switches (``DAEDALUS_PHASE_J_LEGACY`` and the
-per-milestone ones, ``_RETIRED_PHASE_J_ENV``) were retired in audit W7: set,
+per-milestone ones, ``_RETIRED_PHASE_J_ENV``) were retired: set,
 each warns once and is ignored.  The public entry point is
 ``integrate_diagram``; its ``contribution(*ext_time_values) -> complex``
 callable evaluates the diagram.
@@ -82,7 +82,7 @@ from engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
-# Retired environment switches (audit W7)
+# Retired environment switches
 # ───────────────────────────────────────────────────────────────────────
 # Each restored a pre-0.2.0 route or a slower setup path.  Set, it warns once
 # per process (``FutureWarning``) and is otherwise ignored.
@@ -91,48 +91,48 @@ _RETIRED_PHASE_J_ENV = (
      'the pre-0.2.0 Phase J numbers are no longer reproducible in-process; '
      'they are kept as frozen baselines (tests/fixtures/'
      'phase_j_legacy_baseline.npz, tests/phase_j_refactor_fixtures/legacy/) '
-     '(audit W7)'),
+     ''),
     ('DAEDALUS_PHASE_J_THETA0_CONST_ROW',
      "the Ito rule Theta(0) = 0 with the external-time tie order is the only "
-     "constant-row convention ('legacy_clip' is gone) (audit W7)"),
+     "constant-row convention ('legacy_clip' is gone)"),
     ('DAEDALUS_PHASE_J_STRUCTURAL_ZEROS',
-     'identically-zero subsets are always skipped (audit W7)'),
+     'identically-zero subsets are always skipped'),
     ('DAEDALUS_PHASE_J_NQUAD_HARDENED',
-     'the hardened quadrature fallback is the only one (audit W7)'),
+     'the hardened quadrature fallback is the only one'),
     ('DAEDALUS_PHASE_J_DBM',
      'the poset lower-bound inheritance rule and the exact DBM route are '
-     'always on (audit W7)'),
+     'always on'),
     ('DAEDALUS_PHASE_J_DD_KERNELS',
      'the divided-difference kernels are the only Phase J kernels '
-     '(audit W7)'),
+     ''),
     ('DAEDALUS_CHAIN_UPPERS_KERNEL',
      'the divided-difference chain kernels replaced both chain evaluators '
-     '(audit W7)'),
+     ''),
     ('DAEDALUS_CHAIN_UPPERS_MEMO',
-     'the chain integrals are always memoised (audit W7)'),
+     'the chain integrals are always memoised'),
     ('DAEDALUS_PHASE_J_SEMIINF_CHAIN',
-     'the semi-infinite chain is the only m >= 3 route (audit W7)'),
+     'the semi-infinite chain is the only m >= 3 route'),
     ('DAEDALUS_PHASE_J_UNBOUNDED_2D',
-     'the box-free closed forms are the only route (audit W7)'),
+     'the box-free closed forms are the only route'),
     ('DAEDALUS_PRUNE_ZERO_MODES',
      'pole tuples with an exactly zero residue are always pruned '
-     '(audit W7)'),
+     ''),
     ('DAEDALUS_PHASE_J_LEGACY_SETUP',
      'the fast setup path is the only one; it gives the same numbers '
-     '(audit W7)'),
+     ''),
     ('DAEDALUS_SETUP_ZERO_EXIT',
-     'the zero-prefactor early exit is always on (audit W7)'),
+     'the zero-prefactor early exit is always on'),
     ('DAEDALUS_SETUP_PROP_TD',
-     'the call-scoped propagator data are always used (audit W7)'),
+     'the call-scoped propagator data are always used'),
     ('DAEDALUS_SETUP_LAZY_SR',
-     'the SR objects are always built on demand (audit W7)'),
+     'the SR objects are always built on demand'),
     ('DAEDALUS_SETUP_DELTA_SOLVE',
      'the delta edges are always eliminated exactly '
      '(DAEDALUS_PHASE_J_VALIDATE_DELTA still cross-checks sage_solve) '
-     '(audit W7)'),
+     ''),
     ('DAEDALUS_SHOTNOISE_INTEGRATED',
      'integrated shot-noise records are always built; the off path dropped '
-     'shot-noise subsets silently (audit W7)'),
+     'shot-noise subsets silently'),
 )
 for _name, _note in _RETIRED_PHASE_J_ENV:
     _env.retired(_name, _note)
@@ -144,9 +144,9 @@ def _warn_retired_env():
     import warns too (once per process and name)."""
     for name, note in _RETIRED_PHASE_J_ENV + (
             ('DAEDALUS_SETUP_AUT_MEMO',
-             'the automorphism-order memo is always on (audit W7)'),
+             'the automorphism-order memo is always on'),
             ('DAEDALUS_POLE_CLUSTERS',
-             'the near-degenerate pole deformation is always on (audit W7)')):
+             'the near-degenerate pole deformation is always on')):
         _env.retired(name, note)
 del _name, _note
 
@@ -529,7 +529,7 @@ def _extract_exp_mode(sr_expr, tau_sym):
         return None
     # The log-derivative at 0 fits ANY kernel; check that it is the kernel
     # (a sum of exponentials would otherwise get a wrong single mode), at
-    # times on the kernel's OWN scale (audit W4b, ACC-60: fixed times 0.37,
+    # times on the kernel's OWN scale (fixed times 0.37,
     # 1.9, 4.3 underflowed for a fast kernel, so r e^{-rt} cos(rt) at
     # r = 2000 passed with nothing compared and was fitted as one real mode;
     # its r = 2 twin was refused).  The scale is |lambda| together with the
@@ -573,7 +573,7 @@ def _trig_as_exp(expr):
     """``expr`` with cos, sin, cosh and sinh written as exponentials, so that
     a damped-oscillatory kernel ``r e^{-rt} cos(rt)`` splits into its two
     complex modes (``_extract_exp_modes``) on the pole route as on the
-    state-space route (audit W4b, ACC-60: written with cos it was refused,
+    state-space route (written with cos it was refused,
     at r = 2, or fitted as one real mode, at r = 2000).  The SAME object
     when none of them occurs (an operator walk: nothing is built for a
     kernel without a trig factor)."""
@@ -636,7 +636,7 @@ def _extract_exp_modes(sr_expr, tau_sym, max_modes=16):
         # a trig kernel that does not decay (cos(w t), cosh(t)): refused as
         # before the rewrite (``_trig_as_exp``) existed
         return None
-    # probe on every mode's own time scale (ACC-60: fixed times underflow
+    # probe on every mode's own time scale (fixed times underflow
     # for fast modes and check nothing)
     rates = sorted({abs(lam) for (_C, lam) in modes if abs(lam) > 0}) or [1.0]
     try:
@@ -781,7 +781,7 @@ DRESS_CONV_KERNELS = _env.flag('DAEDALUS_PHASE_J_DRESS_KERNELS', True)
 # such entries; at k = 3 one loop the full product n_poles^E was 1e2-1e3
 # times larger than the nonzero one.  The values are bit-identical to the
 # unpruned plan's.  (The switch ``DAEDALUS_PRUNE_ZERO_MODES`` was retired in
-# audit W7; ``_build_modesum_plan(prune=False)`` still builds the unpruned
+# the retirement; ``_build_modesum_plan(prune=False)`` still builds the unpruned
 # plan.)
 
 #: a pruned plan replays the group order of the full product (so
@@ -900,7 +900,7 @@ def mem_budget(var, environ=None):
     environment variable ``var`` (``engine._env.budget_gb``: a positive
     number of GB; ``None`` = no limit for ``off``, ``none``, ``inf`` or
     ``unlimited``; ``0`` and negative values raise -- they meant "no limit"
-    here and "refuse everything" for the spatial guard, audit RED-05);
+    here and "refuse everything" for the spatial guard);
     unset or empty: the default rule (``default_mem_budget``)."""
     gb = _env.budget_gb(var, environ)
     if gb is None:
@@ -1038,7 +1038,7 @@ def _plan_refund(n_tuples):
             _PLAN_MEM['plans'] -= 1
 
 
-# ── the real-growth guard (audit MEM-11 / MEM-02) ─────────────────────────
+# ── the real-growth guard ─────────────────────────
 # The charges above cover the modesum plans and the stationary states only:
 # typing, per-diagram setup objects, Sage expressions and caches grew a run
 # by 0.1-1.7 GB uncharged on the zoo (3-30 GB on stress cases, with no
@@ -1619,12 +1619,12 @@ THETA_AT_ZERO_CONST_ROW = 0
 
 # The constant-row rule above is the only one: the pre-M1 'legacy_clip'
 # mode (``THETA0_CONST_ROW_MODE``, ``DAEDALUS_PHASE_J_THETA0_CONST_ROW``) was
-# retired in audit W7.
+# retired.
 
 # ── Structural zeros (M2a; plan §3.1 L1) ──
 # Two kinds of δ-subset work that is identically zero are always skipped
 # (the switch ``STRUCTURAL_ZEROS`` / ``DAEDALUS_PHASE_J_STRUCTURAL_ZEROS``
-# was retired in audit W7):
+# was retired):
 #   * ``_integrate_polytope`` (the scipy fallback, whoever calls it: an
 #     analytic bail, the SR path of a non-analytic subset, a direct caller)
 #     returns 0j at once when the rows contain a directed cycle of
@@ -1671,12 +1671,12 @@ THETA_AT_ZERO_CONST_ROW = 0
 # the default-tolerance scipy.nquad routines (``_integrate_1d_polytope``,
 # ``_integrate_2d_polytope``, ``_integrate_nd_polytope``).  (The switch
 # ``NQUAD_HARDENED`` / ``DAEDALUS_PHASE_J_NQUAD_HARDENED``, which selected
-# those routines for every region, was retired in audit W7.)
+# those routines for every region, was retired.)
 
 # ── Poset lower-bound inheritance and the exact DBM route (M3; plan §3.1
 # L7, problem P3) ──
 # Two rules for the m≥3 subsets (the switch ``USE_DBM_FALLBACK`` /
-# ``DAEDALUS_PHASE_J_DBM`` was retired in audit W7):
+# ``DAEDALUS_PHASE_J_DBM`` was retired):
 #   * P3, the inheritance rule.  The poset path integrates every variable
 #     from ONE shared scalar lower bound L.  A variable without a scalar
 #     lower of its own may inherit L only through a predecessor in the
@@ -1925,7 +1925,7 @@ def _divergence_policy(on_divergence=None):
                      f'{_DIVERGENCE_POLICIES}')
 
 
-# one copy, shared with ``api.save`` (audit W7, RED-07)
+# one copy, shared with ``api.save``
 from engine._warn_helpers import (                    # noqa: E402
     ensure_warning_shown as _ensure_warning_shown)
 
@@ -2089,7 +2089,7 @@ def _emit_subset_hook(hook, meta, ctx, free_vals, m, cdata, *, path,
       ``bail_category`` (the ``nquad_fallback_by_reason`` key, or ``None``
       when an analytic path answered), ``value`` (complex, exactly what
       the dispatch returns).
-    * engine (S3): ``engine`` ('statespace' for ``path == 'ss'``, else
+    * engine: ``engine`` ('statespace' for ``path == 'ss'``, else
       'poles'); ``ss_fallback``: the reason when this pole-route evaluation
       is the state-space route's call-time fallback, else ``None``.
     """
@@ -2430,7 +2430,7 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
             # every residue of this edge is exactly 0: so is every tuple's
             # coefficient, which every consumer skips -- the plan of an edge
             # without modes (no tuples), not the full product built and
-            # charged for nothing (audit MEM-06)
+            # charged for nothing
             _RUNTIME_COUNTERS['zero_mode_edge_plans'] = (
                 _RUNTIME_COUNTERS.get('zero_mode_edge_plans', 0) + 1)
             plan = _plan_from_tuples((), len(smooth_edge_modes),
@@ -2945,7 +2945,7 @@ def _causal_poset_consistent_scalar_lower(poset, tol=POSET_LOWER_RTOL):
     closure of the strict order (``_poset_lower_not_inherited``).  Such a
     variable is not bounded below by L, so the single-L chain would cut off
     the region below L.  (Before M3 every variable inherited L; the switch
-    that restored that, ``USE_DBM_FALLBACK``, was retired in audit W7.)
+    that restored that, ``USE_DBM_FALLBACK``, was retired.)
     """
     return _poset_scalar_lower_verdict(poset, tol)[:2]
 
@@ -2990,7 +2990,7 @@ def _poset_scalar_lower_verdict(poset, tol=POSET_LOWER_RTOL):
 
     Lowers count as equal within ``tol`` times the poset's time scale (its
     largest scalar bound, lower or upper), a rounding-level margin in any
-    time unit.  Audit W4b (ACC-63): an ABSOLUTE 1e-9 merged the distinct
+    time unit.  An ABSOLUTE 1e-9 merged the distinct
     lowers 0 and 5e-10 of a region with upper 2e-9 (the exact 1e9-faster
     twin of 0, 0.5, 2, which bails): the chain simplex from one L gave the
     m = 3 value 36.6 % low."""
@@ -3039,7 +3039,7 @@ def _causal_poset_consistent_scalar_upper(poset, tol=1e-9):
 # identical arguments (higher loop orders; models with repeated poles).  The
 # memo changes NO number: a hit returns the very object the first call
 # computed.  (Its switch, ``USE_CHAIN_UPPERS_MEMO`` /
-# ``DAEDALUS_CHAIN_UPPERS_MEMO``, was retired in audit W7: always on.)
+# ``DAEDALUS_CHAIN_UPPERS_MEMO``, was retired: always on.)
 #
 # Thread safety: the spatial path runs Phase J under a ThreadPoolExecutor.
 # Lookup (with its counter) and miss-insert (with eviction) hold
@@ -3072,7 +3072,7 @@ DD_BATCH_SKIP_ZERO_GROUPS = True
 
 
 
-# ── M7: the box-free exact routes (the only Phase J routes since audit W7) ─
+# ── M7: the box-free exact routes (the only Phase J routes) ─
 # the internal Phase J plan (not distributed) §3.1 (layers L3, L4) and §14.
 #   * the m=2 region is built exactly -- finite vertices and the recession
 #     rays, no box -- and integrated by the ideal-vertex fan (triangles,
@@ -3094,7 +3094,7 @@ DD_BATCH_SKIP_ZERO_GROUPS = True
 #   inf/nan.
 # ``PHASE_J_T_MIN`` (float, default −inf; no environment variable): the lower
 #   bound of every integration time.  The finite-lower-bound closed forms are
-#   kept for it (switch-on transients, feature plan S6): a finite value is
+#   kept for it (switch-on transients, the switch-on feature plan): a finite value is
 #   honoured by the m=1 interval, the exact polygon, the semi-infinite chain
 #   and the DBM route (a ``ValueError`` when it reaches the scipy fallback,
 #   which cannot honour it).
@@ -3105,7 +3105,7 @@ DD_BATCH_SKIP_ZERO_GROUPS = True
 # M8's.
 # The pre-0.2.0 boxed routes and their switches (``USE_PHASE_J_DD_KERNELS``,
 # ``CHAIN_UPPERS_KERNEL``, ``SEMIINF_CHAIN``, ``UNBOUNDED_2D``,
-# ``POLYGON_BBOX_CAP``, the chain-simplex routines) were retired in audit W7.
+# ``POLYGON_BBOX_CAP``, the chain-simplex routines) were retired.
 PHASE_J_T_MIN = float('-inf')
 
 
@@ -3900,7 +3900,7 @@ def _integrate_subset_dbm(
     # The conditioning test's absolute floor: the DBM's own default
     # (``integral_scale``: Σ |C| e^{Re E} times a volume in the fastest
     # exponent's time unit, capped by the region), in the units of the
-    # integral.  Audit W4b (ACC-64): the Σ |C| passed here lacked e^{Re E}
+    # integral.  The Σ |C| passed here lacked e^{Re E}
     # (an ill-conditioned closed form in a correlator tail passed, its mp
     # retry skipped) and [time]^m (the verdict changed with the time unit).
     scale = None
@@ -4129,7 +4129,7 @@ def _dd_accuracy(total, mag, scale):
     own test -- rounding error ``COND_ERR_FACTOR · Σ|term|`` against
     ``max(COND_RTOL · |value|, COND_ATOL · scale)``, ``scale`` in the units
     of the integral as the DBM's ``integral_scale`` (the callers multiply
-    Σ |coef| e^{Re γ} by ``dbm_integral.time_volume``: audit W4b, ACC-64)
+    Σ |coef| e^{Re γ} by ``dbm_integral.time_volume``: )
     -- recorded in the
     counters ``dd_err_ratio_max`` (the worst ratio) and ``dd_ill_conditioned``
     (subsets above 1).  Bookkeeping only: the value is used as computed (the
@@ -4498,7 +4498,7 @@ QUAD_OPTS = {
 #   from engine.integration.time_domain import final_integral
 #   final_integral.TAU_KERNEL_CAP = 200.0
 #
-# ACC-15: an absolute ±50 truncates a kernel wider than ~10 time units (and
+# an absolute ±50 truncates a kernel wider than ~10 time units (and
 # is not invariant under a change of the time unit).  ``None`` (the
 # default): the box of each source is read off its kernel,
 # ``_noise_kernel_halfwidth`` -- the |τ| beyond which |κ| stays below
@@ -4658,8 +4658,7 @@ DEBUG_HEAVISIDE_GUARD = False
 # ── M5 (P6): per-diagram setup levers (pure speed-ups, no number moves) ──
 # Four levers cut the setup that ``integrate_diagram`` pays per diagram; all
 # are always on (their switches -- ``USE_SETUP_*``, ``DAEDALUS_SETUP_*`` and
-# the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP`` -- were retired in audit
-# W7; each was ``np.array_equal`` to its legacy path on every result):
+# the umbrella ``DAEDALUS_PHASE_J_LEGACY_SETUP`` -- were retired; each was ``np.array_equal`` to its legacy path on every result):
 #
 #   L1: a diagram whose prefactor is numerically exactly 0 returns a zero
 #       contribution before any setup (``_zero_exit_applies``).
@@ -4780,12 +4779,12 @@ _UNSET = object()
 
 
 #: The pole engine's refusal of a kernel without separated rates names the
-#: default engine (audit LOUD-05); it realizes such kernels when the kernel
+#: default engine; it realizes such kernels when the kernel
 #: has a state-space realization (repeated / close rates, polynomial factors).
 _POLES_KERNEL_HINT = ('; the default state-space engine (unset '
                       'DAEDALUS_PHASE_J_ENGINE) can compute such kernels '
                       'exactly when they have a state-space realization: '
-                      'the pole engine cannot (audit LOUD-05)')
+                      'the pole engine cannot')
 
 
 class PropagatorTD:
@@ -4963,7 +4962,7 @@ def _zero_exit_result(D, leaves, ext_time_vars, diag_serial, rerun):
             )
         return 0.0 + 0.0j
 
-    # C0 output (S4): no subset contributes
+    # C0 output : no subset contributes
     contribution.phase_j_parts = {
         'subsets': [], 'perms': [], 'compensation': 1, 'origin_leaf_idx': None,
         'free_ext_idx': [], 'k': n_ext}
@@ -5130,7 +5129,7 @@ def _delta_eliminate_exact(eq_expr, var):
 # ``delta_contributions_multi`` record.  Neither enters ``contribution`` /
 # ``C_tau``.  (The switch ``USE_SHOTNOISE_INTEGRATED`` /
 # ``DAEDALUS_SHOTNOISE_INTEGRATED``, whose off path dropped those subsets
-# silently, was retired in audit W7.)
+# silently, was retired.)
 
 
 def _shot_equality(eqs, free_ext_syms):
@@ -5470,7 +5469,7 @@ def _validate_delta_subset(fast, legacy, edge_info, smooth_edges,
 
 
 class _LazyIntegrand:
-    """S3: the pole routes' closure of a subset the state-space route takes,
+    """The pole routes' closure of a subset the state-space route takes,
     built on its first call (the hook payload's reference ``integrand``)."""
     __slots__ = ('_mk', '_sr', '_fc', '_fn')
 
@@ -5941,9 +5940,9 @@ def integrate_diagram(
     conv_leg_time = {}          # {(v, edge_key): s symbol}   ('leg')
     kernel_edge_specs = []      # [(v, att, s_sym)]             ('leg')
     conv_dress = {}             # {edge_key: kernel modes}      ('dress')
-    conv_dress_att = {}         # {edge_key: the attachment}    ('dress', S3)
+    conv_dress_att = {}         # {edge_key: the attachment}    ('dress')
     conv_dress_direct = {}      # {edge_key: c} a direct term c δ
-    # S3: the state-space route realizes a kernel exactly (equal or close
+    # the state-space route realizes a kernel exactly (equal or close
     # rates, a Jordan-type chain; ``api._realization.realize_kernel``), so a
     # kernel without separated modes is no longer refused when that route is
     # on: it takes the 'leg' path and the subsets without a pole route go to
@@ -6133,7 +6132,7 @@ def integrate_diagram(
                                f'kernel'),
                 }
             if kmodes is None and _ss_realizes_kernel(att):
-                # S3: no separated modes (a repeated / close rate, a
+                # no separated modes (a repeated / close rate, a
                 # polynomial factor), but the state-space route realizes the
                 # kernel: a kernel edge ('leg'), no mode sum
                 _RUNTIME_COUNTERS['conv_kernel_ss_lifted'] = (
@@ -6365,7 +6364,7 @@ def integrate_diagram(
                 fmodes = (_kernel_modes(att, num_params)
                           if att.get('kernel_ft_fn') is not None else None)
                 if fmodes is None and _ss_realizes_kernel(att):
-                    # S3: a frequency image without separated modes: only
+                    # a frequency image without separated modes: only
                     # the state-space route has this kernel (no time-domain
                     # expression for the pole routes' SR integrand)
                     _ss_only_kernels.append(str(att['symbol']))
@@ -6395,7 +6394,7 @@ def integrate_diagram(
                 g_tau = g_tau.subs(num_params)
             dt = SR(vertex_time[v] - s_sym)
             if g_tau is None:
-                # S3: only the state-space route has this kernel; a formal
+                # only the state-space route has this kernel; a formal
                 # function stands for it in the symbolic factors (display;
                 # an SR integrand of such a subset is refused by name)
                 from sage.all import function as _sage_function
@@ -6454,7 +6453,7 @@ def integrate_diagram(
             # sits at anchor - tau); a spec with the legs the other way
             # round reads its kernel at -tau (an asymmetric cross kernel,
             # k_ij(tau) != k_ij(-tau), was evaluated at the wrong sign and
-            # the pair came out symmetrized: audit W6, found with GEN-05)
+            # the pair came out symmetrized: )
             ref = _spec_leg_keys(specs[0])
             for spec in specs:
                 i_leg, j_leg = spec['legs'][0], spec['legs'][1]
@@ -6707,7 +6706,7 @@ def integrate_diagram(
             # ``delta_contributions_multi`` record instead.)
 
             if _ss_only_idx & set(smooth_edges):
-                # a kernel only the state-space route realizes (S3): this
+                # a kernel only the state-space route realizes: this
                 # record's coefficient would need its symbolic image
                 return _ss_only_failure(branch_bits)
             # Build the numeric coefficient: combined_pf × ∏ δ-coeffs
@@ -6732,7 +6731,7 @@ def integrate_diagram(
             # substituted at the top of ``integrate_diagram``.  The only
             # remaining free variables here are ext-time symbols and
             # integration variables -- neither of which is in
-            # ``num_params``.  Removed 2026-04-21 (audit Fix #A, ~6%
+            # ``num_params``.  Removed 2026-04-21 (~6%
             # speedup on k=2 ell=1 quadratic Hawkes).
             try:
                 subset_factor_delta = subset_factor_delta.expand()
@@ -6861,7 +6860,7 @@ def integrate_diagram(
         # edge whose Δt is a numeric constant after δ-elimination (no
         # integration variable, no external time: a_int ≡ 0, a_ext ≡ 0) with
         # c0 <= 0 empties this subset at EVERY τ under Θ(0) = 0.  The subset
-        # is still built (as before audit W7, when a retired Θ(0) mode could
+        # is still built (as before the retirement, when a retired Θ(0) mode could
         # integrate it); the flag makes the closure return 0 without
         # integrating.
         _theta0_always_empty = False
@@ -6906,7 +6905,7 @@ def integrate_diagram(
             ``('ok', fast_callable)``, ``('zero', None)`` (structurally
             zero), ``('skip', reason)`` (an integrated δ subset that cannot
             be built: skipped, as before Feature B) or ``('fail', result
-            dict)``.  Bound to this subset (S3: also called lazily, by the
+            dict)``.  Bound to this subset (also called lazily, by the
             state-space route's fallback)."""
             if _ss_only_idx & set(_smooth_edges):
                 return ('fail', _ss_only_failure(_bits))
@@ -6914,7 +6913,7 @@ def integrate_diagram(
             # prefactor, or missing edge_mode_sums cache — build the
             # full SR + fast_callable path for the residual scipy
             # integrand.  NOTE: ``.subs(num_params)`` removed
-            # 2026-04-21 (audit Fix #A); see commit notes.
+            # 2026-04-21.
             subset_factor = _cp
             for ei_idx in _delta_edges:
                 subset_factor = subset_factor * SR(
@@ -6982,7 +6981,7 @@ def integrate_diagram(
                     ),
                 })
 
-        # S3: a subset the state-space route may take defers the SR build
+        # a subset the state-space route may take defers the SR build
         # (needed by the pole routes' quadrature only): built after the
         # dispatch when the route declines it, or by its fallback.
         _sr_deferred = False
@@ -7110,7 +7109,7 @@ def integrate_diagram(
                           _smooth=smooth_edges, _pn=prefactor_num,
                           _ripi=smooth_edges_ri_pi):
             """The pole routes' per-edge evaluator of this subset (or
-            ``None``); bound to it (S3: built lazily for a subset the
+            ``None``); bound to it (built lazily for a subset the
             state-space route takes, by its fallback)."""
             if vertex_leg_time or (kernel_edge_specs
                                    and edge_mode_sums is None):
@@ -7148,7 +7147,7 @@ def integrate_diagram(
                         _m,
                     )
 
-        # S3: a subset the state-space route may take builds the pole
+        # a subset the state-space route may take builds the pole
         # routes' evaluator only if it is needed (the route declined it, or
         # its fallback); with ``poles`` it is built here, as before
         _fast_eval = None if not _engine_poles else _mk_fast_eval()
@@ -7168,7 +7167,7 @@ def integrate_diagram(
         # ``None`` means the closure-only fallback path applies for
         # both (the constraints either can't be extracted or have
         # a non-numerical prefactor still).
-        # The state-space subset integrator (S2; the default since S3,
+        # The state-space subset integrator (the default engine,
         # ``DAEDALUS_PHASE_J_ENGINE=poles`` switches it off) takes an
         # eligible subset (every row an edge with a realization: a
         # propagator entry, a conductance kernel, a dressed line); no
@@ -7238,7 +7237,7 @@ def integrate_diagram(
                        _pref_c=_prefactor_c, _enabled=_modesum_enabled):
             """``(modes, prefactor, pole_tuples, plan)`` of the analytic
             mode-sum routes for this subset (all ``None`` when they do not
-            apply).  Bound to this subset (S3: also called lazily, by the
+            apply).  Bound to this subset (also called lazily, by the
             state-space route's fallback)."""
             if not (_enabled and not vertex_leg_time
                     and edge_mode_sums is not None and _pref_ok):
@@ -7464,7 +7463,7 @@ def integrate_diagram(
             'diagram_serial': _diag_serial,
             'model': _model_id,
             # the hardened fallback's decay certificate without mode data
-            # and its warnings' parameter point (ACC-17)
+            # and its warnings' parameter point
             'kappa_floor': _kappa_floor,
             'params': _params_fp,
             # breakpoints of the noise sources' τ variables (by index)
@@ -7501,7 +7500,7 @@ def integrate_diagram(
                                     _deferred=_sr_deferred,
                                     _ss_only=bool(_ss_only_idx
                                                   & set(smooth_edges))):
-                """S3: the pole-route closure of this subset, built when
+                """The pole-route closure of this subset, built when
                 the state-space route falls back on it (its modesum plan,
                 and the SR integrand if it was deferred); ``None`` when the
                 subset has no pole route."""
@@ -7686,7 +7685,7 @@ def integrate_diagram(
                 total = total + complex(cfn(free_vals, _ctx, tie_ctx))
         return total / _comp
 
-    # C0 output (S4, ``api.me_output``): how ``contribution`` combines its
+    # C0 output (``api.me_output``): how ``contribution`` combines its
     # subset closures, so the matrix-exponential form of the same sum can be
     # assembled term by term (read only; nothing above uses it)
     contribution.phase_j_parts = {
@@ -10877,7 +10876,7 @@ def _integrate_polytope_hardened(integrand_callable, s_constraints,
             return lo, hi
         if floor_span is not None:
             # no certificate from the integrand, but the model's slowest
-            # line / kernel rate bounds its decay (ACC-17): cut at
+            # line / kernel rate bounds its decay: cut at
             # K / κ_floor beyond the farthest breakpoint
             far_lo = min((x for x in (L, anchor, ext_pts[0])
                           if x is not None and math.isfinite(x)),
@@ -11606,7 +11605,7 @@ def estimate_modesum_plans(typed_diagrams, propagator_data, num_params=None,
     (the diagram index with its per-edge ``(n_e, n_all, has_delta)``), or
     ``None`` when the propagator has no usable pole data.
 
-    S3: ``ss_estimate(td, has_delta)`` -> ``(stationary, transient)`` bytes
+    ``ss_estimate(td, has_delta)`` -> ``(stationary, transient)`` bytes
     or ``None`` (``statespace.diagram_estimate``): a diagram the
     state-space route takes is charged that estimate instead of its pole
     tuples when it is the smaller of the two (``ss_diagrams``, ``ss_bytes``:

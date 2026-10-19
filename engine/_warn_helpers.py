@@ -1,7 +1,7 @@
 """
 engine._warn_helpers
 ====================
-Warning helpers shared by the engine and ``api`` (one copy; audit W7, RED-07:
+Warning helpers shared by the engine and ``api`` (one copy:
 ``api.save`` and ``final_integral`` each had a byte-identical copy).  Both
 modules re-export :func:`ensure_warning_shown` as ``_ensure_warning_shown``.
 """

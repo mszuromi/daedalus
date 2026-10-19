@@ -61,7 +61,7 @@ _MATH_NS = {
 }
 
 # The mean of a library noise (CGMY, tempered stable, ...) with a symbolic
-# exponent carries Gamma functions (audit LOUD-02: NameError 'factorial' in
+# exponent carries Gamma functions (NameError 'factorial' in
 # the saddle solve).  Placed BEFORE the model's names in every namespace: a
 # parameter called ``gamma`` keeps its value.
 _SPECIAL_NS = {'gamma': _gamma, 'factorial': _factorial}
@@ -466,7 +466,103 @@ def _build_residual(model: dict, params_np: dict,
 # ── Initial-guess sampling ───────────────────────────────────────────
 
 
-def _seed_box_default(state_vars, model, fundamental):
+#: Decades scanned for the zero of a variable's own equations
+#: (``_equation_scales``) and the Gauss-Seidel sweeps over the variables.
+_SCALE_DECADES = 30
+_SCALE_SWEEPS = 3
+
+
+def _domains(model):
+    return {p['natural_name']: p.get('domain')
+            for p in model.get('parameters', [])
+            if p.get('mean_field') and p.get('natural_name')}
+
+
+def _equation_scales(R, state_vars, slices, model, seed_box=None):
+    """``{var: (largest, smallest)}``: the sizes of each state variable read
+    off its own equations, unit free.  Starting from 0, each variable in
+    turn (its block of components moved together, the others at their
+    current values) is set to the zero of its own rows nearest to 0 along
+    that line, every zero on the line being recorded: bracketed on
+    the decades ``10^-30 .. 10^30`` (both signs unless the saddle's domain is
+    'positive'), then bisected to full precision; three sweeps.  The scales
+    are the largest and smallest such zeros met.  They move exactly with the variable's
+    units (a field in units s: s times the scale; a time unit: unchanged),
+    so seed boxes built on it do not depend on the units.  A variable whose
+    rows have no sign change on the line keeps no scale (the default box).
+
+    (The default box scaled with the LARGEST PARAMETER VALUE, which is not a
+    field scale: a voltage in mV (Em = 3500) put the spike-rate seeds around
+    1e4, and the solver returned an unphysical negative-rate root that the
+    same model in volts never reached.)"""
+    dom = _domains(model)
+    total = sum(size for _, _, size in state_vars)
+    x = np.zeros(total)
+    found = {}
+    grid = 10.0 ** np.arange(-_SCALE_DECADES, _SCALE_DECADES + 1)
+
+    def rows_at(var, t):
+        a, b = slices[var]
+        y = x.copy()
+        y[a:b] = t
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            with np.errstate(all='ignore'):
+                f = R(y)
+        f = np.asarray(f[a:b], dtype=float)
+        if not np.all(np.isfinite(f)) or np.any(np.abs(f) >= _PENALTY):
+            return None
+        return float(np.mean(f))
+
+    for _ in range(_SCALE_SWEEPS):
+        for var, _, _ in state_vars:
+            if seed_box and var in seed_box:
+                continue
+            signs = (1.0,) if dom.get(var) == 'positive' else (1.0, -1.0)
+            best = None
+            for sg in signs:
+                prev_t, prev_g = 0.0, rows_at(var, 0.0)
+                for t in sg * grid:
+                    g = rows_at(var, t)
+                    if g is None:
+                        prev_t, prev_g = t, None
+                        continue
+                    root = None
+                    if g == 0.0:
+                        root = t
+                    elif prev_g is not None and prev_g != 0.0 and (g > 0) != (prev_g > 0):
+                        lo, hi, glo = prev_t, t, prev_g
+                        for _ in range(200):
+                            mid = 0.5 * (lo + hi)
+                            if mid in (lo, hi):
+                                break
+                            gm = rows_at(var, mid)
+                            if gm is None:
+                                break
+                            if gm == 0.0:
+                                lo = hi = mid
+                                break
+                            if (gm > 0) == (glo > 0):
+                                lo, glo = mid, gm
+                            else:
+                                hi = mid
+                        root = 0.5 * (lo + hi)
+                    prev_t, prev_g = t, g
+                    if root is None or root == 0.0:
+                        continue
+                    found.setdefault(var, []).append(abs(root))
+                    if best is None or abs(root) < abs(best):
+                        best = root
+            if best is not None:
+                a, b = slices[var]
+                x[a:b] = best
+    # every zero met on the lines: the box spans the largest; the smallest
+    # gets seeds of its own when it is more than a decade below (a small
+    # root's basin is a small part of the big box)
+    return {v: (max(r), min(r)) for v, r in found.items()}
+
+
+def _seed_box_default(state_vars, model, fundamental, scales=None):
     """Per-variable default sampling box derived from the variable's
     declared ``domain`` and a heuristic scale.
 
@@ -477,8 +573,12 @@ def _seed_box_default(state_vars, model, fundamental):
     field's saddle explicitly declares ``domain='real'``/``'symmetric'`` (a
     double-well opting into the negative half-line).
 
+    ``scales``: per-variable scales from ``_equation_scales``, which replace
+    the parameter heuristic where given (unit free).
+
     Returns ``{var_name: (low, high)}``.
     """
+    scales = scales or {}
     scale = 0.0
     for pname, pval in fundamental.items():
         arr = np.asarray(pval, dtype=float).ravel()
@@ -504,21 +604,22 @@ def _seed_box_default(state_vars, model, fundamental):
         # preserves the historical seed box of every existing model: widening
         # an undeclared field's box (e.g. a voltage) destabilises its
         # multi-start saddle solve and was an env-sensitive regression.
+        sc = (scales.get(var) or (None,))[0] or scale
         if saddle_domain.get(var) in ('real', 'symmetric'):
-            boxes[var] = (-3.0 * scale, 3.0 * scale)
+            boxes[var] = (-3.0 * sc, 3.0 * sc)
         else:
-            boxes[var] = (0.0, 5.0 * scale)
+            boxes[var] = (0.0, 5.0 * sc)
     return boxes
 
 
 def _sample_seeds(state_vars, slices, model, fundamental,
-                  n_starts, seed_box, rng):
+                  n_starts, seed_box, rng, scales=None):
     """Generate ``n_starts`` initial guesses for the state vector.
 
     Each variable gets sampled uniformly in its box.  ``seed_box``
     overrides defaults per-variable (``{var_name: (low, high)}``).
     """
-    boxes = _seed_box_default(state_vars, model, fundamental)
+    boxes = _seed_box_default(state_vars, model, fundamental, scales)
     if seed_box:
         boxes.update(seed_box)
     total = sum(size for _, _, size in state_vars)
@@ -571,14 +672,14 @@ _RESCALE_ROUNDS = 3
 
 
 def _rescale_seeds(roots, state_vars, slices, model, fundamental, seed_box,
-                   n_starts, rng, used=None):
+                   n_starts, rng, used=None, scales=None):
     """Second-pass guesses: ``n_starts`` on the default box shape scaled to
     each root found whose size (per variable, its largest component) lies
     below a fifth of the default box (or above it); one box per decade of
     root size.  Variables with an explicit ``seed_box``, and variables at 0
     in that root, keep their default box.  Empty when every root is on the
     default box's scale (the existing models: their seeds are unchanged)."""
-    default = _seed_box_default(state_vars, model, fundamental)
+    default = _seed_box_default(state_vars, model, fundamental, scales)
     if seed_box:
         default.update(seed_box)
     unit = _seed_box_default(state_vars, model, {})
@@ -629,7 +730,7 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
 # Every criterion below is relative (to the root, to the row's own linear
 # scale, or to the root's own error estimate): rescaling a field or the time
 # unit rescales the roots and the residual rows but leaves the verdicts, the
-# root set and the selected root unchanged (audit UNIT-02).
+# root set and the selected root unchanged.
 
 #: A converged point is a root when every residual row satisfies
 #: ``|R_k| <= _ROOT_RTOL * sum_j |J_kj| w_j`` (``J``: a finite-difference
@@ -643,7 +744,7 @@ _ROOT_RTOL = 1e-7
 #: (a zero has no scale of its own).
 _ZERO_FLOOR = 1e-8
 #: Chord-Newton refinement steps after the hybrid solve (hybr stops at a
-#: relative step ~1.5e-8, leaving saddles accurate to ~1e-11 only: ACC-21).
+#: relative step ~1.5e-8, leaving saddles accurate to ~1e-11 only).
 _REFINE_STEPS = 8
 #: Linear stability: ``Re sigma < -_EIG_RTOL * r`` for every mode, ``r`` the
 #: model's fastest rate (``_rate_scale``).
@@ -781,6 +882,32 @@ def _fd_jacobian(R, x, f, c):
     return J, res
 
 
+def _equilibrated_lstsq(J, f):
+    """``J^+ f`` with ``J`` scaled by powers of two first (rows and columns
+    to unit maxima; exact): with variables of very different sizes (spike
+    rates ~1e8 next to voltages ~1, a model in fast time units) the plain
+    least-squares cutoff, relative to the largest singular value, dropped
+    the small directions and the Newton correction stopped at ~1e-12."""
+    J = np.asarray(J)
+    rm = np.max(np.abs(J), axis=1) if J.size else np.ones(0)
+    r = np.where(rm > 0, 2.0 ** -np.round(np.log2(np.where(rm > 0, rm, 1.0))), 1.0)
+    Jr = r[:, None] * J
+    cm = np.max(np.abs(Jr), axis=0) if J.size else np.ones(0)
+    c = np.where(cm > 0, 2.0 ** -np.round(np.log2(np.where(cm > 0, cm, 1.0))), 1.0)
+    y = np.linalg.lstsq(Jr * c[None, :], r * f, rcond=None)[0]
+    return c * y
+
+
+def _equilibrate_square(J):
+    """``D^-1 J D`` with ``D`` powers of two balancing ``J`` (same
+    eigenvalues; ``scipy.linalg.matrix_balance``)."""
+    import scipy.linalg as _sl
+    J = np.asarray(J, dtype=float)
+    if not J.size or not np.all(np.isfinite(J)):
+        return J
+    return _sl.matrix_balance(J, permute=False)[0]
+
+
 def _refine_root(R, x, c):
     """Refine a converged point and decide whether it is a root.
 
@@ -810,7 +937,7 @@ def _refine_root(R, x, c):
         if q == 0.0:
             break
         try:
-            d = np.linalg.lstsq(J, f, rcond=None)[0]
+            d = _equilibrated_lstsq(J, f)
         except (np.linalg.LinAlgError, ValueError):
             break
         if not np.all(np.isfinite(d)):
@@ -1148,7 +1275,7 @@ def solve_mean_field_dae(
     ``.set_mf_equation(saddle, rhs)`` instead, the saddle equations
     ``saddle - rhs = 0`` (read from ``model['mf_bg_conditions'](ns)``; needs
     the FieldTheory namespace ``ns``).  Every model gets the same multi-root
-    search (audit GEN-02: the second form used a separate single-root
+    search (the second form used a separate single-root
     iteration from four fixed unit-scale guesses).
 
     Parameters
@@ -1225,7 +1352,7 @@ def solve_mean_field_dae(
         # compound saddle (a voltage, often negative, with no declared
         # domain) then neither enters the seed box nor the root order, and a
         # model written with or without its voltage selects the same root
-        # (audit W6).  The full system otherwise, or when this finds none.
+        # The full system otherwise, or when this finds none.
         system = None
         if _reduced is not False:
             system = _saddle_system(model, fundamental, ns, reduced=True)
@@ -1245,8 +1372,17 @@ def solve_mean_field_dae(
         )
 
     rng = np.random.default_rng(rng_seed)
+    scales = _equation_scales(R, state_vars, slices, model, seed_box)
     seeds = _sample_seeds(
-        state_vars, slices, model, fundamental, n_starts, seed_box, rng)
+        state_vars, slices, model, fundamental, n_starts, seed_box, rng,
+        scales)
+    small = {v: (lo, lo) for v, (hi, lo) in scales.items() if lo < 0.1 * hi}
+    if small:
+        # the smallest zeros on their own box too (the big box reaches a
+        # small root's basin rarely)
+        seeds = np.vstack([seeds, _sample_seeds(
+            state_vars, slices, model, fundamental, n_starts, seed_box, rng,
+            {**scales, **small})])
     undeclared = _undeclared_domain_vars(state_vars, model, seed_box)
     mirror_cols = (np.concatenate([np.arange(*slices[v]) for v in undeclared])
                    if undeclared else None)
@@ -1285,13 +1421,14 @@ def solve_mean_field_dae(
     # basin, e.g. the middle root of a cubic, can be missed there)
     # ... repeated for the root scales a pass discovers (a box at one
     # root's scale can reach a root of another scale whose basin the first
-    # boxes miss; audit W6: an exactly rescaled cubic lost its largest root),
+    # boxes miss: an exactly rescaled cubic lost its largest root),
     # each scale boxed once, at most _RESCALE_ROUNDS rounds
     n_mirror = len(seeds)
     used = set()
     for _ in range(_RESCALE_ROUNDS):
         extra = _rescale_seeds(deduped, state_vars, slices, model,
-                               fundamental, seed_box, n_starts, rng, used)
+                               fundamental, seed_box, n_starts, rng, used,
+                               scales)
         if not len(extra):
             break
         n_before = len(deduped)
@@ -1308,8 +1445,8 @@ def solve_mean_field_dae(
         # fields that declare no domain; the roots they reach are selectable
         # like any other.  (They were only reported: a negative root was
         # selectable when a seed happened to overshoot to it, which depends
-        # on the field's units -- an exactly rescaled cubic lost a root;
-        # audit W6.)  Not the second-pass boxes: their roots are reached
+        # on the field's units -- an exactly rescaled cubic lost a root.)
+        # Not the second-pass boxes: their roots are reached
         # from seeds that are mirrored already.
         run(mirrored(seeds[:n_mirror]), mirror_points)
         cand, cand_e = _roots_from_points(R, mirror_points, rtol, atol)
@@ -1426,7 +1563,7 @@ def solve_mean_field_dae(
         # come first
         # (each group nearest to 0 first): the default fixed_point_index = 0 is then a
         # stable root whenever one exists, whatever the roots' order on the
-        # axis (audit W6: the units decided which root was found, and so
+        # axis (the units decided which root was found, and so
         # which one index 0 was).
         stable_first = set()
         if model.get('equations') and len(deduped) > 1:
@@ -1441,6 +1578,29 @@ def solve_mean_field_dae(
                     raise
                 except Exception:                        # noqa: BLE001
                     pass
+        if not stable_first and len(deduped) > 1:
+            # No linearization decides (algebraic rows, or saddles declared
+            # with .set_mf_equation): the relaxation x' = -R(x) of the
+            # saddle equations as written (``lhs - rhs``, ``s - rhs(s)``)
+            # orders them -- a root is first when every eigenvalue of
+            # -dR/dx has a negative real part (the static stability of a
+            # rate fixed point n = F(n): eig(dF/dn) < 1).  Unit free.  (A
+            # complete root search found the unstable roots of such models
+            # too, and the ascending order put one first.)
+            c_typ = _typical_scale(deduped)
+            for q, x in enumerate(deduped):
+                try:
+                    f = R(x)
+                    fd = _fd_jacobian(R, x, f, c_typ)
+                    if fd is None:
+                        continue
+                    ev = np.linalg.eigvals(-_equilibrate_square(fd[0]))
+                    if ev.size and np.all(ev.real < 0):
+                        stable_first.add(q)
+                except Exception:                        # noqa: BLE001
+                    pass
+            if len(stable_first) == len(deduped):
+                stable_first = set()
         if stable_first:
             # each group nearest to 0 first (ties ascending): invariant under
             # a change of the field's units, and the root the old search

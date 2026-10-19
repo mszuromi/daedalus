@@ -1,7 +1,7 @@
 r"""Box-free exact Phase J integrals on the divided-difference kernels (M7).
 
 ``final_integral`` routes every Phase J closed form here (the only route
-since audit W7 retired the boxed pre-0.2.0 routes and their switches
+since the retirement of the boxed pre-0.2.0 routes and their switches
 ``USE_PHASE_J_DD_KERNELS``, ``SEMIINF_CHAIN``, ``UNBOUNDED_2D``).  Everything
 is evaluated in the log
 domain through ``expdd`` and folded with the constant part γ of the exponent
@@ -221,7 +221,7 @@ def _abs_det_exact(ax, ay, bx, by):
     return abs(float(d))
 
 
-# one copy (audit W7, RED-07): exactly opposite normals whose half-planes
+# one copy: exactly opposite normals whose half-planes
 # do not overlap, exact comparisons only
 from engine.integration.time_domain.final_integral import (  # noqa: E402
     _opposite_rows_empty)

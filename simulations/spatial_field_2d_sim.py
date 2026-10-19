@@ -103,7 +103,7 @@ def simulate_2d(L=20.0, N=64, mu=1.0, D=1.0, T=1.0, g=0.0, lam=0.0,
 
 #: snapshots transformed at once by the equal-time estimators (their fft2 is
 #: complex: transforming all of them at once took 2-3x the snapshots' own
-#: memory, 4.2 GB on a large run; audit MEM-10)
+#: memory, 4.2 GB on a large run)
 SNAPSHOT_CHUNK = 64
 
 

@@ -409,7 +409,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
         raise PPSimulationError(f'record={bad}: only continuous fields are sampled (spike '
                                 f'trains are always recorded as counts).')
     # the output is 8 bytes per bin, unit and path of every recorded field:
-    # refuse before allocating it (T=1e4, dt=1e-3, 100 paths is 8 GB; audit MEM-13)
+    # refuse before allocating it (T=1e4, dt=1e-3, 100 paths is 8 GB)
     out_bytes = 8 * nb * n_paths * sum(size[f] for f in [*spikes, *(record or conts)])
     if max_bytes is None:
         # the Phase J budget rule: PHASE_J_MEM_BUDGET_GB, else the default
