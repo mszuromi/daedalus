@@ -345,6 +345,69 @@ def test_mixed_field_units_keep_the_stable_saddle(power):
     assert eig[1] == pytest.approx(eig[0], rel=1e-9)
 
 
+def _tracked_twin(name, base, twin_of, ext, taus, ell, factor):
+    """Base run and its exact twin of a tracked model: equal values (times
+    ``factor``), the same analyzer codes, the accuracy estimate within a
+    constant factor (in one process: the estimate is per run)."""
+    model, _ = dd.load_model(name)
+    p0, p1, t1 = base, *twin_of
+    r0 = _cc(model, p0, ell=ell, ext=ext, taus=taus)
+    r1 = _cc(model, p1, ell=ell, ext=ext, taus=t1)
+    assert _codes(r1) == _codes(r0)
+    _assert_twin(r0, r1, factor, 4e-15)
+    R0 = r0['analysis'].diagnostics['accuracy_estimate']
+    R1 = r1['analysis'].diagnostics['accuracy_estimate']
+    assert R0 and R1 and R0 / 10 <= R1 <= 10 * R0, (R0, R1)
+
+
+_2DCC = {'mu1': 1.0, 'mu2': 1.0, 'eps1': 0.02, 'eps2': 0.02, 'J1': 0.3, 'J2': 0.3,
+         'D1': 1.0, 'D2': 1.0, 'rho': 0.5, 'tauc': 2.0}
+
+
+@pytest.mark.parametrize('a', (1e-9, 1e6))
+def test_colored_two_field_tree_time_twin(a):
+    """Tracked ``ou_quartic_two_dim_color_corr``: the state-space tree lost
+    6e-13 at a = 1e-6 and 6e-11 at a = 1e-9 (the propagator entries were
+    realized and balanced in the model's time unit, which graded them)."""
+    p = {k: (v / a if k == 'tauc' else v if k == 'rho' else v * a) for k, v in _2DCC.items()}
+    taus = np.array([0.0, 1.0, 4.0])
+    _tracked_twin('ou_quartic_two_dim_color_corr', _2DCC, (p, taus / a),
+                  (('dx', 1), ('dy', 1)), taus, 0, 1.0)
+
+
+_QE = {'Em': [0.8, 0.78], 'tau': [10.0, 9.0], 'a': [0.44, 0.44],
+       'taug': [[2.0, 3.0], [1.0, 3.0]], 'w': [[0.25, 0.25], [0.2, 0.3]]}
+
+
+@pytest.mark.parametrize('a', (1e-9, 1e6))
+def test_quadratic_spiking_one_loop_time_twin(a):
+    """Tracked ``single_population_quad_exp_test``, one loop: 3.4e-8 off at
+    a = 1e-9 (1.2e-11 at 1e-6), its accuracy estimate 0 after a unit-time
+    run in the same process (a difference of process-wide sums), and a false
+    G6_ACCURACY_LOW at a = 1e9 (a graded realization)."""
+    p = dict(_QE, tau=[x / a for x in _QE['tau']], taug=[[x / a for x in r] for r in _QE['taug']],
+             a=[x * a for x in _QE['a']], w=[[x / a for x in r] for r in _QE['w']])
+    taus = np.array([0.0, 2.5, 10.0])
+    _tracked_twin('single_population_quad_exp_test', _QE, (p, taus / a),
+                  (('n', 1), ('n', 2)), taus, 1, a * a)
+
+
+_LH = {'E': [0.78, 0.81], 'tau': 10.0, 'a': 1.0, 'tau_g': 2.5,
+       'w': [[0.30, 0.25], [0.30, 0.35]]}
+
+
+@pytest.mark.parametrize('a', (1e6, 1e9))
+def test_linear_hawkes_fast_units_no_false_accuracy_warning(a):
+    """Tracked ``linear_hawkes`` in fast time units: the spike rates carry
+    the time unit and the voltages do not, so the realization looked
+    'graded' and its a posteriori check added 5e-4..8e-4 to the accuracy
+    estimate (G6_ACCURACY_LOW on an exact result)."""
+    p = dict(_LH, tau=_LH['tau'] / a, tau_g=_LH['tau_g'] / a, a=_LH['a'] * a,
+             w=[[x / a for x in r] for r in _LH['w']])
+    taus = np.array([0.0, 2.5, 10.0])
+    _tracked_twin('linear_hawkes', _LH, (p, taus / a), (('n', 1), ('n', 2)), taus, 0, a * a)
+
+
 def _spiking(s):
     """A field driving an exponential-rate spike train through a kernel, the
     field in units ``s`` (the saddle of the field is negative: reached from

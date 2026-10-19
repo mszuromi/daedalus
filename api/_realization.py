@@ -1498,9 +1498,11 @@ def _aposteriori_error(A, B, C):
 
 def _time_scale(ents):
     """A power of two near the rate scale of the rational functions
-    ``ents`` (elements of ``F(s)``): the median over every numerator and
-    denominator of ``|c_k / c_n|^(1/(n - k))`` (each coefficient ratio of a
-    polynomial of degree ``n``, which scales as a rate^(n-k)).  The
+    ``ents`` (elements of ``F(s)``): the median of ``|K0 / K1|`` over the
+    entries with a first-order polynomial part (``K0 + K1 s``: the fields'
+    own rates), else over every numerator and denominator of
+    ``|c_k / c_n|^(1/(n - k))`` (each coefficient ratio of a polynomial of
+    degree ``n``, which scales as a rate^(n-k)).  The
     realization is formed in ``sigma = s / omega0`` (``_rescale_s``) and
     mapped back exactly (``A = omega0 A~``, ``B = omega0 B~``): in other
     time units the coefficients of a companion / chain form carry different
@@ -1509,8 +1511,21 @@ def _time_scale(ents):
     and a posteriori checks fired at rates 1e6.  1 when nothing sets a
     scale."""
     import math
+    ents = list(ents)
+    # the fields' own first-order parts first (|K0 / K1| of each entry's
+    # polynomial part: the rates the model is written in); a kernel's
+    # coefficients (a Pade-16 delay's ~n/d poles) only when no entry has one
     logs = []
     for x in ents:
+        try:
+            q = x.numerator().quo_rem(x.denominator())[0]
+        except (AttributeError, ArithmeticError, TypeError, ValueError):
+            continue
+        if q.degree() == 1:
+            c0, c1 = abs(complex(q[0])), abs(complex(q[1]))
+            if c0 > 0 and c1 > 0:
+                logs.append(math.log2(c0 / c1))
+    for x in ([] if logs else ents):
         for poly in (x.numerator(), x.denominator()):
             n = poly.degree()
             if n < 1:

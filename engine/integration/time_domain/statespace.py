@@ -1275,15 +1275,13 @@ class _SolveData:
         return (best, self._rel_res(bres, r, best)) if want_residual else best
 
     def _rel_res(self, res, r, y):
-        """``max_i |res_i| / (|M| |y| + |r|)_i`` (0/0 counts as 0)."""
+        """``|res|_inf / |r|_inf`` (the normwise relative residual; 0/0
+        counts as 0)."""
         if not np.size(res):
             return 0.0
-        ares = np.abs(res)
-        scale = self.apply_absM(y) + np.abs(r)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            q = np.where(ares == 0, 0.0, ares / scale)
-        out = float(np.max(q))
-        return out if math.isfinite(out) else math.inf
+        rn = float(np.abs(res).max())
+        rm = float(np.abs(r).max()) if np.size(r) else 0.0
+        return rn / rm if rm > 0 else (0.0 if rn == 0 else math.inf)
 
 
 # ─── the error estimate's per-evaluation accumulators (G6) ────────────────
