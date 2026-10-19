@@ -29,6 +29,7 @@ import threading
 import time
 
 from engine._spawn_worker import SharedPickler, read_frame, write_frame
+from engine.errors import DaedalusError
 
 #: Environment of every worker: one BLAS / OpenMP thread each.
 WORKER_ENV = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1',
@@ -36,7 +37,7 @@ WORKER_ENV = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1',
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-class SpawnWorkerError(RuntimeError):
+class SpawnWorkerError(DaedalusError, RuntimeError):
     """A worker could not be started or initialised."""
 
 

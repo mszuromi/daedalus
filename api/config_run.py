@@ -19,12 +19,15 @@ Schema (all sections but ``model`` are optional; unknown keys are errors)::
       tau_grid: {start: -4, stop: 4, num: 17}    # or an explicit list
       points: [...]                              # spatial k >= 3 only
       taylor_order: 4
+      accuracy: 1e-10                            # target relative accuracy (G6)
       delay: {order: 8}                          # delay models (api.delay options)
     policy: {use_cache: true, parallel: false, n_workers: 4, verbose: false,
              mode: permissive,                   # model analyzer: or strict
              allow_taylor_truncation: true,      # consents (api.analyze.Policy)
              downgrade: [G4_NEGATIVE_VARIANCE],  # errors accepted as warnings
-             preflight: true}                    # false: analyzer gates off
+             preflight: true,                    # false: analyzer gates off
+             backend: state_space,               # an explicit backend (api.routing)
+             discard: auto}                      # true | false | auto: release diagrams after use
     outputs: {npz: out/c.npz, csv: out/c.csv, plot: out/c.png, report_pdf: out/r.pdf}
     output: results/                  # a directory or a file stem: .npz/.csv/.png
 
@@ -56,7 +59,6 @@ string, so a string that is a plain decimal literal is accepted as a number.
 """
 from __future__ import annotations
 
-import contextlib
 import difflib
 import json
 import math
@@ -76,10 +78,12 @@ SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
 #: the ``type:`` of an inline noise source (classes of api.noise); a jump law
 #: inside one is any ``api.noise.JumpDistribution`` subclass
 from api.noise import SOURCE_TYPES as SDE_NOISE_TYPES  # noqa: E402
+from engine.errors import DaedalusError
 
 QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'chi_grid',
-                 'spatial_grid', 'points', 'taylor_order', 'delay')
+                 'spatial_grid', 'points', 'taylor_order', 'accuracy', 'delay')
 POLICY_KEYS = ('use_cache', 'parallel', 'n_workers', 'verbose', 'preflight',
+               'backend', 'discard',
                'mode', 'allow_taylor_truncation', 'allow_markov_embedding',
                'allow_numeric_fallback', 'interpretation', 'downgrade')
 #: the policy keys that go to the model analyzer (``api.analyze.Policy``)
@@ -95,7 +99,7 @@ TAU_GRID_KEYS = ('start', 'stop', 'num')
 _DECIMAL = re.compile(r'^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$')
 
 
-class ConfigError(ValueError):
+class ConfigError(DaedalusError, ValueError):
     """A config problem; ``str(e)`` is ``<file>: line <n>: <message>``."""
 
     def __init__(self, source, line, message):
@@ -384,6 +388,13 @@ class _Parser:
             q['points'] = (self.numeric_tree(items['points'][1],
                                              'question.points'),
                            items['points'][1])
+        if 'accuracy' in items:
+            v = self.number(items['accuracy'][1], 'question.accuracy')
+            if not (math.isfinite(v) and v > 0):
+                self.fail(items['accuracy'][1],
+                          f'question.accuracy must be a finite number > 0; '
+                          f'got {v!r}')
+            q['accuracy'] = float(v)
         if 'delay' in items:
             q['delay'] = self.delay_options(items['delay'][1])
         q['_lines'] = lines
@@ -507,6 +518,16 @@ class _Parser:
         if 'n_workers' in items:
             out['n_workers'] = self.integer(items['n_workers'][1],
                                             'policy.n_workers', 1)
+        if 'backend' in items:
+            out['backend'] = self.string(items['backend'][1],
+                                         'policy.backend')
+        if 'discard' in items:
+            node = items['discard'][1]
+            v = self.py(node)
+            if not (isinstance(v, bool) or v == 'auto'):
+                self.fail(node, f'policy.discard must be true, false or '
+                                f'auto; got {node.value!r}')
+            out['discard'] = v
         choices = {'mode': ('strict', 'permissive'),
                    'interpretation': ('ito', 'stratonovich')}
         for key, allowed in choices.items():
@@ -919,6 +940,8 @@ def resolve(raw, model, mod):
         question['points'] = points
     if 'taylor_order' in q:
         question['taylor_order'] = q['taylor_order']
+    if 'accuracy' in q:
+        question['accuracy'] = q['accuracy']
     if 'delay' in q:
         question['delay'] = dict(q['delay'])
     outputs = {}
@@ -941,25 +964,6 @@ def resolve(raw, model, mod):
 
 
 # ── running ───────────────────────────────────────────────────────────────────
-
-@contextlib.contextmanager
-def _compute_defaults(**extra):
-    """Make ``dd.run`` pass extra keywords (``taylor_order``, ``use_cache``)
-    that ``dd.Config`` does not carry on to ``compute_cumulants``."""
-    import api
-    original = api.compute_cumulants
-
-    def wrapped(*args, **kw):
-        for key, value in extra.items():
-            kw.setdefault(key, value)
-        return original(*args, **kw)
-
-    api.compute_cumulants = wrapped
-    try:
-        yield
-    finally:
-        api.compute_cumulants = original
-
 
 def _git_commit(root):
     try:
@@ -1081,14 +1085,11 @@ def run_config(path, dry_run=False, out=None):
         verbose=pol['verbose'],
         policy={key: pol[key] for key in ANALYZER_POLICY_KEYS if key in pol}
         or None,
-        preflight=pol.get('preflight'), delay=q.get('delay'))
-    extra = {}
-    if q.get('taylor_order') is not None:
-        extra['taylor_order'] = q['taylor_order']
-    if not pol['use_cache']:
-        extra['use_cache'] = False
-    with _compute_defaults(**extra):
-        result = dd.run(model, cfg, mod)
+        preflight=pol.get('preflight'), delay=q.get('delay'),
+        taylor_order=q.get('taylor_order'), accuracy=q.get('accuracy'),
+        use_cache=None if pol['use_cache'] else False,
+        backend=pol.get('backend'), discard=pol.get('discard'))
+    result = dd.run(model, cfg, mod)
 
     written = {}
     if 'npz' in outs:

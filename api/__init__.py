@@ -54,6 +54,7 @@ from api.report      import generate_report
 from api.save        import save_npz, save_csv, load_npz, params_slug, load_provenance
 from api.access      import MeanField, Parameters, normalize_external_fields
 from api._precompute import precompute
+from engine.errors   import DaedalusError
 
 #: Daedalus version (keep in sync with pyproject.toml and daedalus.py;
 #: CITATION.cff describes the latest RELEASE and is bumped, with its
@@ -66,5 +67,5 @@ __all__ = [
     'compute_cumulants', 'generate_report',
     'save_npz', 'save_csv', 'load_npz', 'params_slug', 'load_provenance',
     'MeanField', 'Parameters', 'normalize_external_fields',
-    'precompute',
+    'precompute', 'DaedalusError',
 ]

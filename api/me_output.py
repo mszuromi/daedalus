@@ -59,6 +59,7 @@ from typing import Any, NamedTuple, Optional
 
 import numpy as np
 import scipy.linalg as sl
+from engine.errors import DaedalusError
 
 __all__ = ['MEBlock', 'SideME', 'CumulantME', 'SliceME', 'MEUnavailable',
            'MEConditioningWarning', 'MEFallbackWarning', 'RationalKernel',
@@ -129,7 +130,7 @@ def _form_cache_admit(owner, form):
     return True
 
 
-class MEUnavailable(ValueError):
+class MEUnavailable(DaedalusError, ValueError):
     """The matrix-exponential triple of this result is not available (the
     message lists the reasons)."""
 
@@ -1101,7 +1102,7 @@ def _as_list(kernel):
 
 
 def kernel_value(kernel, s, values=None):
-    """``L(s)`` of a ``symbolic_out.Kernel``, a :class:`RationalKernel` or
+    """``L(s)`` of a ``symbolic_out.PairingKernel``, a :class:`RationalKernel` or
     a list of them (s != 0)."""
     s = float(s)
     tot = 0j
@@ -1157,7 +1158,7 @@ def quad_pairing(C, kernel, values, epsabs=1e-12, epsrel=1e-10, limit=400):
 
 
 def _kernel_terms(kernel, values):
-    """``[(a, rate, power, side)]`` numeric terms of a ``symbolic_out.Kernel``
+    """``[(a, rate, power, side)]`` numeric terms of a ``symbolic_out.PairingKernel``
     (``side`` '+' / '-')."""
     out = []
     for t in kernel.terms:
@@ -1487,7 +1488,7 @@ class CumulantME:
 
     def integrate_smooth(self, kernel, ell=None, values=None):
         """``∫ L(τ) C_smooth(τ) dτ`` (no δ part) for a
-        ``symbolic_out.Kernel`` (exponential / polynomial × exponential
+        ``symbolic_out.PairingKernel`` (exponential / polynomial × exponential
         terms), a :class:`RationalKernel`, or a list of them."""
         if isinstance(kernel, (list, tuple)):
             return sum((self.integrate_smooth(k_, ell, values)

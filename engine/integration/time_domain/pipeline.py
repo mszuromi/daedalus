@@ -40,6 +40,7 @@ from engine.integration.time_domain.final_integral import (
     PropagatorTD,
     _loop_number_from_graph,
 )
+from engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -508,7 +509,7 @@ def _worker_share(n_w):
             'initargs': (left // max(1, int(n_w)),)}
 
 
-class DiscardedDiagramsError(RuntimeError):
+class DiscardedDiagramsError(DaedalusError, RuntimeError):
     """A callable of a Phase J run made with ``discard=True`` (item 61) was
     asked for a point it was not evaluated on, or for a diagram it
     released."""

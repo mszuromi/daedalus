@@ -14,8 +14,10 @@ import nothing but the standard library.
 """
 from collections import namedtuple
 
+from engine.errors import DaedalusError
 
-class PhaseJResourceError(MemoryError):
+
+class PhaseJResourceError(DaedalusError, MemoryError):
     r"""Phase J would hold more modesum-plan memory than the budget
     ``PHASE_J_MEM_BUDGET_GB`` (default: ``default_mem_budget``) allows: raised
     BEFORE the plan that crosses it is allocated (and, from

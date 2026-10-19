@@ -85,6 +85,7 @@ import math
 from fractions import Fraction
 
 import numpy as np
+from engine.errors import DaedalusError
 
 try:
     import numba as _numba
@@ -131,7 +132,7 @@ _RESCALE_EXP = 500
 _LN2 = math.log(2.0)
 
 
-class DivergentIntegralError(ValueError):
+class DivergentIntegralError(DaedalusError, ValueError):
     """A semi-infinite (``L = -inf``) chain whose integral diverges (some
     prefix sum of the alphas has ``Re P_j <= 0``)."""
 
