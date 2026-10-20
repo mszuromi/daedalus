@@ -223,6 +223,89 @@ class SpatialAccuracyError(DaedalusError, RuntimeError):
         self.result = result
 
 
+class MarcusTruncationWarning(UserWarning):
+    """A Marcus-rule source (``SDE.interpretation('marcus')``) whose series,
+    kept to ``SDE.series_order``, has a next term at the saddle above
+    :data:`MARCUS_TRUNCATION_RTOL` of the kept terms
+    (``result['marcus_truncation']``)."""
+
+
+#: relative size of the next Marcus term at the saddle above which
+#: compute_cumulants warns (G6's default accuracy threshold)
+MARCUS_TRUNCATION_RTOL = 1e-10
+
+
+def _marcus_truncation(model, result, k, max_ell):
+    """The size of the first omitted term of each Marcus series
+    (``model['marcus_series']``) at the saddle: per source and population
+    unit, and per response degree ``m <= k + 2*max_ell`` (the noise vertices
+    a run can use), ``sum |coefficient|`` of the omitted term's degree-``m``
+    monomials over the same sum for the kept series; ``relative`` is the
+    largest ratio.  ``None`` when the model has no Marcus series."""
+    series = model.get('marcus_series') if isinstance(model, dict) else None
+    if not series or not isinstance(result, dict):
+        return None
+    from sage.all import CDF, PolynomialRing
+    from api.noise import parse_expr
+    mf = result.get('mf_values') or {}
+    par = dict((result.get('config') or {}).get('fundamental') or {})
+    cap = int(k) + 2 * int(max_ell)
+    out = []
+    for name, rec in series.items():
+        resp = [SR.var(f'{r}__i') for r in rec['responses']]
+        kept = parse_expr(rec['kept'])
+        nxt = None if rec.get('next') is None else parse_expr(rec['next'])
+        # a ring of one variable gives int exponents, of several exponent tuples
+        R = PolynomialRing(CDF, [str(r) for r in resp] + (['zpad__'] if len(resp) == 1 else []))
+        n_units = len(np.atleast_1d(mf.get(rec['responses'][0][:-1] + 'star', [0])))
+        for i in range(n_units):
+            row = {'source': name, 'unit': i, 'order': int(rec['order']),
+                   'next_abs': None, 'kept_abs': None, 'relative': None}
+            sub, missing = {}, []
+            for v in set(kept.variables()) | (set(nxt.variables()) if nxt is not None else set()):
+                if v in resp:
+                    continue
+                nm = str(v)
+                base, _, idx = nm.partition('__')
+                val = None
+                if idx:                                   # x__i: a field (its saddle) or a vector parameter
+                    arr = mf.get(base + 'star', par.get(base))
+                    if arr is not None:
+                        a = np.atleast_1d(np.asarray(arr, dtype=complex))
+                        val = a[i] if a.size > i else None
+                elif nm in par and np.ndim(par[nm]) == 0:
+                    val = par[nm]
+                if val is None:
+                    missing.append(nm)
+                else:
+                    sub[v] = SR(complex(val)) if complex(val).imag else SR(float(complex(val).real))
+            if missing or nxt is None:
+                row['status'] = ('unavailable: no values for ' + ', '.join(sorted(missing))
+                                 if missing else 'unavailable: the source has no cumulant '
+                                 'of the next order (a moment-series jump law)')
+                out.append(row)
+                continue
+
+            def size(e):                            # sum |coefficient| per response degree
+                by = {}
+                for mono, c in R(e.subs(sub).expand()).dict().items():
+                    m = sum(int(q) for q in mono)
+                    if 0 < m <= cap:
+                        by[m] = by.get(m, 0.0) + abs(complex(c))
+                return by
+            kb, nb = size(kept), size(nxt)
+            rel = {m: (nb.get(m, 0.0) / kb[m] if kb.get(m) else
+                       (0.0 if not nb.get(m) else float('inf')))
+                   for m in sorted(set(kb) | set(nb))}
+            row['kept_abs'], row['next_abs'] = sum(kb.values()), sum(nb.values())
+            row['relative_by_degree'] = rel
+            row['relative'] = max(rel.values(), default=0.0)
+            row['status'] = ('above' if row['relative'] > MARCUS_TRUNCATION_RTOL
+                             else 'ok')
+            out.append(row)
+    return out
+
+
 def _spatial_accuracy(result, tau_grid, max_ell):
     """The reasons a spatial result is approximate (empty: certified as far
     as the integrator knows).  Reads the drivers' records in
@@ -1954,6 +2037,21 @@ def compute_cumulants(
                                     max_ell)
         result['spatial_accuracy'] = _sp_acc
         result['status'] = 'approximate' if _sp_acc else 'ok'
+    _marcus = _marcus_truncation(model, result, k, max_ell)
+    if _marcus is not None:
+        result['marcus_truncation'] = _marcus
+        _over = [r for r in _marcus if r.get('status') == 'above']
+        if _over:
+            _w = max(_over, key=lambda r: r['relative'])
+            _msg = (f"Marcus series of source {_w['source']!r} (unit {_w['unit']}): "
+                    f"the first omitted term (order {_w['order'] + 1}) is "
+                    f"{_w['relative']:.2e} of the kept series at the saddle "
+                    f"(threshold {MARCUS_TRUNCATION_RTOL:g}); raise "
+                    f"SDE.series_order -- see result['marcus_truncation'].")
+            from api.save import _ensure_warning_shown
+            _ensure_warning_shown(MarcusTruncationWarning, 'always',
+                                  message=_msg, stacklevel=2)
+            warnings.warn(_msg, MarcusTruncationWarning, stacklevel=2)
     if _pf is not None:
         # G6 sizes its accuracy estimate on ``C_tau``; a switch-on run's
         # values are ``C_times`` (a read-only view: G6 never writes)

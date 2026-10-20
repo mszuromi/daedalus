@@ -47,6 +47,24 @@ converts Gaussian noise to Ito with the drift correction
 and ``V_a`` the variance rate; it raises for jump and exposed sources).
 Time-independent sources only.
 
+``.interpretation('marcus')`` extends Stratonovich to jump sources: a jump
+``z`` of a source coupled through the vector field ``G = sum_i b_i(x) d/dx_i``
+moves the state along the flow of ``G`` for time ``z``,
+``x -> exp(z G) x``.  The action stays Ito-ordered (it is the generator's):
+the noise term of a source with cumulant rates ``kappa_k`` is
+``sum_k kappa_k/k! D_k``, ``D_k = e^{-xt.x} G^k e^{xt.x}``, in place of
+``K(sum_i c_i xt_i)``, so enumeration and Phase J are unchanged.  Gaussian
+sources (and Gaussian parts of a sum) take the Stratonovich conversion above
+(a Gaussian-only model gives exactly the Stratonovich action); a jump source
+with a constant coupling is unchanged (the Ito action); a jump source with a
+state-dependent coupling carries the series to ``SDE.series_order``, and
+``compute_cumulants`` reports the size of the next term at the saddle
+(``result['marcus_truncation']``, G6).  A state-dependent rate stays outside
+the flow (the pre-jump rate).  Refused under Marcus: exposed sources, a
+point process whose spikes enter with a state-dependent coefficient,
+couplings that read other units of a population (joint jumps), and
+state-dependent ``Cumulants``/``CGF`` sources.
+
 Mean-field equation: ``lhs|_{Dt=0} = rhs`` must define ``x*``, so a lhs such
 as ``Dt*x`` is completed.  The linear term of ``rhs`` (field-independent
 coefficient) moves onto the lhs; where there is none (``-x/(1 + eps*x^2)``,
@@ -135,6 +153,8 @@ class SDE:
         self._stability: Optional[bool] = None
         self._extra: list[str] = []
         self._series_order = 8
+        self._marcus_terms: 'OrderedDict[str, dict]' = OrderedDict()
+        self._ito_drift: dict = {}
         self.notes: list[str] = []
 
     # ── declarations (passed through to TemporalModelBuilder) ─────────
@@ -212,7 +232,9 @@ class SDE:
 
     def series_order(self, order: int):
         """Taylor order used in the action for CGFs with a removable
-        singularity at 0 (the uniform jump mgf).  Default 8."""
+        singularity at 0 (the uniform jump mgf), and the order of the Marcus
+        series of a jump source with a state-dependent coupling
+        (``interpretation('marcus')``).  Default 8."""
         self._series_order = int(order)
         return self
 
@@ -350,9 +372,12 @@ class SDE:
         return self
 
     def interpretation(self, mode: str):
+        """``'ito'`` (default), ``'stratonovich'`` (Gaussian sources) or
+        ``'marcus'`` (Gaussian and jump sources; see the module docstring)."""
         mode = str(mode).lower()
-        if mode not in ('ito', 'stratonovich'):
-            raise SDEError(f"interpretation({mode!r}): use 'ito' or 'stratonovich'.")
+        if mode not in ('ito', 'stratonovich', 'marcus'):
+            raise SDEError(f"interpretation({mode!r}): use 'ito', 'stratonovich' or "
+                           f"'marcus'.")
         self._interp = mode
         return self
 
@@ -698,6 +723,8 @@ class SDE:
         for f, info in self._fields.items():
             if info['exposed'] is None and f not in self._eqs:
                 raise SDEError(f'field {f!r} has no equation; call .equation() or .drift().')
+        if self._interp == 'marcus':
+            self._check_marcus_joint()
         allowed_src = (set(self._fields) | set(self._param_names)
                        | set(self._function_names) | {'i', 'j'})
         for name, s in self._sources.items():
@@ -727,16 +754,22 @@ class SDE:
                     raise SDEError(
                         f"interpretation('stratonovich'): source {name!r} is a jump/"
                         f"non-Gaussian source; the Stratonovich rule is defined here "
-                        f"for Gaussian noise only (jump SDEs need the Marcus rule).")
+                        f"for Gaussian noise only; jump SDEs take the Marcus rule, "
+                        f"interpretation('marcus').")
                 if s['expose']:
                     raise SDEError(
                         f"interpretation('stratonovich'): exposed source {name!r} is "
                         f"not supported; couple it with couples= instead.")
+        if self._interp == 'marcus':
+            self._check_marcus()
 
         extra_rhs = {f: [] for f in self._eqs}       # deterministic additions (action + MF)
         mf_rhs = {f: [] for f in self._eqs}          # MF-only additions (non-Gaussian means)
         source_terms = {}                            # per population: action text terms
         exposed_eqs = []                             # (field, rhs text)
+        gauss_units = []                             # (name, Gaussian source, couples): Stratonovich
+        self._marcus_terms = OrderedDict()
+        self._ito_drift = {}                         # field -> Stratonovich corrections (simulator)
 
         for name, s in self._sources.items():
             src = s['source']
@@ -755,56 +788,55 @@ class SDE:
                 if self._fields[f]['exposed'] is not None:
                     raise SDEError(f'noise({name!r}): cannot couple to the exposed '
                                    f'source field {f!r}.')
-            K_full = parse_expr(self._index(expr_to_text(
-                src.action_cgf(self._series_order))), what=f'K of {name}')
-            mean = parse_expr(self._index(expr_to_text(src.mean())), what=f'mean of {name}')
-            if s['expose']:
-                n = s['expose']
-                nt = SR.var(f'{n}t__i')
-                term = f'{n}t[i]*{n}[i] - {_wrap(expr_to_text(K_full.subs({THETA: nt})))}'
-                source_terms.setdefault(pop, []).append(term)
-                exposed_eqs.append((n, expr_to_text(mean)))
-                for f, c in coup.items():
-                    extra_rhs[f].append(c * SR.var(f'{n}__i'))
-                continue
-            if src.is_gaussian:
-                gm = src.params['mean']
-                if not SR(gm).is_zero():
-                    gm_i = parse_expr(self._index(expr_to_text(gm)))
-                    for f, c in coup.items():
-                        extra_rhs[f].append(c * gm_i)
-                    self.notes.append(f'Gaussian source {name!r}: mean '
-                                      f'{expr_to_text(gm)} moved into the drift of '
-                                      f'{", ".join(coup)}.')
-                    # The action keeps only the variance part of K.
-                    K_full = parse_expr(self._index(expr_to_text(src.params['var'])),
-                                        what=f'{name}.var') * THETA ** 2 / 2
+            if self._interp == 'marcus' and not s['expose']:
+                units = self._marcus_units(name, s, coup)
             else:
-                for f, c in coup.items():
-                    if not SR(mean).is_zero():
-                        mf_rhs[f].append(c * mean)
-            theta_val = sum(c * SR.var(f'{f}t__i') for f, c in coup.items())
-            K_term = K_full.subs({THETA: theta_val})
-            source_terms.setdefault(pop, []).append(f'-{_wrap(expr_to_text(K_term))}')
+                units = [(name, src, False)]
+            for uname, src, series in units:
+                if series:
+                    self._marcus_series(uname, src, coup, pop, source_terms, mf_rhs)
+                    continue
+                K_full = parse_expr(self._index(expr_to_text(
+                    src.action_cgf(self._series_order))), what=f'K of {uname}')
+                mean = parse_expr(self._index(expr_to_text(src.mean())), what=f'mean of {uname}')
+                if s['expose']:
+                    n = s['expose']
+                    nt = SR.var(f'{n}t__i')
+                    term = f'{n}t[i]*{n}[i] - {_wrap(expr_to_text(K_full.subs({THETA: nt})))}'
+                    source_terms.setdefault(pop, []).append(term)
+                    exposed_eqs.append((n, expr_to_text(mean)))
+                    for f, c in coup.items():
+                        extra_rhs[f].append(c * SR.var(f'{n}__i'))
+                    continue
+                if src.is_gaussian:
+                    gm = src.params['mean']
+                    gauss_units.append((uname, src, s['couples']))
+                    if not SR(gm).is_zero():
+                        gm_i = parse_expr(self._index(expr_to_text(gm)))
+                        for f, c in coup.items():
+                            extra_rhs[f].append(c * gm_i)
+                        self.notes.append(f'Gaussian source {uname!r}: mean '
+                                          f'{expr_to_text(gm)} moved into the drift of '
+                                          f'{", ".join(coup)}.')
+                        # The action keeps only the variance part of K.
+                        K_full = parse_expr(self._index(expr_to_text(src.params['var'])),
+                                            what=f'{uname}.var') * THETA ** 2 / 2
+                else:
+                    for f, c in coup.items():
+                        if not SR(mean).is_zero():
+                            mf_rhs[f].append(c * mean)
+                theta_val = sum(c * SR.var(f'{f}t__i') for f, c in coup.items())
+                K_term = K_full.subs({THETA: theta_val})
+                source_terms.setdefault(pop, []).append(f'-{_wrap(expr_to_text(K_term))}')
 
-        # Stratonovich -> Ito drift correction (Gaussian sources only).
-        if self._interp == 'stratonovich':
-            dtcoef = {}
-            for f, eq in self._eqs.items():
-                L = self._parse(eq['lhs'], f'lhs of {f}').expand()
-                dt_terms = L.coefficient(_DT, 1)
-                a = dt_terms.coefficient(self._sym(f), 1)
-                # the x part of the Dt terms must be exactly a*x with a free of the fields: ``(1 + x^2)*Dt*x`` has
-                # the Dt-coefficient x + x^3, whose x-part alone (1) would be taken for a
-                if (a.is_zero() or set(map(str, a.variables())) & {g + '__i' for g in self._fields}
-                        or (dt_terms - a * self._sym(f)).expand().has(self._sym(f))):
-                    raise SDEError(f"stratonovich: cannot read a constant Dt "
-                                   f"coefficient off lhs={eq['lhs']!r}.")
-                dtcoef[f] = a
-            for name, s in self._sources.items():
-                V = self._parse(expr_to_text(s['source'].params['var']), f'{name}.var')
+        # Stratonovich -> Ito drift correction (Gaussian sources; under Marcus
+        # the Gaussian sources and Gaussian parts, whose Marcus rule it is).
+        if self._interp == 'stratonovich' or (self._interp == 'marcus' and gauss_units):
+            dtcoef = self._dt_coefficients()
+            for name, src, couples in gauss_units:
+                V = self._parse(expr_to_text(src.params['var']), f'{name}.var')
                 b = {f: self._parse(str(c), 'coefficient') / dtcoef[f]
-                     for f, c in s['couples'].items()}
+                     for f, c in couples.items()}
                 for fi in b:
                     corr = SR(0)
                     for fj in b:
@@ -814,6 +846,7 @@ class SDE:
                     corr = corr.simplify_full()
                     if not corr.is_zero():
                         extra_rhs[fi].append(dtcoef[fi] * corr)
+                        self._ito_drift.setdefault(fi, []).append(dtcoef[fi] * corr)
                         self.notes.append(
                             f'Stratonovich -> Ito: drift of {fi!r} += '
                             f'{expr_to_text(dtcoef[fi] * corr)} (source {name!r}).')
@@ -904,6 +937,181 @@ class SDE:
             f'term in {f}; added {cx} to both sides (lhs {new_lhs!r}, c = 1; the '
             f'residual and the linear stability are unchanged).')
         return new_lhs, new_rhs
+
+    # ── Marcus rule ───────────────────────────────────────────────────
+    def _dt_coefficients(self) -> dict:
+        """The constant ``Dt`` coefficient ``a`` of each equation's lhs
+        (``a*Dt*x + ...``): a coupling ``c`` in lhs units is the vector field
+        ``c/a`` of the field."""
+        dtcoef = {}
+        for f, eq in self._eqs.items():
+            L = self._parse(eq['lhs'], f'lhs of {f}').expand()
+            dt_terms = L.coefficient(_DT, 1)
+            a = dt_terms.coefficient(self._sym(f), 1)
+            # the x part of the Dt terms must be exactly a*x with a free of the fields: ``(1 + x^2)*Dt*x`` has
+            # the Dt-coefficient x + x^3, whose x-part alone (1) would be taken for a
+            if (a.is_zero() or set(map(str, a.variables())) & {g + '__i' for g in self._fields}
+                    or (dt_terms - a * self._sym(f)).expand().has(self._sym(f))):
+                raise SDEError(f"{self._interp}: cannot read a constant Dt "
+                               f"coefficient off lhs={eq['lhs']!r}.")
+            dtcoef[f] = a
+        return dtcoef
+
+    def _field_dependent(self, expr) -> bool:
+        """True when ``expr`` (indexed form, ``x__i``) holds a field."""
+        return any('__' in str(v) and str(v).split('__')[0] in self._fields
+                   for v in SR(expr).variables())
+
+    def _check_marcus(self):
+        """Refuse what the Marcus rule is not defined for here: exposed
+        sources, and point processes whose spikes enter an equation with a
+        state-dependent coefficient (a constant one is the same jump in every
+        interpretation)."""
+        for name, s in self._sources.items():
+            if s.get('pp'):
+                self._check_marcus_pp(name, s['pp'])
+            elif s['expose']:
+                raise SDEError(
+                    f"interpretation('marcus'): exposed source {name!r} is not "
+                    f"supported (it enters the equations as a field, so no jump "
+                    f"flow is defined); couple it with couples= instead.")
+
+    def _check_marcus_joint(self):
+        """A coupling that reads other units of the population (``x[j]``, a
+        population sum) would move several units with one jump: a joint
+        (multivariate) jump, which needs mixed moments.  Refused before the
+        coupling is parsed (the parser refuses it under every interpretation,
+        with a message about parsing)."""
+        names = '|'.join(re.escape(f) for f in sorted(self._fields, key=len, reverse=True))
+        for name, s in self._sources.items():
+            for f, c in s['couples'].items():
+                c = str(c)
+                if ((names and re.search(rf'\b({names})\s*\[\s*(?!i\s*\])', c))
+                        or re.search(r'\bsum\s*\(', c)):
+                    raise SDEError(
+                        f"interpretation('marcus'): the coupling {c!r} of source "
+                        f"{name!r} to {f!r} reads other units of the population, so "
+                        f"one jump would move several units jointly; joint "
+                        f"(multivariate) jumps need mixed moments and are not "
+                        f"supported. One scalar source coupled to several fields of "
+                        f"the same unit (couples={{'x': ..., 'y': ...}}) is a jump "
+                        f"along a vector field and is supported; independent sources "
+                        f"per unit are too.")
+
+    def _check_marcus_pp(self, n, pp):
+        fix = (f"declare the jump as noise(..., Poisson(...) or CompoundPoisson(...), "
+               f"couples={{field: coefficient}}), whose state-dependent coupling "
+               f"takes the Marcus flow, or use interpretation('ito')")
+        bare_in = []
+        for f, eq in self._eqs.items():
+            rhs = self._strip_conv(eq['rhs'])     # a filtered train Conv(K, n) is no jump
+            if not re.search(rf'\b{re.escape(n)}\b', rhs):
+                continue
+            bare_in.append(f)
+            try:
+                R = self._parse(rhs, f'rhs of {f}')
+            except NoiseError:
+                raise SDEError(
+                    f"interpretation('marcus'): spike train {n!r} enters "
+                    f"equation({f!r}) outside Conv(...) in a form whose coefficient "
+                    f"cannot be read (a population sum?); a point process with a "
+                    f"state-dependent coupling is not supported under Marcus: "
+                    f"{fix}.") from None
+            nsym = SR.var(f'{n}__i')
+            coef = R.diff(nsym)
+            if coef.has(nsym) or self._field_dependent(coef):
+                raise SDEError(
+                    f"interpretation('marcus'): spike train {n!r} enters "
+                    f"equation({f!r}) with the state-dependent coefficient "
+                    f"{expr_to_text(coef)!r}; a point process with a state-dependent "
+                    f"coupling is not supported under Marcus (a constant coupling "
+                    f"is the same jump in every interpretation): {fix}.")
+        if bare_in and self._field_dependent(self._parse(pp['size'], f'size of {n}')):
+            raise SDEError(
+                f"interpretation('marcus'): spike train {n!r} has the state-dependent "
+                f"size {pp['size']!r} and enters equation({bare_in[0]!r}) as a jump; a "
+                f"point process with a state-dependent coupling is not supported "
+                f"under Marcus: {fix}.")
+
+    def _marcus_units(self, name, s, coup):
+        """Split a coupled source into the pieces the Marcus rule treats
+        apart: ``[(name, source, series)]``.  Gaussian sources and Gaussian
+        parts of a sum take the Stratonovich route (``series`` False); a jump
+        source (or the jump parts of a sum) with a state-dependent coupling
+        takes the Marcus series (``series`` True); with a constant coupling
+        and no state-dependent Gaussian part the source is unchanged (Marcus
+        = Ito: the flow of a constant field is a translation)."""
+        from api.noise import SumSource, Cumulants, CGF
+        src = s['source']
+        fields = list(self._fields)
+        parts = list(src.parts) if isinstance(src, SumSource) else [src]
+        for q in parts:
+            if isinstance(q, (Cumulants, CGF)) and q.field_dependent(fields):
+                raise SDEError(
+                    f"interpretation('marcus'): source {name!r} is a state-dependent "
+                    f"{type(q).__name__} source, whose Gaussian part cannot be told "
+                    f"from its jumps (the two take different Marcus rules); declare "
+                    f"it as Gaussian(...) + a jump source, or use interpretation('ito').")
+        if len(parts) == 1 and src.is_gaussian:
+            return [(name, src, False)]
+        sd = any(self._field_dependent(c) for c in coup.values())
+        gauss = [q for q in parts if q.is_gaussian]
+        jumps = [q for q in parts if not q.is_gaussian]
+        if not sd and not any(q.field_dependent(fields) for q in gauss):
+            return [(name, src, False)]
+        units = [(name if len(parts) == 1 else f'{name} (part {k + 1})', q, False)
+                 for k, q in enumerate(parts) if q.is_gaussian]
+        if jumps:
+            j = jumps[0] if len(jumps) == 1 else SumSource(*jumps)
+            units.append((name, j, sd))
+        return units
+
+    def _marcus_series(self, name, src, coup, pop, source_terms, mf_rhs):
+        """The Marcus noise term of the jump source ``src`` coupled through the
+        vector field ``G = sum_f b_f d/dx_f`` (``b_f = c_f/a_f``):
+        ``H = sum_{k<=N} kappa_k/k! D_k``, ``D_k = e^{-xt.x} G^k e^{xt.x}``
+        (``D_1 = theta = sum_f c_f ft``, ``D_{k+1} = G D_k + theta D_k``),
+        ``N = SDE.series_order``.  The action gets ``-H`` (its theta-linear
+        part, the mean drift, included); the mean-field equations get that
+        linear part (MF only), as for a non-Gaussian source on the Ito route.
+        The cumulant rates ``kappa_k`` stay outside the flow (a state-dependent
+        rate is the pre-jump rate)."""
+        from sage.all import factorial
+        N = int(self._series_order)
+        src._check_order(N, f"the Marcus series of source {name!r} (series order {N})")
+        a = self._dt_coefficients()
+        resp = {f: SR.var(f'{f}t__i') for f in coup}
+        theta = sum((coup[f] * resp[f] for f in coup), SR(0))
+        b = {f: coup[f] / a[f] for f in coup}
+        top = src._max_order()
+        n_kap = N + 1 if top is None or top >= N + 1 else N
+        kap = {k: parse_expr(self._index(expr_to_text(src.cumulant(k))),
+                             what=f'cumulant {k} of {name}')
+               for k in range(1, n_kap + 1)}
+        D = theta.expand()
+        H, nxt = kap[1] * D, None
+        for k in range(2, n_kap + 1):
+            D = (sum((b[f] * D.diff(self._sym(f)) for f in coup), SR(0)) + theta * D).expand()
+            term = kap[k] / factorial(k) * D
+            if k <= N:
+                H += term
+            else:
+                nxt = term
+        H = H.expand()
+        zero = {r: 0 for r in resp.values()}
+        for f in coup:
+            lin = H.diff(resp[f]).subs(zero)
+            if not lin.is_zero():
+                mf_rhs[f].append(lin)
+        source_terms.setdefault(pop, []).append(f'-{_wrap(expr_to_text(H))}')
+        self.notes.append(
+            f"Marcus: source {name!r} acts through the flow of its coupling; the "
+            f"action carries sum_k kappa_k/k! D_k to order {N} (SDE.series_order); "
+            f"the size of the next term at the saddle is result['marcus_truncation'].")
+        self._marcus_terms[name] = {
+            'order': N, 'population': pop, 'responses': [f'{f}t' for f in coup],
+            'kept': expr_to_text(H),
+            'next': None if nxt is None else expr_to_text(nxt.expand())}
 
     # ── outputs ───────────────────────────────────────────────────────
     def action_text(self) -> str:
@@ -1021,8 +1229,16 @@ class SDE:
     def build(self) -> dict:
         self._check_derived_names()
         m = self.to_builder().build()
-        trunc = sorted(n for n, s in self._sources.items()
-                       if not s.get('pp') and not getattr(s['source'], 'regular', True))
+        trunc = sorted(set(n for n, s in self._sources.items()
+                           if not s.get('pp') and not getattr(s['source'], 'regular', True))
+                       | set(self._marcus_terms))
+        if self._interp == 'marcus':
+            m['interpretation'] = 'marcus'
+        if self._marcus_terms:
+            # the Marcus series of each jump source with a state-dependent
+            # coupling, kept to SDE.series_order, and its next term:
+            # compute_cumulants sizes that term at the saddle
+            m['marcus_series'] = {n: dict(t) for n, t in self._marcus_terms.items()}
         if trunc:
             # the action holds these CGFs as Taylor polynomials of this order;
             # compute_cumulants refuses (k, max_ell) that would need more

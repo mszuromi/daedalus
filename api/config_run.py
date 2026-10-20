@@ -44,7 +44,8 @@ noise and the action are derived exactly as for a Python-built model)::
       drift: {x: "-mu*x - eps*x^3"}   # or equations: {x: {lhs: ..., rhs: ...}}
       noise:                          # type = a class of api.noise, the rest are its arguments
         xi: {type: Gaussian, var: "2*D", couples: {x: 1}}
-      interpretation: ito             # or stratonovich
+      interpretation: ito             # or stratonovich, marcus
+      series_order: 8                 # Taylor / Marcus series order of a jump source
       stability_analysis: true
 
 A point-process model (``SDE.point_process``, kernels, delays) goes through a
@@ -73,7 +74,7 @@ import numpy as np
 TOP_KEYS = ('model', 'sde', 'parameters', 'question', 'policy', 'output',
             'outputs')
 SDE_KEYS = ('name', 'parameters', 'fields', 'drift', 'equations', 'noise',
-            'interpretation', 'stability_analysis')
+            'interpretation', 'series_order', 'stability_analysis')
 SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
 #: the ``type:`` of an inline noise source (classes of api.noise); a jump law
 #: inside one is any ``api.noise.JumpDistribution`` subclass
@@ -333,11 +334,14 @@ class _Parser:
             spec['noise'][nname] = (d, knode.start_mark.line + 1)
         if 'interpretation' in items:
             v = self.string(items['interpretation'][1], 'sde.interpretation')
-            if v not in ('ito', 'stratonovich'):
+            if v not in ('ito', 'stratonovich', 'marcus'):
                 self.fail(items['interpretation'][1],
-                          'sde.interpretation must be ito or stratonovich; '
+                          'sde.interpretation must be ito, stratonovich or marcus; '
                           f'got {v!r}')
             spec['interpretation'] = v
+        if 'series_order' in items:
+            spec['series_order'] = self.integer(items['series_order'][1],
+                                                'sde.series_order', 1)
         if 'stability_analysis' in items:
             spec['stability_analysis'] = self.boolean(
                 items['stability_analysis'][1], 'sde.stability_analysis')
@@ -529,7 +533,7 @@ class _Parser:
                                 f'auto; got {node.value!r}')
             out['discard'] = v
         choices = {'mode': ('strict', 'permissive'),
-                   'interpretation': ('ito', 'stratonovich')}
+                   'interpretation': ('ito', 'stratonovich', 'marcus')}
         for key, allowed in choices.items():
             if key in items:
                 v = self.string(items[key][1], f'policy.{key}')
@@ -595,7 +599,7 @@ def _sde_plain(block):
         if key in spec:
             out[key] = {f: _plain(v) for f, (v, _) in spec[key].items()}
     out['noise'] = {n: _plain(d) for n, (d, _) in spec['noise'].items()}
-    for key in ('interpretation', 'stability_analysis'):
+    for key in ('interpretation', 'series_order', 'stability_analysis'):
         if key in spec:
             out[key] = spec[key]
     return out
@@ -656,6 +660,8 @@ def _build_sde(raw):
         at(line, add)
     if 'interpretation' in spec:
         s.interpretation(spec['interpretation'])
+    if 'series_order' in spec:
+        s.series_order(spec['series_order'])
     if 'stability_analysis' in spec:
         s.stability_analysis(spec['stability_analysis'])
     return at(lines.get('drift') or lines.get('equations'), s.build)

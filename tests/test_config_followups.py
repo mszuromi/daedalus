@@ -410,7 +410,7 @@ def test_d_inline_sde_dry_run_and_other_noise_types(tmp_path, capsys):
                                      'xi: {type: CompoundPoisson, rate: 2, jump: {type: Gaussian, mu: 1}, couples: {x: 1}}'),
      10, 'jump law type must be one of'),
     ('bad interpretation', SDE_CFG.replace('  stability_analysis: true\n', '  interpretation: strat\n'), 11,
-     'sde.interpretation must be ito or stratonovich'),
+     'sde.interpretation must be ito, stratonovich or marcus'),
 ])
 def test_d_inline_sde_errors_have_lines(tmp_path, label, text, line, fragment):
     _bad(tmp_path, text, line, fragment)

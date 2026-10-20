@@ -179,6 +179,10 @@ FINDING_CODES = {
     'G6_COUNTERS_INCOMPLETE':    ('G6', 'info'),
     'G6_NOT_EVALUATED':          ('G6', 'info'),
     'G6_DIAGRAMS_SKIPPED':       ('G6', 'warning'),
+    # the Marcus series (SDE.interpretation('marcus')) kept to SDE.series_order:
+    # the size of its first omitted term at the saddle
+    'G6_MARCUS_TRUNCATION':      ('G6', 'info'),
+    'G6_MARCUS_TRUNCATION_LOW':  ('G6', 'warning'),
     # the Phase J engine census and the state-space route's fallbacks
     'G6_PHASE_J_ENGINE':         ('G6', 'info'),
     'G6_SS_FALLBACK':            ('G6', 'warning'),
@@ -263,8 +267,8 @@ class Policy:
     errors, except the G5 regime advisories).  Consents: ``allow_taylor_truncation``,
     ``allow_markov_embedding``, ``allow_numeric_fallback``.
     ``interpretation``: the stochastic convention the action is written in
-    (``'ito'`` or ``'stratonovich'``); needed when the noise is state
-    dependent.  ``assertions``: facts the user vouches for, e.g.
+    (``'ito'``, ``'stratonovich'`` or ``'marcus'``); needed when the noise is
+    state dependent.  ``assertions``: facts the user vouches for, e.g.
     ``{'saddle_confirmed': True, 'positive_at_saddle': ['nstar']}``;
     the checkable ones are checked, the rest are echoed in the ledger.
     ``downgrade``: error codes the user accepts as warnings (e.g.
@@ -880,10 +884,17 @@ def _g0_declarations(ctx):
         ctx.add('G0_POLICY_INVALID',
                 f"policy.mode must be 'strict' or 'permissive'; got {p.mode!r}.",
                 "use Policy(mode='strict') or Policy(mode='permissive')")
-    if p.interpretation not in (None, 'ito', 'stratonovich'):
+    if p.interpretation not in (None, 'ito', 'stratonovich', 'marcus'):
         ctx.add('G0_POLICY_INVALID',
-                f"policy.interpretation must be 'ito' or 'stratonovich'; got "
-                f'{p.interpretation!r}.', "declare 'ito' or 'stratonovich'")
+                f"policy.interpretation must be 'ito', 'stratonovich' or "
+                f"'marcus'; got {p.interpretation!r}.",
+                "declare 'ito', 'stratonovich' or 'marcus'")
+    elif p.interpretation == 'marcus' and model.get('spatial'):
+        ctx.add('G0_POLICY_INVALID',
+                "policy.interpretation='marcus': the Marcus rule is defined for "
+                'temporal SDE models only (SDE(...).interpretation(\'marcus\')); '
+                'this model is spatial.',
+                "declare 'ito' (the spatial models' action is Ito-ordered)")
     bad_dg = [c for c in p.downgrade
               if FINDING_CODES.get(c, ('', ''))[1] != 'error'
               or c in _NEVER_DOWNGRADE]
@@ -1257,19 +1268,27 @@ def _species_findings(ctx, sector_keys):
                     'interpretation is declared; the pipeline reads the action '
                     'as Ito.',
                     "declare policy interpretation='ito' (or build the model "
-                    "with SDE(...).interpretation('stratonovich'), which "
-                    'converts it to Ito)')
+                    "with SDE(...).interpretation('stratonovich') or "
+                    "('marcus'), which convert it to Ito)")
         ctx.ledger_add('convention', 'interpretation',
                        f'state-dependent noise read as '
                        f'{interp or "ito (pipeline default)"}; equal-time '
                        'Theta(0) = 0',
                        declared=bool(interp),
-                       satisfied=(None if not interp else interp == 'ito'))
+                       satisfied=(None if not interp else interp == 'ito'
+                                  or (interp == 'marcus'
+                                      and model.get('interpretation') == 'marcus')))
         if interp == 'stratonovich' and not model.get('interpretation'):
             ctx.add('G0_CONVENTION_MISSING',
                     'policy declares Stratonovich, but the model dict carries '
                     'no Ito drift correction; the pipeline reads it as Ito.',
                     "build the model with SDE(...).interpretation('stratonovich')")
+        if interp == 'marcus' and model.get('interpretation') != 'marcus':
+            ctx.add('G0_CONVENTION_MISSING',
+                    'policy declares Marcus, but the model dict was not built '
+                    'with the Marcus rule (no Ito-ordered Marcus action); the '
+                    'pipeline reads it as Ito.',
+                    "build the model with SDE(...).interpretation('marcus')")
 
 
 def _read_expand_cache(ctx, N):
@@ -3446,6 +3465,32 @@ def _g6_engine(ctx, d, result, c):
                    satisfied=(nf == 0))
 
 
+def _g6_marcus(ctx, d, result):
+    """The Marcus series' truncation (``result['marcus_truncation']``, from
+    ``compute_cumulants``) as a G6 finding and a ledger approximation."""
+    rows = result.get('marcus_truncation') if isinstance(result, dict) else None
+    if not rows:
+        return
+    sized = [r for r in rows if r.get('relative') is not None]
+    worst = max(sized, key=lambda r: r['relative']) if sized else None
+    d['marcus_truncation_max'] = None if worst is None else worst['relative']
+    over = [r for r in sized if r.get('status') == 'above']
+    if worst is None:
+        detail = ('the Marcus series could not be sized at the saddle ('
+                  + '; '.join(sorted({str(r.get('status')) for r in rows})) + ')')
+    else:
+        detail = (f"Marcus series kept to order {worst['order']}: the first "
+                  f"omitted term is {worst['relative']:.2e} of the kept series at "
+                  f"the saddle (source {worst['source']!r}, unit {worst['unit']})")
+    if over or worst is None:
+        ctx.add('G6_MARCUS_TRUNCATION_LOW', detail + '.',
+                'raise SDE.series_order; see result["marcus_truncation"]')
+    else:
+        ctx.add('G6_MARCUS_TRUNCATION', detail + '.', '')
+    ctx.ledger_add('approximation', 'marcus_series', detail,
+                   satisfied=bool(worst is not None and not over))
+
+
 def _g6(ctx, pf, result, c, complete, evaluated):
     """M8 certificate verdicts, error accounting and the total-relative
     accuracy estimate.
@@ -3479,6 +3524,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
     d['counters_complete'] = bool(complete)
     d['accuracy_estimate'] = None
     _g6_engine(ctx, d, result, c)
+    _g6_marcus(ctx, d, result)
     failed = (result.get('phase_j_incomplete') or {}) \
         if isinstance(result, dict) else {}
     d['n_diagrams_skipped'] = sum(r.get('n_diagrams', 1)
