@@ -15,8 +15,15 @@ paths (numpy; no processes):
   and the state is propagated by ``exp(A dt)``; a delay ``d`` delays the
   filter's input by ``round(d / dt)`` steps (ring buffer);
 * a continuous field with ``lhs = a*Dt*x + b*x`` takes the Euler step
-  ``x += (rhs - b x)/a dt`` (+ its Gaussian sources, ``sqrt(var dt)``), a
-  spike train in ``rhs`` contributing its count (a jump).
+  ``x += (rhs - b x)/a dt`` (+ its Gaussian sources, ``sqrt(var dt)``, with
+  the Ito drift correction under ``'stratonovich'``/``'marcus'``), a spike
+  train in ``rhs`` contributing its count (a jump);
+* a jump source coupled to fields (``noise(..., couples=...)``) draws its
+  increment ``dL`` over the step (rates read at the start of the step):
+  Ito moves the state by ``c(x) dL / a``; Marcus moves it along the flow of
+  ``c/a`` for the time ``dL`` (exact for an affine coupling, a DOP853
+  integration otherwise; the flows of one source compose, so the summed
+  increment is the exact jump of all the step's jumps).
 
 The scheme is first order in ``dt`` (a spike of step ``k`` reaches the
 rates of step ``k + 1`` through ``g(dt)``; a delta part of a kernel on a
@@ -368,22 +375,42 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
                 & {g + '__i' for g in sde._fields}:
             raise PPSimulationError(f'equation({f!r}): lhs {eq["lhs"]!r} is not '
                                     f'a*Dt*{f} + b*{f} with constant a, b.')
+        rhs = sde._index(eq['rhs'])
+        corrs = sde._ito_drift.get(f, [])         # Stratonovich / Marcus: Ito drift correction
+        if corrs:
+            rhs = f'({rhs}) + ' + ' + '.join(f'({expr_to_text(c)})' for c in corrs)
         drift[f] = (compiled(expr_to_text(a), f'<a {f}>'), compiled(expr_to_text(b), f'<b {f}>'),
-                    compiled(sde._index(eq['rhs']), f'<rhs {f}>'), [])
+                    compiled(rhs, f'<rhs {f}>'), [])
+    jumps = []                                     # (name, source, couples, flow or None)
     for name, s in sde._sources.items():
         if s.get('pp'):
             continue
         src = s['source']
-        if s['expose'] is not None or not src.is_gaussian:
+        if s['expose'] is not None:
             raise PPSimulationError(f'source {name!r} ({type(src).__name__}): the simulator '
-                                    f'handles point_process() trains and Gaussian sources '
-                                    f'coupled to fields.')
-        if sde._interp != 'ito':
-            raise PPSimulationError('simulate: Ito interpretation only.')
-        mean = compiled(sde._index(expr_to_text(src.params['mean'])), f'<mean {name}>')
-        var = compiled(sde._index(expr_to_text(src.params['var'])), f'<var {name}>')
-        for f, c in s['couples'].items():
-            drift[f][3].append((compiled(sde._index(str(c)), f'<c {name}>'), mean, var, name))
+                                    f'handles point_process() trains and sources coupled '
+                                    f'to fields (not exposed ones).')
+        if sde._interp == 'marcus':
+            coup = {f: sde._parse(str(c), f'coefficient of {name} in {f}')
+                    for f, c in s['couples'].items()}
+            units = sde._marcus_units(name, s, coup)
+        else:
+            units = [(name, src, False)]
+        for uname, usrc, series in units:
+            if usrc.is_gaussian:
+                mean = compiled(sde._index(expr_to_text(usrc.params['mean'])), f'<mean {uname}>')
+                var = compiled(sde._index(expr_to_text(usrc.params['var'])), f'<var {uname}>')
+                for f, c in s['couples'].items():
+                    drift[f][3].append((compiled(sde._index(str(c)), f'<c {uname}>'), mean, var,
+                                        uname))
+            else:
+                # Ito: the jump moves the state by c(x_pre) dL; Marcus with a
+                # constant coupling: the same translation; with a state-
+                # dependent coupling: the flow of c/a for time dL
+                cc = {f: compiled(sde._index(str(c)), f'<c {uname}>')
+                      for f, c in s['couples'].items()}
+                jumps.append((uname, usrc, cc,
+                              _flow_spec(sde, s['couples'], compiled) if series else None))
 
     def ev(code, i):
         env = dict(base)
@@ -445,6 +472,12 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             counts_now[f] = new[f]
         upd = {}
         xi = {}                                     # one draw per (source, i): shared by its fields
+        dL = {}                                     # jump-source increments, pre-step values
+        for (uname, usrc, cc, flow) in jumps:
+            for i in range(size[next(iter(cc))]):
+                dL[(uname, i)] = np.broadcast_to(np.asarray(
+                    usrc.sample(dt, n_paths, rng, _unit_values(vals, state, i)), dtype=float),
+                    (n_paths,))
         for f in conts:
             x = state[f]
             nx = np.empty_like(x)
@@ -458,6 +491,9 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
                         xi[(nm, i)] = rng.standard_normal(n_paths)
                     dx = dx + cv * (np.real(ev(mean, i)) * dt + np.sqrt(
                         np.maximum(np.real(ev(var, i)), 0.0) * dt) * xi[(nm, i)]) / a
+                for (uname, usrc, cc, flow) in jumps:
+                    if flow is None and f in cc:
+                        dx = dx + np.real(ev(cc[f], i)) * dL[(uname, i)] / a
                 nx[i] = x[i] + dx
             upd[f] = nx
         # filters take this step's inputs (the field values before the update)
@@ -465,6 +501,10 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             src_f, j = key[2]
             filters[key].push(new[src_f][j] if src_f in spikes else state[src_f][j])
         state.update(upd)
+        for (uname, usrc, cc, flow) in jumps:
+            if flow is not None:
+                for i in range(size[next(iter(cc))]):
+                    _marcus_jump(flow, cc, coef, i, dL[(uname, i)], state, ev, n_paths)
         for f in spikes:
             counts_now[f] = np.zeros_like(new[f])
         if k >= nburn:
@@ -478,6 +518,91 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
     return {'counts': out_counts, 'fields': out_fields, 'bin': bsteps * dt, 'dt': dt,
             'n_paths': n_paths, 'T': nb * bsteps * dt,
             'mean_intensity': {f: rate_sum[f] / max(nsteps, 1) for f in spikes}}
+
+
+def _unit_values(vals, state, i):
+    """Names a source's sampler may read for unit ``i``: the parameters (a
+    vector parameter's entry ``i``) and the continuous fields' current values."""
+    out = {}
+    for k, v in vals.items():
+        out[k] = v[i] if np.ndim(v) == 1 and len(v) > i else v
+    for f, x in state.items():
+        if len(x) > i:
+            out[f] = x[i]
+    return out
+
+
+def _flow_spec(sde, couples, compiled):
+    """The Marcus flow of a coupling ``{field: c}``: its fields and, when
+    ``c`` is affine in the fields with a constant Jacobian, the compiled
+    Jacobian entries ``d c_f / d x_g`` (closed-form flow), else ``None``
+    (the flow is integrated)."""
+    from api.noise import expr_to_text
+    fl = list(couples)
+    cs = {f: sde._parse(str(c), f'coefficient of {f}') for f, c in couples.items()}
+    J = [[cs[f].diff(sde._sym(g)) for g in fl] for f in fl]
+    if any(sde._field_dependent(e) for row in J for e in row):
+        return {'fields': fl, 'A': None}
+    return {'fields': fl, 'A': [[compiled(expr_to_text(e), f'<dc {f}/d{g}>')
+                                 for g, e in zip(fl, row)] for f, row in zip(fl, J)]}
+
+
+#: the Marcus flow's ODE fallback (non-affine couplings): DOP853 tolerances
+MARCUS_FLOW_RTOL, MARCUS_FLOW_ATOL = 1e-11, 1e-13
+
+
+def _marcus_jump(flow, cc, coef, i, z, state, ev, n_paths):
+    """Move unit ``i`` of the coupled fields along the flow of ``b = c/a`` for
+    the time ``z`` (per path): ``x -> x + psi_z(A) b(x)``, ``psi_z(lambda) =
+    expm1(z lambda)/lambda``, for an affine ``b = A x + b0`` (exact; the
+    eigenvectors of ``A`` must be well conditioned), else a DOP853 integration
+    of ``dx/ds = z b(x)`` over ``s in [0, 1]``.  The flows of one source
+    compose (``exp(z1 G) exp(z2 G) = exp((z1 + z2) G)``), so the step's
+    summed increment is the exact Marcus jump of all its jumps."""
+    mask = z != 0
+    if not mask.any():
+        return
+    fl = flow['fields']
+    n = len(fl)
+    av = [coef[f][i][0] for f in fl]
+    zz = z[mask]
+
+    def bvec():
+        return np.array([np.broadcast_to(np.real(ev(cc[f], i)), (n_paths,)) / av[r]
+                         for r, f in enumerate(fl)])[:, mask]
+
+    if flow['A'] is not None:
+        A = np.array([[float(np.real(ev(flow['A'][r][q], i))) / av[r] for q in range(n)]
+                      for r in range(n)])
+        lam, V = np.linalg.eig(A)
+        if np.linalg.cond(V) < 1e8:
+            W = np.linalg.solve(V, bvec().astype(complex))
+            L = lam[:, None] * zz[None, :]
+            small = np.abs(L) < 1e-8
+            safe = np.where(lam == 0, 1.0, lam)[:, None]
+            psi = np.where(small, zz[None, :] * (1 + L / 2 + L * L / 6),
+                           np.expm1(np.where(small, 0, L)) / safe)
+            dx = np.real(V @ (psi * W))
+            for r, f in enumerate(fl):
+                state[f][i][mask] += dx[r]
+            return
+    from scipy.integrate import solve_ivp
+
+    def rhs(_s, y):
+        Y = y.reshape(n, -1)
+        for r, f in enumerate(fl):
+            state[f][i][mask] = Y[r]
+        return (bvec() * zz[None, :]).ravel()
+
+    y0 = np.concatenate([state[f][i][mask] for f in fl])
+    sol = solve_ivp(rhs, (0.0, 1.0), y0, method='DOP853', rtol=MARCUS_FLOW_RTOL,
+                    atol=MARCUS_FLOW_ATOL)
+    if not sol.success:
+        raise PPSimulationError(f'Marcus jump flow of {fl}: {sol.message} (the flow of '
+                                f'the coupling may leave every bounded set within the jump).')
+    Y = sol.y[:, -1].reshape(n, -1)
+    for r, f in enumerate(fl):
+        state[f][i][mask] = Y[r]
 
 
 # An intensity times dt above this is no model of anything: the rate feedback

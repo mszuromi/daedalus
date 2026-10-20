@@ -525,6 +525,26 @@ def test_g6_names_diagrams_phase_j_could_not_evaluate():
     assert not _g6_report({'dd_poset': 1}, [0.5, 0.4]).has('G6_DIAGRAMS_SKIPPED')
 
 
+def test_g6_reports_the_marcus_series_truncation():
+    """G6_MARCUS_TRUNCATION_LOW (warning) when the first omitted Marcus term is above 1e-10 of the kept series at
+    the saddle (``result['marcus_truncation']``, from compute_cumulants; end to end in test_marcus.py), else
+    G6_MARCUS_TRUNCATION (info); a ledger approximation either way."""
+    def rep(rel):
+        pf = A.Preflight(_load('ou_quartic')[0], Question(k=2, max_ell=1))
+        pf.after_run({'C_tau': np.array([0.5, 0.4]), 'marcus_truncation': [
+            {'source': 'L', 'unit': 0, 'order': 8, 'relative': rel,
+             'status': 'above' if rel > 1e-10 else 'ok'}]}, {'dd_poset': 1}, complete=True, evaluated=True)
+        return pf.report()
+    low = rep(3e-6)
+    f = [f for f in low.findings if f.code == 'G6_MARCUS_TRUNCATION_LOW'][0]
+    assert f.level == 'warning' and 'series_order' in f.remedy and '3.00e-06' in f.message
+    assert low.diagnostics['marcus_truncation_max'] == 3e-6
+    ok = rep(1e-13)
+    assert ok.has('G6_MARCUS_TRUNCATION') and not ok.has('G6_MARCUS_TRUNCATION_LOW')
+    assert any(e.name == 'marcus_series' and e.satisfied for e in ok.ledger)
+    assert not _g6_report({'dd_poset': 1}, [0.5, 0.4]).has('G6_MARCUS_TRUNCATION')
+
+
 def test_g6_bound_and_verdicts_on_synthetic_counters():
     rep = _g6_report({'divergent_subsets': 2, 'dd_ill_conditioned': 3, 'dd_err_ratio_max': 7.0,
                       'dd_err_abs_sum': 4e-7, 'dbm_err_abs_sum': 1e-7, 'dd_poset': 5, 'nquad_calls': 1},
