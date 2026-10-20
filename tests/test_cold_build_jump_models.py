@@ -21,7 +21,6 @@ Checks:
     linearized dynamics (an independent reference).
 """
 import math
-import time
 
 import numpy as np
 import pytest
@@ -32,6 +31,7 @@ from sage.all import SR, I, matrix, exp, sqrt, assume, forget
 import engine.core.field_theory as F
 import api._propagator as P
 from api.model import TemporalTheoryBuilder
+from tests._cputime import CpuClock  # noqa: E402
 
 _J = [(0, 1, 1.0), (1, 2, -0.8), (0, 2, -0.5)]
 _H = [0.3, -0.2, 0.1]
@@ -165,11 +165,11 @@ def test_three_unit_network_cold_build_and_lyapunov():
     import scipy.linalg as sla
     from api.compute import compute_cumulants
     model, xs, A, B = _network(3)
-    t0 = time.perf_counter()
+    clock = CpuClock()                        # CPU seconds, Maxima child included
     ft = F.FieldTheory(model, taylor_order=3)
     ft.expand()
     prop = P.build_propagator(ft, model, use_cache=False, verbose=False)
-    wall = time.perf_counter() - t0
+    wall = clock.elapsed()
     assert prop['G_ft'] is not None          # the symbolic block completed
     assert wall < 60, wall                    # ~183 s (and no G_ft) before
     C = sla.solve_continuous_lyapunov(A, -B)
@@ -246,10 +246,10 @@ def test_symbolic_coefficient_network_one_loop_timed():
     from api.compute import compute_cumulants
     kw = dict(k=1, max_ell=1, tau_grid=np.array([0.0]), parallel=False,
               verbose=False, use_cache=False)
-    t0 = time.perf_counter()
+    clock = CpuClock()
     r = compute_cumulants(_network_symbolic(2), external_fields=[('dx', 1)],
                           **kw)
-    wall = time.perf_counter() - t0
+    wall = clock.elapsed()
     assert wall < 120, wall
     rn = compute_cumulants(_network(2)[0], external_fields=[('dx1', 1)], **kw)
     v = float(np.real(np.atleast_1d(r['C_tau_by_ell'][1]))[0])

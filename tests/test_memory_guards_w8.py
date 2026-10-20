@@ -11,6 +11,7 @@ pytest.importorskip('sage.all')
 
 from engine.enumeration import prediagram_cache as pc
 from engine.integration.time_domain import final_integral as fi
+from tests._cputime import CpuClock  # noqa: E402
 
 
 def _no_records(*a, **kw):
@@ -143,10 +144,10 @@ def test_pp_simulate_refuses_an_oversized_output():
     sys.path.insert(0, os.path.dirname(__file__))
     from test_point_process_front_end import pp_spike_only
     s = pp_spike_only(1)
-    t0 = time.perf_counter()
+    clock = CpuClock()
     with pytest.raises(MemoryError, match=r'8\.00 GB'):
         s.simulate(T=1e4, dt=1e-3, n_paths=100, burn_in=0.0, max_bytes=4e9)
-    assert time.perf_counter() - t0 < 5          # refused, not simulated
+    assert clock.elapsed() < 5                   # refused, not simulated (CPU seconds)
     out = s.simulate(T=2.0, dt=1e-3, n_paths=3, burn_in=0.0, seed=1,
                      max_bytes=1e6)               # 2000 x 3 x 8 B = 48 kB
     assert sum(v.nbytes for v in out['counts'].values()) == 2000 * 3 * 8

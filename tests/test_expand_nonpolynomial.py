@@ -19,7 +19,6 @@ Checks:
 """
 import os
 import random
-import time
 
 import pytest
 
@@ -29,6 +28,7 @@ from sage.all import (SR, RealField, PolynomialRing, taylor, exp, log, sin,
 
 import engine.core.field_theory as F
 from api.model import TemporalModelBuilder
+from tests._cputime import CpuClock  # noqa: E402
 
 _SIG = {'exp': '(1/(1+exp({u})))',
         # Taylor polynomial of 1/(1+exp(u)) at u = 0, exact through u^4
@@ -145,9 +145,9 @@ def test_equals_legacy_taylor_order3(monkeypatch):
 
 def test_time_budget_order4(monkeypatch):
     model = _model('exp')
-    t0 = time.perf_counter()
+    clock = CpuClock()
     ft = _expand(model, 4, monkeypatch=monkeypatch)
-    dt = time.perf_counter() - t0
+    dt = clock.elapsed()
     assert sum(len(p.dict()) for p in ft._by_tp.values()) == 36
     assert dt < 60.0, f'expand at taylor_order 4 took {dt:.1f} s'
 
@@ -163,9 +163,9 @@ def test_expand_cache_roundtrip_fast(monkeypatch, tmp_path):
     for target in (4, 3):
         ft2 = F.FieldTheory(model, taylor_order=target)
         EC.prepare_for_load(ft2)
-        t0 = time.perf_counter()
+        clock = CpuClock()
         assert EC.load_expand(model, ft2, target_order=target, cached_order=4)
-        assert time.perf_counter() - t0 < 30.0
+        assert clock.elapsed() < 30.0
         for key, poly in ft2._by_tp.items():
             ref = ft._by_tp[key].dict()
             assert list(poly.dict()) == list(ref)
