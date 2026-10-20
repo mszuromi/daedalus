@@ -32,6 +32,7 @@ time ``t`` is always rejected (time-independent sources only).
 from __future__ import annotations
 
 import re
+import warnings
 from math import factorial
 from typing import Iterable, Optional, Sequence
 
@@ -40,7 +41,7 @@ from sage.all import gamma as _gamma, cos as _cos, matrix as _matrix
 from engine.errors import DaedalusError
 
 __all__ = [
-    'NoiseError', 'NoiseSource',
+    'NoiseError', 'NoiseSource', 'CumulantTruncationWarning',
     'Gaussian', 'Poisson', 'CompoundPoisson', 'GammaProcess',
     'InverseGaussianProcess', 'Cumulants', 'CGF',
     'JumpDistribution', 'Dirac', 'Exponential', 'Gamma', 'GaussianJump',
@@ -56,6 +57,11 @@ __all__ = [
 
 class NoiseError(DaedalusError, ValueError):
     """Raised for an invalid noise declaration."""
+
+
+class CumulantTruncationWarning(UserWarning):
+    """A :class:`Cumulants` source was asked for a cumulant above the order it
+    declares; that cumulant is taken as 0 (a formal truncation)."""
 
 
 # The CGF variable.  Reserved: a parameter or field may not be called theta.
@@ -526,6 +532,29 @@ class Cumulants(NoiseSource):
         for m in range(2, self._order + 1):
             K += self.params[f'kappa{m}'] * THETA ** m / factorial(m)
         return K
+
+    @property
+    def declared_order(self) -> int:
+        """The highest cumulant order given (``1 + len(kappas)``)."""
+        return self._order
+
+    def warn_truncation(self, m: int, where: str = '') -> None:
+        """Warn (once per source) that cumulant order ``m`` lies above the
+        declared order: the CGF is a polynomial, so that cumulant is 0."""
+        if int(m) <= self._order or getattr(self, '_truncation_warned', False):
+            return
+        self._truncation_warned = True
+        from engine._warn_helpers import ensure_warning_shown
+        _msg = (f'{self!r}: cumulant order {int(m)} requested{where}, but only '
+                f'cumulants up to order {self._order} are declared; the higher '
+                f'cumulants are taken as 0. Give more kappas if they are not zero.')
+        ensure_warning_shown(CumulantTruncationWarning, 'always', message=_msg,
+                             stacklevel=3)
+        warnings.warn(_msg, CumulantTruncationWarning, stacklevel=3)
+
+    def cumulant(self, m: int):
+        self.warn_truncation(m)
+        return super().cumulant(m)
 
 
 class CGF(NoiseSource):

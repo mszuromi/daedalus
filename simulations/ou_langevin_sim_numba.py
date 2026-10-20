@@ -306,7 +306,7 @@ def sim_ou_quartic_two_dim_color_corr_numba(
     -----------
     As τc → 0 (with dt held fixed and dt < τc), the auxiliary process
     becomes white Gaussian with ⟨ξ_α(t) ξ_β(t')⟩ → 2 D_α C_αβ · δ(t-t'),
-    recovering the existing ``sim_ou_quartic_two_dim_numba`` when ρ = 0.
+    recovering the existing ``sim_ou_quartic_coupled_numba`` when ρ = 0.
     Use τc = 0.01-ish with dt = 0.001 for a numerical white-limit check.
 
     Returns
@@ -388,7 +388,7 @@ def sim_ou_quartic_two_dim_corr_numba(
     """
     Euler-Maruyama for the 2-component coupled quartic Langevin with
     WHITE, CROSS-CORRELATED Gaussian noise.  Same dynamics as
-    ``sim_ou_quartic_two_dim_numba`` but with non-zero noise
+    ``sim_ou_quartic_coupled_numba`` but with non-zero noise
     correlation ρ between the η_x and η_y drivers — matches the κ²
     block in the matching model file.
 
@@ -484,7 +484,7 @@ def sim_ou_quartic_two_dim_corr_numba(
 
 
 @numba.njit
-def sim_ou_quartic_two_dim_numba(
+def sim_ou_quartic_coupled_numba(
         n_steps, dt_sim,
         mu1, mu2, eps1, eps2, J1, J2, D1, D2,
         x_init, y_init,

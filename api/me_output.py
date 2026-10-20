@@ -1870,7 +1870,9 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     """Triples of the k >= 3 slice ``j`` of a ``compute_cumulants`` /
     ``dd.run`` result: leg ``j`` swept, the other non-anchor legs at
     ``base`` (default: ``result['_kpoint_base']`` or 0; a base lag of 0 is
-    pinned at ``-eps``, the Itô left limit, as ``dd.run`` does)."""
+    pinned at ``-eps``, as ``dd.run`` does: ``eps`` defaults to 0 -- the exact
+    tie, ``DAEDALUS_TAU0=exact`` -- or to ``_ITO_EPS`` under
+    ``DAEDALUS_TAU0=nudge``)."""
     from engine.integration.time_domain import final_integral as FI
     cfg = result.get('config') or {}
     _refuse_switch_on(result)
@@ -1880,7 +1882,8 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     if not 1 <= j < k:
         raise ValueError(f'slice index j={j} must be in 1..{k - 1}')
     if eps is None:
-        from api.compute import _ITO_EPS as eps
+        from api.compute import _ITO_EPS, _tau0_mode
+        eps = 0.0 if _tau0_mode() == 'exact' else _ITO_EPS
     if base is None:
         base = result.get('_kpoint_base') or [0.0] * (k - 1)
     base = [float(b) for b in base]
@@ -1889,7 +1892,7 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     if not all(math.isfinite(b) for b in base):
         # (the inverted comparison below sent a NaN to the left limit)
         raise ValueError(f'base lags must be finite, got {base}')
-    pinned = {leg: (-eps if abs(b) <= 1e-12 else b)
+    pinned = {leg: ((-eps if eps else 0.0) if abs(b) <= 1e-12 else b)
               for leg, b in zip(range(1, k), base) if leg != j}
     T0 = [0.0] * k
     for leg, t in pinned.items():

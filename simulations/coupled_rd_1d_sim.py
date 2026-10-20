@@ -243,19 +243,21 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
     rng = np.random.default_rng(seed)
     sqrt_dtdx = np.sqrt(dt / dx)
     # the snapshot buffer (8 B) and its FFT (16 B) per sample: refuse before
-    # allocating when over ``max_bytes`` (default: the memory guards'
-    # default budget)
+    # allocating when over ``max_bytes`` (default: the Phase J budget rule,
+    # ``PHASE_J_MEM_BUDGET_GB`` else the memory guards' default budget;
+    # ``off`` there means no limit)
     need = 24 * n_rec * n_rep * n_f * n_x
     if max_bytes is None:
-        from engine.integration.time_domain.final_integral import (
-            default_mem_budget)
-        max_bytes = default_mem_budget()[0]
-    if need > max_bytes:
+        from engine.integration.time_domain.final_integral import mem_budget
+        max_bytes, rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
+    else:
+        rule = f'max_bytes={float(max_bytes):g}'
+    if max_bytes is not None and need > max_bytes:
         raise MemoryError(
             f'simulate_coupled_rd_1d: {n_rec:,} snapshots x {n_rep} replicas '
             f'x {n_f} fields x {n_x} sites need {need / 1e9:.2f} GB (buffer '
-            f'and FFT), over {max_bytes / 1e9:.2f} GB; shorten t_run, use '
-            f'fewer replicas or sites, or pass max_bytes=.')
+            f'and FFT), over {max_bytes / 1e9:.2f} GB ({rule}); shorten t_run, '
+            f'use fewer replicas or sites, or pass max_bytes=.')
     phi = np.zeros((n_rep, n_f, n_x), dtype=np.float64)
     snaps = np.empty((n_rec, n_rep, n_f, n_x), dtype=np.float64)
 

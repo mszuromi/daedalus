@@ -60,10 +60,16 @@ _ITO_EPS = 1e-6
 # since Oct 2026.  'nudge': the pre-Oct-2026 sample at τ = −_ITO_EPS, whose
 # relative error is (rate × 1e-6) and therefore unit dependent (1e-3 at a
 # rate of 1e3).  Environment variable DAEDALUS_TAU0 = 'exact' | 'nudge',
-# read at call time.  k ≥ 3 slices (``daedalus._kpoint_slice_times``,
-# ``me_output.slice_me``) keep the −_ITO_EPS placement: the engine's tie
-# order is the left limit of a slice only for some leg orders.
+# read at call time.  ``dd.run``'s k ≥ 3 slices follow the same switch
+# (since Oct 2026: 'exact' evaluates a tied point at the exact tie with the
+# swept leg listed last, ``daedalus._kpoint_slice_point``; 'nudge' is the
+# −_ITO_EPS placement of ``daedalus._kpoint_slice_times``).
+# ``me_output.slice_me`` keeps the −_ITO_EPS placement.
 _TAU0_MODES = ('exact', 'nudge')
+
+# (model name, source, declared order) already warned about by
+# compute_cumulants (CumulantTruncationWarning: once per process)
+_CUMULANT_TRUNCATION_WARNED = set()
 
 
 def _tau0_mode():
@@ -1672,6 +1678,23 @@ def compute_cumulants(
             f"(SDE.series_order), but k = {k}, max_ell = {max_ell} can use noise "
             f"vertices up to order k + 2*max_ell = {k + 2 * max_ell}; raise "
             f"SDE.series_order({k + 2 * max_ell}).")
+    _ndo = model.get('noise_declared_orders') if isinstance(model, dict) else None
+    for _src, _top in sorted((_ndo or {}).items()):
+        _key = (model.get('name'), _src, int(_top))
+        if k + 2 * max_ell > int(_top) and _key not in _CUMULANT_TRUNCATION_WARNED:
+            # a Cumulants([...]) source: its CGF is a polynomial of the declared
+            # order, so noise vertices above it are absent (a formal truncation,
+            # not an error); one warning per model, source and process
+            _CUMULANT_TRUNCATION_WARNED.add(_key)
+            from api.noise import CumulantTruncationWarning
+            from api.save import _ensure_warning_shown
+            _msg = (f"noise source {_src!r} (Cumulants) declares cumulants up to order "
+                    f"{int(_top)}; k = {k}, max_ell = {max_ell} can use noise vertices "
+                    f"up to order {k + 2 * max_ell}, and those above order {int(_top)} "
+                    f"are taken as 0. Give more kappas if they are not zero.")
+            _ensure_warning_shown(CumulantTruncationWarning, 'always',
+                                  message=_msg, stacklevel=2)
+            warnings.warn(_msg, CumulantTruncationWarning, stacklevel=2)
     if backend is not None:
         from api import routing as _routing_check
         if backend not in {b.name for b in _routing_check.backends()}:

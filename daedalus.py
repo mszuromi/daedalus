@@ -504,17 +504,16 @@ class Config:
     # ── temporal k≥3 cumulant slicing ──
     # The connected k-point cumulant depends on k−1 time differences
     # τ_j = t_j − t_0.  By default run() returns the k−1 axis-parallel slices
-    # through the origin (sweep leg j, others at 0).  A lag of 0 is evaluated
-    # at the Itô left limit 0⁻ = −_ITO_EPS, and a slice point where the swept
-    # leg meets another leg (τ = 0, τ = a base lag, or τ = −_ITO_EPS for a
-    # base lag of 0) is the left limit of that slice, evaluated with the
-    # swept leg _ITO_EPS below the leg it meets.  With the default base lags
-    # the τ = 0 point is thus 2·_ITO_EPS left of τ = 0 and carries the curve's
-    # change over that offset; τ-grid points within ~2·_ITO_EPS of 0 or of a
-    # base lag are below this resolution (see ``_kpoint_slice_times``; times
-    # in ``result['_kpoint_slice_times']``).  The full grid keeps exact ties
-    # on its diagonals (the engine's tie order), so its origin can differ
-    # from a slice's τ = 0 point.
+    # through the origin (sweep leg j, others at 0).  A slice point where the
+    # swept leg meets another leg (τ = 0 or a base lag) is the LEFT limit of
+    # that slice, evaluated exactly: every leg at its nominal time, the tie
+    # resolved by the engine's tie order with the swept leg listed last
+    # (``_kpoint_slice_point``; times and leg orders in
+    # ``result['_kpoint_slice_times']`` / ``['_kpoint_slice_orders']``).
+    # DAEDALUS_TAU0=nudge restores the pre-Oct-2026 placement 1e-6 below the
+    # leg met (``_kpoint_slice_times``).  The full grid keeps exact ties on
+    # its diagonals (the engine's tie order), so its origin can differ from a
+    # slice's τ = 0 point.
     kpoint_base_lags: Optional[list] = None  # length k−1: the fixed τ for the
                                              # non-swept legs (the base point the
                                              # slices pass through); default 0
@@ -1038,7 +1037,8 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     # ── 2-leg blocks: one k = 2 run per ordered pair of legs (key) over the
     # lags it needs, read as C(τ) = ⟨φ_first(0) φ_second(τ)⟩.  A block with
     # the swept leg 1 is keyed (other leg, leg 1) at lag τ: at τ = 0 leg 1
-    # sits just BEFORE every other leg on the slice (``_kpoint_slice_times``),
+    # is the EARLIEST leg of the tie on the slice (``_kpoint_slice_point``;
+    # 1e-6 below the others under DAEDALUS_TAU0=nudge),
     # and the k = 2 grid's τ = 0 point is the same side (the second leg
     # earlier).  A block of two legs at 0 is keyed in leg order at lag 0 (the
     # anchor is the latest leg; tied pinned legs: the later-listed one counts
@@ -1113,16 +1113,27 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     # ``_kpoint_slice_times``.  A block of 3 or more legs is evaluated at its
     # legs' entries, so at τ = 0 (where leg 1 meets the other legs) it is the
     # left limit of the slice, as ``C_tau`` is, and the k = 3 central moment
-    # is evaluated at the same times as slice 1 of κ₃.  The pinned legs sit
-    # at 0⁻ = −_ITO_EPS, so they do not coincide with the anchor; for k ≥ 4
-    # they coincide with each other, as on the slices.  A block of 2 legs
+    # is evaluated at the same times as slice 1 of κ₃: at a tie with leg 1
+    # listed last (the exact rule, ``_kpoint_slice_point``), or with the pinned
+    # legs at 0⁻ = −_ITO_EPS under DAEDALUS_TAU0=nudge.  For k ≥ 4 the pinned
+    # legs coincide with each other, as on the slices.  A block of 2 legs
     # reads the k = 2 grid at τ or 0 (``_pair_key``), whose τ = 0 point is
     # the k = 2 equal-time value on the slice's side of the tie.
     slice_times = None
+    slice_orders = None
     if k >= 3:
-        from api.compute import _ITO_EPS
-        slice_times = [_kpoint_slice_times([0.0] * (k - 1), 1, float(t),
-                                           _ITO_EPS) for t in tau]
+        from api.compute import _ITO_EPS, _tau0_mode
+        if _tau0_mode() == 'exact':
+            # exact ties; a tied point lists leg 1 last (``_kpoint_slice_point``)
+            scale = max([abs(float(t)) for t in tau] + [0.0])
+            pts = [_kpoint_slice_point([0.0] * (k - 1), 1, float(t), scale)
+                   for t in tau]
+            slice_times = [p[0] for p in pts]
+            slice_orders = [p[1] for p in pts]
+        else:
+            slice_times = [_kpoint_slice_times([0.0] * (k - 1), 1, float(t),
+                                               _ITO_EPS) for t in tau]
+            slice_orders = [list(range(k))] * tau.size
 
     def _kappa(block, ell, ti):
         """ℓ-loop piece of the block's cumulant at the slice times."""
@@ -1132,6 +1143,9 @@ def _assemble_moment_temporal(model, res, kw, k, central):
         if len(b) == 2:
             key, lag = _pair_key(b[0], b[1], ti)
             return _pair_value(key, lag, ell)
+        # the block's legs in the point's evaluation order (leg 1 last at an
+        # exact tie, so it is the earliest of the legs it meets)
+        b = [i for i in slice_orders[ti] if i in block]
         fn = _block_fns(tuple(legs[i] for i in b)).get(ell)
         if not callable(fn):
             return 0.0 + 0.0j
@@ -1161,6 +1175,16 @@ def _assemble_moment_temporal(model, res, kw, k, central):
 
 
 # ── Temporal k≥3 slices: the external times of each slice point ─────────────
+#
+# DEFAULT since Oct 2026 (DAEDALUS_TAU0=exact): ``_kpoint_slice_point`` --
+# every leg at its nominal time; a point where the swept leg meets another leg
+# is an exact tie, evaluated with the swept leg listed LAST, which the
+# engine's tie order (a later-listed leg is infinitesimally earlier) makes the
+# left limit of the slice exactly (the k = 2 τ = 0 rule; the k = 3 tree of an
+# OU + quadratic model matches its closed form to 5e-16 at every tie).  Legs of
+# different fields take one more run with the permuted ``external_fields``.
+# What follows describes the DAEDALUS_TAU0=nudge placement
+# (``_kpoint_slice_times``), the default before Oct 2026:
 #
 # ``run`` turns a temporal k≥3 cumulant (a function of the k external times;
 # leg 0 is the anchor, t₀ = 0) into k−1 curves over ``tau_grid``: slice j
@@ -1280,6 +1304,41 @@ def _kpoint_slice_times(base, j, tau, eps):
             t = _kpoint_below(min(met), eps)
     times[j] = t
     return times
+
+
+def _kpoint_slice_point(base, j, tau, scale):
+    """``(times, order)``: point ``tau`` of the k≥3 slice ``j`` at the EXACT
+    tie (the default since Oct 2026, ``DAEDALUS_TAU0=exact``; the −_ITO_EPS
+    placement of :func:`_kpoint_slice_times` is ``DAEDALUS_TAU0=nudge``).
+
+    Every leg sits at its nominal time: the anchor at 0, the pinned legs at
+    their base lags, the swept leg ``j`` at ``tau``, snapped exactly onto a
+    leg it meets (within ``1e-12 * scale``; ``scale`` is the largest |time| of
+    the grid and the base lags, so the tie is unit invariant).  A tie is
+    resolved by the engine's tie order (``_tie_order_sign``: a later-listed
+    leg counts as infinitesimally EARLIER), so a tied point is evaluated with
+    the legs in ``order`` = anchor, pinned legs, then ``j`` LAST: the swept
+    leg is then earlier than every leg it meets, and the value is the left
+    limit of the slice, exactly (the k = 2 τ = 0 rule).  Pinned legs
+    keep their relative order, so a pinned leg at base lag 0 counts as
+    earlier than the anchor, as its 0⁻ placement did.  ``order`` is the
+    identity (``range(k)``) at points without a tie."""
+    k = len(base) + 1
+    if not 1 <= j < k:
+        raise ValueError(f'slice index j={j} must be in 1..{k - 1}')
+    atol = 1e-12 * float(scale)
+    times = [0.0] * k
+    pinned = [leg for leg in range(1, k) if leg != j]
+    for leg in pinned:
+        b = float(base[leg - 1])
+        times[leg] = 0.0 if abs(b) <= atol else b
+    t = float(tau)
+    met = [times[leg] for leg in [0] + pinned if abs(t - times[leg]) <= atol]
+    if met:
+        times[j] = min(met, key=lambda x: abs(t - x))
+        return times, [0] + pinned + [j]
+    times[j] = t
+    return times, list(range(k))
 
 
 def _kpoint_incomplete(res, cfg, exc, msg):
@@ -1614,16 +1673,59 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         else:
             base = [0.0] * (k - 1)
 
+        from api.compute import _tau0_mode
+        exact_tie = _tau0_mode() == 'exact'
+        # the tie tolerance's scale: the largest |time| of the grid and base
+        tie_scale = max([abs(float(t)) for t in tau] + [abs(b) for b in base]
+                        + [0.0])
+
         def _args(vals):                # full grid: vals = τ of legs 1..k−1
-            # Every leg on its own: a leg at the anchor time (τ = 0) is
-            # evaluated at its Itô left limit 0⁻ = −_ITO_EPS, like the k=2
-            # grid; legs with equal values stay tied (see _kpoint_slice_times).
+            # Every leg on its own; legs with equal values stay tied and the
+            # engine's tie order decides (a later-listed leg is earlier, so a
+            # leg at the anchor time is its Itô left limit 0⁻).  'nudge':
+            # a leg at τ = 0 is evaluated at −_ITO_EPS instead.
+            if exact_tie:
+                return [0.0] + [0.0 if abs(float(v)) <= 1e-12 * tie_scale
+                                else float(v) for v in vals]
             return [0.0] + [_kpoint_pinned_time(v, _ITO_EPS) for v in vals]
 
-        def _slice(fn, j):              # sweep leg j over tau, others at base
+        # The callables of the run with its legs in another order: a point
+        # where the swept leg ties with another leg is evaluated with the
+        # swept leg LAST (``_kpoint_slice_point``).  The cumulant is symmetric
+        # under a joint permutation of legs and times, so legs of one field
+        # reuse this run's callables; legs of different fields take one more
+        # run with the permuted ``external_fields``.
+        _legs = [tuple(e) if isinstance(e, (list, tuple)) else e
+                 for e in kw['external_fields']]
+        _perm_runs = {}
+
+        def _perm_fns(order):
+            order = tuple(order)
+            pf = [_legs[o] for o in order]
+            if pf == _legs:
+                return res.get('total_C_by_ell') or {}, res.get('total_C')
+            key = tuple(pf)
+            if key not in _perm_runs:
+                kwp = dict(kw)
+                kwp['external_fields'] = list(pf)
+                rp = compute_cumulants(**kwp)
+                if isinstance(rp, dict) and rp.get('status') == 'incomplete':
+                    # an extra run that left diagrams out makes the slices
+                    # incomplete too (as the moment's extra runs do)
+                    res['status'] = 'incomplete'
+                    res.setdefault('phase_j_incomplete_perm_runs', []).append(
+                        {'external_fields': list(pf),
+                         'phase_j_incomplete': rp.get('phase_j_incomplete')})
+                _perm_runs[key] = (rp.get('total_C_by_ell') or {},
+                                   rp.get('total_C'))
+            return _perm_runs[key]
+
+        def _slice(pick, j):            # sweep leg j over tau, others at base
             out = np.empty(tau.size, dtype=complex)
             for i, times in enumerate(slice_times[j]):
-                out[i] = complex(fn(*times))
+                order = slice_orders[j][i]
+                fn = pick(order)
+                out[i] = complex(fn(*[times[o] for o in order]))
             return out
 
         try:
@@ -1631,8 +1733,16 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             # sweeps leg j, the other non-anchor legs sit at ``base``, and a
             # point where leg j meets another leg is the LEFT limit of the
             # slice (``_kpoint_slice_times``).  Kept in the result.
-            slice_times = {j: [_kpoint_slice_times(base, j, t, _ITO_EPS)
-                               for t in tau] for j in range(1, k)}
+            if exact_tie:
+                pts = {j: [_kpoint_slice_point(base, j, t, tie_scale)
+                           for t in tau] for j in range(1, k)}
+                slice_times = {j: [p[0] for p in v] for j, v in pts.items()}
+                slice_orders = {j: [p[1] for p in v] for j, v in pts.items()}
+            else:
+                slice_times = {j: [_kpoint_slice_times(base, j, t, _ITO_EPS)
+                                   for t in tau] for j in range(1, k)}
+                slice_orders = {j: [list(range(k))] * tau.size
+                                for j in range(1, k)}
             tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
                    if callable(f)}
             # The k−1 axis-parallel slices through ``base``.  When total_C is
@@ -1640,7 +1750,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             # slice is that sum of their slices, in total_C's order, instead
             # of a second evaluation of every diagram (half the
             # Phase J evaluations of a k≥3 run).
-            slices_by_ell = {j: {e: _slice(f, j) for e, f in tcb.items()}
+            slices_by_ell = {j: {e: _slice(lambda o, e=e: _perm_fns(o)[0][e], j)
+                                 for e in tcb}
                              for j in range(1, k)}
             parts = getattr(res['total_C'], 'sum_of_by_ell', None)
             if (parts is not None and list(parts) == list(tcb)
@@ -1653,7 +1764,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                                      for e in tcb)
                     slices[j] = out
             else:
-                slices = {j: _slice(res['total_C'], j) for j in range(1, k)}
+                slices = {j: _slice(lambda o: _perm_fns(o)[1], j)
+                          for j in range(1, k)}
+            _perm_runs.clear()          # free the permuted runs' plans
             res['C_tau_slices'] = slices
             res['C_tau_slices_by_ell'] = slices_by_ell
             res['C_tau'] = slices[1]                    # canonical single slice
@@ -1661,6 +1774,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             res['_kpoint_base'] = base
             res['_kpoint_slice_times'] = {
                 j: np.array(v, dtype=float) for j, v in slice_times.items()}
+            # the leg order each point was evaluated in (the swept leg last
+            # at an exact tie; the identity elsewhere and under 'nudge')
+            res['_kpoint_slice_orders'] = {
+                j: np.array(v, dtype=int) for j, v in slice_orders.items()}
             res['_kpoint_slice'] = (
                 f'{k-1} slices: leg j swept over tau_grid (τ_j = t_j − t_0), '
                 f'legs ≠ j fixed at base={base}, for j = 1..{k-1}; a point '
@@ -2015,10 +2132,9 @@ def plot_temporal_kpoint_slices(result, cfg, model, sim=None):
     τ_j = t_j − t_0.  Draw one panel per difference — slice j sweeps leg j over
     the τ-grid with the other legs pinned at their base lags (default τ=0) —
     each with the per-loop-order overlay and (optionally) the matching
-    simulator slice.  A point where the swept leg meets another leg (τ = 0,
-    τ = a base lag, or τ = −_ITO_EPS for a base lag of 0) is the left limit
-    of its curve, evaluated with the swept leg _ITO_EPS below that leg
-    (``run``, ``_kpoint_slice_times``).
+    simulator slice.  A point where the swept leg meets another leg (τ = 0
+    or a base lag) is the left limit of its curve, evaluated at the exact tie
+    (``run``, ``_kpoint_slice_point``).
 
     For a single symmetric field the k−1 slices coincide (a visible check of the
     cumulant's permutation symmetry); when the external legs are different

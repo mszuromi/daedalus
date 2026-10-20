@@ -389,12 +389,18 @@ def _dd_run(monkeypatch, model, module, cfg):
 
 
 def _slice_args(k, base, j, tau):
-    """What ``dd.run`` passes for slice j at tau (``daedalus.
-    _kpoint_slice_times``): the non-swept legs at their base lag, or at
+    """What ``dd.run`` passes for slice j at tau.  DAEDALUS_TAU0=exact (the
+    default): every leg at its nominal time (``daedalus._kpoint_slice_point``;
+    a tie is evaluated with the swept leg listed last).  'nudge'
+    (``daedalus._kpoint_slice_times``): the non-swept legs at their base lag, or at
     -_ITO_EPS when it is within 1e-12 of 0; the swept leg at tau, unless tau
     is within 1e-12 of the anchor or of a non-swept leg's lag or time -- then
     one more _ITO_EPS below the earliest leg it meets (the left limit of the
     slice).  The bases used here never need the repeated step."""
+    if os.environ.get('DAEDALUS_TAU0', 'exact') == 'exact':
+        a = [0.0] + [float(b) for b in base]
+        a[j] = float(tau)
+        return tuple(a)
     a = [0.0] * k
     pinned = [i for i in range(1, k) if i != j]
     for i in pinned:
@@ -437,6 +443,9 @@ def _check_api_ties(res, k, base, tie_count_min):
         for i, t in enumerate(tau):
             args = _slice_args(k, base, j, t)
             assert args == tuple(res['_kpoint_slice_times'][j][i]), (j, t)
+            # the leg order of the evaluation (one field: the same callable)
+            order = [int(o) for o in res['_kpoint_slice_orders'][j][i]]
+            args = tuple(args[o] for o in order)
             has_tie = len(set(args)) < len(args)
             n_ties += has_tie
             for ell in (0, 1):
@@ -451,7 +460,10 @@ def _check_api_ties(res, k, base, tie_count_min):
     assert n_ties >= tie_count_min, n_ties
 
 
-def test_api_k4_slices_at_ties(monkeypatch):
+@pytest.mark.parametrize('mode', ['exact', 'nudge'])
+def test_api_k4_slices_at_ties(monkeypatch, mode):
+    monkeypatch.setenv('DAEDALUS_TAU0', mode)
+    nudge = mode == 'nudge'
     model, module = dd.load_model('ou_quartic')
     _reset_nquad()
     # (a) default base: the two non-swept legs sit at -_ITO_EPS (tied), the
@@ -460,8 +472,8 @@ def test_api_k4_slices_at_ties(monkeypatch):
     res = _dd_run(monkeypatch, model, module, dd.Config(
         k=4, max_ell=1, parameters=_P4, external_fields=[('dx', 1)] * 4,
         tau_grid=np.array([0.0, 0.3])))
-    assert _slice_args(4, [0.0] * 3, 1, 0.0) == (
-        0.0, -2 * _ITO_EPS, -_ITO_EPS, -_ITO_EPS)
+    assert _slice_args(4, [0.0] * 3, 1, 0.0) == ((
+        0.0, -2 * _ITO_EPS, -_ITO_EPS, -_ITO_EPS) if nudge else (0.0,) * 4)
     _check_api_equal_time(res, 4, _oracle4)
     _check_api_ties(res, 4, [0.0, 0.0, 0.0], tie_count_min=6)
     # (b) base lags with free-leg ties: ties among the non-swept legs reach
@@ -471,17 +483,21 @@ def test_api_k4_slices_at_ties(monkeypatch):
     res = _dd_run(monkeypatch, model, module, dd.Config(
         k=4, max_ell=1, parameters=_P4, external_fields=[('dx', 1)] * 4,
         tau_grid=np.array([0.0, 0.3, 0.7]), kpoint_base_lags=base))
+    e = _ITO_EPS if nudge else 0.0
     assert _slice_args(4, base, 3, 0.7) == (0.0, 0.3, 0.3, 0.7)
-    assert _slice_args(4, base, 3, 0.3) == (0.0, 0.3, 0.3, 0.3 - _ITO_EPS)
-    assert _slice_args(4, base, 1, 0.7) == (0.0, 0.7 - _ITO_EPS, 0.3, 0.7)
+    assert _slice_args(4, base, 3, 0.3) == (0.0, 0.3, 0.3, 0.3 - e)
+    assert _slice_args(4, base, 1, 0.7) == (0.0, 0.7 - e, 0.3, 0.7)
     _check_api_ties(res, 4, base, tie_count_min=3)
     _assert_no_nquad()
 
 
-def test_api_k3_slices_at_ties(monkeypatch):
-    """k=3 has one non-swept leg, so no dd.run k=3 point is a tie any more
-    (the swept leg goes below the leg it meets); the points must still be
+@pytest.mark.parametrize('mode', ['exact', 'nudge'])
+def test_api_k3_slices_at_ties(monkeypatch, mode):
+    """k=3 has one non-swept leg.  'nudge': no dd.run k=3 point is a tie
+    (the swept leg goes below the leg it meets); 'exact': the point is the
+    exact tie with the swept leg listed last.  Either way the points must be
     the callable at those times, and tau=0 the equal-time Boltzmann value."""
+    monkeypatch.setenv('DAEDALUS_TAU0', mode)
     model = _asym_model()
     _reset_nquad()
     res = _dd_run(monkeypatch, model, None, dd.Config(
@@ -493,7 +509,8 @@ def test_api_k3_slices_at_ties(monkeypatch):
     res = _dd_run(monkeypatch, model, None, dd.Config(
         k=3, max_ell=1, parameters=_P3, external_fields=[('dx', 1)] * 3,
         tau_grid=np.array([0.0, 0.5]), kpoint_base_lags=base))
-    assert _slice_args(3, base, 1, 0.5) == (0.0, 0.5 - _ITO_EPS, 0.5)
+    assert _slice_args(3, base, 1, 0.5) == (
+        0.0, 0.5 - (_ITO_EPS if mode == 'nudge' else 0.0), 0.5)
     _check_api_ties(res, 3, base, tie_count_min=0)
     _assert_no_nquad()
 
