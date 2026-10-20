@@ -764,3 +764,44 @@ def test_rotation_series_advisory_tracks_max_ell():
     res = {'mf_values': {'xstar': [0.0], 'ystar': [0.0]}, 'config': {'fundamental': {'mu': 1.0, 'lam': 1.0, 'z': 0.7}}}
     assert AC._marcus_truncation(rot, res, 2, 1)[0]['status'] == 'ok'
     assert AC._marcus_truncation(rot, res, 2, 2)[0]['status'] == 'above'
+
+
+def test_mgf_check_sees_even_order_poles():
+    """Gamma(2) jumps: K = lam((1 - th theta)^(-2) - 1), whose expanded base th^2 theta^2 - 2 th theta + 1 touches 0
+    at the pole without changing sign; NegativeBinomial(r = 2): (1 - p e^theta)^(-2).  Both are seen (the
+    unexpanded bases and the real roots of polynomial bases), so a b past the pole is refused, not computed."""
+    from api.noise import Gamma, NegativeBinomial
+    c = 0.37
+    quartic = ' + '.join(f'({math.comb(4, j) * (-c) ** j!r})*theta^{j}' for j in range(5))
+    cases = ((CompoundPoisson('lam', Gamma(2, 'th')), {'b': 1.5, 'th': 0.5}, 2),     # n b th >= 1 from n = 2
+             (CompoundPoisson('lam', Gamma(2, 'th')), {'b': 10.0, 'th': 0.5}, 1),
+             (CompoundPoisson('lam', NegativeBinomial(2, 0.5)), {'b': 0.4}, 2),     # e^{n b} p >= 1: n b >= log 2
+             # the same laws typed in expanded: a double root in u = e^theta, a 4-fold root in theta at 1/c
+             (CGF('1/(4 - 4*exp(theta) + exp(2*theta)) - 1'), {'b': 0.3}, 3),
+             (CGF(f'1/({quartic}) - 1'), {'b': 0.7}, 4))                            # 4 b c >= 1
+    for src, vals, n0 in cases:
+        s = (SDE('even pole').parameter('a', default=0.5).parameter('mu', default=1.0, domain='positive')
+             .parameter('lam', default=1.0).parameter('b', default=vals['b']).parameter('th', default=0.5)
+             .field('x').drift('x', 'a - mu*x')
+             .noise('L', src, couples={'x': 'b*x'}).interpretation('marcus').series_order(6))
+        rec = s.build()['marcus_series']['L']
+        assert rec['route'] == 'exact'
+        assert AC._marcus_mgf_degree(rec, vals)[0] == n0, (src, vals)
+    m = s.build()
+    with pytest.raises(ValueError, match=r'degree 4 -- .*mgf does not exist'):
+        AC.compute_cumulants(m, k=2, max_ell=2, external_fields=[('dx', 1)] * 2, tau_grid=np.array([0.0]),
+                             use_cache=False, parallel=False, verbose=False)
+
+
+def test_exact_route_needs_k_plus_max_ell_response_legs():
+    """The exact term is kept to SDE.series_order response legs and a run uses up to k + max_ell of them: order 5
+    serves k = 2, max_ell = 3 (the moment series needs k + 2 max_ell = 8); order 4 is refused, by name."""
+    par = dict(a=0.5, mu=1.0, s=0.3, lam=1.0, b=-0.3, th=0.5)
+    m5 = _geometric(order=5).build()
+    assert 'noise_series_order' not in m5 and m5['marcus_exact_order'] == {'order': 5, 'sources': ['L']}
+    with pytest.raises(ValueError, match=r'exact noise term to 4 response legs.*series_order\(5\)'):
+        AC.compute_cumulants(_geometric(order=4).build(), k=2, max_ell=3, external_fields=[('dx', 1)] * 2,
+                             parameters=par, tau_grid=np.array([0.0]), use_cache=False, parallel=False,
+                             verbose=False)
+    ser = _geometric('series', order=5).build()
+    assert ser['noise_series_order']['order'] == 5

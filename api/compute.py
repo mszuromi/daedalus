@@ -286,7 +286,9 @@ def _marcus_mgf_degree(rec, vals):
     interval about 0 whose ends are singular points of its closed form
     (Widder), so it exists at ``s`` while no base changes sign or vanishes on
     ``[0, s]``."""
+    from sage.all import CDF, fast_callable, log
     from api.noise import THETA, parse_expr
+    U = SR.var('u__mgf')
     bases = [parse_expr(b) for b in rec.get('mgf_bases') or []]
     if not bases:
         return None, None
@@ -300,7 +302,24 @@ def _marcus_mgf_degree(rec, vals):
         if s == 0.0:
             return True
         for f in fns:
-            vs = np.array([complex(f.subs({THETA: float(s * t)})) for t in grid])
+            # a polynomial base in theta or in u = e^theta: its real roots on the
+            # segment (an even-order root touches 0 without a sign change, which
+            # the grid scan below cannot see)
+            for var, g, a_, b_ in ((THETA, f, 0.0, s), (U, f.subs({THETA: log(U)}), 1.0, math.exp(s))):
+                if not g.is_polynomial(var) or not g.has(var):
+                    continue
+                c = [complex(q) for q in reversed(g.coefficients(var, sparse=False))]
+                # a k-fold root splits by ~eps^(1/k): a loose imaginary tolerance
+                # (a complex pair that close to the segment is a near-pole anyway)
+                if any(abs(r.imag) <= 1e-3 * max(1.0, abs(r))
+                       and min(a_, b_) - 1e-12 <= r.real <= max(a_, b_) + 1e-12
+                       for r in np.roots(c)):
+                    return False
+            try:
+                fc = fast_callable(f, vars=[THETA], domain=CDF)
+                vs = np.array([complex(fc(float(s * t))) for t in grid])
+            except (ValueError, ZeroDivisionError, ArithmeticError, TypeError):
+                return False
             re0 = vs[0].real
             if not np.all(np.isfinite(vs)) or re0 == 0.0 or np.any(vs.real * re0 <= 0.0):
                 return False
@@ -1976,6 +1995,17 @@ def compute_cumulants(
             f"(SDE.series_order), but k = {k}, max_ell = {max_ell} can use noise "
             f"vertices up to order k + 2*max_ell = {k + 2 * max_ell}; raise "
             f"SDE.series_order({k + 2 * max_ell}).")
+    _meo = model.get('marcus_exact_order') if isinstance(model, dict) else None
+    if _meo and k + max_ell > int(_meo['order']):
+        # the exact Marcus noise term is kept to SDE.series_order response
+        # legs, and a k-point max_ell-loop diagram uses vertices with up to
+        # k + max_ell of them (_marcus_admissible)
+        raise ValueError(
+            f"Marcus source(s) {', '.join(_meo.get('sources', []))}: the action "
+            f"carries their exact noise term to {_meo['order']} response legs "
+            f"(SDE.series_order), but k = {k}, max_ell = {max_ell} can use noise "
+            f"vertices with up to k + max_ell = {k + max_ell} response legs; raise "
+            f"SDE.series_order({k + max_ell}).")
     # an exact-route Marcus source whose jump law has no mgf where a usable
     # vertex needs it: refused before the mean-field solve
     _marcus_precheck(model, fundamental, k, max_ell)

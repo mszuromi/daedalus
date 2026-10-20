@@ -6,7 +6,8 @@ and also vector couplings where each component is affine in its own field or con
 
 - **The exact term.** The flow is closed form: `phi_z(x) - x = (x + a/b)(e^{bz} - 1)`. So the coefficient of
   `(xt (x + a/b))^n / n!` is `lam E[(e^{bz} - 1)^n]`, built from mgf values. It is kept to `SDE.series_order`
-  response legs, the same truncation the Ito action uses for an irregular CGF.
+  response legs. A run needs `SDE.series_order >= k + max_ell`, because that is how many response legs its vertices
+  can use; `compute_cumulants` refuses a lower order by name. The series route still needs `k + 2*max_ell`.
 - **Why it matters.** The old series diverges at degree `n > 1/(|b| th)` for a multiplicative coupling with
   exponential jumps, even though the exact coefficient is finite. Take `b x <> dL` with `Exponential(th)` jumps. The
   advisory fired for essentially every such model, and the high-degree vertices were unreliable. On the exact route
@@ -19,7 +20,9 @@ and also vector couplings where each component is affine in its own field or con
   the new `SDE.marcus_route('series')` (also `sde.marcus_route` in configs). The series converges fast there.
 - **Missing mgf.** If the jump law's mgf does not exist where a usable vertex needs it (`E[e^{n b z}] = inf`), the
   run is refused before the mean-field solve. The message names the degree. A degree that `(k, max_ell)` cannot
-  reach is recorded as `mgf_degree_limit` instead.
+  reach is recorded as `mgf_degree_limit` instead. Poles of even order (Gamma(2) jumps, for example) are found too:
+  the check uses the real roots of polynomial bases and the unexpanded CGF. The refusal is conservative: a
+  covariance that happens to need only low mgf values, such as one with a linear drift, is refused as well.
 
 Other couplings (non-affine ones, or affine ones that read another moved field, such as a rotation) keep the series
 route.

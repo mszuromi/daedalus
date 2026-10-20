@@ -170,7 +170,7 @@ def _cgf_shapes(K):
     import operator
     from sage.all import exp as _exp
     from sage.symbolic.operators import add_vararg, mul_vararg
-    K = SR(K).expand()
+    K0, K = SR(K), SR(K).expand()
     terms = K.operands() if K.operator() is add_vararg else [K]
 
     def shape(g):
@@ -222,6 +222,10 @@ def _cgf_shapes(K):
                 bases.append(ops[0])
         for q in ops:
             walk(q)
+    if any(kind == 'generic' for kind, _, _ in shapes):
+        # the unexpanded K keeps (1 - c theta)^(-2) as such: expanded, its base
+        # is a square that touches 0 at the pole without changing sign
+        walk(K0)
     for kind, key, _ in shapes:
         if kind == 'generic':
             walk(key)
@@ -1455,7 +1459,12 @@ class SDE:
         m = self.to_builder().build()
         trunc = sorted(set(n for n, s in self._sources.items()
                            if not s.get('pp') and not getattr(s['source'], 'regular', True))
-                       | set(self._marcus_terms))
+                       | set(n for n, t in self._marcus_terms.items() if t['route'] == 'series'))
+        exact = sorted(n for n, t in self._marcus_terms.items() if t['route'] == 'exact')
+        if exact:
+            # the exact Marcus terms are kept to SDE.series_order response
+            # legs; compute_cumulants refuses k + max_ell above it
+            m['marcus_exact_order'] = {'order': self._series_order, 'sources': exact}
         if self._interp == 'marcus':
             m['interpretation'] = 'marcus'
         if self._marcus_terms:
