@@ -3475,16 +3475,16 @@ def _g6_marcus(ctx, d, result):
     worst = max(sized, key=lambda r: r['relative']) if sized else None
     d['marcus_truncation_max'] = None if worst is None else worst['relative']
     over = [r for r in sized if r.get('status') == 'above']
+    from api.compute import _marcus_detail, _marcus_remedy
     if worst is None:
-        detail = ('the Marcus series could not be sized at the saddle ('
+        detail = ('the Marcus noise term could not be sized at the saddle ('
                   + '; '.join(sorted({str(r.get('status')) for r in rows})) + ')')
     else:
-        detail = (f"Marcus series kept to order {worst['order']}: the first "
-                  f"omitted term is {worst['relative']:.2e} of the kept series at "
-                  f"the saddle (source {worst['source']!r}, unit {worst['unit']})")
+        detail = _marcus_detail(worst)
     if over or worst is None:
         ctx.add('G6_MARCUS_TRUNCATION_LOW', detail + '.',
-                'raise SDE.series_order; see result["marcus_truncation"]')
+                (_marcus_remedy(worst) if worst is not None else 'raise SDE.series_order')
+                + '; see result["marcus_truncation"]')
     else:
         ctx.add('G6_MARCUS_TRUNCATION', detail + '.', '')
     ctx.ledger_add('approximation', 'marcus_series', detail,

@@ -56,10 +56,19 @@ the noise term of a source with cumulant rates ``kappa_k`` is
 ``K(sum_i c_i xt_i)``, so enumeration and Phase J are unchanged.  Gaussian
 sources (and Gaussian parts of a sum) take the Stratonovich conversion above
 (a Gaussian-only model gives exactly the Stratonovich action); a jump source
-with a constant coupling is unchanged (the Ito action); a jump source with a
-state-dependent coupling carries the series to ``SDE.series_order``, and
-``compute_cumulants`` reports the size of the next term at the saddle
-(``result['marcus_truncation']``, G6).  A state-dependent rate stays outside
+with a constant coupling is unchanged (the Ito action).  A jump source with an
+affine coupling whose flow is closed form (each coupling affine in its own
+field, ``x -> e^{bz} x + (a/b)(e^{bz} - 1)``) gets its noise term exactly,
+from the jump law's mgf, kept to ``SDE.series_order`` response legs:
+``lam E[(e^{bz} - 1)^n]/n!`` per ``(xt (x + a/b))^n``, with no moment series in
+``z`` (that series diverges for exponential-tailed jumps at degree
+``n > 1/(|b| scale)``).  Other state-dependent couplings carry the series to
+``SDE.series_order`` (``marcus_route('series')`` forces it).
+``compute_cumulants`` reports, over the vertices ``(k, max_ell)`` can use,
+the size of the next series term, or the rounding of the exact coefficients,
+at the saddle (``result['marcus_truncation']``, G6), and refuses an exact
+route whose jump law has no mgf where a usable vertex needs it.  A
+state-dependent rate stays outside
 the flow (the pre-jump rate).  Refused under Marcus: exposed sources, a
 point process whose spikes enter with a state-dependent coefficient,
 couplings that read other units of a population (joint jumps), and
@@ -134,6 +143,91 @@ def _wrap(text) -> str:
     return t if re.fullmatch(r'[\w\[\],.\s]*', t) else f'({t})'
 
 
+def _compositions(n: int, parts: int):
+    """The tuples of ``parts`` non-negative integers that sum to ``n``."""
+    if parts == 1:
+        yield (n,)
+        return
+    for first in range(n, -1, -1):
+        for rest in _compositions(n - first, parts - 1):
+            yield (first,) + rest
+
+
+def _is_rational_in(e, t) -> bool:
+    num, den = SR(e).numerator_denominator()
+    return num.is_polynomial(t) and den.is_polynomial(t)
+
+
+def _cgf_shapes(K):
+    """``K(theta)`` as ``sum coefficient * shape(theta)`` for the exact Marcus
+    route: ``([(kind, key, coefficient)], bases)``.  ``kind`` is ``'exp'``
+    (``key = alpha``: ``e^{alpha theta}``), ``'poly'`` (``key = p``:
+    ``theta^p``) or ``'generic'`` (``key`` the shape); constants are dropped
+    (every difference kills them).  ``bases`` are the subexpressions of the
+    generic shapes at which the closed form stops being the mgf (bases of
+    negative or non-integer powers, log arguments): the mgf exists at ``s``
+    while none of them changes sign or vanishes on ``[0, s]``."""
+    import operator
+    from sage.all import exp as _exp
+    from sage.symbolic.operators import add_vararg, mul_vararg
+    K = SR(K).expand()
+    terms = K.operands() if K.operator() is add_vararg else [K]
+
+    def shape(g):
+        op = g.operator()
+        if g is THETA or (op is None and g.has(THETA)):
+            return 'poly', 1, SR(1)
+        if op is operator.pow:
+            base, ex = g.operands()
+            if base.operator() is not None and str(base.operator()) == 'exp' and not ex.has(THETA):
+                return shape(_exp(base.operands()[0] * ex))
+            if (base - THETA).is_zero() and ex.is_integer() and bool(ex > 0):
+                return 'poly', int(ex), SR(1)
+        if op is not None and str(op) == 'exp':
+            arg = g.operands()[0]
+            if arg.is_polynomial(THETA) and arg.degree(THETA) == 1:
+                return 'exp', arg.coefficient(THETA, 1), _exp(arg.subs({THETA: 0}))
+        return 'generic', g, SR(1)
+
+    groups = OrderedDict()
+    for t in terms:
+        if not t.has(THETA):
+            continue
+        facs = t.operands() if t.operator() is mul_vararg else [t]
+        cf, g = SR(1), SR(1)
+        for q in facs:
+            if q.has(THETA):
+                g *= q
+            else:
+                cf *= q
+        kind, key, extra = shape(g)
+        slot = groups.setdefault((kind, str(key)), [kind, key, SR(0)])
+        slot[2] += cf * extra
+    shapes = [(kind, key, cf) for kind, key, cf in groups.values() if not SR(cf).is_zero()]
+
+    bases = []
+
+    def walk(e):
+        op = e.operator()
+        if op is None:
+            return
+        ops = e.operands()
+        if op is operator.pow:
+            base, ex = ops
+            if base.has(THETA) and not (ex.is_integer() and bool(ex >= 0)):
+                if not any((base - b).is_zero() for b in bases):
+                    bases.append(base)
+        elif str(op) == 'log' and ops[0].has(THETA):
+            if not any((ops[0] - b).is_zero() for b in bases):
+                bases.append(ops[0])
+        for q in ops:
+            walk(q)
+    for kind, key, _ in shapes:
+        if kind == 'generic':
+            walk(key)
+    return shapes, bases
+
+
 class SDE:
     """Builder for an SDE model; see the module docstring."""
 
@@ -153,6 +247,7 @@ class SDE:
         self._stability: Optional[bool] = None
         self._extra: list[str] = []
         self._series_order = 8
+        self._marcus_route = 'auto'
         self._marcus_terms: 'OrderedDict[str, dict]' = OrderedDict()
         self._ito_drift: dict = {}
         self.notes: list[str] = []
@@ -234,8 +329,23 @@ class SDE:
         """Taylor order used in the action for CGFs with a removable
         singularity at 0 (the uniform jump mgf), and the order of the Marcus
         series of a jump source with a state-dependent coupling
-        (``interpretation('marcus')``).  Default 8."""
+        (``interpretation('marcus')``; for an affine coupling, the number of
+        response legs its exact noise term is kept to).  Default 8."""
         self._series_order = int(order)
+        return self
+
+    def marcus_route(self, route: str):
+        """How ``interpretation('marcus')`` builds the noise term of a jump
+        source with a state-dependent coupling.  ``'auto'`` (default): exact
+        for an affine coupling whose flow is closed form (each coupling affine
+        in its own field), from the jump law's mgf, else the moment series of
+        ``sum_k kappa_k/k! D_k``.  ``'series'``: the moment series always
+        (it converges fast for a small slope times jump size, where the exact
+        coefficients can lose digits to cancellation)."""
+        route = str(route).lower()
+        if route not in ('auto', 'series'):
+            raise SDEError(f"marcus_route({route!r}): use 'auto' or 'series'.")
+        self._marcus_route = route
         return self
 
     # ── dynamics ──────────────────────────────────────────────────────
@@ -1080,6 +1190,11 @@ class SDE:
         N = int(self._series_order)
         src._check_order(N, f"the Marcus series of source {name!r} (series order {N})")
         a = self._dt_coefficients()
+        slope = (self._marcus_affine_flow(coup, a)
+                 if self._marcus_route == 'auto' and src._max_order() is None else None)
+        if slope is not None:
+            self._marcus_exact(name, src, coup, slope, pop, source_terms, mf_rhs)
+            return
         resp = {f: SR.var(f'{f}t__i') for f in coup}
         theta = sum((coup[f] * resp[f] for f in coup), SR(0))
         b = {f: coup[f] / a[f] for f in coup}
@@ -1109,9 +1224,118 @@ class SDE:
             f"action carries sum_k kappa_k/k! D_k to order {N} (SDE.series_order); "
             f"the size of the next term at the saddle is result['marcus_truncation'].")
         self._marcus_terms[name] = {
-            'order': N, 'population': pop, 'responses': [f'{f}t' for f in coup],
+            'route': 'series', 'order': N, 'population': pop,
+            'responses': [f'{f}t' for f in coup], 'fields': list(self._fields),
             'kept': expr_to_text(H),
             'next': None if nxt is None else expr_to_text(nxt.expand())}
+
+    def _marcus_affine_flow(self, coup, a):
+        """The slopes ``s_f = d b_f/d x_f`` of the coupling ``G = sum_f b_f
+        d/dx_f`` (``b_f = c_f/a_f``) when its flow is closed form: every
+        ``b_f`` affine in its own field and free of the other coupled fields
+        (a diagonal linear vector field; fields the source does not move may
+        enter, being constant along the flow).  Then
+        ``phi_z(x)_f - x_f = (b_f/s_f)(e^{s_f z} - 1)``, or ``b_f z`` where
+        ``s_f = 0``.  ``None`` otherwise (the series route)."""
+        moved = {f: self._sym(f) for f in coup}
+        slope = {}
+        for f, c in coup.items():
+            g = SR(c) / a[f]
+            if any(g.has(xh) for h, xh in moved.items() if h != f):
+                return None
+            s = g.diff(moved[f])
+            if any(s.has(xh) for xh in moved.values()):
+                return None
+            slope[f] = s
+        return slope
+
+    def _marcus_exact(self, name, src, coup, slope, pop, source_terms, mf_rhs):
+        """The Marcus noise term of a jump source with a closed-form flow
+        (:meth:`_marcus_affine_flow`), exact.  With ``p = sum_f a_f ft x_f``,
+        ``H = e^{-p} K(G) e^{p} = sum_n T[(sum_f w_f (e^{s_f z} - 1) + v z)^n]/n!``,
+        ``w_f = c_f ft/s_f`` (``s_f != 0``), ``v = sum_{s_f = 0} c_f ft``, where
+        the functional ``T`` takes ``z^m e^{sz}`` to ``K^{(m)}(s)``.  It is kept
+        to ``n <= SDE.series_order`` response legs (as the Ito action keeps an
+        irregular CGF): every kept vertex is exact, with no moment series in
+        ``z``.  ``T`` acts term by term on ``K``: ``A e^{alpha theta}`` gives
+        ``A (sum_f w_f (e^{alpha s_f} - 1) + v alpha)^n`` (a jump of size
+        ``alpha``), ``A theta^p`` the ``p``-th ``z``-derivative at 0, and any
+        other term the alternating binomial sum of its values at
+        ``sum_f j_f s_f``, put over one denominator when rational (which removes
+        its cancellation).  ``compute_cumulants`` refuses parameters at which
+        the jump law's mgf does not exist where a usable vertex needs it, and
+        sizes the rounding of the kept coefficients
+        (``result['marcus_truncation']``)."""
+        from itertools import product as _iprod
+        from sage.all import binomial, factorial, exp as _exp
+        N = int(self._series_order)
+        resp = {f: SR.var(f'{f}t__i') for f in coup}
+        moving = [f for f in coup if not SR(slope[f]).is_zero()]
+        still = [f for f in coup if SR(slope[f]).is_zero()]
+        K = parse_expr(self._index(expr_to_text(src.cgf())), what=f'K of {name}')
+        shapes, bases = _cgf_shapes(K)
+        z = SR.var('z__marcus')
+        v = sum((coup[f] * resp[f] for f in still), SR(0))
+
+        def T(mu, m):
+            n = sum(mu) + m
+            tot = SR(0)
+            for kind, key, cf in shapes:
+                if kind == 'exp':
+                    t = key ** m
+                    for f, q in zip(moving, mu):
+                        t *= (_exp(key * slope[f]) - 1) ** q
+                elif kind == 'poly':
+                    if key < n:                 # the z-power series starts at z^n
+                        continue
+                    e = z ** m
+                    for f, q in zip(moving, mu):
+                        e *= (_exp(slope[f] * z) - 1) ** q
+                    t = e.taylor(z, 0, key).coefficient(z, key) * factorial(key)
+                else:
+                    gm = key.diff(THETA, m) if m else key
+                    t = SR(0)
+                    for js in _iprod(*[range(q + 1) for q in mu]):
+                        w = SR(1)
+                        for q, j in zip(mu, js):
+                            w *= binomial(q, j) * (-1) ** (q - j)
+                        t += w * gm.subs({THETA: sum((j * slope[f] for f, j in zip(moving, js)),
+                                                     SR(0))})
+                    if _is_rational_in(key, THETA):
+                        t = t.factor()
+                tot += cf * t
+            return tot
+
+        H, coefs = SR(0), {}
+        for n in range(1, N + 1):
+            for mu in _compositions(n, len(moving) + (1 if still else 0)):
+                mu, m = (mu[:-1], mu[-1]) if still else (mu, 0)
+                P = T(mu, m)
+                for f, q in zip(moving, mu):
+                    P = P / slope[f] ** q
+                if SR(P).is_zero():
+                    continue
+                mono = v ** m / factorial(m)
+                for f, q in zip(moving, mu):
+                    mono *= (coup[f] * resp[f]) ** q / factorial(q)
+                coefs[','.join(map(str, tuple(mu) + ((m,) if still else ())))] = expr_to_text(P)
+                H += P * mono
+        zero = {r: 0 for r in resp.values()}
+        for f in coup:
+            lin = H.diff(resp[f]).subs(zero)
+            if not lin.is_zero():
+                mf_rhs[f].append(lin)
+        source_terms.setdefault(pop, []).append(f'-{_wrap(expr_to_text(H))}')
+        self.notes.append(
+            f"Marcus: source {name!r} acts through the closed-form flow of its affine "
+            f"coupling; the action carries its exact noise term to {N} response legs "
+            f"(SDE.series_order), with no moment series.")
+        self._marcus_terms[name] = {
+            'route': 'exact', 'order': N, 'population': pop,
+            'responses': [f'{f}t' for f in coup], 'fields': list(self._fields),
+            'slopes': {f: expr_to_text(SR(slope[f])) for f in coup},
+            'cgf': expr_to_text(K), 'mgf_bases': [expr_to_text(b) for b in bases],
+            'coefficients': coefs}
 
     # ── outputs ───────────────────────────────────────────────────────
     def action_text(self) -> str:

@@ -224,10 +224,11 @@ class SpatialAccuracyError(DaedalusError, RuntimeError):
 
 
 class MarcusTruncationWarning(UserWarning):
-    """A Marcus-rule source (``SDE.interpretation('marcus')``) whose series,
-    kept to ``SDE.series_order``, has a next term at the saddle above
-    :data:`MARCUS_TRUNCATION_RTOL` of the kept terms
-    (``result['marcus_truncation']``)."""
+    """A Marcus-rule source (``SDE.interpretation('marcus')``) whose noise
+    term may be off at the saddle by more than :data:`MARCUS_TRUNCATION_RTOL`
+    in a vertex the run can use (``result['marcus_truncation']``).  On the
+    series route the measure is the next term over the kept series; on the
+    exact route (affine coupling) it is the rounding of the coefficients."""
 
 
 #: relative size of the next Marcus term at the saddle above which
@@ -235,75 +236,289 @@ class MarcusTruncationWarning(UserWarning):
 MARCUS_TRUNCATION_RTOL = 1e-10
 
 
+def _marcus_admissible(r, q, k, max_ell):
+    """Can a noise vertex with ``r`` response and ``q`` physical
+    (fluctuation) legs enter a ``k``-point ``max_ell``-loop diagram?  Two
+    necessary conditions.  Loops: ``sum_v (r_v + q_v - 2) = k + 2*ell - 2``
+    over the vertices (the xt-linear vertex vanishes at the saddle), so
+    ``r + q <= k + 2*max_ell``.  Response legs: grading the action's
+    ``r``-response vertices by ``hbar^(r-1)`` (``S/hbar`` is the loop
+    expansion) makes an ``ell``-loop ``k``-point part ``hbar^(k-1+ell)``, so
+    ``r <= k + max_ell``."""
+    return r >= 1 and r + q <= k + 2 * max_ell and r <= k + max_ell
+
+
+def _marcus_values(names, mf, par, i):
+    """``{name: value}`` for the bare symbol names of a Marcus record at
+    unit ``i``: a field ``x__i`` takes its saddle ``xstar[i]`` (``mf`` may be
+    ``None``: before the mean-field solve), an indexed parameter its entry
+    ``i``, a scalar parameter its value; names without a value are left
+    out."""
+    out = {}
+    for nm in names:
+        base, _, idx = nm.partition('__')
+        val = None
+        if idx:
+            arr = (mf or {}).get(base + 'star', par.get(base))
+            if arr is not None:
+                a = np.atleast_1d(np.asarray(arr, dtype=complex))
+                val = a[i] if a.size > i else None
+        elif nm in par and np.ndim(par[nm]) == 0:
+            val = par[nm]
+        if val is not None:
+            out[nm] = complex(val)
+    return out
+
+
+def _sr_num(v, field=None):
+    v = complex(v)
+    if field is None:
+        return SR(v) if v.imag else SR(float(v.real))
+    return SR(field(v.real, v.imag)) if v.imag else SR(field(v.real).real())
+
+
+def _marcus_mgf_degree(rec, vals):
+    """The exact route's mgf existence (``rec['mgf_bases']``): the smallest
+    response degree ``n <= rec['order']`` whose vertices need the jump law's
+    mgf at a point where it does not exist, with that point, or
+    ``(None, None)``.  Degree ``n`` needs ``K`` on ``[n*min(s_f, 0),
+    n*max(s_f, 0)]`` (``s_f`` the slopes).  The mgf of a law exists on an
+    interval about 0 whose ends are singular points of its closed form
+    (Widder), so it exists at ``s`` while no base changes sign or vanishes on
+    ``[0, s]``."""
+    from api.noise import THETA, parse_expr
+    bases = [parse_expr(b) for b in rec.get('mgf_bases') or []]
+    if not bases:
+        return None, None
+    sub = {SR.var(n): _sr_num(v) for n, v in vals.items()}
+    slopes = [complex(parse_expr(s).subs(sub)).real for s in rec['slopes'].values()]
+    hi, lo = max([0.0] + slopes), min([0.0] + slopes)
+    fns = [SR(b).subs(sub) for b in bases]
+    grid = np.linspace(0.0, 1.0, 2049)
+
+    def exists(s):
+        if s == 0.0:
+            return True
+        for f in fns:
+            vs = np.array([complex(f.subs({THETA: float(s * t)})) for t in grid])
+            re0 = vs[0].real
+            if not np.all(np.isfinite(vs)) or re0 == 0.0 or np.any(vs.real * re0 <= 0.0):
+                return False
+        return True
+    for n in range(1, int(rec['order']) + 1):
+        for s in (n * hi, n * lo):
+            if not exists(s):
+                return n, s
+    return None, None
+
+
+def _marcus_refuse_mgf(name, i, n, s, k, max_ell):
+    legs = 'leg' if n == 1 else 'legs'
+    fix = ('the mean drift itself is infinite; change the parameters' if n == 1 else
+           f'keep k + max_ell below {n}, or change the parameters')
+    raise ValueError(
+        f"Marcus source {name!r} (unit {i}): degree {n} -- the vertices with {n} "
+        f"response {legs} of its exact (affine-flow) noise term need the jump "
+        f"law's mgf at theta = {s:.6g}, where the mgf does not exist, so their "
+        f"coefficients (rate * E[(e^(b z) - 1)^{n}]) are infinite, and with them "
+        f"the stationary moments of order {n} and above. k = {k}, max_ell = "
+        f"{max_ell} can use vertices with up to k + max_ell = {k + max_ell} "
+        f"response legs; {fix}.")
+
+
+def _marcus_precheck(model, par, k, max_ell):
+    """Refuse, before the mean-field solve, an exact-route Marcus source
+    whose jump law has no mgf where a usable vertex needs it -- for the
+    sources whose slopes and law read only scalar parameters (the rest are
+    checked at the saddle, after the run)."""
+    series = model.get('marcus_series') if isinstance(model, dict) else None
+    from api.noise import parse_expr
+    for name, rec in (series or {}).items():
+        if rec.get('route') != 'exact':
+            continue
+        names = set()
+        for e in list(rec['slopes'].values()) + list(rec.get('mgf_bases') or []):
+            names |= {str(v) for v in parse_expr(e).variables()} - {'theta'}
+        vals = _marcus_values(names, None, par, 0)
+        if set(vals) != names or any('__' in n for n in names):
+            continue
+        n, s = _marcus_mgf_degree(rec, vals)
+        if n is not None and n <= k + max_ell:
+            _marcus_refuse_mgf(name, 0, n, s, k, max_ell)
+
+
 def _marcus_truncation(model, result, k, max_ell):
-    """The size of the first omitted term of each Marcus series
-    (``model['marcus_series']``) at the saddle: per source and population
-    unit, and per response degree ``m <= k + 2*max_ell`` (the noise vertices
-    a run can use), ``sum |coefficient|`` of the omitted term's degree-``m``
-    monomials over the same sum for the kept series; ``relative`` is the
-    largest ratio.  ``None`` when the model has no Marcus series."""
+    """How far each Marcus noise term (``model['marcus_series']``) may be
+    from exact at the saddle, per source and population unit, over the
+    noise vertices the run can use (:func:`_marcus_admissible`; ``by
+    response degree r`` below means the largest over the admissible physical
+    degrees).  ``None`` when the model has no Marcus term.
+
+    Series route: each term expanded about the saddle into vertices
+    ``xt^r dx^q``; ``relative_by_degree[r]`` is ``sum |coefficient|`` of the
+    first omitted term's admissible ``(r, q)`` vertices over the same for
+    the kept series (the largest ratio over ``q``).  Exact route: the
+    vertices are exact, so the measure is rounding -- the relative error of
+    each kept coefficient evaluated in double precision against 212 bits;
+    the smallest degree whose vertices need the mgf where it does not exist
+    is ``mgf_degree_limit`` (refused when a usable vertex needs it).
+    ``relative`` is the largest ratio; ``status`` ``'above'`` past
+    :data:`MARCUS_TRUNCATION_RTOL`."""
     series = model.get('marcus_series') if isinstance(model, dict) else None
     if not series or not isinstance(result, dict):
         return None
-    from sage.all import CDF, PolynomialRing
     from api.noise import parse_expr
     mf = result.get('mf_values') or {}
     par = dict((result.get('config') or {}).get('fundamental') or {})
-    cap = int(k) + 2 * int(max_ell)
     out = []
     for name, rec in series.items():
-        resp = [SR.var(f'{r}__i') for r in rec['responses']]
-        kept = parse_expr(rec['kept'])
-        nxt = None if rec.get('next') is None else parse_expr(rec['next'])
-        # a ring of one variable gives int exponents, of several exponent tuples
-        R = PolynomialRing(CDF, [str(r) for r in resp] + (['zpad__'] if len(resp) == 1 else []))
         n_units = len(np.atleast_1d(mf.get(rec['responses'][0][:-1] + 'star', [0])))
+        exact = rec.get('route') == 'exact'
         for i in range(n_units):
             row = {'source': name, 'unit': i, 'order': int(rec['order']),
-                   'next_abs': None, 'kept_abs': None, 'relative': None}
-            sub, missing = {}, []
-            for v in set(kept.variables()) | (set(nxt.variables()) if nxt is not None else set()):
-                if v in resp:
-                    continue
-                nm = str(v)
-                base, _, idx = nm.partition('__')
-                val = None
-                if idx:                                   # x__i: a field (its saddle) or a vector parameter
-                    arr = mf.get(base + 'star', par.get(base))
-                    if arr is not None:
-                        a = np.atleast_1d(np.asarray(arr, dtype=complex))
-                        val = a[i] if a.size > i else None
-                elif nm in par and np.ndim(par[nm]) == 0:
-                    val = par[nm]
-                if val is None:
-                    missing.append(nm)
-                else:
-                    sub[v] = SR(complex(val)) if complex(val).imag else SR(float(complex(val).real))
-            if missing or nxt is None:
-                row['status'] = ('unavailable: no values for ' + ', '.join(sorted(missing))
-                                 if missing else 'unavailable: the source has no cumulant '
-                                 'of the next order (a moment-series jump law)')
-                out.append(row)
-                continue
-
-            def size(e):                            # sum |coefficient| per response degree
-                by = {}
-                for mono, c in R(e.subs(sub).expand()).dict().items():
-                    m = sum(int(q) for q in mono)
-                    if 0 < m <= cap:
-                        by[m] = by.get(m, 0.0) + abs(complex(c))
-                return by
-            kb, nb = size(kept), size(nxt)
-            rel = {m: (nb.get(m, 0.0) / kb[m] if kb.get(m) else
-                       (0.0 if not nb.get(m) else float('inf')))
-                   for m in sorted(set(kb) | set(nb))}
-            row['kept_abs'], row['next_abs'] = sum(kb.values()), sum(nb.values())
-            row['relative_by_degree'] = rel
-            row['relative'] = max(rel.values(), default=0.0)
-            row['status'] = ('above' if row['relative'] > MARCUS_TRUNCATION_RTOL
-                             else 'ok')
+                   'route': rec.get('route', 'series'),
+                   'admissible': {'max_response_legs': int(k) + int(max_ell),
+                                  'max_legs': int(k) + 2 * int(max_ell)},
+                   'relative': None}
+            if exact:
+                _marcus_exact_row(row, name, rec, mf, par, i, k, max_ell)
+            else:
+                _marcus_series_row(row, rec, mf, par, i, k, max_ell)
             out.append(row)
     return out
+
+
+def _marcus_detail(row):
+    """One line on a ``result['marcus_truncation']`` row (G6, the warning)."""
+    if row.get('route') == 'exact':
+        return (f"Marcus source {row['source']!r} (unit {row['unit']}), exact affine-flow "
+                f"route to {row['order']} response legs: its usable coefficients lose "
+                f"{row['relative']:.2e} to rounding in double precision at the saddle")
+    return (f"Marcus series of source {row['source']!r} (unit {row['unit']}) kept to "
+            f"order {row['order']}: the first omitted term is {row['relative']:.2e} of "
+            f"the kept series at the saddle, in the vertices the run can use")
+
+
+def _marcus_remedy(row):
+    if row.get('route') == 'exact':
+        return ("the cancellation comes from a small slope times jump size; the series "
+                "converges fast there: SDE.marcus_route('series')")
+    return 'raise SDE.series_order'
+
+
+def _rational_literals(text):
+    """``text`` with each decimal literal (``0.1``, ``2.5e-3``) written as the
+    exact fraction of its digits."""
+    import re
+    from fractions import Fraction
+
+    def frac(m):
+        f = Fraction(m.group(0))
+        return f'({f.numerator}/{f.denominator})'
+    return re.sub(r'(?<![\w.])\d+\.\d*(?:[eE][-+]?\d+)?|(?<![\w.])\d+[eE][-+]?\d+', frac, text)
+
+
+def _marcus_exact_row(row, name, rec, mf, par, i, k, max_ell):
+    from sage.all import ComplexField, RealField
+    from api.noise import parse_expr
+    coefs = {key: parse_expr(t) for key, t in rec['coefficients'].items()}
+    # the 212-bit reference reads the decimal literals as exact rationals (a
+    # 53-bit literal would cap the reference at 53 bits)
+    exact = {key: parse_expr(_rational_literals(t)) for key, t in rec['coefficients'].items()}
+    names = set()
+    for e in list(coefs.values()) + [parse_expr(s) for s in rec['slopes'].values()] + \
+            [parse_expr(b) for b in rec.get('mgf_bases') or []]:
+        names |= {str(v) for v in SR(e).variables()} - {'theta'}
+    vals = _marcus_values(names, mf, par, i)
+    missing = sorted(names - set(vals))
+    row['mgf_degree_limit'] = None
+    if missing:
+        row['status'] = 'unavailable: no values for ' + ', '.join(missing)
+        return
+    n0, s0 = _marcus_mgf_degree(rec, vals)
+    row['mgf_degree_limit'] = n0
+    if n0 is not None and n0 <= k + max_ell:
+        _marcus_refuse_mgf(name, i, n0, s0, k, max_ell)
+    RF, CF = RealField(212), ComplexField(212)
+    sub_d = {SR.var(n): _sr_num(v) for n, v in vals.items()}
+    sub_h = {SR.var(n): _sr_num(v, RF) for n, v in vals.items()}
+    by = {}
+    for key, P in coefs.items():
+        r = sum(int(q) for q in key.split(','))
+        if not _marcus_admissible(r, 0, k, max_ell):
+            continue
+        hp = CF(SR(exact[key]).subs(sub_h).n(212))
+        try:
+            d = complex(SR(P).subs(sub_d))
+            rel = float(abs(CF(d) - hp) / abs(hp)) if hp != 0 else (0.0 if d == 0 else float('inf'))
+        except (ValueError, ZeroDivisionError, ArithmeticError, TypeError, RuntimeError):
+            rel = float('inf')
+        if not math.isfinite(rel):
+            rel = float('inf')
+        by[r] = max(by.get(r, 0.0), rel)
+    row['relative_by_degree'] = dict(sorted(by.items()))
+    row['relative'] = max(by.values(), default=0.0)
+    row['status'] = 'above' if row['relative'] > MARCUS_TRUNCATION_RTOL else 'ok'
+
+
+def _marcus_series_row(row, rec, mf, par, i, k, max_ell):
+    from sage.all import CDF, PolynomialRing
+    from api.noise import parse_expr
+    resp = [SR.var(f'{r}__i') for r in rec['responses']]
+    kept = parse_expr(rec['kept'])
+    nxt = None if rec.get('next') is None else parse_expr(rec['next'])
+    fields = [SR.var(f'{f}__i') for f in rec.get('fields') or []]
+    names = set()
+    for e in (kept,) + ((nxt,) if nxt is not None else ()):
+        names |= {str(v) for v in e.variables()}
+    names -= {str(r) for r in resp}
+    vals = _marcus_values(names, mf, par, i)
+    missing = sorted(names - set(vals))
+    if missing or nxt is None:
+        row['status'] = ('unavailable: no values for ' + ', '.join(missing)
+                         if missing else 'unavailable: the source has no cumulant '
+                         'of the next order (a moment-series jump law)')
+        return
+    fld = [x for x in fields if str(x) in vals]
+    sub = {SR.var(n): _sr_num(v) for n, v in vals.items() if SR.var(n) not in fld}
+    cap = int(k) + 2 * int(max_ell)
+    dx = [SR.var(f'd{x}') for x in fld]
+    shift = {x: _sr_num(vals[str(x)]) + d for x, d in zip(fld, dx)}
+    gens = [str(r) for r in resp] + [str(d) for d in dx]
+    R = PolynomialRing(CDF, gens + (['zpad__'] if len(gens) == 1 else []))
+    nr = len(resp)
+
+    def size(e):
+        """sum |coefficient| per admissible (r, q) vertex about the saddle"""
+        e = SR(e).subs(sub)
+        try:
+            poly = R(e.subs(shift).expand())
+        except (TypeError, ValueError):
+            poly = None
+        by = {}
+        if poly is not None:
+            items = poly.dict().items()
+        else:                               # non-polynomial in the fields: Taylor about the saddle
+            t = SR.var('t__marcus')
+            ser = e.subs({x: _sr_num(vals[str(x)]) + t * d for x, d in zip(fld, dx)})
+            ser = ser.series(t, cap + 1).truncate().subs({t: 1}).expand()
+            items = R(ser).dict().items()
+        for mono, c in items:
+            mono = tuple(int(q) for q in mono)
+            r, q = sum(mono[:nr]), sum(mono[nr:len(gens)])
+            if _marcus_admissible(r, q, k, max_ell):
+                by[(r, q)] = by.get((r, q), 0.0) + abs(complex(c))
+        return by
+    kb, nb = size(kept), size(nxt)
+    rel = {}
+    for rq in set(kb) | set(nb):
+        ratio = (nb.get(rq, 0.0) / kb[rq] if kb.get(rq) else
+                 (0.0 if not nb.get(rq) else float('inf')))
+        rel[rq[0]] = max(rel.get(rq[0], 0.0), ratio)
+    row['kept_abs'], row['next_abs'] = sum(kb.values()), sum(nb.values())
+    row['relative_by_degree'] = dict(sorted(rel.items()))
+    row['relative'] = max(rel.values(), default=0.0)
+    row['status'] = 'above' if row['relative'] > MARCUS_TRUNCATION_RTOL else 'ok'
 
 
 def _spatial_accuracy(result, tau_grid, max_ell):
@@ -1761,6 +1976,9 @@ def compute_cumulants(
             f"(SDE.series_order), but k = {k}, max_ell = {max_ell} can use noise "
             f"vertices up to order k + 2*max_ell = {k + 2 * max_ell}; raise "
             f"SDE.series_order({k + 2 * max_ell}).")
+    # an exact-route Marcus source whose jump law has no mgf where a usable
+    # vertex needs it: refused before the mean-field solve
+    _marcus_precheck(model, fundamental, k, max_ell)
     _ndo = model.get('noise_declared_orders') if isinstance(model, dict) else None
     for _src, _top in sorted((_ndo or {}).items()):
         _key = (model.get('name'), _src, int(_top))
@@ -2043,11 +2261,8 @@ def compute_cumulants(
         _over = [r for r in _marcus if r.get('status') == 'above']
         if _over:
             _w = max(_over, key=lambda r: r['relative'])
-            _msg = (f"Marcus series of source {_w['source']!r} (unit {_w['unit']}): "
-                    f"the first omitted term (order {_w['order'] + 1}) is "
-                    f"{_w['relative']:.2e} of the kept series at the saddle "
-                    f"(threshold {MARCUS_TRUNCATION_RTOL:g}); raise "
-                    f"SDE.series_order -- see result['marcus_truncation'].")
+            _msg = (_marcus_detail(_w) + f" (threshold {MARCUS_TRUNCATION_RTOL:g}); "
+                    + _marcus_remedy(_w) + " -- see result['marcus_truncation'].")
             from api.save import _ensure_warning_shown
             _ensure_warning_shown(MarcusTruncationWarning, 'always',
                                   message=_msg, stacklevel=2)

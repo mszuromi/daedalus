@@ -13,6 +13,10 @@ A jump ``z`` of a source coupled through ``G = sum_i b_i d/dx_i`` moves the stat
    simulator's Marcus jumps keep ``r^2`` to round-off.
 6  Refusals.
 7  A superlinear coupling: the truncation advisory fires at the saddle (warning, result, G6).
+8  Affine couplings take the exact route (closed-form flow, mgf coefficients): it reproduces the series route of
+   3/4 to 1e-13; the geometric exponential-jump model (series divergent at high degree) converges to ell = 3 with
+   no advisory; two fields against quadrature; mgf-pole refusals naming the degree; the rounding advisory.
+9  The advisory counts only the vertices a (k, max_ell) run can use.
 
 Loop grading (3, 4).  The action ``S = xt.(Dt x) - sum_j eta_j(x) xt^j`` is the generator
 ``L = sum_j eta_j(x) d^j`` (normal ordered).  Scaling ``eta_j -> hbar^(j-1) eta_j`` makes ``S/hbar`` the loop
@@ -540,3 +544,223 @@ def test_superlinear_coupling_truncation_advisory():
     res11 = AC.compute_cumulants(_superlinear(11).build(), k=2, max_ell=0, external_fields=[('dx', 1)] * 2,
                                  tau_grid=np.array([0.0]), use_cache=False, parallel=False, verbose=False)
     assert res11['marcus_truncation'][0]['relative'] < 1e-2 * rows[0]['relative']
+
+
+# ── 8: affine couplings: the exact (closed-form flow) route ────────────────────────────────
+
+def _geometric(route='auto', b=-0.3, order=10):
+    """dx = (a - mu x) dt + s dW + b x <> dL, L compound Poisson with Exp(th) jumps: the Marcus map x -> x e^{bz}.
+    On the series route the coefficient of xt^n x^n is ~ sum_k (n b th)^k, divergent for n > 1/(|b| th)."""
+    return (SDE('geometric jumps').parameter('a', default=0.5).parameter('mu', default=1.0, domain='positive')
+            .parameter('s', default=0.3).parameter('lam', default=1.0, domain='positive').parameter('b', default=b)
+            .parameter('th', default=0.5, domain='positive').field('x').drift('x', 'a - mu*x')
+            .noise('W', Gaussian(var='s^2'), couples={'x': 1})
+            .noise('L', CompoundPoisson('lam', Exponential('th')), couples={'x': 'b*x'})
+            .interpretation('marcus').marcus_route(route).series_order(order).stability_analysis(True))
+
+
+def _geometric_exact(a, mu, s, lam, b, th, tau):
+    """The linear moment hierarchy closes: c_k = lam (E[e^{k b z}] - 1), m = a/(mu - c1),
+    M2 = (2 a m + s^2)/(2 mu - c2), C(tau) = (M2 - m^2) e^{-(mu - c1) tau}."""
+    c1, c2 = lam * (1 / (1 - b * th) - 1), lam * (1 / (1 - 2 * b * th) - 1)
+    m = a / (mu - c1)
+    return m, ((2 * a * m + s * s) / (2 * mu - c2) - m * m) * np.exp(-(mu - c1) * tau)
+
+
+def test_exact_route_builds_the_closed_form_coefficients():
+    """Exponential jumps, coupling b x: P_n = lam E[(e^{bz} - 1)^n]/b^n = lam n! th^n/prod_{j<=n} (1 - j b th),
+    one fraction (no alternating sum), so no cancellation at any b."""
+    rec = _geometric(order=4).build()['marcus_series']['L']
+    assert rec['route'] == 'exact' and rec['mgf_bases']
+    b, th, lam = SR.var('b'), SR.var('th'), SR.var('lam')
+    for n in range(1, 5):
+        want = lam * math.factorial(n) * th ** n
+        for j in range(1, n + 1):
+            want /= (1 - j * b * th)
+        assert (parse_expr(rec['coefficients'][str(n)]) - want).simplify_full().is_zero(), n
+    # the affine conductance coupling with Poisson spikes: lam (e^{-w} - 1)^n (Es - x)^n xt^n / n!
+    text = _conductance('marcus', order=3).action_text()
+    assert '(exp(-w) - 1)^3' in text and 'factorial' not in text
+
+
+@pytest.mark.parametrize('which', ['affine+', 'affine-', 'conductance'])
+def test_exact_route_reproduces_the_series_route(which):
+    """PR #86's affine models (series kept to orders 16/20, truncation below 1e-10 per degree there): the exact
+    route gives the same mean and loop-graded covariance to 1e-13."""
+    if which == 'conductance':
+        build = lambda route: _conductance('marcus').marcus_route(route).build()                 # noqa: E731
+        par = {'tau': 1.0, 'EL': 0.0, 'Es': 1.0, 'lam': 2.0, 'w': 0.3}
+    else:
+        build = lambda route: _affine('marcus').marcus_route(route).build()                      # noqa: E731
+        par = {'mu': 1.0, 'lam': 1.5, 'a': 0.4, 'b': 0.15 if which == 'affine+' else -0.15, 'mJ': 0.2}
+    ex, res_ex = _pipeline_cov(build('auto'), par)
+    se, res_se = _pipeline_cov(build('series'), par)
+    assert res_ex['marcus_truncation'][0]['route'] == 'exact'
+    assert res_se['marcus_truncation'][0]['route'] == 'series'
+    assert res_ex['mf_values']['xstar'][0] == pytest.approx(res_se['mf_values']['xstar'][0], rel=1e-13, abs=0)
+    for ell in (0, 1):
+        assert np.max(np.abs(ex[ell] - se[ell])) <= 1e-13 * np.max(np.abs(se[ell])), (ell, ex[ell], se[ell])
+
+
+def test_geometric_exponential_jumps_exact_route_converges_without_warning():
+    """The coordinator's model (scratch check of PR #86): on the exact route no advisory fires, the saddle is the
+    exact mean, and the loop series to ell = 3 approaches the exact covariance with the ell >= 4 tail (3.1e-8)."""
+    a, mu, s, lam, b, th = 0.5, 1.0, 0.3, 1.0, -0.3, 0.5
+    tau = np.array([0.0, 0.4, 1.3])
+    m, exact = _geometric_exact(a, mu, s, lam, b, th, tau)
+    par = dict(a=a, mu=mu, s=s, lam=lam, b=b, th=th)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        res = AC.compute_cumulants(_geometric().build(), k=2, max_ell=3, external_fields=[('dx', 1)] * 2,
+                                   parameters=par, tau_grid=tau, use_cache=False, parallel=False, verbose=False)
+    assert not [x for x in w if issubclass(x.category, AC.MarcusTruncationWarning)]
+    row = res['marcus_truncation'][0]
+    assert row['route'] == 'exact' and row['status'] == 'ok' and row['relative'] < 1e-14
+    assert row['mgf_degree_limit'] is None                     # b < 0: e^{bz} <= 1, every mgf value exists
+    assert res['analysis'].has('G6_MARCUS_TRUNCATION') and not res['analysis'].has('G6_MARCUS_TRUNCATION_LOW')
+    assert res['mf_values']['xstar'][0] == pytest.approx(m, rel=1e-14)
+    by = {int(l): np.real(np.asarray(v, dtype=complex)) for l, v in res['C_tau_by_ell'].items()}
+    acc, errs = np.zeros_like(tau), []
+    for ell in range(4):
+        acc = acc + by[ell]
+        errs.append(np.max(np.abs(acc / exact - 1)))
+    assert all(e1 < 0.05 * e0 for e0, e1 in zip(errs, errs[1:])), errs     # geometric convergence
+    assert 1e-8 < errs[3] < 5e-8, errs                                       # the ell >= 4 tail
+
+
+def test_geometric_series_route_flags_its_divergent_vertices():
+    """The same model on the series route: the high-degree vertex coefficients diverge with the order, and the
+    advisory says so (degrees up to k + max_ell = 5 are usable at max_ell = 3)."""
+    res = {'mf_values': {'xstar': [0.4423]}, 'config': {'fundamental': {'a': 0.5, 'mu': 1.0, 's': 0.3, 'lam': 1.0,
+                                                                         'b': -0.3, 'th': 0.5}}}
+    row = AC._marcus_truncation(_geometric('series').build(), res, 2, 3)[0]
+    assert row['route'] == 'series' and row['status'] == 'above' and row['relative_by_degree'][5] > 1e-2
+    ex = AC._marcus_truncation(_geometric('auto').build(), res, 2, 3)[0]
+    assert ex['route'] == 'exact' and ex['status'] == 'ok'
+
+
+def _noise_coefficients(s, resp, point, nmax):
+    """sum_n s^n H_n at a numeric point: the s^n coefficients (n >= 2) of -S(Dt = 0) with the responses scaled by s
+    (the xt-linear drift only enters at n = 1)."""
+    text = s.action_text()
+    inner = re.sub(r'\s*for i in pop\)\s*$', '', re.sub(r'^\s*sum\(', '', text.strip()))
+    sv = SR.var('s_')
+    S0 = parse_expr(inner).subs({SR.var('Dt'): 0}).subs({SR.var(r): sv * SR.var(r) for r in resp})
+    S0 = S0.subs({SR.var(k): v for k, v in point.items()}).expand()
+    return {n: float(-S0.coefficient(sv, n)) for n in range(2, nmax + 1)}
+
+
+def test_exact_route_two_fields_against_quadrature():
+    """A diagonal vector field with a moving and a translated component and a non-unit Dt coefficient:
+    G = (a1 + b1 x) d/dx + (c2/tau) d/dy.  H_n = lam E[(xt (phi_z(x) - x) + tau yt c2 z/tau)^n]/n! with
+    phi_z(x) - x = (x + a1/b1)(e^{b1 z} - 1), against mpmath quadrature over the Exp(th) jump density."""
+    import mpmath as mp
+    mp.mp.dps = 30
+    s = (SDE('two fields').parameter('lam', default=1.2).parameter('a1', default=0.3).parameter('b1', default=-0.4)
+         .parameter('c2', default=0.7).parameter('tau', default=2.0).parameter('th', default=0.6)
+         .field('x').field('y').drift('x', '-x').equation('y', lhs='(tau*Dt + 1)*y', rhs='0')
+         .noise('L', CompoundPoisson('lam', Exponential('th')), couples={'x': 'a1 + b1*x', 'y': 'c2'})
+         .interpretation('marcus').series_order(5))
+    assert s.build()['marcus_series']['L']['route'] == 'exact'
+    vals = {'lam': 1.2, 'a1': 0.3, 'b1': -0.4, 'c2': 0.7, 'tau': 2.0, 'th': 0.6}
+    x, xt, yt = 0.9, 0.8, -0.5
+    got = _noise_coefficients(s, ['xt__i', 'yt__i'], {**vals, 'x__i': x, 'y__i': 0.2, 'xt__i': xt, 'yt__i': yt}, 5)
+    u = xt * (x + vals['a1'] / vals['b1'])
+    for n, g in got.items():
+        f = lambda z: (u * mp.expm1(vals['b1'] * z) + yt * vals['c2'] * z) ** n * mp.exp(-z / vals['th']) / vals['th']  # noqa: E731,E501
+        want = vals['lam'] * float(mp.quad(f, [0, mp.inf])) / math.factorial(n)
+        assert g == pytest.approx(want, rel=1e-13, abs=1e-15), (n, g, want)
+
+
+def test_exact_route_refuses_where_the_mgf_does_not_exist():
+    """b > 0 with exponential jumps: E[e^{n b z}] = 1/(1 - n b th) exists only for n b th < 1.  Degree n's
+    vertices need it; refused, naming the degree, when k + max_ell reaches it, else recorded."""
+    tau = np.array([0.0])
+    par = dict(a=0.5, mu=1.0, s=0.3, lam=1.0, b=0.6, th=0.5)       # b th = 0.3: degrees >= 4 diverge
+    m = _geometric(b=0.6).build()
+    with pytest.raises(ValueError, match=r'degree 4 -- .*mgf does not exist'):
+        AC.compute_cumulants(m, k=2, max_ell=2, external_fields=[('dx', 1)] * 2, parameters=par,
+                             tau_grid=tau, use_cache=False, parallel=False, verbose=False)
+    res = AC.compute_cumulants(m, k=2, max_ell=1, external_fields=[('dx', 1)] * 2, parameters=par,
+                               tau_grid=tau, use_cache=False, parallel=False, verbose=False)
+    assert res['marcus_truncation'][0]['mgf_degree_limit'] == 4
+    with pytest.raises(ValueError, match=r'degree 1 -- .*mean drift itself is infinite'):
+        AC.compute_cumulants(m, k=2, max_ell=0, external_fields=[('dx', 1)] * 2,
+                             parameters={**par, 'b': 2.5}, tau_grid=tau, use_cache=False, parallel=False,
+                             verbose=False)
+
+
+def test_exact_route_rounding_advisory_and_series_remedy():
+    """A Gaussian jump law has no one-fraction form: at a small slope the alternating mgf sum cancels.  The
+    rounding advisory fires and names the series route, which is accurate there."""
+    from api.noise import GaussianJump
+
+    def model(route):
+        return (SDE('small slope').parameter('mu', default=1.0, domain='positive').parameter('lam', default=1.5)
+                .parameter('a', default=0.4).parameter('b', default=1e-4).field('x').drift('x', '-mu*x')
+                .noise('L', CompoundPoisson('lam', GaussianJump(0.1, 0.3)), couples={'x': 'a + b*x'})
+                .interpretation('marcus').marcus_route(route).stability_analysis(True))
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter('always')
+        _, res = _pipeline_cov(model('auto').build(), {}, max_ell=0)
+    msg = [str(x.message) for x in w if issubclass(x.category, AC.MarcusTruncationWarning)]
+    assert msg and 'rounding' in msg[0] and "marcus_route('series')" in msg[0]
+    assert res['marcus_truncation'][0]['status'] == 'above'
+    assert res['analysis'].has('G6_MARCUS_TRUNCATION_LOW')
+    _, res = _pipeline_cov(model('series').build(), {}, max_ell=0)
+    assert res['marcus_truncation'][0]['status'] == 'ok'
+
+
+def test_marcus_route_validation_and_config(tmp_path):
+    with pytest.raises(SDEError, match="'auto' or 'series'"):
+        SDE('x').marcus_route('exact')
+    from api.config_run import load_config
+    p = tmp_path / 'm.yaml'
+    p.write_text("""\
+sde:
+  name: route
+  parameters: {mu: {default: 1.0, domain: positive}, lam: 1.5, b: 0.1}
+  fields: [x]
+  drift: {x: "-mu*x"}
+  noise:
+    L: {type: Poisson, rate: lam, couples: {x: "1 + b*x"}}
+  interpretation: marcus
+  marcus_route: series
+question: {k: 2, max_ell: 1, tau_grid: [0.0]}
+""")
+    resolved, model, _, _ = load_config(str(p))
+    assert resolved['sde']['marcus_route'] == 'series' and model['marcus_series']['L']['route'] == 'series'
+    p.write_text(p.read_text().replace('  marcus_route: series\n', ''))
+    assert load_config(str(p))[1]['marcus_series']['L']['route'] == 'exact'
+
+
+# ── 9: the advisory counts only the vertices a run can use ──────────────────────────────────
+
+def test_advisory_weights_vertices_by_what_k_and_max_ell_can_use():
+    """A vertex xt^r dx^q (about the saddle) can enter a k-point max_ell-loop diagram only if r + q <= k + 2 max_ell
+    and r <= k + max_ell.  A large omitted xt^4 term is no concern at k = 2, max_ell = 1; an omitted xt^2 x^6 term
+    (degree 8 about the saddle x* = 0) only from max_ell = 3."""
+    def model(nxt):
+        return {'marcus_series': {'L': {'route': 'series', 'order': 4, 'responses': ['xt'], 'fields': ['x'],
+                                        'kept': 'xt__i*x__i + xt__i^2 + xt__i^4 + xt__i^2*x__i^6', 'next': nxt}}}
+    res = {'mf_values': {'xstar': [0.0]}, 'config': {'fundamental': {}}}
+    r4 = model('1e-3*xt__i^4')
+    assert AC._marcus_truncation(r4, res, 2, 1)[0]['status'] == 'ok'
+    assert AC._marcus_truncation(r4, res, 2, 2)[0]['relative_by_degree'][4] == pytest.approx(1e-3)
+    d8 = model('1e-3*xt__i^2*x__i^6')
+    for ell in (1, 2):
+        assert AC._marcus_truncation(d8, res, 2, ell)[0]['status'] == 'ok', ell
+    assert AC._marcus_truncation(d8, res, 2, 3)[0]['relative_by_degree'][2] == pytest.approx(1e-3)
+    # off x* = 0 the degree-8 monomial also feeds the usable xt^2 dx^q vertices, which count
+    res1 = {'mf_values': {'xstar': [1.0]}, 'config': {'fundamental': {}}}
+    assert AC._marcus_truncation(d8, res1, 2, 1)[0]['status'] == 'above'
+
+
+def test_rotation_series_advisory_tracks_max_ell():
+    """The non-commuting rotation stays on the series route; at order 15 its usable vertices are below 1e-10
+    at max_ell = 1 but not at max_ell = 2 (the xt^3 vertices join)."""
+    rot = _rotation('marcus').series_order(15).build()
+    assert rot['marcus_series']['L']['route'] == 'series'
+    res = {'mf_values': {'xstar': [0.0], 'ystar': [0.0]}, 'config': {'fundamental': {'mu': 1.0, 'lam': 1.0, 'z': 0.7}}}
+    assert AC._marcus_truncation(rot, res, 2, 1)[0]['status'] == 'ok'
+    assert AC._marcus_truncation(rot, res, 2, 2)[0]['status'] == 'above'
