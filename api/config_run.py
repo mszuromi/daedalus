@@ -46,6 +46,7 @@ noise and the action are derived exactly as for a Python-built model)::
         xi: {type: Gaussian, var: "2*D", couples: {x: 1}}
       interpretation: ito             # or stratonovich, marcus
       series_order: 8                 # Taylor / Marcus series order of a jump source
+      marcus_route: auto              # or series (marcus: exact for affine couplings)
       stability_analysis: true
 
 A point-process model (``SDE.point_process``, kernels, delays) goes through a
@@ -74,7 +75,7 @@ import numpy as np
 TOP_KEYS = ('model', 'sde', 'parameters', 'question', 'policy', 'output',
             'outputs')
 SDE_KEYS = ('name', 'parameters', 'fields', 'drift', 'equations', 'noise',
-            'interpretation', 'series_order', 'stability_analysis')
+            'interpretation', 'series_order', 'marcus_route', 'stability_analysis')
 SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
 #: the ``type:`` of an inline noise source (classes of api.noise); a jump law
 #: inside one is any ``api.noise.JumpDistribution`` subclass
@@ -342,6 +343,12 @@ class _Parser:
         if 'series_order' in items:
             spec['series_order'] = self.integer(items['series_order'][1],
                                                 'sde.series_order', 1)
+        if 'marcus_route' in items:
+            v = self.string(items['marcus_route'][1], 'sde.marcus_route')
+            if v not in ('auto', 'series'):
+                self.fail(items['marcus_route'][1],
+                          f'sde.marcus_route must be auto or series; got {v!r}')
+            spec['marcus_route'] = v
         if 'stability_analysis' in items:
             spec['stability_analysis'] = self.boolean(
                 items['stability_analysis'][1], 'sde.stability_analysis')
@@ -599,7 +606,7 @@ def _sde_plain(block):
         if key in spec:
             out[key] = {f: _plain(v) for f, (v, _) in spec[key].items()}
     out['noise'] = {n: _plain(d) for n, (d, _) in spec['noise'].items()}
-    for key in ('interpretation', 'series_order', 'stability_analysis'):
+    for key in ('interpretation', 'series_order', 'marcus_route', 'stability_analysis'):
         if key in spec:
             out[key] = spec[key]
     return out
@@ -662,6 +669,8 @@ def _build_sde(raw):
         s.interpretation(spec['interpretation'])
     if 'series_order' in spec:
         s.series_order(spec['series_order'])
+    if 'marcus_route' in spec:
+        s.marcus_route(spec['marcus_route'])
     if 'stability_analysis' in spec:
         s.stability_analysis(spec['stability_analysis'])
     return at(lines.get('drift') or lines.get('equations'), s.build)
