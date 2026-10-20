@@ -60,7 +60,7 @@ from engine.errors   import DaedalusError
 #: CITATION.cff describes the latest RELEASE and is bumped, with its
 #: date-released, when this version is released; tests/
 #: test_save_version_stamp.py checks all of it).
-__version__ = '0.2.1'
+__version__ = '0.3.0'
 
 __all__ = [
     '__version__',

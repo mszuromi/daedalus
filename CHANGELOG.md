@@ -6,12 +6,1079 @@ in the git history.
 
 Entries that change numbers list every public model whose results moved, with
 values before and after. "Before" is the code immediately before the change,
-which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
+which still used the 0.1.0 rules. (The `DAEDALUS_PHASE_J_LEGACY` switch that
+reproduced it was retired in 0.3.0; those numbers survive as frozen test baselines.)
 "After" is the new default.
 
-### Unreleased
+## 0.3.0 (2026-10-19)
 
-#### Changed: macOS never forks; `DAEDALUS_PARALLEL=0` kill switch; the OBJC fork-safety flag is never set
+The release after the full-codebase audit (142 root causes; 124 fixed with a test). Highlights: the state-space Phase J
+engine is the default and is unit-invariant; tau = 0 is the exact Ito left limit; one multi-root mean-field solver; delay
+kernels, point processes and a noise library; exact equal-time spatial loops; honest memory guards on every pool; safe
+parallelism (macOS never forks; threads and spawned workers, bit-identical for any worker count); byte-identical results
+across processes and hash seeds. Grouped Phase J and 23 rollback switches are retired. Entries are newest first; each
+lists the public numbers it moves.
+
+### Faster mean-field residual: rows compiled once, one error state per call
+
+A mean-field solve evaluates its residual thousands of times: the multi-start hybr runs, the seed-scale search of
+fix-final-mf-seeds, and the Newton refinement. Each call used to re-parse every row's equation text with
+`eval(str)` (twice per row, once per side), enter a numpy error-state context per row, and unwrap each value through
+`asarray(...).reshape(...)`.
+
+Each row is now compiled once as `(lhs) - (rhs)`, together with its term-size form. The error state is entered once
+per call, a scalar row is unwrapped directly, and `define_function` expressions are compiled once. The arithmetic is
+the same (lhs, then rhs, then the difference), and a check on `ou_quartic_two_dim_color_corr` and
+`dendritic_quad_soma_sigmoid` (k=2, one loop) gives bit-identical saddles and cumulants.
+
+Load-independent measure: Python calls of one `analyze` of `ou_quartic_two_dim_color_corr` (cProfile, warm expand
+cache) were 1,315,523 before fix-final-mf-seeds and 1,595,299 with it (+21 %). They are now 944,560: 28 % below
+the earlier figure and 41 % below main. The residual call count is unchanged (21,778), since the scale search's
+2,976 extra evaluations stay. Each call is now much cheaper: under load, that model's mean-field solves went from
+10.8 s to 2.9 s.
+
+### Speed-bound tests measure CPU time, not wall time (test hygiene)
+
+`test_analyze.py::test_fast_and_leaves_model_unchanged` (each model under 10 s), the two cold-build tests of
+`test_cold_build_jump_models.py`, `test_expand_cache.py` (warm run at least 3x faster than cold),
+`test_expand_nonpolynomial.py` (two time budgets) and the refusal-is-instant check of `test_memory_guards_w8.py` measured wall
+seconds, so a loaded machine (several test processes, a long pipeline) failed them with unchanged code. They now use
+`tests._cputime.CpuClock`: CPU seconds of the test process and its children (Sage's Maxima helper, through `psutil` when it
+is installed), with the same limits. No library change.
+
+### Decisions after the final verification (W2, W5, F2, F6)
+
+- **`dd.run` k ≥ 3 slices are evaluated at the exact tie (F2).** A slice point where the swept leg meets another leg
+  (τ = 0, a base lag) is now evaluated with every leg at its nominal time, the tie resolved by the engine's tie order
+  with the swept leg listed last (`daedalus._kpoint_slice_point`): the left limit of the slice, exactly, as the k = 2
+  τ = 0 point has been since #48. Before, the pinned legs at base lag 0 sat at −1e-6 and the swept leg 1e-6 below
+  the leg it met, an O(rate × 1e-6) error that was not unit invariant. Legs of different fields take one more
+  `compute_cumulants` run with the permuted `external_fields` (only when a tie occurs). The same rule applies to the
+  full grid (`kpoint_full_grid`: a leg at τ = 0 is at 0, the tie order decides), the moment outputs
+  (`output='moment'` / `'central_moment'`, blocks of 3 or more legs) and `me_output.slice_me` (default `eps` 0).
+  `DAEDALUS_TAU0=nudge` restores the old placement for k ≥ 3 too. New result key `_kpoint_slice_orders` (the leg
+  order of each slice point). Checked against the exact tree third cumulant of x' = −μx − gx² + √(2D)ξ (one cubic
+  vertex, mpmath): 4.8e-16 at every point, tied and untied, base lags [0, 0], [0, 0.5], [0.5, 0] (the nudge: 4e-7);
+  with legs of different fields (single_population_spike_reset_test ⟨n₁ v₁ n₂⟩) the tied point equals the left
+  limit of its slice, not the right one (a jump of 7x).
+  **Numbers that move** (k ≥ 3 slices of `dd.run`, relative to each slice's maximum, τ ∈ {−1, 0, 0.5, 2}):
+  ou_quartic k = 4 one loop: 1.1e-7 .. 4.6e-7 (5.7e-12 at τ = 0); single_population_linear_delta_spikes_test k = 3
+  tree: 4.9e-9 .. 2.7e-7; single_population_spike_reset_test k = 3 tree ⟨n₁ n₂ n₁⟩: 2.7e-8 .. 2.5e-6;
+  ou_quartic_coupled k = 3 (symmetric, identically 0): unchanged. Saved k ≥ 3 slice results move by the same amounts.
+  `compute_cumulants`, `total_C` and every k ≤ 2 number are unchanged. Zoo A/B (separate processes, warm-up
+  discarded, `use_cache=False`, base main 3053a45): every runnable entry bit-identical except
+  `dendritic_quad_soma_sigmoid` 1.5e-16 (main's own cross-process scatter); the k ≥ 3 entries evaluate `total_C` at
+  fixed points.
+- **`Cumulants([...])` above its declared order warns (W5).** A `Cumulants` source gives cumulants only up to
+  `1 + len(kappas)`; higher ones are 0 (a formal truncation). Now `Cumulants.cumulant(m)` above that order warns once
+  per source (`api.noise.CumulantTruncationWarning`), `SDE.build()` records `model['noise_declared_orders']`, and
+  `compute_cumulants` warns once per source when `k + 2*max_ell` can reach a noise vertex above the declared order.
+  No number moves.
+- **The simulators read `PHASE_J_MEM_BUDGET_GB` (F6).** `simulate(max_bytes=None)` (point-process front end) and
+  `simulations.coupled_rd_1d_sim.simulate_coupled_rd_1d(max_bytes=None)` use the Phase J budget rule: the variable
+  when set (`off` / `none` / `inf` / `unlimited`: no limit), else the default budget. Before, an 8 GB setting still
+  refused at the 6 GB default. An explicit `max_bytes=` still wins.
+- **A tracked two-field OU quartic model (W2).** `models/ou_quartic_coupled.model.py`: two OU variables with cubic
+  restoring terms, coupled linearly, white noise (the model of `test_phase_j_setup_fastpath`'s inline twin, same
+  numbers bit for bit). The two zoo entries of `tests/tools/phase_j_zoo_baseline.py` that ran a local, untracked model
+  now run it (`ou_quartic_coupled-k2-l2-xx`, `-xy`; values bit-identical to before). They have no frozen pre-M1
+  baseline value (the legacy baseline test lists them in `_ADDED_AFTER_FREEZE`); their values are pinned in
+  `tests/fixtures/zoo_ou_quartic_coupled.npz`, and the analyzer's golden table gains the model. The simulator
+  `simulations.ou_langevin_sim_numba.sim_ou_quartic_two_dim_numba` is renamed `sim_ou_quartic_coupled_numba`
+  (no alias; scripts that import the old name need a one-line local alias), and the stored model listings of
+  `notebooks/model_builder*.ipynb` / `model_runner.ipynb` name the tracked file.
+
+### Results are byte-identical across processes; direct tests of the mean-field root tolerance; doc fix (final determinism pass)
+
+- **Cross-process determinism (FINAL N9).** Runs were identical within a process but scattered by 1-4 ulp from one process
+  to the next (dendritic 4 variants, spike_reset 2-3, cubic_alpha 2, quad_exp rarely), whatever `PYTHONHASHSEED` was.
+  Root cause: Pynac (Sage's symbolic engine) orders the operands of a product by a symbol hash that is drawn afresh in every
+  process, so `(a1*a2*vstar2).subs({a1: 2.5, a2: 3.7, ...})` multiplies the floats in a process-dependent order. A
+  four-line script reproduces it. The Phase J prefactor of every diagram was formed that way (`cp.subs(num_params)`), so
+  the last bit of the prefactor, and of everything built from it, differed between processes. `engine.core.detnum.numeric_subs`
+  now evaluates a closed form in the parameters itself: Python doubles, product operands in a canonical order (sorted by
+  text), sums rounded exactly (`math.fsum`); an expression with a symbol the substitution does not cover falls back to
+  `.subs`. The prefactor sites of `final_integral.py` use it, and so do the other numeric substitutions there (kernel rates, noise-kernel
+  coefficients, the retardation probe); the ones with a free time or frequency symbol keep `.subs`. Verified: spike_reset one loop 9 of 9 processes byte-identical
+  (3 variants before), dendritic and quad_exp 6 of 6 (4 and 2 before). Zoo values against the previous main
+  (one process each): dendritic 1.5e-16, quad_exp 1.4e-16, quadratic_hawkes_alpha 1.2e-16 relative, every other entry
+  bit-identical; three separate serial processes of the whole zoo agree to the byte on every entry that runs. New tests (`tests/test_audit_w9_determinism.py`) run separate processes
+  and compare bytes: the substitution on its own, and the one-loop spike_reset cumulant end to end.
+- **Direct tests of the mean-field root tolerance (FINAL N12).** `_ROOT_RTOL` 1e-7 -> 1e-4 survived every mean-field test
+  file (1e-2 was killed by one indirect test). `tests/test_audit_w9_mf_mutants.py` feeds `_refine_root` closed-form
+  systems (two rows disagreeing by a relative 3e-5 / 3e-3, the same in units of 1e9 and 1e-9, and a 1e-8 gap that must be
+  accepted) and kills the mutants 1e-4, 1e-2 (too loose) and 1e-9, 1e-12 (too tight).
+- `docs/phase_j_unbounded_exact.md` no longer describes the retired Phase J switches in the present tense (FINAL N10).
+- **The deduplication representative no longer depends on `PYTHONHASHSEED` (FINAL decision W3, audit CON-10).** The external-leg
+  permutations of a typed-diagram enumeration came from a `set` of tuples of strings, whose iteration order changes with the
+  hash seed; the deduplication keeps the first diagram of each class, so a two-field model's loop cumulant took two byte
+  variants across seeds 0-5. `type_assignment._distinct_permutations` now returns them in a canonical content order
+  (`sorted`). Verified: the two-field one-loop and two-loop cumulants are byte-identical across seeds 0-5 (two variants
+  before); eight zoo entries (spike_reset, linear_hawkes, multipopulation_test, quad_exp, dendritic, ou_quartic_colored,
+  quadratic_hawkes_alpha, ou_quartic k3 l2) identical across seeds 0-3. No frozen baseline needed refreezing: every
+  baseline test passes at its tolerance. New test in `tests/test_audit_w9_determinism.py` (six processes, seeds 0-5).
+
+### Unit invariance of the state-space engine and the analyzer (final check)
+
+Found by exactly rescaled twins of the 13 tracked temporal models (time units 1e-9 .. 1e9, field units 1e+-3) and of
+inline models. The state-space engine lost real digits in slow time units, and its accuracy estimate R and several
+analyzer gates changed with the units. All 13 tracked models now agree with their twins to <= 4e-15 (one loop,
+except `ou_quartic_colored` at a time unit of 1e9: 4.8e-13, unchanged from main). R stays within a small factor of
+the unscaled run's; the mean-field root choice of two models is fixed separately (fix-final-mf-seeds).
+
+- **Realization in the model's own units** (`api._realization`, `statespace._balance_siso`): the propagator is
+  realized in a normalized frequency `s / w0`, where `w0` is a power of two near the fields' own rates (the median
+  `|K0/K1|`). Its rows and columns are equilibrated by powers of two (the fields' units), and the result is mapped
+  back exactly. Each entry's augmented balancing now compares `|a|` and `|b||c|` relative to their own sizes, not
+  raw. Before, the coefficients of the realization carried different powers of the time unit, and balancing left
+  the entries graded (`a_21 = 6e-4` next to rates 1e-9). The exponentials then lost digits: the two-field colored
+  OU tree was 6e-11 off at a time unit of 1e-9, and the `single_population_quad_exp_test` one loop 3.4e-8 off. Both
+  are now within 1e-15, as on the pole engine. In fast time units, a model whose spike rates carry the time unit
+  and whose voltages do not no longer looks 'graded'. Its a posteriori check had added a spurious 5e-4 .. 8e-4 to R,
+  raising `G6_ACCURACY_LOW` on an exact result (`linear_hawkes`, `multipopulation_test`, `quadratic_hawkes_alpha`,
+  `single_population_quad_exp_test` at a time unit of 1e6 and up).
+- **G6 accuracy estimate per run** (`api.compute`): the error-estimate sums are reset around a run and restored
+  afterwards, as the maxima already were. Before, the run's sum was the difference of two process-wide totals, so a
+  run in slow units after one in unit time got R = 0.
+- **G5 regime gate** (`_tree_sigmas`): underdamped poles were merged after rounding to 9 decimal places in
+  absolute terms, so a model with rates ~1e-12 rounded every pole to 0 and the sort then divided by zero. The error
+  was caught as `INTERNAL_ERROR` and the regime check was skipped silently, on both engines. Poles are now merged
+  at 1e-9 of the pole scale.
+- **Saddle stability with fields in very different units** (`api._mean_field_dae.linear_stability`): the linearized
+  pencil is equilibrated before QZ (rows and columns scaled by powers of two, which leaves its eigenvalues unchanged).
+  With three fields in units 2e-6, 2.3e5 and 3.1e3, the entries spanned about 1e-11 .. 1e11. QZ is backward stable
+  only normwise, so it lost the small entries: the exactly rescaled stable saddle was refused as
+  `G2_UNSTABLE_SADDLE`, with eigenvalues `[+0.888, -2.94, -1.15]` instead of all negative. The eigenvalues now agree
+  with the unscaled model to 1e-9, and the saddle to 1e-12.
+
+Numbers that move: state-space results at round-off level (the realizations are formed differently), the G6
+accuracy estimate R, and the linearization eigenvalues at round-off level. Zoo A/B (23 runnable public entries,
+`use_cache=False`, base main a46ddcf): 15 bit-identical; `quad_exp` 2.3e-15, `dendritic_quad_soma_sigmoid`
+1.5e-16, `quadratic_hawkes_alpha` 1.7e-16, `spike_reset` k=2 4.5e-16 relative; analyzer codes identical; R moves
+at most 1.4 % (`quad_exp`, `quadratic_hawkes_alpha`); the 5 entries that refuse do so identically on both sides.
+
+### Mean field: seed boxes from the model's own equations, equilibrated Newton steps (final check)
+
+Exactly rescaled twins of two tracked models picked a different mean-field root, or the right root to only ~1e-10.
+
+- **Seed boxes** (`api._mean_field_dae._equation_scales`): each state variable's box now comes from the zero of its
+  own equations. Starting from 0, each variable in turn is set to the zero of its rows nearest to 0 along that line,
+  bracketed over the decades 1e-30 .. 1e30 and then bisected to full precision, for three sweeps. This scale moves
+  exactly with the variable's units, so the seeds do not depend on them. The largest-parameter heuristic is kept
+  only for a variable whose rows have no sign change. Before: `single_population_spike_reset_test` with the voltage
+  in units of 1e3 (Em, w times 1e3) seeded the spike rates around 1e4 and returned the negative-rate root
+  n1* = -3.345, which stopped the run with `G4_NEGATIVE_VARIANCE`. `dendritic_quad_soma_sigmoid` with time in units
+  of 1e-3 returned an unstable root (`G2_UNSTABLE_SADDLE`). Both now return the same root as in the original units,
+  to 1e-14.
+- **Root order without a linearization**: for saddles declared with `.set_mf_equation`, or `.equation` rows
+  without Dt terms, nothing classified stability. The roots were then ordered by their value nearest to 0, which
+  can select an unstable root now that the search finds every root. They are now ordered by the relaxation
+  x' = -R(x) of the saddle equations as written: a root comes first when every eigenvalue of -dR/dx has a negative
+  real part (for a rate fixed point n = F(n), eig(dF/dn) < 1). This fixes a regression of the one-solver change:
+  the two-population kernel model of `test_frontend_function_kernel_ft.py` was refused with `G2_UNSTABLE_SADDLE`
+  (a propagator pole at -0.30i).
+- **Newton refinement**: the correction is solved on the Jacobian scaled by powers of two (rows and columns to unit
+  maxima). With spike rates ~1e8 next to voltages ~1, the plain least-squares cutoff dropped the small directions.
+  The saddle was then right to only 1e-10 .. 2e-9, and two symmetric populations came out different by up to 1e-12.
+  It is now right to round-off (1.8e-16).
+
+Numbers that move: the saddle's last digits, and therefore the cumulants at round-off level times the problem's
+conditioning. A model whose roots were previously reached from the largest-parameter box may find more roots: they
+are listed in `mf_all_roots`, and the selected root comes from the stable-first order. Zoo A/B (23 runnable public
+entries, `use_cache=False`, base main a46ddcf): 12 bit-identical; `dendritic_quad_soma_sigmoid` 6.3e-16,
+`linear_hawkes` 2.2e-16, `linear_delta_spikes` 2.1e-16, `spike_reset` k=1 3.7e-16 relative. `spike_reset` k=2 moves
+by 9.0e-14 at one loop: its saddle moves by 1-2 ulp, and a 40-digit solve puts both main's and this saddle within
+2e-16 of the exact root, so this is round-off amplified about 400x by that diagram, not an error in either. Analyzer
+codes are identical, and the same roots are selected.
+
+### Spatial `C_tau_x_by_ell` is per-order increments; stage and audit labels out of library text (final consistency pass)
+
+- **`result['C_tau_x_by_ell']` of a spatial k = 2 run is now the per-loop-order INCREMENTS** (ell = 0 the tree, ell >= 1
+  the ell-loop contribution), like the temporal `C_tau_by_ell` and the spatial `total_C_by_ell`, so
+  `sum(C_tau_x_by_ell.values()) == C_tau_x`. #70 had made it an alias of the CUMULATIVE `C_tau_x_by_order`, so summing
+  it double-counted the tree (the one-loop Allen-Cahn 1-d term read 0.4625 instead of the exact -0.0375).
+  `C_tau_x_by_order` is unchanged (cumulative: tree, tree + 1-loop, ...). Both are documented in the
+  `compute_cumulants` return docs.
+- Library comments and messages no longer carry internal stage or audit labels (`audit W7`, `W8p S4`, `ACC-61`,
+  `S3:`, `stage S4`, ...); the sentences keep their content, and the retired-switch notes no longer end in
+  "(audit W7)". `tests/test_audit_w9_docs.py` now also fails on these patterns and on placeholder tokens in
+  `changelog.d/` fragments (a leftover placeholder in the W7 environment-switch fragment is fixed).
+
+### Fixed: non-local noise kernels with slow tails (silent-wrong since the kernel-derived τ box), quadrature error in G6, a budget for the quadrature fallback
+
+**Numbers move** for non-local noise sources (`declare_cgf_term(..., markovianize=False)`) whose kernel decays slowly
+(a power-law tail). The τ box read off the kernel (wave 3c) reaches ~1e4 for `1/(1+τ^4)` and ~1e8 for `1/(1+τ^2)`,
+while the kernel's peak is O(1) wide. The hardened quadrature had no breakpoint near the peak, so it sampled past
+it. With equal external times the only breakpoint is 0, and the peak sat at the end of two panels as wide as the
+box; QUADPACK's nearest node lies 0.0022 panel widths from an end, so it returned 0 with error 0, accepted. The
+status stayed 'ok'. Tree of `x' = -x + η`, `D = 1/2`, before → after (exact: mpmath convolution):
+
+| kernel | τ | before | after = exact |
+|---|---|---|---|
+| `1/(1+τ^4)` | 0 / 0.7 / 3 | 0.6304769 / 0.3593010 / 0.0786357 | 0.6304778 / 0.5398611 / 0.0814718 |
+| `1/(1+τ^2)` | 0 / 0.7 | 0.0 / 0.326 | 0.6214 / 0.542 |
+| `(1+τ^2)^(-3/4)` | 0 | 0.0 | 0.6792 |
+| `1/(1+(τ/40)^2)` | 0 | 0.0 | 0.9988 |
+| `(1+τ^2)^(-1/2)` | 0 | 0.0 | finite (the kernel's integral diverges, C does not: the line decays) |
+
+After: ≤ 1.8e-13 relative against mpmath at τ = 0, 0.7, 3, 10, and for a time-rescaled twin (S = 100).
+
+- **The fix.** When a source's box is more than 64 core widths (`_noise_kernel_scales`: the |τ| where the kernel
+  falls to half its peak), its τ variable gets the breakpoints ±core·16·4^j out to the box (`_noise_kernel_ladder`).
+  Kernels that decay fast (`exp(-|τ|)`, `exp(-τ^2)`) get none, so they integrate exactly as before.
+- **G6.** The hardened fallback's QUADPACK error estimates now enter the accuracy estimate (counter
+  `nquad_hardened_err_abs_sum`): each level's own estimate plus its inner levels' estimates, integrated over its
+  nodes. This share is judged against 1e-8 (the fallback's own contract) unless `question.accuracy` is declared;
+  `G6_ACCURACY_LOW` names it when it exceeds that. Before, quadrature regions were not in the estimate at all.
+- **A budget.** A hardened region that needs more than `NQUAD_EVAL_BUDGET = 20,000,000` integrand evaluations
+  raises `PhaseJQuadratureBudgetError` (a `DaedalusError`) that names the region and the options; `None` removes the
+  limit. Before, the one-loop colored-noise OU (exp, gaussian and power-law kernels alike) ran for more than 30 minutes
+  (exp: over 40, killed), with QUADPACK non-convergence. Now it is refused after about 3 minutes. The counter `nquad_hardened_evals_max` records
+  the largest region.
+
+Not refused: a bounded kernel whose integral diverges (`(1+τ^2)^(-1/2)`) gives a finite, correct C wherever the
+lines decay. A diverging zero-frequency noise power only shows where nothing filters it.
+
+Zoo A/B (17 public entries that run, `use_cache=False`, base main a46ddcf): all bit-identical, analyzer codes
+unchanged; five more refuse identically on both sides. No zoo entry has a slow-tailed non-Markov noise kernel.
+Full suite: 0 failures.
+
+Tests: `tests/test_noise_kernel_box_quadrature.py` (eight of its first ten cases fail on the code before; exp and gaussian
+pass on both; plus the budget refusal).
+
+### Lazy k >= 3 points stay inside the run's memory budget (final check after audit wave W8)
+
+- For k >= 3, `compute_cumulants` returns callables and the Phase J integrals run when they are called:
+  `r['total_C_by_ell'][ell](t1, t2, t3)`. Those calls ran outside every memory scope, with no growth check and with
+  each plan checked only on its own. One point of a cubic+quartic 1-D model at k=3, max_ell=3
+  (`compute_cumulants` returned at 3.4 GB) then grew past 9.5 GB under `PHASE_J_MEM_BUDGET_GB=8` with no refusal.
+  k=4, max_ell=2 did the same, reaching 12 GB.
+- The returned `total_C` and `total_C_by_ell[ell]` callables now resume the run's own scope on every call: the
+  footprint baseline taken when the run started, the run's single budget reading, and a running Phase J memory
+  scope for the plans and states they build. A growth check runs before each state-space subset evaluation.
+- A point that grows the process past the budget is refused with `PhaseJResourceError`, and the message names the
+  point and the run, e.g. `total_C_by_ell[3](0, 0.3, 1.1) of <model> k=3 max_ell=3`.
+- The k=3 max_ell=3 case is now refused at 8.00 GB of growth (8.32 GB peak footprint). The wrapped callables give
+  the same values (the wrapped function stays at `.__wrapped__`); without a budget (`off`) they are not wrapped.
+- No public number moves.
+
+### Public text points at things that exist; no internal ticket numbers in library comments (audit wave W9, part 3)
+
+Text only: no code path, number or API changes.
+
+- **Dangling references fixed (CON-05).** About 25 docs and code sites cited design documents, spike scripts and
+  example notebooks that are not in the repository; they now say "the internal design notes (not distributed)" (or
+  point at `CHANGELOG.md`). The design docs under `docs/` use the current package names (`engine/`, `api/`,
+  `ModelBuilder`, `tests/oracles/symbolic.py`, retired modules marked as retired) instead of `msrjd/`, `pipeline/` and
+  `TheoryBuilder`. Docstrings that described behaviour the code no longer has are corrected: the time-domain
+  `pipeline` module no longer says loops are skipped, and `SymbolicCumulant.callable` no longer promises Horner forms.
+  Simulator docstrings no longer name git-ignored local model files.
+- **Internal ticket numbers removed from comments and docstrings (CON-08).** About 125 "item N" / "bug N" references
+  in `api/`, `engine/`, `daedalus.py` and `models/` are gone (the sentence keeps its content). `CHANGELOG.md` is left
+  as written (fragments are collated at release).
+- `tests/test_audit_w9_docs.py` fails when a tracked file cites a missing `docs/` file or old package name, or when a
+  library comment gets a ticket number again.
+
+### Spawned Sage-free Phase J workers and per-worker memory caps on every pool (W8p S2 + S4)
+
+- **Spawned workers** (`engine.spawn_pool`, `engine._spawn_worker`) are fresh interpreters started with
+  `subprocess`. Nothing of the parent is inherited, the user's `__main__` is not re-imported, and they never import
+  Sage: about 0.4 s and 40 MB each.
+  - They evaluate Phase J diagrams from the numeric state the parent already built (`statespace.diagram_payload`;
+    shared model and entry ops travel once per worker). The values are the same bytes as the parent's.
+  - Used automatically where fork is not available (macOS scripts, Windows), when a timing sample predicts at least
+    `pipeline.SPAWN_MIN_SECONDS` = 3 s of work. Inside a Jupyter kernel they are opt-in (`start_method='spawn'` or
+    `DAEDALUS_SPAWN_IN_KERNEL=1`) until the manual notebook checklist in `docs/parallel.md` has passed.
+  - Default 4 workers (`n_workers` overrides). Workers run with `OPENBLAS_NUM_THREADS` (and OMP/MKL/VECLIB) = 1.
+  - A diagram a worker refuses, or one held by a worker that died, is evaluated in the parent, with its pole-route
+    fallback.
+- **The Sage-free evaluation core:** `time_domain._light` now holds the runtime counters, the Θ(0) / tie rule for
+  constant rows and the Wick-permutation sum (`diagram_sum`). `final_integral` re-exports every name (same
+  objects). `integrate_diagram`'s `contribution` and a spawned worker run the same `diagram_sum` and
+  `statespace._subset_value`.
+- **Memory caps on every pool** (`engine.worker_budget`):
+  - Each pool sizes itself from what the run's budget has left after the run's growth so far (W8's
+    `run_growth_scope`): fewer workers, then serial.
+  - A watcher polls each worker's own footprint (macOS `phys_footprint`; Linux private pages). A spawned worker over
+    its share is killed and its diagrams are redone in the parent. A fork pool over its share (Phase J, type
+    assignment) is stopped and the stage runs serially. The streamed enumeration stops with
+    `PhaseJResourceError`.
+  - Counters: `parallel_workers_capped_by_budget`, `parallel_workers_over_share`, `parallel_spawn_batches`,
+    `parallel_spawn_diagrams_here`.
+- `engine.fork_safety.fork_unsafe` is also True where the platform has no fork (Windows).
+- New doc: `docs/parallel.md` (methods, knobs, memory, the notebook checklist).
+- Numbers: no public number moves (parallel = serial bytes; the serial path is unchanged).
+
+### One worker knob: `n_workers` reaches the streamed prediagram enumeration (W8p S3)
+
+- `compute_cumulants(parallel=True, n_workers=n)`, and so `dd.Config.n_workers` and the YAML `policy.n_workers`, now
+  also set the process count of a streamed prediagram enumeration: a cache miss on an unshipped cell
+  (`prediagram_cache.load_prediagrams(..., n_procs=)`, `api._diagrams.enumeration_procs`). Before, only the
+  environment variable `DAEDALUS_PREDIAGRAM_PROCS` reached it.
+- With `n_workers` unset the enumeration stays in one process, as before; a streamed cell is usually small.
+- `DAEDALUS_PREDIAGRAM_PROCS` still overrides when set (kept for scripts; prefer `n_workers`).
+- macOS never forks, so there the enumeration is serial whatever the count.
+- The certificate set, and so every result, does not depend on the worker count.
+
+### Parallel Phase J batches: diagram-only partitioning, thread fan-out on every platform (W8p S1)
+
+- `total_C_batch` / `eval_per_diagram_batch` (and so `compute_cumulants(parallel=True)`, the default) now
+  partition the batch by diagram only. A worker evaluates whole diagrams on the whole tau grid, and the parent
+  sums each point's diagram values in diagram order. The result is the same bytes as `parallel=False` for any
+  worker count and method.
+  - Before, on Linux, a fork worker evaluated whole tau points without the state-space grid prefetch. That
+    differed from the serial batch by rounding (state-space engine).
+  - On macOS (S0) the batch was serial.
+- **Threads on every platform, notebooks included.** A diagram goes to a worker thread when its largest
+  stationary-state block has at least `pipeline.THREAD_BLOCK_MIN` = 256 entries; that work releases the GIL. The
+  main thread evaluates the small diagrams meanwhile; on threads they are dispatch-bound and slower.
+  - Measured on quadratic_hawkes_alpha k=2 ell=1 (130 diagrams, warm): 2.7-3.0x on the large-block diagrams at
+    4 threads.
+  - Measured on dendritic_quad_soma_sigmoid (5,212 diagrams, blocks <= 81): no pool starts; threads there would
+    run at 0.75-0.86x.
+  - Up to `pipeline.DEFAULT_THREADS` = 8 threads; `n_workers` overrides.
+- **Fork (Linux only)** takes batches with at least `max(4, 2 n_workers)` diagrams. Its workers now return their
+  `_RUNTIME_COUNTERS` deltas, so a run's counters (analyzer G6) stay complete.
+- `start_method`: `None` (new default, automatic), `'threads'` or `'fork'`. An explicit `'fork'` on macOS warns
+  once and uses the safe method. `'spawn'` raises `ValueError` until spawn workers land.
+- `final_integral._RUNTIME_COUNTERS` is a dict subclass. In a worker thread (`final_integral.counter_delta`)
+  increments go to a thread-local overlay that the parent merges (`merge_counter_delta`: sums; `*_max` keys take
+  the maximum). So no increment is lost to a race.
+- Inside a switch-on scope (per thread) the batch stays serial. `DAEDALUS_PARALLEL=0` keeps every batch serial.
+- Numbers: no public number moves. Serial is unchanged, and parallel is now bit-identical to it.
+
+### One option surface, one grid rule, one exception base, result-schema docs, truncation in the accuracy estimate (audit wave W9, part 2)
+
+Zoo numbers are bit-identical. What moves: the G6 accuracy estimate `R` of a run whose propagator was balanced-
+truncated (by at most the truncation bound, <= 1e-12 at the default tolerance), and the grid rule of
+`compute_cumulants` (below).
+
+- **`dd.Config` carries the numeric options of `compute_cumulants` (CON-02).** New fields `taylor_order`, `use_cache`,
+  `accuracy`, `backend`, `discard` (None = `compute_cumulants`' default; validated at construction) are forwarded by
+  `dd.run`. The YAML config reads them through `dd.Config` instead of a monkey-patched `compute_cumulants`
+  (`question.accuracy`, `policy.backend`, `policy.discard` are new keys; `taylor_order` and `use_cache` already
+  existed). `dd.config_options()` now lists `delay`, the new options and the alias spellings (`fundamental`,
+  `spatial_grid`). (`dd.run` still takes its default tau grid from the model's `METADATA`, tau_max 10, while
+  `compute_cumulants` defaults to tau_max 50: documented, not changed.)
+- **One grid rule everywhere (decision B4).** `api._grids.resolve_grid` is shared by `compute_cumulants`, `dd.Config` and
+  the YAML config: an `(lo, hi, n)` TUPLE is a `linspace` range, a list or array is literal points, and a 3-element
+  LIST whose last entry is an integer count >= 2 (`[-5, 5, 51]`, also `[0.0, 1.0, 4.0]`) is refused with a message that
+  names both spellings. `compute_cumulants` used to refuse the tuple and accept `[0.0, 0.5, 2.0]` as three literal
+  points; pass `np.array([0.0, 0.5, 2.0])` for those.
+- **Unbuilt models are accepted everywhere (CON-07).** `compute_cumulants`, `dd.describe_model` and
+  `dd.symbolic_cumulant` build an `api.sde.SDE` / builder themselves, as `dd.run` does (`AttributeError: 'SDE' object
+  has no attribute 'get'` before). The spatial k = 2 result gains `status` and `C_tau_x_by_ell` (the temporal schema's
+  names; `C_tau_x_by_order` stays), and the `compute_cumulants` return docs list the spatial k = 2 keys and say that
+  the k = 1 `C_tau` is the mean shift, not the mean.
+- **Balanced truncation reaches the accuracy estimate and the reference guard (CON-09).** The relative H-infinity bound
+  of a truncated propagator entry or dressed line (`result['phase_j_engine']['realization_check']['truncation']`) is
+  added to `R` (G6) and named in `G6_ACCURACY`; a delayed OU at tolerance 1e-3 now reports R = 4.6e-4 for a measured
+  shift of 1.9e-4 (it reported 1e-14). `symbolic_cumulant(result=...)` refuses a result whose own record shows
+  truncated entries or dressed lines (`truncated_reference`); before, the guard re-realized the model and missed the
+  dressed lines.
+- **`DaedalusError`, the common base of the package's own exceptions (CON-04).** `engine.errors.DaedalusError`
+  (also `api.DaedalusError`, `dd.DaedalusError`) is now a base of every exception class `api/` and `engine/` define
+  (31 classes: `SDEError`, `NoiseError`, `ConfigError`, `SymbolicOutError`, `PhaseJResourceError`,
+  `SpatialUVDivergenceError`, ...). Each keeps the builtin it always was (`ValueError`, `RuntimeError`,
+  `NotImplementedError`, `MemoryError`, ...), so every existing `except` clause still catches it; a test fails when
+  a new public exception class forgets the base. Builtins raised directly for a bad argument are unchanged. Two
+  vague messages are fixed: a population sum in a drift no longer reads "not supported inside a noise parameter",
+  and "Call expand() first." names what has to run.
+- **Two classes called `Kernel` (CON-06).** `api.symbolic_out.Kernel` (the pairing kernel `L(s)` of the C2 output) is
+  now `api.symbolic_out.PairingKernel` (`dd.PairingKernel`); `Kernel` stays as an alias of the same class, so
+  `dd.Kernel`, `so.Kernel.exponential(...)` and `isinstance` checks keep working (`api.delay.Kernel` is the delay
+  kernel builder and is untouched).
+- **`combinatorial_factor` refuses a fractional symmetry factor (CON-10).** A Wick numerator not divisible by the
+  automorphism order was floored silently; it now raises `RuntimeError` like `external_wick_compensation` (the case
+  never occurs on the zoo; the check was dead defensive code).
+- **The Taylor norm estimate is reproducible (found by the discard bit-identity test on Linux CI).** Since the cheaper
+  norm bounds (audit SPD-03), `d_2 = ||A^2||_1^(1/2)` of a generator with more than 300 states came from scipy
+  `onenormest`, which draws its start vectors from numpy's UNSEEDED global generator: two identical runs picked
+  different Taylor parameters (estimates differing by ~10 %) and differed in the last bit, so
+  `test_discard_is_bit_identical_and_releases` failed on about half of the Linux processes (current main included).
+  `d_2` is now exact up to 2000 states (`statespace._EXACT_NORM_N`; the dense generator is already held, n^3 flops) and
+  both remaining `onenormest` calls (beyond that size, and the matrix-free operator) run with a fixed seed and restore
+  the caller's random state. Values of models with 301-2000 states move in the last digits against 3776472 (the
+  estimate was random there).
+
+### Memory guards refuse before the allocation: prediagram records, real growth, forked workers, ME forms, simulators (audit wave W8, part 2)
+
+On an 8 GB machine a run must end in a clean refusal (`PhaseJResourceError`, a `MemoryError`), never a swap storm.
+Each item below was reproduced at main first (MEM-08: verified, not fixed).
+
+- **MEM-01, prediagram records.** `load_prediagrams` rebuilds ~11.2 kB of Sage graphs per class. It now refuses a
+  cell whose records exceed the budget (`PHASE_J_MEM_BUDGET_GB`, default `default_mem_budget`) before reading or
+  computing anything. The manifests' count is exact; an extrapolated count is refused only beyond twice the
+  budget; the cert count is checked again once in hand.
+  - Before, the shipped cells (2,4) and (5,2) (12.9 / 10.3 GB of records) loaded under any budget: 12 GB in 35 s
+    under a 4 GB budget.
+  - **Default change: k=2 ell=4 and k=5 ell=2 are refused at the default budget (6 GB at most)**; raise
+    `PHASE_J_MEM_BUDGET_GB` to run them.
+  - A cold k=4 ell=3 (81 GB of records) is refused in 0 s; it used to enumerate for 8.7 min first.
+- **MEM-11 / MEM-02, real growth.** The charges cover plans and stationary states only; typing, setup objects, Sage
+  expressions and caches grew runs by 0.1-1.7 GB uncharged on the zoo, and 3-30 GB on stress cases.
+  - `compute_cumulants` now holds a `run_growth_scope`: the process footprint (`phys_footprint` on macOS) at the
+    start of the run, and the run's single budget reading, which the pre-pass and the running scope now share.
+  - `growth_guard` refuses once the footprint has grown by more than the budget. It is checked at every plan
+    charge, before every diagram's Phase J integration, and every 64 prediagrams of type assignment (one
+    `proc_pid_rusage` call).
+  - The k=3 one-loop case (369,741 typed diagrams) grew past 10 GB with no refusal; it is now stopped at 4.00 GB
+    growth under a 4 GB budget (diagram #25,235).
+- **Item 57 Q4, forked workers.** On Linux each forked Phase J worker builds its own states and charged them to its
+  own copy of the total. Each worker now gets an equal share of the budget's remainder (macOS never forks).
+- **MEM-05, the pre-pass.** The cheap branch of the state-space pre-pass counted stateless delta lines as subset
+  choices (2^k over-estimate since #38); it now counts only the subsets built. Synthetic layout cheap/enumerated
+  4.01 -> 1.00; still an upper bound end to end.
+- **MEM-06, all-zero edges.** An edge whose residues are all exactly 0 gives the empty plan (no tuples), as an edge
+  without modes does; the full product of exact zeros was built and charged before.
+- **MEM-07, chain maps.** The dense map between two moving segments of a C0 chain output is refused before
+  allocation when over the budget (it was uncharged above 2,000 states: 6.4 GB at D = 2e4).
+- **MEM-03, ME form caches.** The dense forms cached on matrix-exponential blocks may hold at most half the budget
+  in all; they are released when their block is collected, and rebuilt on demand beyond the cap. One frequency of
+  `spectrum_smooth` on a 3-field one-loop result went 1.2 -> 6.3 GB under a 4 GB budget; peak now 3.1 GB, with
+  the next frequency 0.6 -> 4.9 s.
+- **MEM-09.** `SideME.triple()` refuses a dense block-diagonal triple over the budget before forming it (6.4 GB at
+  `MAX_DENSE_TOTAL`). The segment-decomposition cache is bounded in bytes (half the budget), not only by count.
+- **MEM-13 / MEM-10, simulators.**
+  - `api.pp_simulate.simulate(..., max_bytes=None)` refuses an output over `max_bytes` (default: the guards'
+    default budget) before allocating it. T=1e4, dt=1e-3, 100 paths is 8 GB.
+  - `simulate_coupled_rd_1d(..., max_bytes=None)` checks its snapshot buffer the same way.
+  - The 2-D equal-time estimators (`structure_factor_2d`, `radial_correlator_2d`) transform 64 snapshots at a
+    time; they had transformed all at once, 2-3x the snapshots' own memory. Values agree to 1e-15 relative
+    (summation order).
+- **RED-11, the cache.** A compressed shipped cell is copied to the local cache as it is: 2.3 MB for (2,4), where
+  re-pickling it uncompressed wrote 38 MB into every working directory.
+- **MEM-08, verified only.** The chain memo tables are empty on the default state-space route after a run (pole
+  route: bounded at 200k entries). `_SolveData` and `SymbolicCumulant._ctx` were left as they are.
+- **No public number moves.** Zoo bit-identical except base-scatter moves (dendritic_quad_soma_sigmoid 1.5e-16,
+  spike_reset k2 l1 grouped 3.4e-16). No zoo entry is refused.
+- Paper-session cases unchanged in value and peak footprint: ENSO-like k=3 one loop 1.08 GB; 2-neuron delayed
+  spike-only one loop 1.08 GB; two private delay models 0.44 / 0.58 GB.
+
+### Loud edge cases, TikZ labels, caches and simulators (audit wave W9, part 1)
+
+No computed number moves: every change below is a refusal, a message, a label, or a file-handling fix. The zoo is
+bit-identical.
+
+- **Prediagram cache writes are race-free and tolerate a read-only root (LOUD-03, LOUD-04).** Cache files are written
+  through a writer-private temp name (pid + random suffix) and renamed at the end, and the temp file is removed on
+  any failure, so two cold-cache runs of one cell no longer crash with `FileNotFoundError`. A shipped-cell hit that
+  cannot be copied into the local cache root (read-only mount, no permission) is now served from memory with a
+  warning instead of raising `PermissionError`; `build_cache` still raises, since writing is its job.
+- **TikZ export names edges and fields correctly (ACC-71, GEN-13).** Per-edge propagator labels and the
+  `style_by_field` line styles were looked up under a reconstructed `(u, v, copy)` key that never matched a real
+  typed diagram, so every edge read the bare `G`; they now use the diagram's own edge key (the old spelling is the
+  fallback for hand-built stand-ins). Field symbols are decoded by role (a response leg loses a trailing `t`, a
+  physical leg a leading `d`): a field called `input` was drawn as `inpu`/`dinpu`.
+- **`generate_report(result=...)` describes the result (LOUD-06).** The cover page reads `k`, `max_ell`, the
+  parameters, the external fields and the model name from `result['config']`; `parameters=` is no longer needed with
+  a reused result (it raised `AttributeError`), and a stale `max_ell=0` default no longer mislabels the cover.
+- **Symbolic output (ACC-72, LOUD-12).** `TreeCovariance.default_values()` no longer swallows a failed mean-field
+  solve into `{}`: it warns (`RuntimeWarning`, with the cause). A parameter raised to an exactly representable
+  float power (`D**0.5`) is the rational power `D**(1/2)` in the bridge (the scan and the conversion disagreed and
+  refused it with a message about omega); an inexact exponent gets a message about the exponent.
+- **Noise library (LOUD-10).** `FinitePMF` accepts float probabilities that sum to 1 up to 1e-12, like
+  `Hyperexponential`; `CGF('1/theta')` raises `NoiseError` ("not analytic at theta = 0") instead of a raw Sage
+  `ValueError`. (`PhaseType` with float entries at n >= 5 was checked and does not overflow; no change.)
+- **Simulators refuse what has no answer (LOUD-11).** The point-process simulator raises `PPSimulationError` naming
+  the field, the step and the runaway rate when a rate feedback diverges (the README's exponential-Hawkes example at
+  seed 0 died inside numpy with "lam value too large"); `mean_rate`, `cross_covariance`, the delay-SDE
+  `autocovariance`, `third_cumulant_x` and the coupled reaction-diffusion simulator need >= 2 independent
+  paths/snapshots/replicas for an error bar (they returned NaN); the 1-D and 2-D spectral simulators refuse
+  `mu <= 0` (NaN fields, or a negative default `dt`).
+- **Spatial raw moments refuse before the run (decision B3).** `dd.run(..., output='moment')` for a spatial k = 2
+  run that needs the means' loop corrections (`max_ell >= 2`, or `max_ell = 1` with a nonzero saddle) now raises
+  before the expensive loop run (a one-event tree-level k = 1 run reads the saddle for `max_ell = 1`).
+- The two-field OU test of the Phase J setup fast path uses an inline model instead of a git-ignored model file.
+
+### Cheaper Taylor norm bounds, lazy plotting imports (audit wave W8, part 3)
+
+- **SPD-03.** The state-space Taylor action's parameters (`_onenorm_powers`) now take `||A||_1` and `||A^2||_1`
+  exactly (an estimate above 300 states, as before) and bound `||A^p||` for p > 2 by
+  `min(||A||^p, ||A^2||^(p//2) ||A||^(p%2))`, a rigorous upper bound, which is what the Taylor fragment needs.
+  The seven further matrix powers or 1-norm estimates were about half of a state-space run.
+- **SPD-06.** matplotlib (`api.report`) and IPython (`engine.core.field_theory._show`) are imported when first
+  needed. `from api import compute_cumulants` no longer imports them (numba was already gone after audit W7):
+  3.84 -> 3.34 s (median of 5, vs main c1cff54), and ~0.1 GB less peak footprint per run.
+- **Timings** (base main f361730 and branch side by side):
+
+  | case | base | branch |
+  |---|---|---|
+  | 2-neuron exp spike Hawkes, k=2 one loop, warm | 40.9 s, 1.35 GB peak | 28.1 s, 1.10 GB peak |
+  | 2-neuron delayed-alpha spike-only, k=2 one loop | 612 s | 619 s (unchanged) |
+
+- **No public number moves.** Zoo bit-identical (quad_exp, quadratic_hawkes_alpha, spike_reset, ou_quartic k4 l2
+  checked again after the revert below), and the spike Hawkes C(tau) is bit-identical too.
+- **Tried and reverted:** a matmul `_mode` (SPD-05, ~6 %). Its rounding depends on the tensor shape, so the
+  evaluate-and-discard grid and the plain run were no longer bit-identical
+  (`test_discard_is_bit_identical_and_releases`).
+
+### Multi-field jump models and cold propagator builds in seconds: no Maxima zero tests on float or `I*omega` expressions (audit wave W8, part 1; SPD-04)
+
+- **The cost was never the Taylor expansion.** On small networks of binary (Glauber) units with polynomial rates
+  (2-4 units, jump action `xt Dt x - (exp(xt)-1)(1-x) r(I) - (exp(-xt)-1) x (1-r(I))`) the time went to Sage's
+  `bool(c)` zero tests. Sage's random-point test cannot certify an expression with a float or `I*omega`, so each
+  of these tests went to Maxima:
+  - the zero test of the whole expanded action (an ECL `BINDING-STACK overflow` at three units, one loop);
+  - the pivot tests of Sage's symbolic inverse of the kernel matrix (101 s for 3x3; the symbolic block then timed
+    out, ~183 s wasted, and the run went on numerically);
+  - the omega -> infinity limit of the inverse's entries (`numerator()` of a ~20 kB nested fraction, minutes per
+    entry);
+  - the source-coefficient tests of `classify_coefficient_factors` (once per typed diagram).
+- **`engine.core.field_theory._sr_nonzero`** keeps `bool`'s verdict and falls back to `bool` whenever it cannot
+  certify one, but certifies more cases without Maxima:
+  - interval proofs also run in complex intervals (entire functions and integer powers; `log`, `arctan` and
+    fractional powers go to `bool`);
+  - a float expression is certified when the proof survives perturbing every float by 1e-8 AND its value clears
+    2^-30 of the magnitude of its terms (an exactly nonzero value below double rounding, e.g. a complex
+    `(a+b)^2 - a^2 - 2ab - b^2`, is zero to `bool` and goes to it);
+  - verdicts are memoised on (GiNaC hash, `repr` digest, assumptions in force).
+
+  0 verdict mismatches against `bool` on 10,500 random float / complex / near-cancelling expressions.
+- `_sr_to_ring` no longer zero-tests the whole action. The ring monomials are independent, so the action is zero
+  exactly when every coefficient is, and each coefficient is tested.
+- **SPD-04: `api._propagator._sr_inverse` replaces `K_ft.inverse()`.** It runs Sage's own algorithm (augment,
+  classical in-place Gauss-Jordan of `Matrix_symbolic_dense`, last-pivot check) step for step, with the certified
+  test for its truth tests. The inverse is the same expressions (`repr`-identical to `K.inverse()` on every tested
+  matrix: the 3x3 above, symbolic 4x4 / 5x5 with assumption parameters and `I*omega`, pivot swaps), without
+  Maxima.
+  - Cold-cache propagator builds (same machine load, base -> now): quad_exp 135 s (the symbolic block timed out:
+    whether it completed depended on the machine's speed) -> 2.4 s, linear_hawkes 19.5 -> 0.5 s,
+    linear_delta_spikes 14.6 -> 0.7 s.
+  - Zoo cold-run walls: quad_exp 101.5 -> 6.7 s, quadratic_hawkes_alpha 153.8 -> 13.9 s.
+- The symbolic D_delta is taken only for inverse entries of up to 4,000 characters (the zoo's largest is ~800).
+  Larger ones are left to the exact tier of `compute_poles_and_residues`, which already filled D_delta whenever
+  the symbolic block ran out of time.
+- `classify_coefficient_factors` uses the same zero test, and memoises the product of the vertex coefficients
+  per ordered tuple of vertex types: same operands, same order, same expression.
+- Action text may contain numpy >= 2 scalar reprs (`f'{x!r}'` of an `np.float64` is `np.float64(0.25)`). They are
+  read as the number; they raised `NameError: np`.
+- **Timings, network of binary units, k = 1 mean, one process (before -> after):**
+  - numeric rates: n=2 tree 2.9 -> 1.6 s, one loop 3.9 -> 2.0 s, two loops 28.4 -> 3.2 s; n=3 tree 188 -> 3.7 s,
+    one loop ECL crash -> 10.5 s (0.44 GB peak footprint), two loops crash -> 786 s (7.7 GB); n=4 tree 30.8 s,
+    one loop 43.9 s (expand alone was 257 s);
+  - symbolic indexed coefficients: n=2 one loop 474.7 s / 5.26 GB -> 4.9 s (regression test), n=3 one loop
+    1698.6 s -> 116.9 s.
+- **No public number moves.** Every zoo entry is bit-identical up to base run-to-run scatter: dendritic 1.4e-16
+  also shows base-vs-base; spike_reset k2 l1 takes {0, 4.5e-16} with the same frequency on both sides.
+
+### One environment-switch parser, rollback switches retired, every state-space decline reason named (audit wave W7, part 2)
+
+- **Retired switches (RED-02; FutureWarning when set, value ignored).** Each of them restored code that is now
+  deleted (~2.6k lines in `final_integral.py`), most of it reproducing numbers known to be wrong:
+  `DAEDALUS_PHASE_J_LEGACY` (the pre-0.2.0 numbers are no longer reproducible; the frozen baselines in
+  `tests/fixtures/phase_j_legacy_baseline.{npz,json}` keep them), `DAEDALUS_PHASE_J_THETA0_CONST_ROW=legacy_clip`
+  (the Theta(0) = 1 polygon clip), `DAEDALUS_PHASE_J_STRUCTURAL_ZEROS=0`, `DAEDALUS_PHASE_J_NQUAD_HARDENED=0` (the
+  default-tolerance quadrature routines stay where the hardened fallback uses them), `DAEDALUS_PHASE_J_DBM=0`,
+  `DAEDALUS_PHASE_J_DD_KERNELS=0` (the boxed closed forms with +-600 overflow guards and the chain simplex),
+  `DAEDALUS_CHAIN_UPPERS_KERNEL`, `DAEDALUS_CHAIN_UPPERS_MEMO`, `DAEDALUS_PHASE_J_SEMIINF_CHAIN=0`,
+  `DAEDALUS_PHASE_J_UNBOUNDED_2D=box` (with `POLYGON_BBOX_CAP`), `DAEDALUS_PRUNE_ZERO_MODES`,
+  `DAEDALUS_POLE_CLUSTERS=0` (the deformation is always on), `DAEDALUS_PHASE_J_LEGACY_SETUP`,
+  `DAEDALUS_SETUP_ZERO_EXIT`, `DAEDALUS_SETUP_PROP_TD`, `DAEDALUS_SETUP_LAZY_SR`, `DAEDALUS_SETUP_AUT_MEMO`,
+  `DAEDALUS_SETUP_DELTA_SOLVE` (the speed levers: same numbers by construction), `DAEDALUS_SHOTNOISE_INTEGRATED=0`
+  (it silently dropped shot-noise subsets), `DAEDALUS_EXPAND_LEGACY` (its single `taylor()` dropped degree-3 terms),
+  `DAEDALUS_EDGE_GENERATOR`, `DAEDALUS_ORIENTATION_CHECKER`, `DAEDALUS_DELTA_ORBIT_DEDUP` (the alternative
+  enumeration generators stay as test references, selectable by module attribute only). The module attributes the
+  retired switches set (`THETA0_CONST_ROW_MODE`, `STRUCTURAL_ZEROS`, `NQUAD_HARDENED`, `USE_DBM_FALLBACK`,
+  `USE_PHASE_J_DD_KERNELS`, `SEMIINF_CHAIN`, `UNBOUNDED_2D`, `PRUNE_ZERO_MODES`, `USE_CHAIN_UPPERS_MEMO`,
+  `CHAIN_UPPERS_KERNEL`, `USE_SETUP_*`, `USE_SHOTNOISE_INTEGRATED`, `symmetry.USE_AUT_MEMO`) are gone, and so are
+  their entries in the saved `phase_j_flags` stamp. Old result files stamped `theta0_legacy_clip` still load (with
+  their warning). Older CHANGELOG entries that say a retired switch "reproduces" or "restores" something describe
+  0.2.1 and earlier. A retired switch set after import warns at the next Phase J pass. The pole engine (`DAEDALUS_PHASE_J_ENGINE=poles`) stays fully supported; its default routes
+  are unchanged: the zoo is bit-identical on both engines (`DAEDALUS_PHASE_J_ENGINE` default and `poles`).
+- **One parser for every switch (RED-05).** New `engine._env` (on/off words `1 true yes on` / `0 false no off`,
+  choices, integers, numbers, memory budgets); garbage raises `ValueError` naming the variable instead of meaning
+  "on" at some sites and "off" at others. `DAEDALUS_PHASE_J_ENGINE` has one reader (four of five accepted a typo as
+  the default). The two memory budgets share one meaning: a positive number of GB, or `off` / `none` / `inf` /
+  `unlimited` for no limit; `0` and negative values now raise (they meant "no limit" for `PHASE_J_MEM_BUDGET_GB`
+  and "refuse every loop" for `SPATIAL_MEM_BUDGET_GB`, where `off` raised), and an empty value is the default (it
+  meant "no limit" for the Phase J budget); `SPATIAL_MEM_BUDGET_GB=0` now raises `ValueError` (it raised
+  `SpatialPropagatorError` for every loop) and `off` works. Validated now (an unknown word raises instead of meaning
+  "on" or "off"): `DAEDALUS_PHASE_J_SS_FALLBACK` (checked at the start of `compute_cumulants`, not at the first late
+  refusal), `DAEDALUS_PREFLIGHT`, `DAEDALUS_DELAY_EXACT_TREE` and `DAEDALUS_FASTENUM` (only `0` switched them off;
+  now `off` / `false` / `no` do too), `DAEDALUS_CERT_BACKEND` (`fast` / `sage`, any case; `nauty` silently meant
+  `sage`), `DAEDALUS_PREDIAGRAM_PROCS` (an integer >= 1: `0` and negatives were clamped to 1, now raise; empty = 1),
+  `DAEDALUS_PREDIAGRAM_FORMAT` (empty = `auto`), `DAEDALUS_PHASE_J_DRESS_KERNELS`, `DAEDALUS_PHASE_J_DBM_MP`,
+  `DAEDALUS_PHASE_J_VALIDATE_DELTA`, `DAEDALUS_PHASE_J_ON_DIVERGENCE`, `DAEDALUS_TAU0`. The spatial resolution knobs
+  (`SPATIAL_GRID_NT`/`NS`, `SPATIAL_Q_CUT`, `SPATIAL_N_Q`, `SPATIAL_MC_N`, `SPATIAL_INTEGRATOR`,
+  `SPATIAL_FORCE_NUMERICAL_FT`, `SPATIAL_EQTIME`, `SPATIAL_SEGMENT_NODES`) keep their own readers (unchanged here).
+- **Every state-space decline reason is named (RED-01, stage 1).** `statespace.DECLINE_REASONS` /
+  `DECLINE_PREFIXES` list every reason the route gives for leaving a model, diagram or subset to the pole engine, or
+  for refusing an evaluation at call time; `tests/test_ss_decline_reasons.py` fails when the code produces a reason
+  that is not named (or names one it no longer produces).
+- **Repeated-rate conductance kernels on the pole engine say where to go (LOUD-05).** With
+  `DAEDALUS_PHASE_J_ENGINE=poles` an alpha (Erlang-2) conductance kernel at one loop stays `status='incomplete'`
+  (the pole engine needs separated rates); the failure reason now names the default state-space engine, which
+  computes it exactly (equal to the Markov-embedded twin to 1e-10, new test).
+
+### Grouped Phase J retired, test-only references moved out of the library, dead code removed (audit wave W7, part 1)
+
+- **Grouped Phase J is retired (RED-03, ACC-70).** `compute_cumulants(..., use_grouped_phase_j=True)` now emits a
+  `FutureWarning` and runs the per-diagram integrator, which gave the same numbers (the grouped path was inert on the
+  default state-space engine and, on the pole engine, agreed with the per-diagram path to <= 3.8e-13 while being
+  slower). `api/_grouped_phase_j.py` and `engine/integration/time_domain/grouped_integral.py` (~2.1k lines) are
+  deleted, with the routing backend `phase_j_grouped` (requesting it by name now raises "not registered") and
+  `RouteRequest.grouped`. `result['config']['use_grouped_phase_j']` is always `False`; the saved `phase_j_flags`
+  stamp no longer lists `USE_GROUPED_ANALYTIC_MODESUM` / `use_grouped_phase_j` (old files still load).
+  A run that passed `use_grouped_phase_j=True` now gets the per-diagram numbers: zoo `spike_reset` k2 l1 moves by
+  2.5e-14 relative on the pole engine and 1.4e-15 on the default engine (the grouped path's own rounding). Every
+  other zoo entry is bit-identical on both engines (`DAEDALUS_PHASE_J_ENGINE` default and `poles`).
+- **Test-only references are out of the library (RED-04).** No production module imported them:
+  `engine.integration.symbolic` (frequency-domain Phase H), `engine.integration.spatial.{loop_dyson,
+  generic_evaluator, loop_parametric, spatial_reduce, temporal_integrate}` and `engine.enumeration.orderly` now live
+  in `tests/oracles/` (their tests use them there); `engine.enumeration.degree_scan`, `engine.core.serialize` (and
+  their own tests) and the empty stubs `engine.core.propagator`, `engine.integration.numerical`, `engine.ui` are
+  deleted. The routing table no longer lists `phase_h_symbolic` (it had no runner).
+- **The frequency-domain reference refuses an undecidable pole (ACC-68).** `tests/oracles/symbolic.py` dropped a pole
+  whose half-plane Sage could not decide (a parameter without an assumption) and turned a failed residue into 0, so
+  the tree of `1/(i w + b)` returned 0 with status 'ok'; it now raises `PoleSearchError`.
+- **`compute_correction_td(kernel_groups=...)` is retired (ACC-67).** The legacy input integrated every diagram of a
+  group with the group's summed prefactor (two copies of one diagram gave four times its value); it now raises
+  `TypeError` -- pass `typed_diagrams=` and `prefactors=`.
+- **`eval_delta_contributions_on_tau_grid` / `_on_2d_grid` are retired (ACC-66).** They put off-grid spikes in the
+  edge bin, gave ties to one side, swallowed coefficient errors, and with their defaults returned an all-zero k = 3
+  heatmap; `compute_cumulants` never used them. The user-facing delta accessor is `api.cumulant` (`dd.cumulant`).
+- **`G_t_entry` uses the recorded time variable (LOUD-09).** With symbolic rates whose names sort before the time
+  variable it substituted a rate (`e^{-a t}` at `t -> s` gave `e^{-s t}`); it now reads `'t_var'` from
+  `build_G_t_matrix`'s output and guesses only for a bare matrix. No production number moves (the production calls
+  substitute numeric parameters first).
+- **Dead code and duplicates (RED-06, RED-07).** 18 never-called functions and 10 unused attributes, imports and parameters deleted
+  (e.g. `_vertex_combinatorial_factor`, three orphaned layout helpers, `inverse_fourier_transform`, `me_ray`,
+  `_complex_quad`, `Preflight.mean_field_failed`); one copy each of the byte-identical `_ensure_warning_shown` (now
+  `engine._warn_helpers`), `_iter_multi_indices` and `_opposite_rows_empty`.
+
+### Slow tests green again (W5 follow-up)
+
+Tests only; no library code changed and no public number moved. The first scheduled run of
+`.github/workflows/slow-tests.yml` failed 13 tests; each one was traced to a merged change:
+
+- **Legacy-baseline entries whose values moved for a documented reason are refrozen** in
+  `tests/fixtures/phase_j_legacy_baseline_refrozen_w5s.npz` (the original baseline is never rewritten). Bisected per
+  commit: #44 (spatial loops at tau != 0 split the chamber time grid at the kinks) moved `spatial-allen_cahn_1d-l2` by
+  <= 1.05e-3, `spatial-reaction_diffusion_conserved_1d-l1` by 3.4e-5 and `spatial-coupled_rd_2species_1d-l1` by
+  1.4e-3 relative, at tau = 0.5 only (tau = 0 rows bit-identical); #58 (radial-simplex equal-time rule,
+  derivative-vertex kink segments) then moved the Allen-Cahn tau = 0 rows by <= 2.2e-6 and the conserved model by
+  <= 4.5e-4 (tau = 0) and 1.7e-5 (tau = 0.5). `spatial-reaction_diffusion_2d-l1` now refuses by design (#44: a
+  UV-divergent tadpole at d = 2) and the test expects the `SpatialUVDivergenceError`. The two colored-noise entries'
+  model fingerprint changed in #50 (CGF row semantics); their values are unchanged and the test accepts the new
+  fingerprint.
+- **Two k = 3 spatial tests fit a CI runner's memory budget**: since the kink-split time grid (#44) they needed
+  ~11 GB per chamber. `test_k3_spectral_uniform_mass_identity` runs at n_t = 4 (both routes share the time rule;
+  residual 4.8e-7 against its 5e-4 bound); `test_k3_coupled_cross_complex_modes` runs its one loop at n_t = 5,
+  n_s = 6 (2.7 GB; it checks realness, exact at any grid, and a loose size bound).
+- **`test_delayed_alpha_network_voltage_form_bit_identical_to_builder` expects `status='target_missed'`** on both
+  forms: the automatic Pade order stops at n_max = 16 with an estimated 1.4e-5 against the 1e-8 target, which #50 marks
+  as a missed target (it used to read 'ok'); the two forms still agree bit for bit, status and order included.
+- **The two unequal-D Dyson loop tests are `bigmem`** (`test_unequal_D_loops_order3_runs`,
+  `test_unequal_D_loop_dressing_ladder`): the coupled one loop at dressing order 2 / 3 needs 6.4 / 10.8 GB per chamber
+  at the default grids; before the memory guard (#44) the same tests reached > 18.9 GB, so they never fitted a standard
+  runner. (Their NaN in the x-space tree is a separate fix, fix/dyson-nan.)
+- **Moves from #59 (W6) documented there**: the two-population spike-reset captures of
+  `tests/test_phase_j_subset_hook.py` are refrozen (the saddle solved to round-off moved them by <= 2.9e-11 relative;
+  #59 lists spike_reset k2 l1 <= 9.0e-11), and the `linear_hawkes` baseline entry accepts its new model fingerprint
+  (#59 GEN-01: an explicit population; values moved 2.2e-16). `ou_quartic_two_dim_color_corr-k2-l1` is compared at
+  1e-12 instead of 1e-13: its ell1 differs from the macOS baseline by 4.0e-13 on CI's stack (ubuntu / openblas) and
+  has not moved at any commit since the baseline.
+
+### Fixed: the x-space Dyson tree returned NaN for a negative eigenvalue gap (#55 regression)
+
+`engine.integration.spatial.dyson_dressing.dressed_tree_C_x` (the exact unequal-D tree of #55) and `hcal_n` formed
+each term as `exp(-m0 t) * Phi_n(t; nu)`. With an eigenvalue gap `nu < 0`, `Phi_n` alone grows like `e^{|nu| t}`, so at
+large s it overflowed while the exponential underflowed: `0 * inf = NaN`. One NaN sample made the whole s-integral NaN,
+and the convergence check raised (loud, not silent). Every coupled unequal-D model with two distinct masses was
+affected; `tests/test_dyson_dressing.py::test_unequal_D_loops_order3_runs` and `::test_unequal_D_loop_dressing_ladder`
+(slow) raised it.
+
+- Each term is now one exponential, `(-1)^n expm(-t (Z + m0 I))[0, n]` on the Opitz matrix whose nodes are the
+  eigenvalues themselves (Re > 0), which only decays. Values that were finite before are unchanged to rounding.
+- The s-integral stops where its own decay bound `e^{-mu_min |tau|} e^{-2 v^2}` (times polynomials of degree
+  <= 2 order + 2) is below e^{-800}, checked to be exactly 0 there, instead of sampling an infinite interval.
+- Regression test `tests/test_dyson_large_gap.py`: closed-form divided differences, finite to t = 1e6 with nu < 0, and
+  a mass-gap-3 unequal-D tree that converges geometrically to the exact Lyapunov tree on the line.
+
+The two slow ladder tests still fail, now loudly on the spatial memory guard (the coupled loop at dressing order 2 / 3
+needs 6.4 / 10.8 GB per chamber at the default grids, against a 6 GB budget); that is a separate #55 memory
+regression (before #55 they ran at ~1.5 GB), followed up separately.
+
+### Mean-field roots do not depend on the field's units; stable roots first (audit wave W6, follow-up)
+
+- **Every root is found and selectable in every unit.** A field with no declared domain is seeded on its
+  non-negative half line; a negative root was selectable only when a seed happened to overshoot to it, which
+  depends on the units: the cubic drift `-(x - 0.3 s)(x + 1.1 s)(x - 1.7 s)/s^2` had the roots -1.1, 0.3, 1.7 at
+  s = 1 but lost -1.1 s at s = 1e-5 (and `fixed_point_index` 1 and 2 both returned 1.7e-5). The mirrored seeds'
+  roots (they were only reported, `mf_unsearched_roots`, now always empty) are selectable like any other. With
+  `domain='real'` the root 1.7 s was lost at s >= 1e5: the second-pass seed boxes are now repeated (up to 3
+  rounds) for the root scales they discover. The roots, their order and the selection are now identical up to
+  the factor s for s = 1e-8 .. 1e8.
+- **`fixed_point_index` with stability analysis off: the linearly stable roots come first** (each group ordered
+  by the first field's distance from 0, ties ascending; a change of units keeps the order), wherever the linearization decides (`.equation` rows with `Dt` terms, no
+  kernels): the default index 0 is a stable root whenever one exists. Before, roots were ascending on the axis, so
+  index 0 could be an unstable root. Where the linearization does not decide (kernels, `.set_mf_equation`
+  models), the order is unchanged and the roots only the mirrored seeds reach follow the others. Every tracked
+  model selects the same root as before and the zoo is unchanged (bit-identical; dendritic_quad_soma_sigmoid
+  1.5e-16, run-to-run scatter); `reaction_diffusion_2d` and `reaction_diffusion_quadratic_1d` list their unstable
+  negative root second (2 saddles instead of 1). Tests that selected by the ascending order were updated.
+- **`.set_mf_equation` models: the iteration saddles are the unknowns again** (the compound ones substituted),
+  the full system only when that finds no root. Since the W6 single solver the full system was searched first, so
+  a compound saddle with no declared domain (a voltage, negative at the stable root) was seeded on its
+  non-negative box: a two-neuron exponential Hawkes model written with its voltage selected the unstable upper
+  rate (n* 3.407 vs the stable 0.2789) while its spike-only twin selected the stable one. Both select 0.2789
+  again (the pre-W6 root). The same model written with `.equation` rows (the full system) selects it too: a
+  kernel symbol in an `.equation` row is now its integral (it raised NameError), and the stable-first order uses
+  the static linearization (each kernel at its integral) for models with kernels as well (ordering only: the
+  unstable-saddle refusal still skips them). Tracked `.set_mf_equation` models: same roots, saddles still at round-off (50-digit
+  check), C(tau) within 1.5e-16 of main on the A/B grid; zoo spike_reset k2 l1 (and grouped) 1.3e-14 (ulp-level saddle
+  differences amplified by the one loop), every other entry bit-identical or <= 5.5e-16.
+- **An unstable selected root is refused by name** with the analyzer off (`preflight=False`):
+  `UnstableSaddleError` names the stable indices (it surfaced as `PoleFreePropagatorError`). With the analyzer on,
+  `G2_UNSTABLE_SADDLE` refuses it as before.
+
+### Noise library, symbolic covariance, complex realizations, simulator arrays (audit wave W6, library group)
+
+- **`NormalInverseGaussian` with parameter-named `alpha` / `beta` runs (LOUD-01).** Its CGF
+  `sqrt(a^2 - b^2) - sqrt(a^2 - (b + theta)^2)` was expanded by Maxima into `I*sqrt(b^2 - a^2)` for the second root
+  when `alpha`, `beta` are symbols, a nonzero `K(0)` the mean-field check refused. The CGF is now written with the one
+  root `g = sqrt(alpha^2 - beta^2)` and a series around 1 (`K(0) = 0` identically). The mean and `C(0)` equal the
+  closed forms (`delta beta / g`, `kappa_2 / (2 mu)`) to round-off; a literal NIG moves by at most 1 ulp (`C(0)`
+  0.06954412153194652 -> 0.0695441215319465 on the test model).
+- **Symbolic C2 `tree_covariance` of a fully coupled float model (GEN-08).** A 3-field linear SDE with float
+  coefficients failed (`K * G != identity`, or `NonRationalPropagatorError` on a `^1.000` exponent): the pipeline's
+  float `G` was rationalized entry by entry, which is not the exact inverse. With `K` available, `G = K^-1` is now
+  computed exactly in the rational field (a supplied `G` is checked against it numerically, so a convention mismatch
+  is still refused) and a float-typed integral exponent is an integer. The float model equals its rational twin and
+  the Lyapunov covariance to 1.7e-15. Results of models that passed before are unchanged (their `G` was the exact
+  inverse).
+- **Complex-coefficient realizations get the exact Hurwitz test and the a-posteriori refusal (GEN-15).** The Routh
+  test returned `None` over `QQ[I]`, so `realize_K` never checked a complex realization: the graded Pade-24 4-field
+  cycle with one entry multiplied by `1 + I/1000` was accepted while its real twin was refused as `ill_conditioned`.
+  The test now runs on `p(s) conj(p)(s)` (real rational coefficients, the same root real parts): both are refused.
+  Agrees with the numerical eigenvalues on 200 random complex matrices.
+- **`build_sim_arrays` (multi-population Hawkes simulator) reads the coupling signs from the model (GEN-16).** The
+  sign of `W` came from the literal population names (`E` +, `I` -; any other name +): an A/B-named copy of an E/I
+  model simulated an all-excitatory network. The sign is now that of `d v* / d w_ij` in the model's own saddle
+  equation (at the saddle), so the A/B copy gives the E/I `W`. The time constant is read from `taug<P><Q>`,
+  `tau_g<P><Q>`, `taug` or `tau_g` (a scalar applies to every pair); a pair whose kernel filters (an
+  omega-dependent image) and has none now raises instead of a silent 1.0 (an instantaneous kernel keeps the unused
+  1.0). Tracked models: `W` and `tau_g` unchanged.
+
+### One mean-field solver, no spelling-keyed machinery, fixed Hawkes/GTaS templates (audit wave W6)
+
+- **Every model gets the same multi-root mean-field solver (GEN-02).** Models declared with `.set_mf_equation(...)`
+  went to a single-root `fsolve` iteration from four fixed unit-scale guesses (8 of the 12 zoo models); now their
+  saddle equations `s - rhs(s) = 0` go through the `.equation` solver: every root (`mf_all_roots`),
+  `fixed_point_index` selects among them (it was ignored), unit-free seeds, Newton refinement to round-off.
+  `api._mean_field.solve_mean_field` is the one front door (`compute_cumulants`, the expand-time sector check, the
+  analyzer, the symbolic routes). When the full saddle system has no root on the default search (a compound saddle
+  far out, e.g. a voltage of -100), the iteration saddles are solved alone with the others substituted, as before.
+  The same roots are selected on every tracked model; the saddles move by their old error (saddle error vs 50-digit
+  roots, main -> now: quadratic_hawkes_alpha 1.4e-11 -> 2.9e-16, spike_reset 9.9e-13 -> 4.6e-17, dendritic 2.8e-12
+  -> 2.5e-16, quad_exp 2.8e-14 -> 1.4e-16, linear models <= 2.5e-16 both). Zoo moves (max relative over the
+  entry's arrays): spike_reset k2 l1 (also grouped) 9.0e-11, quadratic_hawkes_alpha 1.4e-11, quad_exp 1.4e-11,
+  spike_reset k1 l1 2.9e-12, dendritic_quad_soma_sigmoid 2.1e-13, linear_hawkes 2.2e-16; every other entry
+  bit-identical. `stability_analysis(True)` on a model with only `.set_mf_equation` rows now raises (there are no
+  `Dt` terms to linearize; it was ignored). The roots (`mf_values`, `mf_all_roots`, `linear_stability(root=)`) are
+  keyed by each field's declared saddle name (`<field>star` unless declared otherwise). The solver dict no longer
+  carries `nstar_vals` / `vstar_vals` / `phi_deriv_vals`, and `solve_mean_field` needs a ModelBuilder model (one
+  that declares its populations; hand-written dicts without them did not run through `compute_cumulants` either).
+- **`n_populations=N` is an explicit population (GEN-01).** `ModelBuilder(name, n_populations=N)` without
+  `.population(...)` now declares the population `pop` of size N (indexed fields, parameters, kernels, one-argument
+  functions and `.equation` rows without `population=` are indexed by it); the flat-population branch that read
+  the names `nstar`/`vstar`/`E`/`g` (and `lambda_X`/`p_part`) is retired. An exact relabeling of the tracked
+  `linear_hawkes` model (`n, v, E, g -> r, u, b, k`, or `E` or `g` alone) was refused with "MF sector non-zero"; it
+  now gives the same numbers (`linear_hawkes` itself: bit-identical C(tau), saddle = closed form). A two-population
+  spatial model with a nonlinear coupling (`.equation` without `population=`) solved population 1 only and failed
+  its MF check; both are solved (OU closed form to 1e-13). When the expand-time sector check cannot run its
+  numerical check, the error now names the solver's exception (it said 'N/A').
+- **Saddle = the builder's `mean_field` flag, one naming service (GEN-03, GEN-04).** New `api.naming`. A real
+  parameter named `tstar` was hidden from `dd.param_names` / defaults and refused by `dd.run` (a `star` suffix
+  meant "saddle"); a saddle declared under any other name (`rate_mf`) was missed by the symbolic route, the
+  1-point mean, the report labels and the builder's auto-derived saddle text. Retired: the `.*star\d*` regex,
+  the `'d'`-prefix stripping, the `nstar`/`vstar`/`mstar` result fallbacks, the n/v/m table of `api.access`
+  (without a naming convention only internal names are accepted), the `'nstar'` default of the MF text compilers,
+  the `'star'` substring test of the operator-IR mean annihilation.
+- **Field names ending in digits (GEN-07).** `x1` was the ring variable `dx11`, parsed as `('dx', 11)`: every
+  spelling of the leg was refused, and `dx1` pop 1 collided with `dx` pop 11. A base ending in a digit (or `_`) now
+  gets a separator (`dx1_1`); letters-only names are unchanged. Digit-named models equal their letter twins bit for
+  bit. A saddle declared under another name now survives save / load (`api.model_serialize` dropped it).
+- **GTaS / Hawkes templates fixed and tested (GEN-05, GEN-06).** GTaS cumulants are those of the cluster process:
+  mixed-cell kappa3 / kappa4 were exactly 0 (Monte Carlo 29.6 +- 2.2 for a Campbell value 30.6 at T = 50; now the
+  Campbell integral `lambda p^2` exactly), and the kappa2 cross term ignored the leg order. `HawkesAction`,
+  `ExpSynapticKernel`, `DeltaKernel` and `GTaSNoise` read only their own name fields; `add_gtas_noise` declares
+  its parameters without values (it filled in 0.25 / 1.7 / 0.6 / 0 / 1 silently); the delta-kernel
+  specialization survives any call order. A template-built linear Hawkes model equals the text-built
+  `linear_hawkes` bit for bit (also renamed, either order).
+- **Order-2 noise kernels are evaluated in their own leg orientation (found with GEN-05).** Phase J read every
+  cumulant spec of a noise vertex at the first spec's tau, so an asymmetric cross kernel (`k_ij(tau) !=
+  k_ij(-tau)`, e.g. the GTaS shift law) was symmetrized: `<m1(t) m2(t+tau)>` was the average of the two
+  orientations. Each spec now carries its orientation (`k_ji(tau) = k_ij(-tau)`); GTaS `<m1 m2>` and `<m2 m1>`
+  equal the closed form to 1e-16, on both Phase J engines (the state-space engine hands noise-kernel diagrams to
+  the same route) and grouped. Cross-field CGF rows (`response_legs=['xt', 'yt']`) were right (two errors
+  cancelled) and are bit-identical; a reconstructed leg-field order now also passes the leg indices in the row's
+  own order at every cumulant order (an index-asymmetric coefficient of a cross-field row was read with permuted
+  indices). Such a model expanded before this change can be served from a stale expand cache: delete its
+  `saved_models/<model>/expand_*` files (the cache version is not bumped, which would re-expand every model).
+- **Noise means with Gamma functions (LOUD-02).** `CGMY` (or any library source) with a parameter-named exponent
+  stopped with `NameError: factorial` in the saddle solve; `gamma` / `factorial` are now in the solver namespaces
+  (mean and `C(0)` equal the closed forms).
+- **Symbolic loop route (GEN-17):** derived symbols (`phi0_i`, Taylor coefficients `phi{k}_i`) are no longer
+  offered as free parameters.
+- **Analyzer (W6s follow-up):** the spatial G3 check looked up `GradX` on the namespace (it lives there as a global
+  symbol), so every model with a drift or gradient vertex at a non-zero saddle got `G3_SPATIAL_FORM` ("rate checks
+  skipped"); the spatial rate checks now run.
+
+### Pole engine: unit-invariant thresholds (audit wave W4b)
+
+The pole engine (`DAEDALUS_PHASE_J_ENGINE=poles`, the supported backup of the state-space default) had absolute
+thresholds that changed answers under an exact change of time or field units. Each is now relative to the problem's
+own scale, and each fix is tested with exact time-rescaled (or field-rescaled) twins, units changed by 1e-6 to 1e6,
+against the state-space engine or a closed form (`tests/test_audit_w4b_pole_units.py`).
+Zoo A/B on BOTH engines (`use_cache=False`, base = main c8b869c): default engine 17 of 18 runnable public entries
+bit-identical, `dendritic_quad_soma_sigmoid` within 2.8e-16 (main's own scatter); pole engine 15 of 16 bit-identical,
+`spike_reset-k2-l1-grouped` within 4.1e-15 (main's own cross-process scatter on that route: repeated main runs differ
+by as much); analyzer codes identical except `ou_quartic_two_dim_color_corr` on the pole engine, which now reports
+`info:G6_ILL_CONDITIONED` (13 subset sums above their unit-correct floor, worst ratio 2.76; values bit-identical,
+`G6_ACCURACY` unchanged at 6.1e-13). No zoo number moves beyond 1e-15 except that scatter.
+
+- **Kernels with cos / sin / cosh / sinh** (`_extract_exp_modes`): `r e^{-rt} cos(rt)` at `r = 2000` was fitted as
+  ONE real exponential, because the fixed probe times 0.37, 1.9 and 4.3 underflowed and compared nothing; the one-loop
+  C was 39 % off with no warning (1.532e-3 instead of 1.105e-3 at τ = 0). At `r = 2` the same kernel was refused
+  ("Phase J could not evaluate 3 diagrams", one-loop C = 0). The probe times are now multiples of the kernel's own
+  time unit, and trig factors are written as exponentials first, so the kernel splits into its complex modes. Both
+  twins now give the state-space value (1.10487e-3, 9.6889e-4, 1.8371e-4 at τ = 0, 0.5, 2; agreement 1e-15). A trig
+  kernel that does not decay (`cos(ωt)` alone) is still refused. The state-space engine gets the same fix where it
+  used this function (a mixed cos / sin / cosh kernel at rates 1e-4 was refused there too).
+- **Residues from the numerical tiers** (when the exact tier fails): a residue entry below 1e-12 of the LARGEST entry
+  at its pole was set to 0. A field in small units (`x' = -x + c z` with `c = 1e-14`) lost its genuine `C_xz`
+  (pole-engine value 0 instead of 1.33e-14), and `propagator['C_mats']` was wrong on every engine. Entries are now
+  zero only when they are structural zeros of `K^{-1}` (exact), or rounding noise relative to the SAME entry's size
+  on a small circle around the pole (a quarter of the distance to the nearest other zero, at most half the pole's
+  modulus: a circle as wide as a far zero clipped a genuine residue, CI). Residues now agree with the exact tier
+  entry by entry (1e-12).
+- **The numerical tiers are no longer entered silently**: an exact-tier inverse that raised or ran out of time, or a
+  repeated root the cluster route did not resolve, now gives a `PoleResidueWarning`. When the exact pole record
+  exists, the analyzer reports `G3_RESIDUES_NUMERICAL_TIER`.
+- **Poles from the numerical tiers**: the retarded floor (`Im ω > 1e-9`), the pre-Newton dedup radius (1e-5), the
+  Newton exits and steps (`|det| < 1e-13`, `1e-7 (1 + |ω|)`) and the probe frequencies were absolute. In slow units
+  (`a = 1e-4`, `b = 1.05e-4`) two poles were merged, and `C_xx` came out 236 times too large with no warning. Every
+  root of `det K(ω)` is now Newton-refined with relative steps and kept only if `det K` vanishes there. A zero off the
+  real axis (|Im| > 1e-3 |ω|) keeps its sign; one near it is a retarded pole when `Im ω` exceeds 100 times its OWN
+  first-order rounding error (from the singular vectors of `K(ω)`: invariant under scaling and non-normality),
+  never a threshold set by other roots (one Newton routine; the three drifted copies are gone). After a
+  leading-coefficient trim drops genuine poles, the untrimmed polynomial's roots are the candidates (one per root;
+  restored and trimmed copies of an ill-conditioned slow pole could otherwise both be kept).
+- **Retarded poles of the exact tier and of the cluster analysis** (`api._pole_clusters`): a decay rate below the
+  absolute 1e-9 was dropped silently. Example: `y' = -b y` with `b = 5e-10` next to a unit-rate field, after
+  downgrading `G2_MARGINAL_MODE`, gave `C_yy = 0` instead of 0.2. Its 1000-times-faster twin kept the pole. The
+  decision is now made per root: a root clearly off the real axis keeps its sign; when a root is within 1e-3 of the
+  axis (relative), or 1e3 times smaller than the largest, all roots of the exact `Q(ω)` are computed at 60 digits,
+  matched one to one, and the near ones decided there (an exact zero root via `Q(0) = 0`); a root that cannot be
+  matched sends the propagator to the exact 50-digit route. The cluster analysis decides per root at its 50 digits
+  (exact zero roots from the exact factors). A
+  first version of this fix used a floor relative to the LARGEST root, which dropped the pole of a model whose
+  float parameters leave a genuine far root (a cancelling mass matrix: root ~1e16 times the pole) -- on the exact
+  tier on every platform, and on the numerical tier where that far root verifies (CI, Linux); both are tests now.
+- **Kernels written as complex exponentials** (`e^{(-r ± i r) t}` with `r` positive): the structural transform
+  refused the complex rate `(1 ∓ i) r` as "not known to be positive"; the REAL part is what must be positive (the
+  convergence condition), and is now checked. Where Sage's own integral of such a kernel fails (seen on the Linux
+  conda stack), the kernel had no image and the mean-field check took it as normalised (gain 1 against the
+  solver's 1/2), refusing a valid model with "saddle does not satisfy its own equations". Growing or undamped
+  terms are still refused.
+- **Poset chain simplex** (k ≥ 3, m ≥ 3 regions): scalar lower bounds within an absolute 1e-9 were treated as one. In
+  units 1e9 times finer, the lowers 0 and 5e-10 of a region with upper 2e-9 were merged, and the subset came out
+  36.6 % low (its unit twin went to the exact route). The tolerance is now 1e-12 of the poset's largest bound
+  (`POSET_LOWER_RTOL`).
+- **DBM / box-free conditioning floor** (`dbm_integral`): the absolute floor `COND_ATOL · scale` had the units of the
+  integrand, not of the integral. The same integral changed from `ill_conditioned` to `ok` when time was rescaled
+  (the ratio scaled as λ^-m). The pole route also passed `Σ|C|` without `e^{Re E}`, so an ill-conditioned closed
+  form in a correlator tail (`e^{-30}`) was accepted with relative error 1.2e-6 and its mp retry skipped. The
+  default scale is now `integral_scale = Σ|C| e^{Re E} · ∏_v min(w_v, 1/max|β|)`: the integrand times a volume in
+  the fastest exponent's time unit, capped by the region's own extent `w_v`. The route uses it, and the DD routes'
+  error accounting (counters for G6) uses the same volume. At rates of order one this is the old floor. One
+  consequence: a single-variable cancellation between near-equal SLOW rates (`a = -1e-3`) is accepted in double
+  precision, as its unit-rate twin always was, instead of going to the mp retry.
+
+### Test-suite precision (audit wave W5)
+
+Tests, CI and the environment only; no library code changed and no public number moved.
+
+- **A public exact-oracle suite runs in CI** (`tests/test_public_oracles.py`, references in `tests/oracles_public/refs.py`,
+  mpmath only, no package code): linear Gaussian SDEs (non-normal 3-field drift, correlated noise, a Jordan block, poles
+  1e-7 apart; Lyapunov + expm), Levy-driven linear SDEs at k = 2..4 (closed form), linear Hawkes rates and two-point
+  functions (Markov embedding), 1-D polynomial drifts loop by loop at unequal times (backward generator; the Boltzmann
+  series 1, -3, 24, -297), the delayed OU process (exact BVP), Erlang kernels, the switch-on transient (Van Loan),
+  colored noise (exact one-loop mass shift) and the 1-D Allen-Cahn tree and one loop. Tolerance 1e-12 relative to the
+  cell's scale on both the state-space and the pole engine. The equal-time
+  one loop (2e-6..7e-6 off before the exact equal-time loop rule) agrees to 3.7e-13.
+- **Mutation-killing tests** (`tests/test_audit_w5_mutation_kills.py`) for the audit's surviving mutants: Laurent
+  residues at double and triple poles, the pole-cluster cancellation factor, the Taylor degree selection of the
+  state-space exponential, and the exact delayed tree (rational K0, dynamic delayed K1, against a spectral integral; the
+  neutral-system refusal). Each test was checked to fail on its mutant.
+- **Tolerances tightened to the measured accuracy**: 327 assertions that were >= 100x looser than the worst error the
+  suite achieves (or exact under a loose tolerance) now sit at max(1e-12, the decade above 100x the worst error on
+  either the local or the CI stack); 12 were left alone (semantic thresholds, or already at the floor). Ten `pytest.approx` checks on values far
+  below 1 get `abs=0` (the default `abs=1e-12` made them vacuous, e.g. a 2e-20 residue), and a stochastic check whose
+  expected value was below its own 5-sigma band now runs at a lag where it is not. Three assertions that ran within
+  2x of their tolerance on CI's stack got a decade of room.
+- **New tests for untested public paths**: `dd.prediagram_mappings`, `RationalKernel` at a delta contact,
+  `Cumulant.smooth`, phase-type jumps from floats and a symbolic rate, the simulator's delayed-kernel ring buffer and
+  `record=`, a lift-the-bound test for the tree enumeration's |V2| bound, exact counts in the type-assignment tests,
+  and the README's Python snippets run as written (`tests/test_readme_snippets.py`).
+- **Slow tests run weekly and on demand** (`.github/workflows/slow-tests.yml`, three shards); the two tests whose
+  footprint exceeds 12 GB are marked `bigmem` and run only when asked. The analyzer's cold-cache counterparts of its
+  warm-cache skips are slow tests, so they now run there. A test that needs a git checkout skips outside one.
+- **`environment.yml` pins the exact stack CI runs** (python 3.12, numpy 2.3.5, scipy 1.17.1, sympy 1.13.3,
+  numba 0.65.1; the supported ranges stay in a comment), and CI prints the resolved versions.
+
+### Spatial engine: exact equal-time loops, derivative-vertex accuracy, approximate status (audit W6s follow-up)
+
+**Behaviour change -- these runs now REFUSE (`SpatialUVDivergenceError`); main returned grid-dependent numbers:**
+tracked `combined_allencahn_modelb_kpz_1d` at `max_ell >= 1` (d = 1), and the Model B and KPZ one-loop bubbles at
+d = 2.  Details in the UV-count item below.
+
+- **The UV power count includes derivative-vertex momenta** (`omega -= r/2`, r the even part of the form factor's
+  degree along the subgraph's loop directions), at any d. Genuinely divergent loops refuse
+  (`SpatialUVDivergenceError`); they used to return grid-dependent numbers:
+  - the Model B and KPZ one-loop bubbles at d = 2 (omega = 0);
+  - tracked `combined_allencahn_modelb_kpz_1d` at max_ell >= 1 (d = 1): the KPZ self-loop
+    <(dphi)^2> = int dk k^2 C(k) (omega = -1/2) feeds the Allen-Cahn vertex; on main its one-loop C(x=0.5,
+    tau=0.5) was -0.354 / -0.906 / -2.897 at SPATIAL_GRID_NS = 24 / 48 / 96 (tree 0.149).
+  Pure KPZ / Model B / Burgers at d = 1 are UV-finite and unchanged by the count.
+- **Equal external times (k = 2 at tau = 0, k-point events at one time) use the radial-simplex rule.** Every edge
+  weight is homogeneous there, so the radial integral is a closed-form Bessel-K (it carries the heat-kernel factor
+  e^{-x^2/4B} that the product grid resolved only jointly in (t, sigma)) and the simplex is integrated spectrally
+  (tanh-sinh stick breaking, adaptive order to 1e-9). Plain vertices, simplex dimension <= 4 (every one-loop k = 2
+  diagram, the k = 3 tree, the phi^3 two-loop diagrams). Numbers move at tau = 0 only:
+  - tracked `allen_cahn_1d_subcritical_infinite` one loop (mu 1.5, D 0.5, T 0.8, lam 0.15): was 1.2e-5 relative off
+    the exact tadpole mass shift in the one-loop correction, now 1e-13;
+  - zoo `spatial-allen_cahn_1d-l2`: 3 of 14 arrays (the tau = 0 values) move by up to 6.5e-6 relative (the
+    (16, 14) grid's error); wall 5.3 -> 18 s;
+  - a d = 2 bubble was 6e-4 off at the default grid; the k = 3 tree 1.8e-5.
+  Above dimension 4 the grid stays (a 2x refinement only when it fits the memory budget and 2e7 samples, which
+  it does not at the default grids). `SPATIAL_EQTIME=0` restores the grid, `SPATIAL_EQTIME_RTOL` (default 1e-9)
+  trades accuracy for time (one-loop phi^2 on 64 points: 6 s, the grid 0.4 s at 1e-5);
+  `result['spatial_info']['equal_time']` records the orders and changes.
+- **Derivative-vertex loops (KPZ, Model B, Burgers), any tau:** the form factor makes the loop-shrink corner an
+  integrable rho^(-1/2) singularity, which the product grid resolved like n^-2 (the KPZ C-C bubble at q = 0.5,
+  tau = 0 was 6.3 % off at the default grid; fixed 8-node kink segments capped tau != 0 at 2e-3). These diagrams
+  now use sigma = s_cap v^6 and kink segments with n_t nodes: the bubble is ~1e-4, the total C ~1e-6. Zoo
+  `spatial-reaction_diffusion_conserved_1d-l1`: 2 of 11 arrays move by up to 4.5e-4 relative (toward main's own
+  refined grid: main default 1.1e-4 off its (44, 48) value, now 2.7e-5); wall 1.4 -> 3.6 s.
+- **A spatial result is `status='ok'` or `'approximate'`, never ok when not certified.** Approximate (with
+  `result['spatial_accuracy']`, a `SpatialAccuracyWarning`, G6 `G6_SPATIAL_DERIVATIVE_LOOP` /
+  `G6_SPATIAL_EQUAL_TIME`; `policy={'mode': 'strict'}` raises `SpatialAccuracyError`): any derivative-vertex loop
+  (with the measured spread against a 0.7x coarser grid), equal-time diagrams left on the grid, coupled loops at
+  tau = 0 and coupled k-point events at equal times (zoo `spatial-coupled_rd_2species_1d-l1`: values
+  bit-identical, now approximate), `SPATIAL_INTEGRATOR=mc` / `bessel`.
+- In a mixed model a diagram whose vertices are all plain no longer gets a (constant) form factor.
+- `compute_spatial_kpoint` derivative records also report the coarse-grid spread.
+
+### Spatial engine: population legs, operators, constant drift, Dyson tree, memory guard (audit wave W6s)
+
+Models that were not affected keep their numbers bit for bit (zoo A/B below).
+
+- **Multi-population spatial fields: a leg `(name, population)` is that population.** The leg->field map stripped
+  the population digit, so `('p', 2)` computed population 1 (the default route then failed its own certification;
+  `certify=False` and the bespoke tree returned population 1 silently). Each population now equals its
+  single-population twin bit for bit (tree and one loop) and the closed form to 1e-13. An absent population or a
+  bare name of a multi-population field raises; a one-population field still accepts any label.
+- **A parameter inside a spatial operator at a non-zero saddle:** `Lap(lam*p^2)` aborted ("bilinear '__mean__'
+  has no v1 lowering") while `lam*Lap(p^2)` ran. Any operator argument free of fields and coordinates is a
+  constant and is annihilated (`kill_means(keep_syms=)`); the two spellings agree bit for bit and the tree matches
+  the closed form with `D_eff = DD - 2*lam*p*` to 1e-12.
+- **Constant drift `v*Dx(phi, 0)` is computed (it was ignored or crashed).** A drift shared by every field is
+  removed exactly by the Galilean boost: every driver (k = 2 tree and loops, coupled tree and loops, k >= 3)
+  evaluates the drift-free theory at `x - v*tau` (convention `C(x, tau) = <phi(0,0) phi(x,tau)>`; the k-point slot
+  j at `x_j - v*tau_j`; off-grid `total_C` too). Before: the diagonal tree dropped the drift (`certify=False`,
+  9.4e-3 off the exact advected OU), the default route crashed with a TypeError, the k = 2 loop guard used an
+  absolute 1e-9, the coupled drivers took `.real` of the purely imaginary `V` and never read the `GradX` symbol
+  (the namespace has no `GradX` attribute), so a coupled drift crashed (TypeError). Now: exact advected OU (erfc
+  closed form, line and periodic image sum) to 6e-17, and its exact rate-rescaled twins (1e-6, 1e8) to 6e-17.
+  Unequal drifts, cross-advection, a real `V` and `GradX^2` terms refuse, with thresholds relative to the velocity
+  scale `sqrt(|eig M| |eig D|)`; a drift at d >= 2 refuses.
+- **Unequal-diffusion (Dyson) coupled tree: no q-grid.** The dressed tree used a fixed `q_cut = 60` /
+  `n_q = 6000` cosine transform (infinite line), a fixed 1201-mode sum (periodic) and a fixed radial grid (d >= 2).
+  Each Dyson term's `q -> x` transform is now the Laguerre-Gaussian closed form and only an adaptive,
+  error-checked s-integral remains (`dyson_dressing.dressed_tree_C_x`); a periodic box sums images or dual modes to
+  convergence. Order 6 matches the exact unequal-D (Lyapunov) tree to 1.4e-8 on the line and at L = 3 and L = 400
+  (the order-6 truncation). At order 2 (truncation 3.25e-5) main was 7.0e-5 off on the line and 4.9e-5 at L = 400
+  (now 3.25e-5 on both; L = 3 was already converged) and 25-140x slower. `SPATIAL_FORCE_NUMERICAL_FT=1` keeps the grid transform as a
+  cross-check.
+- **k >= 3 derivative vertices (KPZ, Model B, Burgers) through `compute_cumulants(k>=3, spatial_points=)`:** the
+  k-point driver dropped the form factor, so the vertex was integrated as a plain `phi^2` (Model B's conserved
+  `c*Lap(p^2)` came out as exactly minus the plain `c*p^2` twin: `int dx1 dx2 kappa3 / int |kappa3|` = +1.00 where
+  conservation requires 0; now -0.048 at grid step 0.5 and -0.013 at 0.25, the O(h^2) trapezoid error). The d = 1
+  form factor reads each momentum symbol by its index (`q1` used to read `q[0]` when `q0` was absent; same for loop
+  symbols on the fallback paths) and builds the multivariate moment over all k-1 external momenta (a form factor in
+  `q0` alone had none and refused).
+- **Spatial memory guard inside every chamber.** `diagram_kinematic` checks each chamber's exact sample count against
+  `full_integrator.chamber_peak_bytes` (sample arrays, Symanzik blocks, the `(P, n_x)` heat kernel, derivative
+  moments, the d >= 2 Gauss-Hermite grid `gh^{L d}`), so the k-point driver and the d >= 2 q-path are guarded (they
+  ran unguarded: > 5 GB at k = 3, one loop, two points; 14.7 GB at d = 2, two loops, a 7-node grid). The k = 2
+  up-front guard uses the same estimate (it priced one `(P, n_x)` array x 2.5, under-counting small `n_x` 2-3x).
+  Measured tracemalloc peaks are 0.4-0.9 of the estimate. Runs whose chamber exceeds the budget now refuse
+  (`SpatialMemoryBudgetError`); the k = 2 guard is less strict at large `n_x` (it charged 40 x 8 bytes per sample
+  per output point, the real cost is ~2.5 x 8).
+
+### Fixed: unit-dependent thresholds on the default route (audit wave W4a)
+
+An exact change of units (a field measured in other units, `x -> s x`, or time in other units, `t -> t/a`) no
+longer changes a verdict or a number beyond rescaling it. Each absolute threshold below became relative to the
+model's own scale; `tests/test_unit_invariance.py` checks twins rescaled by up to 1e+-12 (tracked `ou_quartic`,
+`ou_quartic_colored`, inline models; 35 of its cases fail before this change and two more hang).
+
+- **Mean-field DAE solver** (`api/_mean_field_dae.py`): a converged point is a root when each residual row is
+  below 1e-7 of that row's linear terms at the point (a fresh finite-difference Jacobian); it was `max|R| <= 1e-7`
+  absolute, which rejected every root of a model with rates ~1e9 and, in small field units, accepted points far
+  from the root (a two-field model in 1e-6 units: saddle off by 3e-5, correlator by 5e-8). Roots are refined by
+  Newton steps to round-off (hybr stopped at ~1e-11: population models agreed with their permuted / unrolled
+  twins to 1.2e-10 only, now 6e-15); a component that is zero within its error estimate is set to an exact 0.
+  Roots are merged componentwise relative to their size and their error estimates (default `atol` now 0, was
+  1e-10: the roots {1, 2, 3}e-9 of a cubic merged into one). The default seed box is unchanged; a second pass
+  seeds a box at the scale of every root found far off that box (the cubic in field units 1e-3 found only 3s,
+  and `fixed_point_index=0` silently returned 3s instead of s), and when the default box finds nothing a ladder
+  of boxes over the decades 1e-12 .. 1e12 is tried (field units 1e-6 gave G2_NO_SADDLE). Roots with a negative
+  value in a field of undeclared domain stay outside `fixed_point_index` exactly as before (found from the
+  mirrored seeds, with the same warning). A model whose roots lie below a fifth of its largest parameter value can
+  therefore find roots it missed before, and `fixed_point_index` counts them (a cubic with roots 0.1, 0.2, 0.3 and
+  K = 100 selected 0.3 before, 0.1 now). The linear-stability tolerance is 1e-12 of the model's fastest rate read
+  off the pencil (was 1e-9 absolute; not relative to the largest eigenvalue, which a stiff model's fast mode or an
+  algebraic mode's QZ value ~1e15 would inflate). An equation that cannot be evaluated returns 1e100 (was 1e10, below the terms of a model with
+  rates ~1e11). The result carries `mf_errors` (error estimate of each selected value).
+- **Mean-field sector checks** (expand time and the selected root, shared rule
+  `engine.core.field_theory.mf_sector_residual`): residual <= 1e-6 x (sum of |terms|) plus the residual the
+  saddle's own error estimates explain. Before: an absolute 1e-9 at expand time refused valid models in field
+  units >= 1e5 or with rates >= 1e8 ("does not satisfy its own equations"), and the selected-root check's
+  absolute floor 1e-7 passed a wrong equation in small units.
+- **Analyzer** (`api/analyze.py`): the marginal-mode band is 1e-8 of the largest eigenvalue (or pole) with no
+  floor of 1.0 (a stable model in slow time units, rates 1e-9, was refused as G2_MARGINAL_MODE); the spatial
+  rate checks compare M, D and M + Vq + Dq^2 each with its own scale; the negative-variance test is relative to
+  the covariance (a small noise with a negative variance passed). Unchanged and unit invariant: a mode slower
+  than 1e-8 of the fastest is still reported marginal (two decoupled rates 1 and 1e9 are refused in every unit).
+- **G2-K Lambert W** (`api/_kernel_stability.py`): a root strictly right of the band is 'unstable' even when
+  another sits on the axis (was 'marginal'); the band is 1e-9 of the root plus the 30-digit rounding of the
+  model's rates (was absolute 1e-9: slow stable delayed models were 'marginal'); the branch count no longer grows with the time unit (8e7
+  branches at a 1e9 rescaling: a hang). The acausal-image and delay-dedup tests are relative.
+- **Delta-contact rule** (`Cumulant.integrate_against`, `contact=None`): a kernel's jump at 0 is judged against
+  the kernel's own size at 0 (a floor of 1.0 took the jump of a 1e-15 kernel for round-off and used L(0+)).
+  `kernel_at_zero(..., with_scale=True)` returns that size.
+- **PhaseType** (`api/noise.py`): the singularity test is relative to the sub-generator (rates below 1e-4 were
+  refused), the row-sum test to each row (rows of rates ~1e6 failed on +1e-10 of round-off); the MGF is written
+  `1 + theta alpha (-theta I - T)^-1 1` (the same function, exactly 1 at 0, formed without Maxima, which
+  overflowed at rates ~1e6). A compound Poisson source accepts a float `M(0) = 1 +- 1e-12` with a symbolic rate
+  (`CompoundPoisson('lam', Hyperexponential([1/3]*3, ...))` was refused with "K(0) != 0").
+- **`symbolic_out.numeric_inverse_transform`**: the contact term is the limit of the even part along the decades
+  up to 1e60 (was its value at omega = 1e9), the quadrature runs in omega / omega_s (omega_s the spectrum's
+  half-width), and `epsabs=None` (new default) is 1e-12 of the integrand's own size. Before: tau = 0 was 100 % off
+  for rates >= 1e6 or <= 1e-6, and 3e307 came back at 1e-9.
+
+- **k = 2 tau grid** (`compute_cumulants`): a grid value is the equal-time point when it is 0 to round-off of the
+  grid's own scale, and `total_C(t0, t1)` ties times within 1e-12 relative. Before, an absolute 1e-12: a model in
+  fast time units (rates 1e12, lags ~1e-13) returned C(0) at every lag below 1e-12 with status 'ok' (a
+  two-field damped rotation: 30-85 % off).
+
+Numbers that move: only models that hit one of the cases above. Zoo A/B: 23 runnable public entries (`use_cache=False`, warm-up discarded, base main c8b869c): 17 bit-identical; `dendritic_quad_soma_sigmoid` 1.5e-16, `multipopulation_test` 1.5e-16, `quadratic_hawkes_alpha` 2.0e-16, `spike_reset` k=1 1.8e-16 and k=2 1.4e-15 (two runs of main differ by the same 1.4e-15; the branch equals one of them); analyzer codes and wall times unchanged; 5 entries refuse identically on both sides (memory budget, UV, pole-free). No zoo number moves beyond main's own scatter.
+
+### Changed: macOS never forks; `DAEDALUS_PARALLEL=0` kill switch; the OBJC fork-safety flag is never set
 
 - **macOS never forks**, in any process (notebook, terminal IPython, script, pytest). `engine.fork_safety.fork_unsafe`
   is True for the `fork` start method on macOS, and every fork-based pool (Phase J `total_C_batch` /
@@ -33,7 +1100,7 @@ which still used the 0.1.0 rules; `DAEDALUS_PHASE_J_LEGACY=1` reproduces it.
   only) a forked child that runs Maxima and a full ECL garbage collection within a timeout. The fork bit-identity
   tests skip on macOS; Linux CI runs them.
 
-#### Fixed: the fork guard missed the SageMath Jupyter kernel
+### Fixed: the fork guard missed the SageMath Jupyter kernel
 
 `engine.fork_safety.fork_unsafe_in_notebook` tested the shell's class name for exactly `ZMQInteractiveShell`. The
 SageMath 10.x kernel uses the subclass `SageZMQInteractiveShell`, so inside Sage notebooks on macOS the guard returned
@@ -42,7 +1109,7 @@ The guard now treats any Jupyter kernel as unsafe for fork: `ipykernel` loaded, 
 shell's MRO, or a shell with a kernel. Those runs fall back to serial with the existing warning. Numbers do not move.
 Regression tests: `tests/test_fork_safety.py` (Sage subclass, loaded `ipykernel`, shell with a kernel).
 
-#### Front end: CGF rows, Markovian embedding, kernels, model files, delay controller (audit wave W3b)
+### Front end: CGF rows, Markovian embedding, kernels, model files, delay controller (audit wave W3b)
 
 Silent wrong numbers before; models that were not affected keep their numbers bit for bit (zoo A/B below).
 
@@ -81,7 +1148,7 @@ discarded, `use_cache=False`, base main ab19bcb): 23 runnable entries; 5 spatial
 order is derived from them); order sequence and chosen order unchanged; `status` is now `'target_missed'` in all
 four (each misses its target, as before, with a `DelayOrderWarning`).
 
-#### Fixed: conductance-kernel legs, cache staleness and unit-dependent thresholds (audit wave 3c)
+### Fixed: conductance-kernel legs, cache staleness and unit-dependent thresholds (audit wave 3c)
 
 Numbers move only for the models each item names (silent-wrong or refused before); every other model is
 unchanged (zoo A/B below).
@@ -136,7 +1203,7 @@ Tests: `tests/test_audit_wave3_kernel_slots.py`, `tests/test_audit_wave3_caches.
 `tests/test_audit_wave3_thresholds.py` (Markov-embedded twins, the indexed-kernel twin, cold-vs-warm caches, the
 manifest, exact time-rescaled twins, closed forms).
 
-#### Fixed: audit wave W3a -- silent wrong numbers on the `dd.run` route
+### Fixed: audit wave W3a -- silent wrong numbers on the `dd.run` route
 
 Regression tests: `tests/test_audit_w3a_core.py`. Cumulants do not move (zoo
 A/B bit-identical); the MOMENT outputs below do.
@@ -194,7 +1261,7 @@ A/B bit-identical); the MOMENT outputs below do.
   replaced by 41 evenly spaced points now warns and is recorded in
   `result['_kpoint_tau_resampled']`.
 
-#### Changed: k = 2 τ = 0 is the exact Itô left limit by default (`DAEDALUS_TAU0=exact`)
+### Changed: k = 2 τ = 0 is the exact Itô left limit by default (`DAEDALUS_TAU0=exact`)
 
 **Numbers move:** every k = 2 τ = 0 value moves, and only those. This covers the `C_tau` / `C_tau_by_ell` grid point
 at τ = 0, `total_C(t, t)`, and the exact delayed tree's τ = 0. The point used to be C(−1e−6), whose relative error is
@@ -235,7 +1302,7 @@ Tests:
 - Example notebooks: no printed value changes at its shown precision (the τ = 0 values are printed with 2-4
   significant digits).
 
-#### Spatial engine: quadrature and UV (audit wave 2, group 3)
+### Spatial engine: quadrature and UV (audit wave 2, group 3)
 
 Numbers move (silent-wrong before):
 
@@ -286,7 +1353,7 @@ Numbers move (silent-wrong before):
   (samples x spectral assignments) arrays unguarded).
 
 
-#### Spatial engine: loop scope guards (audit wave 2, group 2)
+### Spatial engine: loop scope guards (audit wave 2, group 2)
 
 - **Multi-field models with a diagonal kinetic block** (fields mixed only
   through the noise, e.g. `-Ta*at^2*(1+c*b^2)`): loop edges that carry another
@@ -310,7 +1377,7 @@ Numbers move (silent-wrong before):
   momentum-dependent noise) raises; it used to become 0 silently.
 
 
-#### Fixed: audit fix wave 1 -- simulation estimators (F1 group 4)
+### Fixed: audit fix wave 1 -- simulation estimators (F1 group 4)
 
 Regression tests: `tests/test_audit_wave1_estimators.py` and the transposed oracle check in
 `tests/test_coupled_rd_sim.py`. Package numbers do not move. Simulation reference curves that validation compares
@@ -332,7 +1399,7 @@ against do.
   estimator and the oracle. It used the transpose, so off-diagonal entries of a non-symmetric M at τ ≠ 0 were swapped
   relative to the pipeline.
 
-#### Fixed: audit fix wave 1 -- outputs (F1 group 3)
+### Fixed: audit fix wave 1 -- outputs (F1 group 3)
 
 Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's reproducer and fails on the old code.
 - **`symbolic_out`:**
@@ -360,7 +1427,7 @@ Regression tests: `tests/test_audit_wave1_outputs.py`. Each test is the audit's 
   - `slice_me` refuses a NaN base lag. It used to be pinned at the left limit.
 - **`save_csv` writes 17 significant digits** (round-trip exact), instead of 10.
 
-#### Fixed: audit fix wave 1 -- noise library front end (F1 group 2)
+### Fixed: audit fix wave 1 -- noise library front end (F1 group 2)
 
 Regression tests: `tests/test_audit_wave1_noise.py`. No computed number moves. A run that was silently wrong is
 now refused, and so are invalid noise declarations.
@@ -385,7 +1452,7 @@ now refused, and so are invalid noise declarations.
   A negative scale or mean (the reflected, negative-jump laws `Exponential(-1)`, `Gamma(k, -s)`, `GammaProcess(r, -s)`)
   stays valid.
 
-#### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
+### Fixed: audit fix wave 1 -- core accuracy (F1 group 1)
 
 Every fix has a regression test in `tests/test_audit_wave1.py`. Zoo A/B (11 public entries, separate processes,
 warm-up discarded, `use_cache=False`, base main 4a9e932):
@@ -423,7 +1490,7 @@ warm-up discarded, `use_cache=False`, base main 4a9e932):
   mid-stream left a silently truncated tree list. Fewer prediagrams were then written to a correctly stamped cache
   file. It now raises `RuntimeError` with gentreeg's stderr.
 
-#### Spatial engine: k=2 completion, lag convention, total_C (audit wave 2)
+### Spatial engine: k=2 completion, lag convention, total_C (audit wave 2)
 
 Numbers move (silent-wrong before):
 
@@ -445,7 +1512,7 @@ Numbers move (silent-wrong before):
   single-field d=1 tree (exact closed form).
 
 
-#### Changed: memory pre-pass is honest, `discard=` evaluates one diagram at a time, dressed lines are minimal (item 61)
+### Changed: memory pre-pass is honest, `discard=` evaluates one diagram at a time, dressed lines are minimal (item 61)
 
 - **Honest pre-pass** (`final_integral.estimate_modesum_plans`, `statespace.diagram_estimate`).
   - The exact-zero-prefactor test now also drops diagrams charged the state-space estimate.
@@ -482,7 +1549,7 @@ Numbers move (silent-wrong before):
   - Zoo: only `conductance` (k = 2, one loop) builds dressed lines; its values move by <= 2.0e-16. No other entry
     builds a dressed line.
 
-#### Fixed: known-bugs sweep (item 60)
+### Fixed: known-bugs sweep (item 60)
 
 Numbers move only where they were wrong: a conductance vertex mixing a plain and a kernel term (bug 14, below).
 Zoo A/B (11 public entries, separate processes, warm-up discarded): bit-identical except `spike_reset` k = 2
@@ -537,7 +1604,7 @@ Zoo A/B (11 public entries, separate processes, warm-up discarded): bit-identica
 - Checked, already fixed on main: the delta-in-heaviside DC gain (bug 1, #20; end-to-end test added) and the
   stale `legacy_baseline[multipopulation_test]` slow test (bug 6, refrozen in #20; passes on both engines).
 
-#### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
+### Added: kernel direct terms at vertex legs; the bare-delay refusal is per line (item 56)
 
 Numbers move only for models with a bare hard delay at a vertex leg (`x*x(t - d)`, a bare delay inside a rate
 nonlinearity), which now run the (n, n) Padé approximant instead of item 47's strictly proper `[n-1/n]` rerun: the
@@ -577,7 +1644,7 @@ proper kernel takes exactly the old code paths).
   -4.71e-4: the strictly proper approximant converges slowly for loop terms. With `order='auto'`, `x*x(t - d)` stops
   at n = 8 in 9.5 s; item 47's double pass needed `[15/16]` (113 s).
 
-#### Fixed: tier-1 residues no longer clipped across entries; memory budgets follow the machine (item 53)
+### Fixed: tier-1 residues no longer clipped across entries; memory budgets follow the machine (item 53)
 
 - **Residue clip.** The tier-1 (exact-membership, double-precision) residues were zeroed below 1e-12 of the LARGEST
   entry at their pole. Membership is exact, so every member residue is exactly nonzero and the clip could only drop a
@@ -601,7 +1668,7 @@ proper kernel takes exactly the old code paths).
   by the order of the additions only: d = 1 bit-identical, d = 2 <= 4e-16 relative, d = 3 <= 8.5e-15 relative where
   the sum cancels (old and new are equally far, <= 5e-15, from an exact `math.fsum` of the same terms).
 
-#### Fixed: mean-field saddle (round 3, item 52)
+### Fixed: mean-field saddle (round 3, item 52)
 
 - **Kernels whose integral is not 1.** `Conv(K, constant)` at the saddle is now `K(omega = 0)·constant`
   (the kernel's integral, read off its frequency image; a delay factor counts 1). It was the constant
@@ -629,7 +1696,7 @@ proper kernel takes exactly the old code paths).
   (`'a*exp(Em + c*vstar)'`, not only `vstar[i]`); it was a parse error. Results equal the 1-element
   population form bit for bit.
 
-#### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
+### Added: matrix-exponential output for every k >= 3 chamber, and the exact delayed tree's pairing and spectrum (item 54)
 
 No computed number moves (output side only).
 
@@ -652,7 +1719,7 @@ No computed number moves (output side only).
 - **Mode merging.** More than 2,000 mode terms are now merged by exact rate first and clustered row by row
   (before: an n x n comparison, 7 GB for the middle chambers). Smaller lists take the old path unchanged.
 
-#### Added: point-process front end (round 2, item 46)
+### Added: point-process front end (round 2, item 46)
 
 No existing number moves (no existing model uses the new paths).
 - `SDE.point_process('n', rate, population=..., size=...)` declares a spike train with conditional
@@ -672,7 +1739,7 @@ No existing number moves (no existing model uses the new paths).
   Gaussian sources, kernels realized exactly as state-space filters (delays by a ring buffer);
   `cross_covariance` and `mean_rate` estimators with batch-means errors.
 
-#### Fixed: package warnings were hidden under `sage -python` and the Sage kernel (item 51)
+### Fixed: package warnings were hidden under `sage -python` and the Sage kernel (item 51)
 
 `DelayOrderWarning`, `PhaseJIncompleteWarning`, `PhaseJEngineFallbackWarning`, `PhaseJDivergenceWarning`,
 `PhaseJNquadFallbackWarning`, `GroupedDeltaRecordsDroppedWarning` and `StaleResultWarning` were never shown in Sage.
@@ -688,7 +1755,7 @@ Results still carried their `status` and cap fields. No number moves.
   another message of the same category keeps working. Applies to both copies (`api.save`, `engine`'s
   `final_integral`) and every call site.
 
-#### Added: delay kernels inside nonlinear terms (round 2, item 47)
+### Added: delay kernels inside nonlinear terms (round 2, item 47)
 
 A hard delay inside a nonlinear term (`x*x(t - d)`) used to return `status='incomplete'` with a warning. It now runs.
 No number that was computed before moves: only runs that came back incomplete take the new path.
@@ -723,7 +1790,7 @@ No number that was computed before moves: only runs that came back incomplete ta
 - **Limit.** The 2-neuron spike-only one loop exceeds the Phase J memory guard (estimate about 122 GB over 1,446
   diagrams: every leg is a dressed line). Its voltage form runs.
 
-#### Added: noise library, finite-moment Levy sources and samplers (round 2, item 48)
+### Added: noise library, finite-moment Levy sources and samplers (round 2, item 48)
 
 No existing number moves (existing noise tests unchanged, zoo bit-identical).
 
@@ -742,7 +1809,7 @@ No existing number moves (existing noise tests unchanged, zoo bit-identical).
   `Meixner` (numerical inversion of the exact density); `simulate_ou_paths` is the Levy-driven OU simulator.
 - Inline `sde:` config blocks accept the new source types.
 
-#### Fixed: a declared parameter named `e` was read as Euler's number (round 2, item 48)
+### Fixed: a declared parameter named `e` was read as Euler's number (round 2, item 48)
 
 `SDE().parameter('e', ...)` with `Poisson(rate='e', size='e')` printed `exp(1)` in the action while the drift's `e` was
 the parameter, a silently wrong action and saddle. `SDE.parameter / field / define_function / define_kernel / noise(expose=)`
@@ -750,7 +1817,7 @@ now refuse the names `e`, `pi`, `I`, the keywords (`sum`, `for`, `in`, `if`, `el
 Python keywords and the elementary-function names with `SDEError` (population labels only refuse `Dt`, `Conv`, `t`,
 `theta` and Python keywords: they are loop-set labels, never symbols; `I` stays a valid population name).
 
-#### Added: matrix-exponential triples for conductance-kernel and delay-kernel models (S4b)
+### Added: matrix-exponential triples for conductance-kernel and delay-kernel models (S4b)
 
 Models with field × Conv (conductance) vertices now have triples, so `integrate_against` and `spectrum` are exact
 for them as well (one resolvent solve per block instead of quadrature). No number of `C_tau`, `C_tau_by_ell`, the
@@ -788,7 +1855,7 @@ branch are bit-identical on the tracked zoo, including its alpha-kernel conducta
     - The Phase J callables' quadrature of this model refuses long lags (a stiff segment), so there was no
       quadrature value to compare with.
 
-#### Fixed: float-literal coupled drifts, partial `parameters=`, NaN lags (round 2, item 49)
+### Fixed: float-literal coupled drifts, partial `parameters=`, NaN lags (round 2, item 49)
 
 Three input-handling bugs; no number that was computed before moves (the zoo is bit-identical wherever it built).
 
@@ -815,7 +1882,7 @@ Three input-handling bugs; no number that was computed before moves (the zoo is 
   which refuses it.  `dd.Config` rejects non-finite `tau_grid`, `chi_grid`, `times`, `tau_max`, `tau_step` and
   `kpoint_base_lags`.
 
-#### Changed: balanced truncation of the state-space realizations; the delay order controller measures its cost (item 45)
+### Changed: balanced truncation of the state-space realizations; the delay order controller measures its cost (item 45)
 
 Every per-entry realization of the propagator and every conductance kernel (`api/_realization.py`) is now
 **balanced-truncated** to a relative H-infinity tolerance (default `1e-12`, 1 % of the pipeline's default accuracy
@@ -872,7 +1939,7 @@ state-space route's cost goes.  Model-agnostic: any rational kernel (Padé delay
   at 1e-10 except one test that compares an Erlang-32 OU tree pointwise to 1e-11 (a lag where |C| is 0.003 moved by
   5e-12); at the 1e-12 default it passes -- one reason for the default.
 
-#### Added: symbolic loop corrections as rational functions (C3)
+### Added: symbolic loop corrections as rational functions (C3)
 
 `dd.symbolic_cumulant(model, k, max_ell, external_fields=...)` (`api/symbolic_loop.py`) returns the **equal-time
 cumulant** of every loop order as an exact rational function of the model parameters (and, on request, of the
@@ -902,7 +1969,7 @@ rational spectrum and, for small triples, `C(τ)` itself through C2's `tree_mode
   (`kernel_edge`), non-local noise kernels, subsets off the state-space route, spatial models, parameters entering
   through square roots (e.g. correlated-noise amplitudes `√(D1 D2)`: keep them numeric).
 
-#### Added: switch-on transients (non-stationary stage 1)
+### Added: switch-on transients (non-stationary stage 1)
 
 `compute_cumulants(..., t_min=T, times=...)` (and `dd.Config(t_min=..., times=...)`) computes the cumulants of a
 **switch-on transient**: the fluctuations about the selected mean-field saddle start at zero at the absolute time
@@ -945,7 +2012,7 @@ bit-identical to main on the tracked zoo (11 entries, k = 1, 2, 3, ℓ ≤ 2).
   ≤ 1e-13; t1 = t2 = t_min gives exactly 0; thread safety (callables from 8 threads next to a stationary
   evaluation).
 
-#### Added: delay kernels (Padé loops with an automatic order, exact tree, kernel-aware stability, delay simulator)
+### Added: delay kernels (Padé loops with an automatic order, exact tree, kernel-aware stability, delay simulator)
 
 A kernel image with a factor `exp(-I*omega*d)` (`d > 0`) is a delay kernel. Before, the analyzer stopped such a
 model (`G3_NONRATIONAL_KERNEL`); now `compute_cumulants` computes it (`api/delay.py`). No number of a model
@@ -995,7 +2062,7 @@ without a delay changes.
   stationary autocovariance of the scheme itself for linear scalar models (to separate statistics from the
   `O(dt)` bias).
 
-#### Fixed: the state-space route returned wrong numbers for some high-order rational kernels
+### Fixed: the state-space route returned wrong numbers for some high-order rational kernels
 
 `api._realization.realize_K` now checks a strongly graded realization a posteriori (balancing range above 1e6, or a
 Lyapunov margin <= 0 although the exact Routh test says Hurwitz): the rounded matrices' stationary output
@@ -1007,7 +2074,7 @@ Seen on a 4-field model with a Padé-24 / Padé-32 kernel on its cycle (|B| ~ 1e
 `G6_ACCURACY` reporting no problem; it now equals the pole engine's value. Ordinary models (balancing range within
 [0.125, 8]) are not checked and unchanged; the scalar Padé-24/32 realizations pass the check and stay on the route.
 
-#### Added: cumulants as matrix-exponential triples (C0, state-space stage S4)
+### Added: cumulants as matrix-exponential triples (C0, state-space stage S4)
 
 `dd.cumulant(result)` of a k = 2 result computed on the state-space route now also holds its smooth part as
 matrix-exponential triples, one per loop order and side: `C(τ) = c e^{G|τ|} x0` (`api/me_output.py`). Each block is
@@ -1043,7 +2110,7 @@ zoo); `spectrum()` values move within its old quadrature tolerance (its default 
   measured also: spike reset one loop 8.6e-15); pairings equal to quadrature within 1e-10; the linear-Hawkes spectrum
   equal to its closed form within 1e-12; k = 3 slices equal to `dd.run`'s (`tests/test_c0_output.py`).
 
-#### Changed: `inverse_transform` / `pair_with_kernel` run on the stage-C2 engine
+### Changed: `inverse_transform` / `pair_with_kernel` run on the stage-C2 engine
 
 `symbolic_out.inverse_transform` and `pair_with_kernel` (and the `TreeCovariance` methods) now use item 23's engine
 by default: any denominator degree (roots of factors of degree >= 3 are `RootOf` symbols), the half-plane split
@@ -1060,7 +2127,7 @@ The `legacy=True` dict has no `'modes'`, `'roots'` or `'assumptions'` keys. `dd.
 `integrate_against`, `inverse_transform`, `pair_with_kernel`, `AssumptionViolation`, `ModeTerm`, `CumulantME`,
 `RationalKernel`, `MEUnavailable`, `MEFallbackWarning`, `MEConditioningWarning` and `slice_me`.
 
-#### Fixed: compiled kernels accept `c*dirac_delta(t)` terms (`api/model_compiler.py`: `causal_exponential_ft`)
+### Fixed: compiled kernels accept `c*dirac_delta(t)` terms (`api/model_compiler.py`: `causal_exponential_ft`)
 
 A kernel given by `time_expr='(0.3*dirac_delta(t) + exp(-t/tau)/tau)*heaviside(t)'` was refused by the compiled
 transform ("factor dirac_delta(t) is not t^n or an exponential"). A `c*dirac_delta(t)` term, with or without a
@@ -1072,13 +2139,13 @@ to those of the same kernel given by `freq_image` (builder and SDE front end ali
 d != 0 is a delay, not a local term: it is refused with a message pointing to `Kernel.delay`. Kernels without delta
 terms are unchanged (same image string). No number of an existing model moves.
 
-#### Documentation: the state-space route and the engine choice
+### Documentation: the state-space route and the engine choice
 
 `ARCHITECTURE.md` describes `api/_realization.py` and `engine/integration/time_domain/statespace.py` (what each
 does, how the engine is chosen, `DAEDALUS_PHASE_J_ENGINE=poles`, `PHASE_J_MEM_BUDGET_GB`); the README has a short
 section on the engine choice.
 
-#### Changed: the state-space route is the default Phase J engine (`DAEDALUS_PHASE_J_ENGINE=poles` switches back)
+### Changed: the state-space route is the default Phase J engine (`DAEDALUS_PHASE_J_ENGINE=poles` switches back)
 
 The state-space subset integrator below is now used for every subset it can take; `DAEDALUS_PHASE_J_ENGINE=poles`
 restores the pole engine everywhere (the dispatch then never imports the module, and its numbers are those of
@@ -1138,7 +2205,7 @@ within 1e-13). In each case the value that moves is the pole engine's, checked a
 (A local zoo model whose one-loop cumulant is exactly 0 reads 0 on the route and ~1e-21 of rounding on the pole
 engine.)
 
-#### Changed: faster mean-field-sector check in `FieldTheory.expand`; no number moves
+### Changed: faster mean-field-sector check in `FieldTheory.expand`; no number moves
 
 `_verify_and_zero_mf_sector` ran `simplify_full` on every coefficient of the mean-field sector and, for the numerical
 tier, solved the saddle again for each of them. A coefficient that interval arithmetic (128 bits, at a point that
@@ -1152,7 +2219,7 @@ previous source). Whole zoo `expand()` 15.9 s -> 6.4 s; public models, taylor or
 (4) 0.45 -> 0.20, `multipopulation_test` (4) 0.28 -> 0.18; a polynomial-coefficient model with float coefficients
 (order 4) 12.9 -> 7.4 (the check 6.9 -> 1.4).
 
-#### Fixed: front-end and engine leftovers
+### Fixed: front-end and engine leftovers
 
 - A scalar model (no `.population()`) whose closure is given by `set_mf_equation('nstar', 'a*exp(Em + c*vstar[i])')`
   (or `define_function`) failed the mean-field self-check: its saddle parameters carry no `indexed_by`, so the
@@ -1178,13 +2245,13 @@ previous source). Whole zoo `expand()` 15.9 s -> 6.4 s; public models, taylor or
   `D[0](f)(...)` atoms cannot be written in the front end and the legacy `taylor()` leaves such an atom unexpanded when
   its argument is not a bare field (the per-atom route already agrees with it where it expands).
 
-#### Tests
+### Tests
 
 - `tests/test_phase_j_legacy_baseline.py::test_heavier_entries_reproduce[multipopulation_test-k2-l1-default]` (slow)
   failed at 1.5e-4: its stored tree level and `polytope_m0_direct` predate the pole-cluster resolution (item 21). The
   original baseline file is untouched; the two moved arrays and the counter are refrozen beside it.
 
-#### Added: state-space subset integrator (opt-in, DAEDALUS_PHASE_J_ENGINE=statespace) (`engine/integration/time_domain/statespace.py`, one dispatch point in `final_integral.py`; no number moves with the flag unset)
+### Added: state-space subset integrator (opt-in, DAEDALUS_PHASE_J_ENGINE=statespace) (`engine/integration/time_domain/statespace.py`, one dispatch point in `final_integral.py`; no number moves with the flag unset)
 
 A Phase J subset integral evaluated without poles, residues or pole tuples, on the realization layer
 `api/_realization.py` (`G(t) = C e^{At} B + D δ(t)`). Each smooth edge carries the minimal realization of ITS
@@ -1232,7 +2299,7 @@ need no special case. The module docstring has the method and a proof sketch.
   3.2 GB, values equal to 1.2e-14); its tree + one loop on a 201-point grid: 0.77 s batched, 1.45 s per point
   (Phase J 16 s).
 
-#### Fixed: front-end small bugs: SDE `time_expr` kernels, `Conv` on a bare field, `_is_single_function_call` (`api/sde.py`, `api/model_compiler.py`; no number moves)
+### Fixed: front-end small bugs: SDE `time_expr` kernels, `Conv` on a bare field, `_is_single_function_call` (`api/sde.py`, `api/model_compiler.py`; no number moves)
 
 - **SDE `time_expr` kernel integral.** `SDE._kernel_dc` (the kernel's integral for the mean-field equations) asked
   Maxima for the integral and failed on a difference of exponentials,
@@ -1250,7 +2317,7 @@ need no special case. The module docstring has the method and a proof sketch.
 - `SDE.notes` is rebuilt on every derivation (it already was; a test now pins that `equations()`, `build()` and
   `show()` do not duplicate entries).
 
-#### Changed: Phase J leaves exact-zero residue modes out of its pole-tuple plans; k >= 3 one loop from tens of minutes (or out of memory) to seconds (`final_integral.py`, `grouped_integral.py`, `daedalus.py`; no number moves)
+### Changed: Phase J leaves exact-zero residue modes out of its pole-tuple plans; k >= 3 one loop from tens of minutes (or out of memory) to seconds (`final_integral.py`, `grouped_integral.py`, `daedalus.py`; no number moves)
 
 Every propagator edge carried one mode per pole, including poles whose residue in that entry is exactly 0. A
 driven filter that does not feed back (red noise on an oscillator) makes `K` block triangular, and the entries
@@ -1277,7 +2344,7 @@ instead of 0.97 M for a 4-field one with two.
   in-process A/B against main, warm-up discarded: 40 of 42 entries bit-identical, the other 2 raise the same
   error on both sides, total wall 0.99x.
 
-#### Added: Phase J memory budget `PHASE_J_MEM_BUDGET_GB` (default 6) (`final_integral.py`, `api/compute.py`, `api/_grouped_phase_j.py`)
+### Added: Phase J memory budget `PHASE_J_MEM_BUDGET_GB` (default 6) (`final_integral.py`, `api/compute.py`, `api/_grouped_phase_j.py`)
 
 Phase J refuses rather than exhausting memory. A pre-pass at the start of Phase J estimates the tuples every
 plan will hold (`estimate_modesum_plans`: per diagram, the nonzero modes of each propagator edge, the δ-subset
@@ -1293,7 +2360,7 @@ budget (`PHASE_J_MEM_BUDGET_GB` in GB, or `off`). The estimate is in `result['ph
 (`diagnostics['phase_j_memory']`) and in the assumptions ledger (`phase_j_memory_budget`). No zoo entry is near
 the default budget.
 
-#### Changed: pure-integrator mean-field equations are accepted (`api/model.py`, `api/_mean_field_dae.py`)
+### Changed: pure-integrator mean-field equations are accepted (`api/model.py`, `api/_mean_field_dae.py`)
 
 `.equation(lhs='Dt*h[i]', rhs='-om*T[i]')`, whose LHS vanishes at Dt = 0, used to be refused with a request to
 move the algebraic part to the LHS. It now builds: the saddle text is derived as for the moved form
@@ -1308,7 +2375,7 @@ as written for the joint DAE solve. Three cases are refused with a clear message
 Models without a pure-integrator equation are untouched. Tests: `tests/test_zero_mode_pruning.py`,
 `tests/test_mf_lhs_coefficient.py`.
 
-#### Added: state-space realization of propagators (internal, not yet used by Phase J) (`api/_realization.py`)
+### Added: state-space realization of propagators (internal, not yet used by Phase J) (`api/_realization.py`)
 
 `realize(prop, num_params)` writes the propagator `G(s) = K(s)^{-1}` (s = iω) as `C (sI − A)^{-1} B + D`,
 `G(t) = Θ(t) C e^{At} B + D δ(t)`, without an eigenvalue or a numerical root. The algebra is exact over QQ at
@@ -1330,7 +2397,7 @@ and any other `A` gets scipy's `expm`. `stationary_covariance(Q)` uses a Lyapuno
 refinement and refuses when `A` is not Hurwitz. Nothing in the pipeline
 calls the module yet; no number changes. Tests: `tests/test_realization.py`.
 
-#### Fixed: high-degree rational kernels and propagators gave C = 0 or a wrong C without a warning (`api/_propagator.py`, `api/analyze.py`)
+### Fixed: high-degree rational kernels and propagators gave C = 0 or a wrong C without a warning (`api/_propagator.py`, `api/analyze.py`)
 
 The exact propagator tier decided that a pole `p_k` of `Q(ω)` (the common denominator) is not a pole of entry
 `(i, j)` by an absolute test, `|Q_ij(p_k)| > 1e-9`, on the entry's monic denominator. At high degree its rounding
@@ -1368,7 +2435,7 @@ exact state-space references at 80 digits; `tests/test_residue_membership.py` ch
 ≤ 3.3e-13). Two-population linear Hawkes models with Erlang-8 and Erlang-16 kernels match too (measured ≤ 2.2e-14;
 not in the test suite, about 2 minutes each).
 
-#### Fixed: vertices with a field times a convolution, `x·Conv(g, y)`, were wrong, dropped or took days (`final_integral.py`, `api/_expand_cache.py`, `api/_diagrams.py`, `engine/core/vertices.py`)
+### Fixed: vertices with a field times a convolution, `x·Conv(g, y)`, were wrong, dropped or took days (`final_integral.py`, `api/_expand_cache.py`, `api/_diagrams.py`, `engine/core/vertices.py`)
 
 Such a vertex (a "conductance" synapse `v·(g∗n)`, any `x·(g∗y)` coupling) puts its `y` leg at its own time `s`,
 joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which one a run met depended on the cache:
@@ -1414,7 +2481,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   kernel that is not a finite exponential sum are refused by name (write the filter as auxiliary linear fields);
   between separated rates the result equals the Markov embedding to 1.6e-13 at an 11 % gap.
 
-#### Fixed: the propagator and typed-diagram caches served another model with the same name (`api/_propagator.py`, `api/_diagrams.py`; pre-existing)
+### Fixed: the propagator and typed-diagram caches served another model with the same name (`api/_propagator.py`, `api/_diagrams.py`; pre-existing)
 
 - Both caches are keyed by the model name; a model that differs only in a kernel's image (or any other text) got the
   other model's propagator: e.g. an alpha-kernel model returned an exponential-kernel model's numbers exactly. Both
@@ -1431,7 +2498,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   correction to 7e-15, k = 3 at tree level to 5e-14.
 - No tracked model has such a vertex; no tracked number moves.
 
-#### Fixed: a diagram Phase J cannot evaluate is no longer dropped silently (`api/compute.py`, `api/_grouped_phase_j.py`, `api/analyze.py`)
+### Fixed: a diagram Phase J cannot evaluate is no longer dropped silently (`api/compute.py`, `api/_grouped_phase_j.py`, `api/analyze.py`)
 
 - Before, such a diagram was listed in `phase_j_by_ell[ell]['skipped_kernel_ids']` and left out of `C_tau`, and
   `compute_cumulants` said nothing (on the grouped route, a diagram that failed inside the per-diagram fallback was
@@ -1443,7 +2510,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   `phase_j_status` stamp (`load_provenance`), and `dd.run`'s moment assembly marks its result incomplete when one
   of its extra runs is.
 
-#### Added: high-precision exact route for ill-conditioned subsets (`dbm_integral.integrate_exp_sum_mp`)
+### Added: high-precision exact route for ill-conditioned subsets (`dbm_integral.integrate_exp_sum_mp`)
 
 - A DBM closed form that fails its conditioning test (its expansion cancels: near-equal decay rates) is evaluated
   once more by the same elimination in 40-digit arithmetic before the subset may go to quadrature
@@ -1452,7 +2519,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   the double path is unchanged and thread safe). It answered the 9 subsets of the spiking model that needed 411 s
   of quadrature before the kernels were folded into lines (they now need neither).
 
-#### Fixed: a declared function applied to an expression, and `time_expr` kernels with symbolic time constants (`api/model_compiler.py`, `api/model.py`)
+### Fixed: a declared function applied to an expression, and `time_expr` kernels with symbolic time constants (`api/model_compiler.py`, `api/model.py`)
 
 - `define_function('phi', ['v'], 'a[i]*exp(v)')` called as `phi[i](Em[i] + sum(w[i,j]*Conv(r[i,j], n[j]) for j in E))`,
   or `g(a*x)` in an SDE drift, or any function whose formal argument names no field (`define_function('g', ['v'],
@@ -1474,17 +2541,17 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   left behind. Where the rule does not apply, the error names the parameter(s) without `domain='positive'` and
   points to `freq_image=`. Kernels Sage already transformed keep Sage's image.
 
-#### Changed: documentation (no code path changes)
+### Changed: documentation (no code path changes)
 
 - README: the config-file section now says `daedalus run config.yaml` (the console script of `[project.scripts]`), not `dd run`, which is the name of the Python alias, not a command; `sage -python -m daedalus run ...` is unchanged. The same fix is in the module docstring and the missing-PyYAML message of `api/config_run.py` and in a test docstring.
 - ARCHITECTURE.md lists the modules added since 0.2.0 (`api/{config_run,sde,noise,cumulant,cumulant_plot,symbolic_out,_pole_clusters,_expand_cache,colored_to_markovian}.py`, `engine/integration/time_domain/{expdd,boxfree,dbm_integral}.py`) with one line each.
 - Tracked text no longer names models that are not in the public repository: the two perf tables and one sentence below that named a local two-field OU quartic model now describe it structurally, and `docs/spatial_pipeline.md` points at the public model and simulator paths (it still said `theories/...` and `models/...sim.py`).
 
-#### Added: notebook CI workflow (`.github/workflows/notebooks.yml`)
+### Added: notebook CI workflow (`.github/workflows/notebooks.yml`)
 
 - A separate workflow that executes every `notebooks/examples/**/*.ipynb` with `jupyter nbconvert --execute` (per-notebook and whole-job timeouts) in the same conda environment as `tests.yml`. It runs only on `workflow_dispatch` and a weekly schedule, writes the executed copies to a temporary directory (the shipped outputs are not touched) and uploads them as a build artifact.
 
-#### Changed: `FieldTheory.expand` on non-polynomial actions, minutes to about a second (`engine/core/field_theory.py`)
+### Changed: `FieldTheory.expand` on non-polynomial actions, minutes to about a second (`engine/core/field_theory.py`)
 
 - The action is now Taylor-expanded node by node: sums add, products and positive integer powers multiply with
   truncation at total degree `taylor_order` at every step, and each distinct non-polynomial atom (`exp`, `log`,
@@ -1511,7 +2578,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   longer prints each ring element to test it for emptiness (`str()` of a ring element over SR compares every
   coefficient with 1 and could take 10 s; `api/compute.py`).
 
-#### Fixed: the SDE front end refuses drifts with no syntactic linear term (`api/sde.py`; no number moves for a model that built before)
+### Fixed: the SDE front end refuses drifts with no syntactic linear term (`api/sde.py`; no number moves for a model that built before)
 
 - `SDE.drift('x', '-x/(1+eps*x^2)')`, `'-x*exp(-eps*x^2)'`, an SGD logistic-loss gradient, or any drift
   whose linear coefficient contains a field, raised `SDEError: ... rhs has no linear term ... field-independent
@@ -1532,7 +2599,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
 - Still refused, with the workaround spelled out: a lhs or rhs that cannot be read symbolically (e.g. a
   population sum in the rhs), and a drift that does not depend on the field at all.
 
-#### Added: symbolic tree-level covariance in the time domain, any denominator degree (`api/symbolic_out.py`, stage C2)
+### Added: symbolic tree-level covariance in the time domain, any denominator degree (`api/symbolic_out.py`, stage C2)
 
 - `tree_modes(C0, omega)` / `TreeCovariance.modes(a, b)` return `C(tau)` as a
   `ModeSum`: terms `Mode(coeff, rate, power, side)`, each
@@ -1572,7 +2639,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   linear Hawkes models (contact = mean rate), each also after positive
   domains were put on the same symbol names. No pipeline number changes.
 
-#### Added: regime advisories and a one-table report in the model analyzer (D3, D4)
+### Added: regime advisories and a one-table report in the model analyzer (D3, D4)
 
 - New gate G5 in `api/analyze.py`, read-only (no number moves; added preflight time is a few ms). `ModelTraits`
   gains `pole_rate_min`/`pole_rate_max` (decay-rate range of the poles), `tree_std` (tree-level standard
@@ -1594,7 +2661,7 @@ joined to the vertex time `t` by the kernel `g(t − s)`. Three defects; which o
   is an error (as in `dd.Config`); console script `daedalus` (`[project.scripts] daedalus = "daedalus:main"`); an inline
   `sde:` block can replace `model:` (single scalar populations; noise types of `api.noise`).
 
-#### Added: the δ components of a cumulant (no `C_tau` number moves)
+### Added: the δ components of a cumulant (no `C_tau` number moves)
 
 A shot-noise model (a point process: Hawkes, spike reset, δ spikes) has
 spikes `w δ(...)` in its cumulants, on hyperplanes of the external times (for
@@ -1624,7 +2691,7 @@ OUT of `C_tau` (unchanged: `C(0)` is the continuous part) and are now exposed:
   header). Files without it still load (`Cumulant.from_saved` then reports
   `complete=False`). The flag stamp gains `USE_SHOTNOISE_INTEGRATED`.
 
-#### Fixed: δ records that were dropped (records only; `C_tau` is bit-identical)
+### Fixed: δ records that were dropped (records only; `C_tau` is bit-identical)
 
 - Loop corrections to a δ weight were skipped: a shot-noise subset that keeps
   internal times after the δ elimination (e.g. the one-loop mean rate under
