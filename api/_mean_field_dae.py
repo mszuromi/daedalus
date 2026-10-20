@@ -208,9 +208,10 @@ def _make_phi_callables(model: dict, params: dict) -> dict[str, '_PhiCallableLis
 
         # Translate Sage power ``^`` to Python ``**`` once.
         expr_py = _sage_to_python(expr_text)
+        expr_code = compile(expr_py, '<mean-field function>', 'eval')
         callables = []
         for i in range(pop_size_val):
-            def phi_i(x_val, _expr=expr_py, _arg=arg_name,
+            def phi_i(x_val, _expr=expr_code, _arg=arg_name,
                       _i=i, _params=params):
                 ns = {**_SPECIAL_NS, **_params, **_MATH_NS,
                       _arg: x_val, 'i': _i,
@@ -363,16 +364,23 @@ def _build_residual(model: dict, params_np: dict,
     # describing a SINGLE scalar residual.  Power operator ``^`` is
     # translated to ``**`` here so the strings are valid Python.
     expanded = []
-    mag_texts = []          # per row: magnitude texts (``_magnitude_text``)
+    mag_texts = []          # per row: compiled term-size form (``_magnitude_text``)
+    row_codes = []          # per row: compiled ``(lhs) - (rhs)``
     for eq in equations:
         pop = eq['population']
         pop_size_val = _pop_size(model, pop) if pop is not None else 1
         lhs_py = _sage_to_python(eq['lhs_text'])
         rhs_py = _sage_to_python(eq['rhs_text'])
         lhs_m, rhs_m = _magnitude_text(lhs_py), _magnitude_text(rhs_py)
+        # compiled once: ``eval`` of the text parsed it on every one of the
+        # thousands of residual calls of a solve (the same arithmetic: lhs,
+        # then rhs, then the difference)
+        diff_code = compile(f'({lhs_py}) - ({rhs_py})', '<mean-field row>', 'eval')
+        mag_code = compile(f'({lhs_m}) + ({rhs_m})', '<mean-field row size>', 'eval')
         for i in range(pop_size_val):
             expanded.append((lhs_py, rhs_py, i, pop))
-            mag_texts.append((lhs_m, rhs_m))
+            mag_texts.append(mag_code)
+            row_codes.append(diff_code)
 
     # Identify single-position state vars so the namespace binds them
     # as bare numpy scalars (size-1 arrays support bare arithmetic
@@ -411,53 +419,53 @@ def _build_residual(model: dict, params_np: dict,
             '__builtins__': {},
         }
         out = np.empty(len(expanded), dtype=float)
-        for k, (lhs_text, rhs_text, i, pop) in enumerate(expanded):
-            ns['i'] = i
-            try:
-                # A saturating expression (``1/(1 + exp(300*x^2))``) overflows
-                # to a valid value; numpy's overflow / invalid warning, issued
-                # from this frame whose ``__builtins__`` is empty, would fail
-                # with ``KeyError('__import__')`` once warnings are shown
-                # (pytest, ``-W``).  Silence it; the values are unchanged.
-                with np.errstate(all='ignore'):
-                    lhs = eval(lhs_text, ns)
-                    rhs = eval(rhs_text, ns)
-                # A scalar (no-population) model evaluates its state as
-                # 1-element arrays; ``float(array)`` is deprecated for
-                # ndim > 0 (NumPy 1.25) and will raise, so unwrap explicitly.
-                diff = np.asarray(lhs - rhs, dtype=float).reshape(-1)
-                if diff.size != 1:
-                    raise ValueError(
-                        f'residual of equation {k} ({lhs_text!r} = '
-                        f'{rhs_text!r}, i={i}) is not a scalar: shape '
-                        f'{np.shape(lhs - rhs)}.')
-                val = float(diff[0])
-                if mag is not None:
-                    with np.errstate(all='ignore'):
-                        mv = (eval(mag_texts[k][0], ns)
-                              + eval(mag_texts[k][1], ns))
-                    mv = float(np.asarray(mv, dtype=float).reshape(-1)[0])
-                    mag[k] = mv if math.isfinite(mv) else _PENALTY
-                # an overflow / invalid operation silenced above gives inf or
-                # NaN, never an exception: penalize it like the exceptions
-                # below, so a NaN residual can never pass as a root (NaN
-                # compares False against every tolerance)
-                out[k] = val if math.isfinite(val) else _PENALTY
-            except NameError as exc:
-                # (still a NameError: the multi-start loop swallows ValueErrors
-                # as "no fixed point from this seed")
-                raise NameError(
-                    f'mean-field DAE solve: {exc} in the equation '
-                    f'{lhs_text!r} = {rhs_text!r}.  If it is a model '
-                    f'parameter, it was not in the parameters given and '
-                    f'declares no default (pass parameters={{...}} or '
-                    f'declare default= on ModelBuilder.parameter).') from exc
-            except (ValueError, ZeroDivisionError, OverflowError,
-                    FloatingPointError):
-                # Penalize: send the solver away from this region.
-                out[k] = _PENALTY
-                if mag is not None:
-                    mag[k] = _PENALTY
+        # A saturating expression (``1/(1 + exp(300*x^2))``) overflows to a
+        # valid value; numpy's overflow / invalid warning, issued from a frame
+        # whose ``__builtins__`` is empty, would fail with
+        # ``KeyError('__import__')`` once warnings are shown (pytest, ``-W``).
+        # Silence it (once per call); the values are unchanged.
+        with np.errstate(all='ignore'):
+            for k, (lhs_text, rhs_text, i, pop) in enumerate(expanded):
+                ns['i'] = i
+                try:
+                    d = eval(row_codes[k], ns)
+                    # A scalar (no-population) model evaluates its state as
+                    # 1-element arrays; ``float(array)`` is deprecated for
+                    # ndim > 0 (NumPy 1.25) and will raise, so unwrap
+                    # explicitly.
+                    if type(d) is np.ndarray:
+                        if d.size != 1:
+                            raise ValueError(
+                                f'residual of equation {k} ({lhs_text!r} = '
+                                f'{rhs_text!r}, i={i}) is not a scalar: shape '
+                                f'{d.shape}.')
+                        val = float(d.flat[0])
+                    else:
+                        val = float(d)
+                    if mag is not None:
+                        mv = eval(mag_texts[k], ns)
+                        mv = float(mv.flat[0]) if type(mv) is np.ndarray else float(mv)
+                        mag[k] = mv if math.isfinite(mv) else _PENALTY
+                    # an overflow / invalid operation silenced above gives inf
+                    # or NaN, never an exception: penalize it like the
+                    # exceptions below, so a NaN residual can never pass as a
+                    # root (NaN compares False against every tolerance)
+                    out[k] = val if math.isfinite(val) else _PENALTY
+                except NameError as exc:
+                    # (still a NameError: the multi-start loop swallows
+                    # ValueErrors as "no fixed point from this seed")
+                    raise NameError(
+                        f'mean-field DAE solve: {exc} in the equation '
+                        f'{lhs_text!r} = {rhs_text!r}.  If it is a model '
+                        f'parameter, it was not in the parameters given and '
+                        f'declares no default (pass parameters={{...}} or '
+                        f'declare default= on ModelBuilder.parameter).') from exc
+                except (ValueError, ZeroDivisionError, OverflowError,
+                        FloatingPointError):
+                    # Penalize: send the solver away from this region.
+                    out[k] = _PENALTY
+                    if mag is not None:
+                        mag[k] = _PENALTY
         return out
 
     return R, expanded
