@@ -23,6 +23,7 @@ import shutil
 import tempfile
 
 import pytest
+from tests._cputime import CpuClock  # noqa: E402
 
 
 # A model file we can hit cheaply (~9 s cold, ~0.2 s warm at order 4).
@@ -161,7 +162,7 @@ def test_compute_cumulants_warm_cache_speedup(
 
     model, fundamental = model_and_fund
 
-    t0 = time.perf_counter()
+    clock = CpuClock()
     th1 = compute_cumulants(
         model=model, k=2, max_ell=0,
         fundamental=fundamental,
@@ -169,9 +170,9 @@ def test_compute_cumulants_warm_cache_speedup(
         tau_max=5.0, tau_step=1.0,
         parallel=False, verbose=False,
     )
-    t_cold = time.perf_counter() - t0
+    t_cold = clock.elapsed()
 
-    t0 = time.perf_counter()
+    clock.reset()
     th2 = compute_cumulants(
         model=model, k=2, max_ell=0,
         fundamental=fundamental,
@@ -179,7 +180,7 @@ def test_compute_cumulants_warm_cache_speedup(
         tau_max=5.0, tau_step=1.0,
         parallel=False, verbose=False,
     )
-    t_warm = time.perf_counter() - t0
+    t_warm = clock.elapsed()
 
     # Outputs must match exactly.
     assert np.allclose(th1['C_tau'], th2['C_tau'], rtol=1e-12, atol=1e-12), \

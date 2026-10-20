@@ -7,7 +7,6 @@ multipopulation_test ~10 s) are timed only when the pipeline's expand cache is w
 never writes it."""
 import copy
 import importlib.util
-import time
 import types
 from pathlib import Path
 
@@ -22,9 +21,10 @@ from api.analyze import FINDING_CODES, Finding, ModelReport, Policy, analyze  # 
 from api.model import TemporalModelBuilder                                    # noqa: E402
 from api.noise import CompoundPoisson, Dirac, Gaussian                        # noqa: E402
 from api.sde import SDE                                                       # noqa: E402
+from tests._cputime import CpuClock  # noqa: E402
 
 MODELS = Path(__file__).resolve().parent.parent / 'models'
-BUDGET_S = 10.0
+BUDGET_S = 10.0            # CPU seconds (tests._cputime.CpuClock), not wall seconds
 HEAVY = {'dendritic_quad_soma_sigmoid', 'multipopulation_test'}   # cold expand >= budget
 
 
@@ -399,9 +399,9 @@ def test_fast_and_leaves_model_unchanged(name):
     if name in HEAVY and not _warm(name, model):
         pytest.skip(f'{name}: cold expand exceeds the budget; warm saved_models/ first')
     before = copy.deepcopy(model)
-    t0 = time.perf_counter()
+    clock = CpuClock()                           # CPU seconds: a loaded machine must not fail it
     analyze(model, question=q)
-    wall = time.perf_counter() - t0
+    wall = clock.elapsed()
     _same(model, before)
     assert wall < BUDGET_S, f'{name}: {wall:.2f}s'
 
