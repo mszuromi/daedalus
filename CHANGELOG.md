@@ -10,7 +10,7 @@ which still used the 0.1.0 rules. (The `DAEDALUS_PHASE_J_LEGACY` switch that
 reproduced it was retired in 0.3.0; those numbers survive as frozen test baselines.)
 "After" is the new default.
 
-## 0.3.0 (2026-10-19)
+## 0.3.0 (2026-10-20)
 
 The release after the full-codebase audit (142 root causes; 124 fixed with a test). Highlights: the state-space Phase J
 engine is the default and is unit-invariant; tau = 0 is the exact Ito left limit; one multi-root mean-field solver; delay
