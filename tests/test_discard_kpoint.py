@@ -254,3 +254,30 @@ def test_delay_auto_order_unchanged_by_discard():
     assert b['phase_j_memory']['discard'] is True
     i = [tuple(p) for p in b['points'].tolist()].index((0.0, 0.0, 0.0))
     assert b['C_points'][i] == complex(a['total_C'](0.0, 0.0, 0.0))
+
+
+def test_discard_per_diagram_identical_at_scale():
+    """Thousands of one-loop diagrams (a two-field k = 3 run): every
+    diagram's value and every sum is the same with and without discard
+    (both runs cold: ``use_cache=False``; the on-disk caches are a separate
+    matter)."""
+    model = _two_field()
+    kw = dict(k=3, max_ell=1, external_fields=[('x', 1), ('y', 1), ('x', 1)],
+              parallel=False, verbose=False, use_cache=False)
+    pt = (0.0, 0.0, 0.0)
+    a = compute_cumulants(model, tau_grid=np.array([0.0]), **kw)
+    b = compute_cumulants(model, points=[pt], discard=True, **kw)
+    n = 0
+    for ell, ra in a['phase_j_by_ell'].items():
+        if not ra:
+            continue
+        va = [complex(g['contribution'](*pt)) for g in ra['groups']
+              if g.get('contribution') is not None]
+        vb = b['phase_j_by_ell'][ell]['eval_per_diagram_batch'](
+            [pt], parallel=False)[0][0]
+        assert va == [complex(v) for v in vb]
+        assert complex(a['total_C_by_ell'][ell](*pt)) == \
+            b['C_points_by_ell'][ell][0]
+        n += len(va)
+    assert n > 4000
+    assert complex(a['total_C'](*pt)) == b['C_points'][0]
