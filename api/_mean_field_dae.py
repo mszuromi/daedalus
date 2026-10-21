@@ -744,7 +744,10 @@ def _undeclared_domain_vars(state_vars, model, seed_box):
 #: ``|R_k| <= _ROOT_RTOL * sum_j |J_kj| w_j`` (``J``: a finite-difference
 #: Jacobian at the point; ``w_j = max(|x_j|, 1e-8 c_j)``, ``c_j`` the typical
 #: size of variable ``j`` over the converged points): the residual is
-#: negligible against the size of the row's linear terms.  (Was an absolute
+#: negligible against the size of the row's linear terms -- or, for a row
+#: whose linear terms are themselves round-off (no linear scale: the
+#: components it depends on are ~0), is round-off of the row's own terms
+#: (16 ulps of ``|lhs| + sum |rhs terms|``).  (Was an absolute
 #: ``max|R| <= 1e-7``: large units were rejected, tiny units accepted points
 #: far from the root.)
 _ROOT_RTOL = 1e-7
@@ -786,11 +789,23 @@ def _hybr_point(R, x0):
     except (ValueError, ZeroDivisionError, OverflowError,
             FloatingPointError):
         return None
-    if not sol.success or not np.all(np.isfinite(sol.x)):
+    if not np.all(np.isfinite(sol.x)):
         return None
     x = np.asarray(sol.x, dtype=float)
-    f = R(x)
+    m = np.empty(len(x))
+    f = R(x, m)
     if not np.all(np.isfinite(f)):
+        return None
+    if not sol.success and not (
+            np.max(np.abs(x)) <= 1e-8 * np.max(np.abs(x0))
+            and np.all(np.abs(f) <= 16.0 * np.finfo(float).eps * m)):
+        # hybr's stop test is a step RELATIVE to ``x``: converging to an
+        # exact 0 whose rows cancel only to round-off, it never passes and
+        # reports no progress; the point is kept when the whole vector
+        # collapsed toward 0 and every row is at its round-off
+        # (``_refine_root`` decides).  Not a stall elsewhere: far out in a
+        # decaying drift's flat tail ``x + f(x)`` rounds to ``x`` as well,
+        # and such a point is no root.
         return None
     return _snap_zeros(R, x, f, (x != 0) & (np.abs(x) <= 1e-8 * np.abs(x0)))[0]
 
@@ -980,7 +995,21 @@ def _refine_root(R, x, c):
             x, f, snapped = xs, fs, True
     if snapped:
         q, rho = rel(f, x)
-    if not np.all((f == 0) | (np.abs(f) <= _ROOT_RTOL * rho)):
+        R(x, m)
+        noise = 16.0 * np.finfo(float).eps * m
+    # A row is satisfied when its residual is negligible against its linear
+    # terms -- or, when those are themselves round-off of the row (it has no
+    # linear scale), is round-off of the terms it is evaluated from: at a
+    # root whose components in the row are 0 (every converged point there,
+    # so c ~ 0) ``rho`` is ~0, while rows with cancelling terms --
+    # ``(a - b) + b e^{-x} - a e^{x}`` at x = 0 -- evaluate to a few ulps of
+    # those terms, never to an exact 0.  Only there: with ``rho`` above
+    # round-off a round-off residual is no evidence (far out in a decaying
+    # drift's flat tail ``x = x + f(x)`` is at round-off of ``|x|`` and is no
+    # root); and ``rho <= noise`` leaves a nonzero component its row does not
+    # resolve to the position test below.
+    if not np.all((f == 0) | (np.abs(f) <= _ROOT_RTOL * rho)
+                  | ((rho <= noise) & (np.abs(f) <= noise))):
         return None
     if np.any((x != 0) & (err >= np.abs(x))):
         return None                    # its position is not resolved
