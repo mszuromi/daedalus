@@ -659,6 +659,34 @@ def _delay_time_scale(ctx) -> float:
     return T if T is not None else 1.0
 
 
+def _sample_points(k, t_scale=1.0):
+    """The k >= 3 sample points of ``_observable`` (times in units of
+    ``t_scale``)."""
+    return [tuple([0.0] + [0.3 * (j + 1) * (i + 1) * t_scale for i in range(k - 1)])
+            for j in range(4)]
+
+
+def _with_sample_points(sub_call, k, t_scale):
+    """``sub_call`` for a k >= 3 evaluate-and-discard run with fixed points
+    (``points``, or ``tau_grid=[0.0]``: the equal-time point): the sample
+    points of ``_observable`` are added, so the error estimate and the order
+    the controller picks are those of the same run without discard."""
+    if k < 3 or sub_call.get('discard', False) is False:
+        return sub_call
+    pts = sub_call.get('points')
+    if pts is None:
+        from api._grids import resolve_grid
+        tg = resolve_grid(sub_call.get('tau_grid'), 'tau_grid')
+        if tg is None:
+            return sub_call
+        tg = np.asarray(tg, dtype=float).ravel()
+        if tg.size != 1 or float(tg[0]) != 0.0:
+            return sub_call           # no fixed points: compute_cumulants says so
+        pts = [(0.0,) * k]
+    pts = [tuple(float(x) for x in p) for p in np.asarray(pts, dtype=float)]
+    return dict(sub_call, points=pts + _sample_points(k, t_scale))
+
+
 def _observable(r, k, t_scale=1.0):
     """Total and loop part of the observable on the grid (k <= 2), or at a few
     sample points of ``total_C`` (k >= 3), at times in units of ``t_scale``
@@ -670,8 +698,17 @@ def _observable(r, k, t_scale=1.0):
         tree = np.asarray(by.get(0), dtype=complex) if by.get(0) is not None else 0 * tot
         return tot, tot - tree
     # k >= 3: total_C(t0, ..., t_{k-1}) at a few distinct, ordered times
-    pts = [tuple([0.0] + [0.3 * (j + 1) * (i + 1) * t_scale for i in range(k - 1)])
-           for j in range(4)]
+    pts = _sample_points(k, t_scale)
+    if r.get('C_points') is not None:
+        # evaluate-and-discard: the callables answer the run's fixed points
+        # only, and ``_run_orders`` added these sample points to them
+        where = {tuple(p): i for i, p in
+                 enumerate(np.asarray(r['points'], dtype=float).tolist())}
+        sel = [where[p] for p in pts]
+        tot = np.asarray(r['C_points'], dtype=complex)[sel]
+        t0 = (r.get('C_points_by_ell') or {}).get(0)
+        return tot, tot - (np.asarray(t0, dtype=complex)[sel]
+                           if t0 is not None else 0 * tot)
     tot = np.array([complex(r['total_C'](*p)) for p in pts])
     f0 = (r.get('total_C_by_ell') or {}).get(0)
     tree = np.array([complex(f0(*p)) for p in pts]) if f0 is not None else 0 * tot
@@ -1005,6 +1042,7 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             'stop': None, 'truncation_by_order': {}, 'loop_error_pred': {},
             'sample_time_scale': _delay_time_scale(ctx) if k >= 3 else None}
     t_scale = ctrl['sample_time_scale'] or 1.0
+    sub_call = _with_sample_points(sub_call, k, t_scale)
     last = None                    # (result, order, its estimate, the order that measures)
     for i, n in enumerate(seq):
         t_cur = t_base if last is None else _next_truncation(opts, t_base, *_lastargs(last, k, n),
