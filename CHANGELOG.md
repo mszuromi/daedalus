@@ -10,6 +10,143 @@ which still used the 0.1.0 rules. (The `DAEDALUS_PHASE_J_LEGACY` switch that
 reproduced it was retired in 0.3.0; those numbers survive as frozen test baselines.)
 "After" is the new default.
 
+## 0.3.1 (2026-10-21)
+
+The Marcus rule for jump and non-Gaussian noise (`SDE(...).interpretation('marcus')`, exact coefficients for affine
+couplings), a mean-field fix for saddles that sit exactly at zero, and evaluate-and-discard for k >= 3 runs with fixed
+evaluation points. Entries are newest first.
+
+### Evaluate-and-discard at k >= 3
+
+`discard=True` / `'auto'` now works for k >= 3 runs whose evaluation points are known up front. Before, every
+k >= 3 diagram kept its lazy point callable, about 45 KB each, so a large one-loop run could hit the run-growth
+guard even though no single diagram was large.
+
+- **Points.** `compute_cumulants(points=...)` takes the `(n, k)` external-time tuples the result will be read at
+  (duplicates are dropped). `tau_grid=[0.0]` with `discard` means the equal-time point. `dd.run` passes the points
+  it will read: those of its slices, of the runs with permuted legs (cumulants with legs of different fields), of
+  the full grid (`kpoint_full_grid`) and of the moment's cumulant blocks.
+- **What is kept.** Each diagram is evaluated at those points right after it is built, one call per point (as a
+  `discard=False` result is read). Then it is released and its charge is refunded. The values are bit-identical to
+  reading a `discard=False` result at the same points, and the summation order is unchanged.
+  `result['C_points']` / `result['C_points_by_ell']` hold the values at `result['points']`. The callables answer
+  those points only and raise `DiscardedDiagramsError` anywhere else.
+- **Delay kernels.** With the automatic Padé order, a discard run also carries the order controller's four sample
+  points (they appear in `result['points']`). The controller then estimates its error at the same points as without
+  discard, and picks the same order.
+- **`'auto'` mid-run.** As before, `'auto'` turns on when the pre-pass estimate is over the budget and the largest
+  diagram fits. It now also turns on mid-run: when the estimate is under the budget, the run starts with the
+  callables kept. At the first diagram boundary where measured growth exceeds `DISCARD_AUTO_GROWTH_FRACTION` (0.5)
+  of the budget, it switches. The diagrams built so far are evaluated at the points in diagram order and released,
+  so the values are the same. This applies to k = 1, 2 as well. A loop order finished before the switch keeps its
+  callables. `result['phase_j_memory']['discard_switched_at']` records where the switch happened.
+- **Messages.** The growth guard's refusal now says when evaluate-and-discard applies to the run. For a k >= 3 run
+  without points, it says what it needs (`points=`). The pre-pass refusal says the same when the largest diagram
+  fits.
+
+### Mean field: a saddle at an exact 0 whose rows cancel to round-off is found
+
+`solve_mean_field_dae` refused a model whose exact saddle is the origin when the drift rows only cancel there to
+round-off, for example `(a - c) + c e^{-x} - a e^{x}` with the constants split across several rate terms. Every run
+stopped at `G2_NO_SADDLE` ("no MF fixed point found from 64 seeds"). This hit the SDE front end with
+state-dependent `Poisson` sources coupled to several fields, and hand-written `TemporalModelBuilder` rows in the
+same form. There were two causes.
+
+- **Acceptance.** A root was accepted when each residual row is below `1e-7` of the row's linear scale
+  `sum_j |J_kj| |x_j|`. At a root whose components are 0, that scale is 0 (or round-off), so a residual of a few
+  ulps was refused. A row whose linear terms are themselves round-off is now satisfied when its residual is
+  round-off of its own terms (16 ulps of `|lhs| + sum |rhs terms|`, the allowance the zero snap and the
+  finite-difference Jacobian already use). Rows with a linear scale above round-off keep the relative test.
+  Accepting round-off there would admit points far out in a decaying drift's flat tail, where `x = x + f(x)` sits at
+  the round-off of `|x|`.
+- **The hybrid solve.** `hybr` stops on a step relative to `x`. Converging to an exact 0 against a round-off
+  residual floor, it never passes that test and reports no progress, so the start was dropped. Such a point is now
+  kept only when the whole vector collapsed toward 0 (below `1e-8` of the seed) and every row is at its round-off;
+  the refinement and acceptance above decide.
+
+New tests in `tests/test_mf_exact_zero_root.py`: a two-node shot-noise model with the saddle at `(0, 0)` to
+round-off, built both in the SDE front end and by hand with `set_action_text`. The one-loop results agree, and the
+tree matches the Lyapunov covariance to `1e-10`. Two rate splits of the same drift are covered. Further tests cover
+a round-off zero next to a nonzero field, and a round-off zero among other roots. They also check that 0 is still
+refused when it is not a root, that a shifted root with terms `1e3` times the drift is found, and that no flat-tail
+point displaces the stable root of a bistable drift.
+
+### Marcus rule: exact noise terms for affine couplings, and a sharper truncation advisory
+
+Under `interpretation('marcus')`, a jump source whose coupling is affine in its own field now gets its noise term
+exactly from the jump law's mgf. Before, it was a moment series in the jump size. This covers `(a + b x) <> dL`,
+and also vector couplings where each component is affine in its own field or constant.
+
+- **The exact term.** The flow is closed form: `phi_z(x) - x = (x + a/b)(e^{bz} - 1)`. So the coefficient of
+  `(xt (x + a/b))^n / n!` is `lam E[(e^{bz} - 1)^n]`, built from mgf values. It is kept to `SDE.series_order`
+  response legs. A run needs `SDE.series_order >= k + max_ell`, because that is how many response legs its vertices
+  can use; `compute_cumulants` refuses a lower order by name. The series route still needs `k + 2*max_ell`.
+- **Why it matters.** The old series diverges at degree `n > 1/(|b| th)` for a multiplicative coupling with
+  exponential jumps, even though the exact coefficient is finite. Take `b x <> dL` with `Exponential(th)` jumps. The
+  advisory fired for essentially every such model, and the high-degree vertices were unreliable. On the exact route
+  that model's saddle equals the exact mean to `1e-16`, and the loop series converges to the exact covariance with
+  the `ell >= 4` tail (`3.1e-8` at `max_ell = 3`). No advisory fires.
+- **No cancellation for the common laws.** Exponential, Poisson and other exp-sum or rational mgfs give one-fraction
+  coefficients, for example `lam n! th^n / prod_j (1 - j b th)`.
+- **Laws with no one-fraction form** (Gaussian or non-integer Gamma jumps) give an alternating mgf sum. That sum can
+  lose digits at small `b`. `compute_cumulants` measures this rounding and warns past `1e-10`, naming the remedy:
+  the new `SDE.marcus_route('series')` (also `sde.marcus_route` in configs). The series converges fast there.
+- **Missing mgf.** If the jump law's mgf does not exist where a usable vertex needs it (`E[e^{n b z}] = inf`), the
+  run is refused before the mean-field solve. The message names the degree. A degree that `(k, max_ell)` cannot
+  reach is recorded as `mgf_degree_limit` instead. Poles of even order (Gamma(2) jumps, for example) are found too:
+  the check uses the real roots of polynomial bases and the unexpanded CGF. The refusal is conservative: a
+  covariance that happens to need only low mgf values, such as one with a linear drift, is refused as well.
+
+Other couplings (non-affine ones, or affine ones that read another moved field, such as a rotation) keep the series
+route.
+
+The advisory (`result['marcus_truncation']`, `MarcusTruncationWarning`, G6) now counts only the vertices the run can
+use. Each term is expanded about the saddle into vertices `xt^r dx^q`, and a vertex counts only if
+`r + q <= k + 2*max_ell` (loop counting) and `r <= k + max_ell` (loop grading of the response legs). For example, an
+omitted degree-8 vertex no longer warns at `k = 2, max_ell = 1`. Rows now carry `route` (`'series'` or `'exact'`)
+and `admissible`, and `relative_by_degree` is keyed by the response degree `r`.
+
+Gaussian-only and additive models are unchanged, still byte-identical to `'stratonovich'` and Ito.
+
+### The Marcus rule for jump and non-Gaussian sources: `SDE(...).interpretation('marcus')`
+
+A multiplicative jump `g(x) <> dL` now has a Marcus interpretation. A jump `z` moves the state along the flow of the
+coupling, `x -> exp(z G) x` with `G = sum_i g_i(x) d/dx_i`. A conductance-type jump `-w (V - Es) <> dN`, for example,
+takes `V - Es` to `e^{-w} (V - Es)`, so it never crosses `Es`. The Ito jump `(1 - w)(V - Es)` does cross it when `w > 1`.
+
+The action stays Ito-ordered, because it is built from the generator. A source with cumulant rates `kappa_k` contributes
+`sum_k kappa_k/k! D_k`, with `D_k = e^{-xt.x} G^k e^{xt.x}`, in place of `K(sum_i g_i xt_i)`. Enumeration and Phase J
+are therefore unchanged.
+
+- **Gaussian sources and Gaussian parts of a sum** take the existing Stratonovich conversion. A Gaussian-only model gives
+  exactly the `'stratonovich'` action, equations and notes.
+- **Jump sources with a constant coupling** are unchanged, since the flow of a constant field is a translation. A model
+  with only additive jumps gives exactly the Ito action.
+- **Jump sources with a state-dependent coupling** carry the series to `SDE.series_order`. Its theta-linear part (the
+  mean drift) enters the action once and the mean-field equations once, as for any non-Gaussian source.
+  `compute_cumulants` sizes the first omitted term at the saddle, per response degree up to `k + 2*max_ell`, and
+  stores the result in `result['marcus_truncation']`. Above `1e-10` it warns (`MarcusTruncationWarning`) and adds the
+  G6 finding `G6_MARCUS_TRUNCATION_LOW`; otherwise it adds `G6_MARCUS_TRUNCATION`.
+- **Rates.** A state-dependent rate is the pre-jump rate and stays outside the flow.
+- **Refused under Marcus, with messages:**
+  - exposed sources;
+  - a point process whose spikes enter an equation with a state-dependent coefficient or size;
+  - couplings that read other units of a population (joint jumps);
+  - state-dependent `Cumulants` and `CGF` sources, whose Gaussian part cannot be told from their jumps;
+  - moment-series jump laws below the series order;
+  - spatial models (`Policy(interpretation='marcus')`).
+- **`'stratonovich'` with a jump source** still refuses, and its message now points to `'marcus'`.
+
+The simulator (`SDE.simulate`) now handles jump sources coupled to fields:
+
+- **Ito:** the pre-jump coupling times the increment.
+- **Marcus:** the exact flow of the coupling over the step's increment (the flows of one source compose). It uses the
+  closed form `x + psi_z(A) b(x)` for an affine coupling, and DOP853 at `rtol 1e-11` otherwise.
+- **Gaussian sources under `'stratonovich'`/`'marcus'`** take the Ito drift correction.
+
+`'marcus'` is accepted by `config_run` (`sde.interpretation`, `policy.interpretation`, and a new `sde.series_order`) and by
+the analyzer's convention ledger. Models without `'marcus'` are unchanged (no numbers move).
+
 ## 0.3.0 (2026-10-20)
 
 The release after the full-codebase audit (142 root causes; 124 fixed with a test). Highlights: the state-space Phase J
