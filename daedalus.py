@@ -1409,17 +1409,26 @@ def _kpoint_plan(cfg, k, tau):
     # The external times of every slice point, computed once: slice j
     # sweeps leg j, the other non-anchor legs sit at ``base``, and a
     # point where leg j meets another leg is the LEFT limit of the
-    # slice (``_kpoint_slice_times``).
-    if exact_tie:
-        pts = {j: [_kpoint_slice_point(base, j, t, tie_scale)
-                   for t in tau] for j in range(1, k)}
-        plan['slice_times'] = {j: [p[0] for p in v] for j, v in pts.items()}
-        plan['slice_orders'] = {j: [p[1] for p in v] for j, v in pts.items()}
-    else:
-        plan['slice_times'] = {j: [_kpoint_slice_times(base, j, t, _ITO_EPS)
-                                   for t in tau] for j in range(1, k)}
-        plan['slice_orders'] = {j: [list(range(k))] * tau.size
-                                for j in range(1, k)}
+    # slice (``_kpoint_slice_times``).  A failure is kept
+    # (``slice_error``): ``run`` reports it as a failed slice evaluation.
+    plan['slice_error'] = None
+    try:
+        if exact_tie:
+            pts = {j: [_kpoint_slice_point(base, j, t, tie_scale)
+                       for t in tau] for j in range(1, k)}
+            plan['slice_times'] = {j: [p[0] for p in v]
+                                   for j, v in pts.items()}
+            plan['slice_orders'] = {j: [p[1] for p in v]
+                                    for j, v in pts.items()}
+        else:
+            plan['slice_times'] = {
+                j: [_kpoint_slice_times(base, j, t, _ITO_EPS) for t in tau]
+                for j in range(1, k)}
+            plan['slice_orders'] = {j: [list(range(k))] * tau.size
+                                    for j in range(1, k)}
+    except Exception as e:          # as broad as the slice evaluation's catch
+        plan['slice_error'] = e
+        plan['slice_times'] = plan['slice_orders'] = None
     # the full grid's axis: downsampled so the n^{k−1} evaluations stay
     # bounded
     n = min(tau.size, max(2, int(4000 ** (1.0 / (k - 1)))))
@@ -1444,10 +1453,18 @@ def _kpoint_run_points(plan, legs, k, full_grid, moment):
                 tuple(times[o] for o in order))
     if full_grid:
         g = plan['grid_tau']
-        for idx in itertools.product(range(g.size), repeat=k - 1):
-            runs[legs].append(tuple(plan['grid_args']([g[m] for m in idx])))
+        try:
+            grid = [tuple(plan['grid_args']([g[m] for m in idx]))
+                    for idx in itertools.product(range(g.size), repeat=k - 1)]
+        except Exception:
+            grid = []       # the grid's own evaluation fails and reports it
+        runs[legs].extend(grid)
     if moment:
-        for key, pts in _moment_block_points(k, plan['tau'], legs).items():
+        try:
+            blocks = _moment_block_points(k, plan['tau'], legs)
+        except Exception:
+            blocks = {}     # likewise for the moment (``_kappa``)
+        for key, pts in blocks.items():
             runs.setdefault(key, []).extend(pts)
     return runs
 
@@ -1741,7 +1758,12 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                               else np.arange(-kw['tau_max'], kw['tau_max']
                                              + kw['tau_step'] * 0.5,
                                              kw['tau_step']))
-        if kw.get('discard') not in (None, False):
+        if kw.get('discard') not in (None, False) and (
+                _kplan['slice_error'] is not None):
+            # no slice points: the slices fail (reported below), and the
+            # run keeps its callables
+            kw['discard'] = False
+        elif kw.get('discard') not in (None, False):
             _kpoint_runs = _kpoint_run_points(
                 _kplan, [tuple(e) if isinstance(e, (list, tuple)) else e
                          for e in kw['external_fields']], k,
@@ -1845,6 +1867,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         try:
             # The external times of every slice point (``_kpoint_plan``).
             # Kept in the result.
+            if _kplan['slice_error'] is not None:
+                raise _kplan['slice_error']
             slice_times = _kplan['slice_times']
             slice_orders = _kplan['slice_orders']
             tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()

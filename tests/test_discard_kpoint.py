@@ -281,3 +281,25 @@ def test_discard_per_diagram_identical_at_scale():
         n += len(va)
     assert n > 4000
     assert complex(a['total_C'](*pt)) == b['C_points'][0]
+
+
+@pytest.mark.parametrize('disc', [True, 'auto'])
+def test_slice_failure_still_reported(monkeypatch, disc):
+    """A k >= 3 slice whose points cannot be computed is reported as with
+    discard=False: the result is incomplete, warns, and has no moment."""
+    from api.compute import PhaseJIncompleteWarning
+
+    def boom(*a, **kw):
+        raise RuntimeError('slice evaluation failed')
+    monkeypatch.setattr(dd, '_kpoint_slice_times', boom)
+    monkeypatch.setattr(dd, '_kpoint_slice_point', boom)
+    for out in ('cumulant', 'moment'):
+        with pytest.warns(PhaseJIncompleteWarning, match='slices'):
+            r = dd.run(_cubic(), dd.Config(
+                k=3, max_ell=0, tau_grid=[0.0, 1.0], discard=disc,
+                external_fields=[('x', 1)] * 3, output=out,
+                use_cache=False, verbose=False))
+        assert r['status'] == 'incomplete' and r['C_tau'] is None
+        assert 'slice evaluation failed' in r['_kpoint_slice_error']
+        if out == 'moment':
+            assert r['moment'] is None
