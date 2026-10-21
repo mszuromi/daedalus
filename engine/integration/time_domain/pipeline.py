@@ -898,7 +898,11 @@ def compute_correction_td(
             _at.setdefault(pt, (p_idx, tot))
 
         def _lookup(pt):
-            hit = _at.get(tuple(pt))
+            try:                # numpy scalars and 0-d arrays: plain floats
+                key = tuple(float(x) for x in pt)
+            except (TypeError, ValueError):
+                key = tuple(pt)
+            hit = _at.get(key)
             if hit is None:
                 raise DiscardedDiagramsError(
                     f'this Phase J run used discard=True: its diagrams were '

@@ -13,6 +13,9 @@ guard even though no single diagram was large.
   reading a `discard=False` result at the same points, and the summation order is unchanged.
   `result['C_points']` / `result['C_points_by_ell']` hold the values at `result['points']`. The callables answer
   those points only and raise `DiscardedDiagramsError` anywhere else.
+- **Delay kernels.** With the automatic Padé order, a discard run also carries the order controller's four sample
+  points (they appear in `result['points']`). The controller then estimates its error at the same points as without
+  discard, and picks the same order.
 - **`'auto'` mid-run.** As before, `'auto'` turns on when the pre-pass estimate is over the budget and the largest
   diagram fits. It now also turns on mid-run: when the estimate is under the budget, the run starts with the
   callables kept. At the first diagram boundary where measured growth exceeds `DISCARD_AUTO_GROWTH_FRACTION` (0.5)

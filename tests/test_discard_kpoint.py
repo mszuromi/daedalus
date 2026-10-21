@@ -96,8 +96,10 @@ def test_off_point_queries_raise():
     assert getattr(g, 'discarded', False)
     with pytest.raises(dd.DiscardedDiagramsError, match='released'):
         g(*POINTS[0])
-    # on the points: the same sums
+    # on the points: the same sums, whatever the argument types
     assert complex(b['total_C'](*POINTS[1])) == b['C_points'][1]
+    assert complex(b['total_C'](*[np.asarray(t) for t in POINTS[1]])) == \
+        b['C_points'][1]
 
 
 def test_equal_time_point_and_validation():
@@ -232,3 +234,23 @@ def test_auto_stays_off_without_pressure():
              discard='auto')
     assert r2['phase_j_memory']['discard'] is False and 'points' not in r2
     complex(r2['total_C'](0.0, 0.7))
+
+
+def test_delay_auto_order_unchanged_by_discard():
+    """The delay order controller estimates its error at fixed sample points
+    (``api.delay._observable``); a discard run carries them along, so it
+    picks the same order and gives the same values."""
+    m = (SDE('discard kpoint delay').parameter('a', default=1.0)
+         .parameter('c', default=-2.0)
+         .parameter('d', default=0.5, domain='positive')
+         .parameter('b', default=0.3).parameter('D', default=0.1)
+         .field('x').drift('x', '-a*x + c*x(t - d) - b*x^2')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    kw = dict(parallel=False, delay={'tol': 5e-5})
+    a = _cc(m, 3, 0, tau_grid=np.array([0.0]), **kw)
+    b = _cc(m, 3, 0, tau_grid=np.array([0.0]), discard=True, **kw)
+    assert b['delay']['n'] == a['delay']['n']
+    assert b['delay'].get('est_by_order') == a['delay'].get('est_by_order')
+    assert b['phase_j_memory']['discard'] is True
+    i = [tuple(p) for p in b['points'].tolist()].index((0.0, 0.0, 0.0))
+    assert b['C_points'][i] == complex(a['total_C'](0.0, 0.0, 0.0))
