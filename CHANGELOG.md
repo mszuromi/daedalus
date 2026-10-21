@@ -10,7 +10,7 @@ which still used the 0.1.0 rules. (The `DAEDALUS_PHASE_J_LEGACY` switch that
 reproduced it was retired in 0.3.0; those numbers survive as frozen test baselines.)
 "After" is the new default.
 
-## 0.3.1 (2026-10-20)
+## 0.3.1 (2026-10-21)
 
 The Marcus rule for jump and non-Gaussian noise (`SDE(...).interpretation('marcus')`, exact coefficients for affine
 couplings), a mean-field fix for saddles that sit exactly at zero, and evaluate-and-discard for k >= 3 runs with fixed
