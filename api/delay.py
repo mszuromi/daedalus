@@ -669,6 +669,13 @@ def _observable(r, k, t_scale=1.0):
         tot = np.asarray(r['C_tau'], dtype=complex)
         tree = np.asarray(by.get(0), dtype=complex) if by.get(0) is not None else 0 * tot
         return tot, tot - tree
+    if k >= 3 and r.get('C_points') is not None:
+        # evaluate-and-discard: the values at the run's fixed points (the
+        # callables answer only those)
+        tot = np.asarray(r['C_points'], dtype=complex)
+        t0 = (r.get('C_points_by_ell') or {}).get(0)
+        return tot, tot - (np.asarray(t0, dtype=complex) if t0 is not None
+                           else 0 * tot)
     # k >= 3: total_C(t0, ..., t_{k-1}) at a few distinct, ordered times
     pts = [tuple([0.0] + [0.3 * (j + 1) * (i + 1) * t_scale for i in range(k - 1)])
            for j in range(4)]

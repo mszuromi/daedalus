@@ -788,10 +788,25 @@ def _combine_phase_j(results, nodes):
     return out
 
 
+#: ``discard='auto'`` with the pre-pass estimate under the budget: the run
+#: switches to evaluate-and-discard at the first diagram boundary where its
+#: measured growth (``final_integral.run_growth``) exceeds this fraction of
+#: the budget; the growth guard refuses at 1.
+DISCARD_AUTO_GROWTH_FRACTION = 0.5
+
+#: What a k >= 3 run without fixed evaluation points needs for
+#: evaluate-and-discard (pre-pass and growth-guard messages).
+_DISCARD_POINTS_HINT = (
+    'needs the evaluation points up front: points= (the external-time '
+    'tuples to evaluate; dd.run passes its slice points, tau_grid=[0.0] '
+    'is the equal-time point).')
+
+
 def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                               prop, model, k, max_ell, verbose, preflight,
                               ss_route=None, n_tau=1, run_budget=None,
-                              discard=False, discard_ok=False):
+                              discard=False, discard_ok=False,
+                              discard_hint=None):
     """The estimate of the modesum-plan memory of the whole Phase J
     run (``final_integral.estimate_modesum_plans`` over every diagram of
     every ell, times the pole-deformation node runs), recorded in the
@@ -911,9 +926,14 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
                    f"({charged / ram:.0%} of it)." if ram else
                    f"  The estimate is {charged / 1e9:.2f} GB (this "
                    f"machine's RAM is unknown).")
-        if not on and discard_ok and runs == 1 and held <= budget:
+        if not on and runs == 1 and held <= budget and (discard_ok
+                                                        or discard_hint):
             machine += ("  The largest diagram alone fits: discard=True "
-                        "(or 'auto') evaluates one diagram at a time.")
+                        "(or 'auto') evaluates one diagram at a time."
+                        if discard_ok else
+                        f"  The largest diagram alone fits: discard=True "
+                        f"evaluates one diagram at a time; at k >= 3 it "
+                        f"{discard_hint}")
         if not w or not w['edges']:
             raise _fi.PhaseJResourceError(
                 f"Phase J memory estimate more than {factor}x over budget "
@@ -1601,6 +1621,7 @@ def compute_cumulants(
     initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
     delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
     discard=False,                   # evaluate each diagram on the grid, then release it (True / 'auto')
+    points=None,                     # k>=3 temporal: the (n, k) external-time tuples the result is read at
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1705,13 +1726,28 @@ def compute_cumulants(
         the memory budget), so Phase J holds one diagram at a time: the
         pre-pass compares the largest diagram plus one segment working
         set with the budget instead of the sum.  Needs fixed evaluation
-        points: k = 1 or 2 with a τ grid (no switch-on, no pole-cluster
-        deformation pass).  The values are the same; the
+        points: k = 1 or 2 with a τ grid, or k >= 3 with ``points``
+        (or ``tau_grid=[0.0]``, the equal-time point); no switch-on, no
+        pole-cluster deformation pass.  The values are the same; the
         result's callables (``total_C``, ``total_C_by_ell``, the
-        per-diagram callables) then answer the grid points only and raise
+        per-diagram callables) then answer those points only and raise
         ``DiscardedDiagramsError`` elsewhere (rerun with
         ``discard=False``).  ``'auto'``: on exactly when the summed
-        estimate is over the budget and the largest diagram fits.
+        estimate is over the budget and the largest diagram fits; when
+        the estimate is under the budget the run starts with the callables
+        kept and switches to evaluate-and-discard at the first diagram
+        boundary where the run's measured growth exceeds
+        ``DISCARD_AUTO_GROWTH_FRACTION`` (0.5) of the budget (the diagrams
+        built before then are evaluated on the points and released; the
+        values are the same).  ``result['phase_j_memory']['discard']``
+        says whether it was on, ``['discard_switched_at']`` where.
+    points : array (n, k) or None
+        k >= 3 temporal runs: the external-time tuples (``total_C``'s
+        arguments, one time per leg in ``external_fields`` order) the
+        result will be read at; duplicates are dropped.  It fixes the
+        evaluation points for ``discard`` (``dd.run`` passes its slice
+        points).  With evaluate-and-discard on, ``result['C_points']`` /
+        ``result['C_points_by_ell']`` hold the values at ``result['points']``.
     verbose : bool
         Print progress messages.
     policy : api.analyze.Policy, dict or None
@@ -1977,6 +2013,28 @@ def compute_cumulants(
     elif not (isinstance(discard, str) and discard == 'auto'):
         raise ValueError(f"discard={discard!r}: expected False, True or "
                          f"'auto'")
+    if points is not None:
+        _pa = np.asarray(points, dtype=float)
+        if k < 3:
+            raise ValueError(
+                f'points= is for k >= 3 (the external-time tuples of a '
+                f'k-point cumulant); k = {k} is read on tau_grid.')
+        if t_min is not None:
+            raise ValueError('points= with t_min: a switch-on run takes its '
+                             'absolute external times from times=.')
+        if spatial_grid is not None or spatial_points is not None or (
+                isinstance(model, dict) and model.get('spatial')):
+            raise ValueError('points= is for temporal runs; spatial k >= 3 '
+                             'events are spatial_points=.')
+        if _pa.ndim != 2 or _pa.shape[1] != k or _pa.shape[0] < 1:
+            raise ValueError(
+                f'points must have shape (n, k) = (n, {k}), n >= 1: one '
+                f'time per external leg; got shape {_pa.shape}.')
+        if not np.all(np.isfinite(_pa)):
+            raise ValueError('points must be finite.')
+        # in order, without duplicates (each is evaluated once)
+        points = list(dict.fromkeys(tuple(float(x) for x in row)
+                                    for row in _pa))
     # one rule for every entry point (dd.Config, YAML, here): an
     # (lo, hi, n) tuple is a range, a list/array is literal points, and a
     # 3-element integer-count list is refused (api._grids)
@@ -2257,6 +2315,10 @@ def compute_cumulants(
         spatial_parallel=spatial_parallel, spatial_n_q=spatial_n_q,
         n_workers=n_workers,
         discard=discard,
+        points=(points if points is not None or k < 3 or discard is False
+                or tau_grid is None or np.asarray(tau_grid).size != 1
+                or float(np.asarray(tau_grid).ravel()[0]) != 0.0
+                else [(0.0,) * k]),     # tau_grid=[0.0]: the equal-time point
         verbose=verbose, naming_convention=naming_convention,
         vtypes=vtypes, stypes=stypes, phase_walls=phase_walls,
         phase_time=_phase_time, t_phase=_t_phase, preflight=_pf,
@@ -2759,14 +2821,18 @@ def _run_phase_j(state):
                    else _fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
     # evaluate-and-discard needs fixed evaluation points (k <= 2
-    # on the τ grid) and a single pass
+    # on the τ grid, k >= 3 at ``points``) and a single pass
     discard = getattr(state, 'discard', False)
     if discard not in (False, True, 'auto'):
         raise ValueError(f"discard={discard!r}: expected False, True or "
                          f"'auto'")
+    kpoints = getattr(state, 'points', None) if k > 2 else None
+    _no_points = k > 2 and kpoints is None and switch_on is None
     _discard_why = (
-        'k >= 3 (no fixed evaluation points)' if k > 2 else
         'switch-on transients (t_min)' if switch_on is not None else
+        'k >= 3 without fixed evaluation points (pass points=, the '
+        'external-time tuples to evaluate; dd.run passes its slice points)'
+        if _no_points else
         'the pole-cluster deformation averages several passes'
         if (prop.get('pole_deformation') is not None
             and not ss_route.get('bypass_deformation')) else None)
@@ -2779,9 +2845,24 @@ def _run_phase_j(state):
         max_ell, verbose, state.preflight, ss_route=ss_route,
         n_tau=(len(tau_grid) if k <= 2 else 1) if switch_on is None
         else len(switch_on['times']), run_budget=_run_budget,
-        discard=discard, discard_ok=_discard_why is None)
+        discard=discard, discard_ok=_discard_why is None,
+        discard_hint=(_DISCARD_POINTS_HINT if _no_points else None))
     _discard_on = (bool(mem_estimate.get('discard')) if mem_estimate
                    else (discard is True))
+    # 'auto' with the estimate under the budget: switch on mid-run when
+    # the measured growth crosses a fraction of the budget
+    _discard_defer = (discard == 'auto' and not _discard_on
+                      and _discard_why is None and mem_estimate is not None
+                      and mem_estimate.get('node_runs', 1) == 1
+                      and mem_estimate.get('budget_bytes') is not None)
+    # the growth guard's refusal says what evaluate-and-discard would do
+    _growth_hint = (
+        None if _discard_on else
+        "Evaluate-and-discard applies to this run: discard=True evaluates "
+        "each diagram at the run's fixed points and releases it, so Phase J "
+        "holds one diagram at a time." if _discard_why is None else
+        f'Evaluate-and-discard (discard=True) would hold one diagram at a '
+        f'time; at k >= 3 it {_DISCARD_POINTS_HINT}' if _no_points else None)
 
     # Pick the τ-grid evaluation pattern by k (None = no grid eval)
     if k == 1:
@@ -2808,6 +2889,11 @@ def _run_phase_j(state):
                       for t in tau_grid]
     else:
         tau_points = None   # k≥3: caller handles grid evaluation
+    # the points each diagram is evaluated on under evaluate-and-discard:
+    # the τ grid's (k <= 2, under the state-space τ batch, as
+    # ``total_C_batch``), or ``points`` one call at a time (k >= 3, as the
+    # result is read)
+    _discard_pts = tau_points if k <= 2 else kpoints
     if switch_on is not None:
         # absolute times (``times``), evaluated below; no τ grid
         tau_points = None
@@ -2840,8 +2926,9 @@ def _run_phase_j(state):
                     C_tau_by_ell[ell] = None
                 continue
 
-            if _discard_on:
-                # each diagram evaluated on the grid, then released
+            if _discard_on or _discard_defer:
+                # each diagram evaluated on the points, then released
+                # (``_discard_defer``: from the switch on)
                 with _phase_j_warning_scope():
                     td_result_ell = compute_correction_td(
                         typed_diagrams   = [r['typed_diagram']
@@ -2853,7 +2940,10 @@ def _run_phase_j(state):
                         external_fields  = external_fields,
                         num_params       = num_params,
                         origin_leaf_idx  = origin_leaf_idx,
-                        discard_points   = tau_points,
+                        discard_points   = _discard_pts,
+                        **({} if k <= 2 else {'discard_prefetch': False}),
+                        **({} if _discard_on else {
+                            'discard_defer': DISCARD_AUTO_GROWTH_FRACTION}),
                     )
             else:
                 td_result_ell = compute_correction_td(
@@ -2911,7 +3001,10 @@ def _run_phase_j(state):
         _so_scope = _ss_so.switch_on_scope(switch_on['t_min'])
     else:
         _so_scope = _ctx.nullcontext()
-    with _scope as _mem_scope, _so_scope:
+    _hint_scope = (_fi_mem.growth_hint(_growth_hint)
+                   if _growth_hint and hasattr(_fi_mem, 'growth_hint')
+                   else _ctx.nullcontext())
+    with _scope as _mem_scope, _so_scope, _hint_scope:
         _bypassed = None
         if prop.get('pole_deformation') is not None and (
                 ss_route['bypass_deformation'] or switch_on is not None):
@@ -2933,6 +3026,7 @@ def _run_phase_j(state):
                 # the bypass did not hold (a subset needed the pole route):
                 # the deformation runs after all
                 pole_cluster_report = _pole_cluster_preamble(prop, max_ell)
+            _discard_defer = False
             if _discard_on:
                 # several passes are averaged: evaluate-and-discard is off
                 # for them; the running guard still checks
@@ -2952,6 +3046,13 @@ def _run_phase_j(state):
         if _dis:
             # evaluate-and-discard: what was built over the run, the largest
             # diagram held at once, and what stays charged (δ records)
+            if not mem_estimate.get('discard'):
+                # 'auto' switched on mid-run by the measured growth
+                mem_estimate['discard'] = True
+                mem_estimate['discard_switched_at'] = {
+                    ell: r['discard']['switched_at']
+                    for ell, r in phase_j_by_ell.items()
+                    if isinstance(r, dict) and r.get('discard')}
             mem_estimate['built_bytes'] = sum(d['built_bytes'] for d in _dis)
             mem_estimate['built_max_diagram_bytes'] = max(
                 d['max_diagram_bytes'] for d in _dis)
@@ -2970,6 +3071,21 @@ def _run_phase_j(state):
     # ``dd.run`` may form total_C's values from the per-ell
     # values it evaluates anyway (the same sum, in this order)
     total_C.sum_of_by_ell = total_C_by_ell
+
+    # k >= 3 evaluate-and-discard: the values at the fixed points (an ell
+    # evaluated before a mid-run switch is evaluated there now)
+    C_points = C_points_by_ell = None
+    if kpoints is not None and any(
+            isinstance(r, dict) and r.get('discard')
+            for r in phase_j_by_ell.values()):
+        with _phase_j_warning_scope():
+            C_points_by_ell = {
+                ell: np.array([complex(fn(*p)) for p in kpoints],
+                              dtype=complex)
+                for ell, fn in total_C_by_ell.items()}
+        C_points = np.zeros(len(kpoints), dtype=complex)
+        for i in range(len(kpoints)):        # total_C's sum, in its order
+            C_points[i] = sum(complex(v[i]) for v in C_points_by_ell.values())
 
     # Aggregate τ-grid C(τ) = Σ_ell C_ell(τ)
     if tau_points is not None:
@@ -3080,6 +3196,10 @@ def _run_phase_j(state):
         'C_tau':           C_tau,
         'C_tau_by_ell':    C_tau_by_ell,
         'tau_grid':        tau_grid if switch_on is None else None,
+        # k >= 3 with evaluate-and-discard: the fixed points and the values
+        **({} if C_points is None else {
+            'points': np.array(kpoints, dtype=float),
+            'C_points': C_points, 'C_points_by_ell': C_points_by_ell}),
         'mf_values':       mf_values,
         'mf':              MeanField(mf_values,
                                      naming_convention=naming_convention),

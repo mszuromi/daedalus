@@ -551,6 +551,44 @@ def _mem_release(mark, refund=True):
         return nb
 
 
+def _mem_delta(mark):
+    """``(bytes, tuples, plans)`` charged to the running budget since
+    ``mark`` (zeros outside a scope)."""
+    from engine.integration.time_domain import final_integral as _fi
+    scoped, used0, tuples0, plans0 = mark
+    with _fi._PLAN_MEM_LOCK:
+        m = _fi._PLAN_MEM
+        if not scoped or m['active'] <= 0:
+            return (0, 0, 0)
+        return (m['used'] - used0, m['tuples'] - tuples0,
+                m['plans'] - plans0)
+
+
+def _mem_refund(mark, charge):
+    """Take ``charge`` (``_mem_delta``) back from the running total: the
+    charge of a diagram released after other diagrams were charged."""
+    from engine.integration.time_domain import final_integral as _fi
+    with _fi._PLAN_MEM_LOCK:
+        m = _fi._PLAN_MEM
+        if not mark[0] or m['active'] <= 0:
+            return
+        m['used'] -= charge[0]
+        m['tuples'] -= charge[1]
+        m['plans'] -= charge[2]
+
+
+def _growth_over(fraction):
+    """Has the running ``compute_cumulants`` grown by more than ``fraction``
+    of its budget (``final_integral.run_growth``)?"""
+    from engine.integration.time_domain import final_integral as _fi
+    rg = getattr(_fi, 'run_growth', None)
+    if rg is None:
+        return False
+    growth, budget = rg()
+    return (growth is not None and budget is not None
+            and growth > fraction * budget)
+
+
 def compute_correction_td(
     typed_diagrams=None,
     prefactors=None,
@@ -569,6 +607,12 @@ def compute_correction_td(
     # evaluate each diagram on these points right after it is
     # built, keep the values, release it (``discard``)
     discard_points=None,
+    # evaluate them under the state-space τ batch (k <= 2: as
+    # ``total_C_batch`` does) or point by point (k >= 3: as a call does)
+    discard_prefetch=True,
+    # 'auto' mid-run: keep the callables until the run has grown by this
+    # fraction of its budget, then evaluate and release
+    discard_defer=None,
 ):
     r"""
     Time-domain entry point: evaluate typed diagrams by Phase J vertex-time
@@ -615,6 +659,21 @@ def compute_correction_td(
         points only (the same sums, in the same order) and raise
         ``DiscardedDiagramsError`` elsewhere; ``result['discard']`` has
         the bookkeeping.
+    discard_prefetch : bool, default True
+        With ``discard_points``: evaluate each diagram on them under the
+        state-space τ batch (``True``; the same values as ``total_C_batch``)
+        or one call per point (``False``; the same values as calling
+        ``total_C`` at each point, which is how k >= 3 results are read).
+    discard_defer : float or None
+        With ``discard_points``: start with the callables kept (as without
+        ``discard_points``) and switch to evaluate-and-discard at the first
+        diagram boundary where the run's measured growth
+        (``final_integral.run_growth``) exceeds this fraction of its budget.
+        The diagrams built before then are evaluated on the points in
+        diagram order and released at the switch, so the sums are the same.
+        Without a switch the result is the one without ``discard_points``;
+        ``result['discard']['switched_at']`` is the first diagram built in
+        discard mode.
     origin_leaf_idx : int or None
         Which canonical position to pin to zero.  Default 0.
     external_fields : list of tuple or None
@@ -682,10 +741,33 @@ def compute_correction_td(
 
     if discard_points is not None:
         discard_points = [tuple(pt) for pt in discard_points]
+    # evaluate-and-discard from the first diagram, or (``discard_defer``)
+    # from the switch on
+    discarding = discard_points is not None and discard_defer is None
     discard_vals = []           # per kept diagram: complex values per point
     discard_info = {'points': discard_points, 'diagrams': 0, 'refunded': 0,
                     'kept_for_delta': 0, 'built_bytes': 0,
-                    'max_diagram_bytes': 0}
+                    'max_diagram_bytes': 0,
+                    'switched_at': 0 if discarding else None}
+    # ``discard_defer`` before the switch: (index into tree_callables, into
+    # groups_out, diagram index, its charge, has δ records) per diagram
+    backlog = []
+
+    def _eval_points(fn):
+        if discard_prefetch:
+            with _ss_grid(discard_points):
+                return [complex(fn(*pt)) for pt in discard_points]
+        return [complex(fn(*pt)) for pt in discard_points]
+
+    def _count(nb, has_delta):
+        discard_info['diagrams'] += 1
+        discard_info['built_bytes'] += nb
+        discard_info['max_diagram_bytes'] = max(
+            discard_info['max_diagram_bytes'], nb)
+        if has_delta:
+            discard_info['kept_for_delta'] += 1
+        else:
+            discard_info['refunded'] += 1
 
     from engine.integration.time_domain import final_integral as _fi_g
     _growth = getattr(_fi_g, 'growth_guard', None)
@@ -693,6 +775,24 @@ def compute_correction_td(
         loop_number = _loop_number_from_graph(td)
         if _growth is not None:
             _growth(f'diagram #{idx} of {len(typed_diagrams)}')
+        if (discard_points is not None and not discarding
+                and _growth_over(discard_defer)):
+            # the switch: the diagrams kept so far are evaluated on the
+            # points (in diagram order) and released
+            for ti, gi, didx, charge, has_delta in backlog:
+                mark_b = _mem_mark()
+                discard_vals.append(_eval_points(tree_callables[ti]))
+                charge = tuple(a + b for a, b in
+                               zip(charge, _mem_delta(mark_b)))
+                released = _discarded_callable(didx)
+                tree_callables[ti] = released
+                groups_out[gi]['contribution'] = released
+                if not has_delta:
+                    _mem_refund(mark_b, charge)
+                _count(charge[0], has_delta)
+            backlog = []
+            discarding = True
+            discard_info['switched_at'] = idx
         mark = _mem_mark() if discard_points is not None else None
 
         # ``integrate_diagram`` handles every loop order -- tree and
@@ -722,23 +822,16 @@ def compute_correction_td(
         )
         if result['status'] == 'ok':
             contribution = result['contribution']
-            if discard_points is not None:
-                with _ss_grid(discard_points):
-                    discard_vals.append([complex(contribution(*pt))
-                                         for pt in discard_points])
+            has_delta = bool(result.get('delta_contributions')
+                             or result.get('delta_contributions_multi'))
+            if discarding:
+                discard_vals.append(_eval_points(contribution))
                 contribution = _discarded_callable(idx)
                 result['contribution'] = contribution
-                has_delta = bool(result.get('delta_contributions')
-                                 or result.get('delta_contributions_multi'))
-                nb = _mem_release(mark, refund=not has_delta)
-                discard_info['diagrams'] += 1
-                discard_info['built_bytes'] += nb
-                discard_info['max_diagram_bytes'] = max(
-                    discard_info['max_diagram_bytes'], nb)
-                if has_delta:
-                    discard_info['kept_for_delta'] += 1
-                else:
-                    discard_info['refunded'] += 1
+                _count(_mem_release(mark, refund=not has_delta), has_delta)
+            elif discard_points is not None:
+                backlog.append((len(tree_callables), len(groups_out), idx,
+                                _mem_delta(mark), has_delta))
             tree_callables.append(contribution)
             n_delta_subsets_dropped += result.get(
                 'n_delta_subsets_dropped', 0)
@@ -795,7 +888,7 @@ def compute_correction_td(
             })
             skipped.append(idx)
 
-    if discard_points is not None:
+    if discarding:
         # the same sums as below, from the kept values, in diagram order
         _at = {}
         for p_idx, pt in enumerate(discard_points):

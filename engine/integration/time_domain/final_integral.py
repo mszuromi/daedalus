@@ -1050,7 +1050,7 @@ def _plan_refund(n_tuples):
 # diagram's Phase J integration and every 64 prediagrams of the typing loop
 # (one ``proc_pid_rusage`` call, ~1 us).
 _RUN_GROWTH = {'active': 0, 'fp0': None, 'budget': None, 'rule': None,
-               'what': ''}
+               'what': '', 'hint': ''}
 
 
 class run_growth_scope:
@@ -1082,8 +1082,46 @@ class run_growth_scope:
         with _PLAN_MEM_LOCK:
             _RUN_GROWTH['active'] -= 1
             if _RUN_GROWTH['active'] == 0:
-                _RUN_GROWTH.update(fp0=None, budget=None, rule=None, what='')
+                _RUN_GROWTH.update(fp0=None, budget=None, rule=None, what='',
+                                   hint='')
         return False
+
+
+class growth_hint:
+    """Within this context, a :func:`growth_guard` refusal ends with
+    ``text`` (what the run could do instead, e.g. evaluate-and-discard).
+    Nests: the previous hint is restored on exit."""
+
+    def __init__(self, text):
+        self.text = text or ''
+
+    def __enter__(self):
+        with _PLAN_MEM_LOCK:
+            self._prev = _RUN_GROWTH.get('hint', '')
+            _RUN_GROWTH['hint'] = self.text
+        return self
+
+    def __exit__(self, *exc):
+        with _PLAN_MEM_LOCK:
+            _RUN_GROWTH['hint'] = self._prev
+        return False
+
+
+def run_growth():
+    """``(growth_bytes, budget_bytes)`` of the running
+    :class:`run_growth_scope`: how much the process footprint has grown
+    since the run started, and the run's budget (``(None, None)`` outside a
+    scope, without a limit or without a footprint reading)."""
+    with _PLAN_MEM_LOCK:
+        if _RUN_GROWTH['active'] <= 0:
+            return None, None
+        fp0, budget = _RUN_GROWTH['fp0'], _RUN_GROWTH['budget']
+    if fp0 is None or budget is None:
+        return None, None
+    fp = process_footprint_bytes()
+    if fp is None:
+        return None, None
+    return fp - fp0, budget
 
 
 def run_budget():
@@ -1197,6 +1235,7 @@ def growth_guard(where=''):
             return
         fp0, budget = _RUN_GROWTH['fp0'], _RUN_GROWTH['budget']
         rule, what = _RUN_GROWTH['rule'], _RUN_GROWTH['what']
+        hint = _RUN_GROWTH.get('hint', '')
     if fp0 is None or budget is None:
         return
     fp = process_footprint_bytes()
@@ -1210,7 +1249,8 @@ def growth_guard(where=''):
         f'has grown by {_fmt_gb(fp - fp0)} since the run started '
         f'({_fmt_gb(fp0)} -> {_fmt_gb(fp)} footprint), over the budget of '
         f'{_fmt_budget(budget, rule)}, at {where or "a checkpoint"}.  The run '
-        f'was stopped there.  Options: {_BUDGET_HOW}.', est)
+        f'was stopped there.  {hint + "  " if hint else ""}Options: '
+        f'{_BUDGET_HOW}.', est)
 
 #: Relative gap below which a kernel rate counts as equal to a propagator
 #: pole (the dressed line would need a ``Δt e^{λΔt}`` term): leg-time path,

@@ -814,7 +814,7 @@ def config_options(spatial=None):
             ('use_cache',    'on-disk caches (diagram, propagator, expand); None → on'),
             ('accuracy',     'target relative accuracy of the G6 error estimate; None → 1e-10'),
             ('backend',      'an explicit backend name (api.routing); None → the router picks'),
-            ('discard',      "False | True | 'auto': release each diagram after evaluating it (memory)"),
+            ('discard',      "False | True | 'auto': release each diagram after evaluating it at the run's points (memory; k≥3: the slice points)"),
         ]),
         ('delay kernels (api.delay)', [
             ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
@@ -976,6 +976,7 @@ def _leg_mean_by_ell(model, res, kw, legs, L, compute_cumulants):
                 kw1 = dict(kw)
                 kw1.update(k=1, external_fields=[leg],
                            tau_grid=np.array([0.0]))
+                kw1.pop('points', None)
                 r1 = compute_cumulants(**kw1)
             be = r1.get('C_tau_by_ell') or {}
             for e in range(1, L + 1):
@@ -1081,6 +1082,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
         kw2 = dict(kw)
         kw2.update(k=2, external_fields=list(key),
                    tau_grid=np.array(sorted(lags), dtype=float))
+        kw2.pop('points', None)
         kw2.pop('tau_max', None)
         kw2.pop('tau_step', None)
         pair_tab[key] = _table(compute_cumulants(**kw2))
@@ -1105,6 +1107,9 @@ def _assemble_moment_temporal(model, res, kw, k, central):
         if bl_legs not in kj:
             kwj = dict(kw)
             kwj.update(k=len(bl_legs), external_fields=list(bl_legs))
+            if 'points' in kwj:
+                # evaluate-and-discard: the block's own points
+                kwj['points'] = _moment_block_points(k, tau, legs)[bl_legs]
             kj[bl_legs] = compute_cumulants(**kwj).get('total_C_by_ell') or {}
         return kj[bl_legs]
 
@@ -1122,18 +1127,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     slice_times = None
     slice_orders = None
     if k >= 3:
-        from api.compute import _ITO_EPS, _tau0_mode
-        if _tau0_mode() == 'exact':
-            # exact ties; a tied point lists leg 1 last (``_kpoint_slice_point``)
-            scale = max([abs(float(t)) for t in tau] + [0.0])
-            pts = [_kpoint_slice_point([0.0] * (k - 1), 1, float(t), scale)
-                   for t in tau]
-            slice_times = [p[0] for p in pts]
-            slice_orders = [p[1] for p in pts]
-        else:
-            slice_times = [_kpoint_slice_times([0.0] * (k - 1), 1, float(t),
-                                               _ITO_EPS) for t in tau]
-            slice_orders = [list(range(k))] * tau.size
+        slice_times, slice_orders = _moment_slice(k, tau)
 
     def _kappa(block, ell, ti):
         """ℓ-loop piece of the block's cumulant at the slice times."""
@@ -1356,6 +1350,138 @@ def _kpoint_incomplete(res, cfg, exc, msg):
                           stacklevel=3)
     warnings.warn(msg, PhaseJIncompleteWarning, stacklevel=3)
 
+
+
+def _kpoint_plan(cfg, k, tau):
+    """Where :func:`run` reads a temporal k≥3 cumulant: the τ grid of the
+    slices (``tau``, the run's grid; at most 41 points, ``[0.0]`` when
+    empty), the base lags, the tie rule, the external times and leg order of
+    every slice point (``_kpoint_slice_point`` / ``_kpoint_slice_times``)
+    and the full grid's axis and point map (``kpoint_full_grid``).  Made
+    before the run, so evaluate-and-discard knows the points
+    (:func:`_kpoint_run_points`)."""
+    from api.compute import _ITO_EPS, _tau0_mode
+    plan = {'replaced': False, 'resampled_from': None}
+    tau = None if tau is None else np.asarray(tau, dtype=float)
+    if tau is None or tau.size == 0:
+        tau = np.array([0.0])
+        plan['replaced'] = True
+    elif tau.size > 41:                      # bound the # of 1-D evaluations
+        plan['resampled_from'] = tau.size
+        tau = np.linspace(float(tau.min()), float(tau.max()), 41)
+        plan['replaced'] = True
+    plan['tau'] = tau
+
+    # The connected k-point cumulant depends on k−1 time differences
+    # τ_j = t_j − t_0 (leg 0 anchored at τ=0).  ``base`` is the fixed point
+    # the axis-parallel slices pass through (the non-swept legs sit here).
+    base = cfg.kpoint_base_lags
+    if base is not None:
+        base = [float(b) for b in base]
+        if not all(math.isfinite(b) for b in base):
+            raise ValueError(
+                f"kpoint_base_lags must be finite; got {base!r}.")
+        if len(base) != k - 1:
+            raise ValueError(
+                f"kpoint_base_lags must have k−1 = {k-1} entries (one per "
+                f"non-anchor leg); got {len(base)}.")
+    else:
+        base = [0.0] * (k - 1)
+    plan['base'] = base
+
+    exact_tie = _tau0_mode() == 'exact'
+    plan['exact_tie'] = exact_tie
+    # the tie tolerance's scale: the largest |time| of the grid and base
+    tie_scale = max([abs(float(t)) for t in tau] + [abs(b) for b in base]
+                    + [0.0])
+
+    def _args(vals):                # full grid: vals = τ of legs 1..k−1
+        # Every leg on its own; legs with equal values stay tied and the
+        # engine's tie order decides (a later-listed leg is earlier, so a
+        # leg at the anchor time is its Itô left limit 0⁻).  'nudge':
+        # a leg at τ = 0 is evaluated at −_ITO_EPS instead.
+        if exact_tie:
+            return [0.0] + [0.0 if abs(float(v)) <= 1e-12 * tie_scale
+                            else float(v) for v in vals]
+        return [0.0] + [_kpoint_pinned_time(v, _ITO_EPS) for v in vals]
+    plan['grid_args'] = _args
+
+    # The external times of every slice point, computed once: slice j
+    # sweeps leg j, the other non-anchor legs sit at ``base``, and a
+    # point where leg j meets another leg is the LEFT limit of the
+    # slice (``_kpoint_slice_times``).
+    if exact_tie:
+        pts = {j: [_kpoint_slice_point(base, j, t, tie_scale)
+                   for t in tau] for j in range(1, k)}
+        plan['slice_times'] = {j: [p[0] for p in v] for j, v in pts.items()}
+        plan['slice_orders'] = {j: [p[1] for p in v] for j, v in pts.items()}
+    else:
+        plan['slice_times'] = {j: [_kpoint_slice_times(base, j, t, _ITO_EPS)
+                                   for t in tau] for j in range(1, k)}
+        plan['slice_orders'] = {j: [list(range(k))] * tau.size
+                                for j in range(1, k)}
+    # the full grid's axis: downsampled so the n^{k−1} evaluations stay
+    # bounded
+    n = min(tau.size, max(2, int(4000 ** (1.0 / (k - 1)))))
+    plan['grid_tau'] = (tau if n >= tau.size else
+                        np.linspace(float(tau.min()), float(tau.max()), n))
+    return plan
+
+
+def _kpoint_run_points(plan, legs, k, full_grid, moment):
+    """``{external legs: [points]}``: the external-time tuples at which
+    :func:`run` reads the callables of each k≥3 run it makes (the run on
+    ``legs`` and the runs with permuted legs; with ``moment``, the cumulant
+    blocks of three or more legs), from ``plan`` (:func:`_kpoint_plan`).
+    Evaluate-and-discard runs are evaluated exactly there."""
+    import itertools
+    legs = tuple(legs)
+    runs = {legs: []}
+    for j in range(1, k):
+        for times, order in zip(plan['slice_times'][j],
+                                plan['slice_orders'][j]):
+            runs.setdefault(tuple(legs[o] for o in order), []).append(
+                tuple(times[o] for o in order))
+    if full_grid:
+        g = plan['grid_tau']
+        for idx in itertools.product(range(g.size), repeat=k - 1):
+            runs[legs].append(tuple(plan['grid_args']([g[m] for m in idx])))
+    if moment:
+        for key, pts in _moment_block_points(k, plan['tau'], legs).items():
+            runs.setdefault(key, []).extend(pts)
+    return runs
+
+
+def _moment_slice(k, tau):
+    """The external times and leg orders of the temporal k≥3 moment's points
+    (:func:`_assemble_moment_temporal`): those of ``run``'s slice 1 with the
+    default base lags."""
+    from api.compute import _ITO_EPS, _tau0_mode
+    if _tau0_mode() == 'exact':
+        # exact ties; a tied point lists leg 1 last (``_kpoint_slice_point``)
+        scale = max([abs(float(t)) for t in tau] + [0.0])
+        pts = [_kpoint_slice_point([0.0] * (k - 1), 1, float(t), scale)
+               for t in tau]
+        return [p[0] for p in pts], [p[1] for p in pts]
+    return ([_kpoint_slice_times([0.0] * (k - 1), 1, float(t), _ITO_EPS)
+             for t in tau], [list(range(k))] * len(tau))
+
+
+def _moment_block_points(k, tau, legs):
+    """``{block legs: [points]}``: where the temporal k≥3 moment evaluates
+    each cumulant block of three or more legs (``_kappa`` in
+    :func:`_assemble_moment_temporal`)."""
+    slice_times, slice_orders = _moment_slice(k, tau)
+    out = {}
+    for part in _set_partitions(list(range(k))):
+        for block in part:
+            if len(block) < 3:
+                continue
+            for ti in range(len(tau)):
+                b = [i for i in slice_orders[ti] if i in block]
+                out.setdefault(tuple(legs[i] for i in b), []).append(
+                    tuple(slice_times[ti][idx] for idx in b))
+    return out
 
 def _spatial_raw_moment_message(max_ell, mu_a=None, mu_b=None):
     why = ('' if mu_a is None else f' (saddles {mu_a}, {mu_b})')
@@ -1607,6 +1733,25 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             and (getattr(cfg, 'output', 'cumulant') or 'cumulant') == 'moment'):
         _refuse_spatial_raw_moment(model, kw, ext, max_ell)
 
+    # Temporal k≥3: where the result will be read (the slices below), known
+    # before the run; with evaluate-and-discard the run is evaluated there
+    _kplan = _kpoint_runs = None
+    if not is_spatial(model) and k >= 3 and cfg.t_min is None:
+        _kplan = _kpoint_plan(cfg, k, kw['tau_grid'] if 'tau_grid' in kw
+                              else np.arange(-kw['tau_max'], kw['tau_max']
+                                             + kw['tau_step'] * 0.5,
+                                             kw['tau_step']))
+        if kw.get('discard') not in (None, False):
+            _kpoint_runs = _kpoint_run_points(
+                _kplan, [tuple(e) if isinstance(e, (list, tuple)) else e
+                         for e in kw['external_fields']], k,
+                bool(cfg.kpoint_full_grid),
+                (getattr(cfg, 'output', 'cumulant') or 'cumulant')
+                in ('moment', 'central_moment'))
+            kw['points'] = _kpoint_runs[tuple(
+                tuple(e) if isinstance(e, (list, tuple)) else e
+                for e in kw['external_fields'])]
+
     res = compute_cumulants(**kw)
 
     # Spatial k≥3 grid: reshape the flat per-event k-point cumulant back into the
@@ -1632,19 +1777,15 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     # estimates the matching slice with ``lag_bins=[0, None, 0, …]``.  The
     # times of each slice point (the Itô nudges at coincident legs) are set by
     # ``_kpoint_slice_times``; see the comment above it.
-    if (not is_spatial(model) and k >= 3 and res.get('C_tau') is None
+    if (_kplan is not None and res.get('C_tau') is None
             and res.get('t_min') is None
             and callable(res.get('total_C'))):
-        from api.compute import _ITO_EPS
-        tau = np.asarray(res.get('tau_grid'))
-        if tau is None or tau.size == 0:
-            tau = np.array([0.0])
+        tau = _kplan['tau']
+        if _kplan['replaced']:
             res['tau_grid'] = tau
-        elif tau.size > 41:                      # bound the # of 1-D evaluations
+        if _kplan['resampled_from'] is not None:
             import warnings
-            n_in = tau.size
-            tau = np.linspace(float(tau.min()), float(tau.max()), 41)
-            res['tau_grid'] = tau
+            n_in = _kplan['resampled_from']
             res['_kpoint_tau_resampled'] = (
                 f'tau_grid of {n_in} points replaced by 41 evenly spaced '
                 f'points over [{tau[0]}, {tau[-1]}] for the k={k} slices')
@@ -1656,38 +1797,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             _ensure_warning_shown(UserWarning, 'always', message=_msg,
                                   stacklevel=2)
             warnings.warn(_msg, UserWarning, stacklevel=2)
-
-        # The connected k-point cumulant depends on k−1 time differences
-        # τ_j = t_j − t_0 (leg 0 anchored at τ=0).  ``base`` is the fixed point
-        # the axis-parallel slices pass through (the non-swept legs sit here).
-        base = cfg.kpoint_base_lags
-        if base is not None:
-            base = [float(b) for b in base]
-            if not all(math.isfinite(b) for b in base):
-                raise ValueError(
-                    f"kpoint_base_lags must be finite; got {base!r}.")
-            if len(base) != k - 1:
-                raise ValueError(
-                    f"kpoint_base_lags must have k−1 = {k-1} entries (one per "
-                    f"non-anchor leg); got {len(base)}.")
-        else:
-            base = [0.0] * (k - 1)
-
-        from api.compute import _tau0_mode
-        exact_tie = _tau0_mode() == 'exact'
-        # the tie tolerance's scale: the largest |time| of the grid and base
-        tie_scale = max([abs(float(t)) for t in tau] + [abs(b) for b in base]
-                        + [0.0])
-
-        def _args(vals):                # full grid: vals = τ of legs 1..k−1
-            # Every leg on its own; legs with equal values stay tied and the
-            # engine's tie order decides (a later-listed leg is earlier, so a
-            # leg at the anchor time is its Itô left limit 0⁻).  'nudge':
-            # a leg at τ = 0 is evaluated at −_ITO_EPS instead.
-            if exact_tie:
-                return [0.0] + [0.0 if abs(float(v)) <= 1e-12 * tie_scale
-                                else float(v) for v in vals]
-            return [0.0] + [_kpoint_pinned_time(v, _ITO_EPS) for v in vals]
+        base = _kplan['base']
+        _args = _kplan['grid_args']
 
         # The callables of the run with its legs in another order: a point
         # where the swept leg ties with another leg is evaluated with the
@@ -1708,6 +1819,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             if key not in _perm_runs:
                 kwp = dict(kw)
                 kwp['external_fields'] = list(pf)
+                if _kpoint_runs is not None:
+                    # evaluate-and-discard: this run's own points
+                    kwp['points'] = _kpoint_runs[key]
                 rp = compute_cumulants(**kwp)
                 if isinstance(rp, dict) and rp.get('status') == 'incomplete':
                     # an extra run that left diagrams out makes the slices
@@ -1729,20 +1843,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             return out
 
         try:
-            # The external times of every slice point, computed once: slice j
-            # sweeps leg j, the other non-anchor legs sit at ``base``, and a
-            # point where leg j meets another leg is the LEFT limit of the
-            # slice (``_kpoint_slice_times``).  Kept in the result.
-            if exact_tie:
-                pts = {j: [_kpoint_slice_point(base, j, t, tie_scale)
-                           for t in tau] for j in range(1, k)}
-                slice_times = {j: [p[0] for p in v] for j, v in pts.items()}
-                slice_orders = {j: [p[1] for p in v] for j, v in pts.items()}
-            else:
-                slice_times = {j: [_kpoint_slice_times(base, j, t, _ITO_EPS)
-                                   for t in tau] for j in range(1, k)}
-                slice_orders = {j: [list(range(k))] * tau.size
-                                for j in range(1, k)}
+            # The external times of every slice point (``_kpoint_plan``).
+            # Kept in the result.
+            slice_times = _kplan['slice_times']
+            slice_orders = _kplan['slice_orders']
             tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
                    if callable(f)}
             # The k−1 axis-parallel slices through ``base``.  When total_C is
@@ -1804,9 +1908,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 # Downsample the axis so the total n^{k−1} evaluations stay
                 # bounded.
                 import itertools
-                n = min(tau.size, max(2, int(4000 ** (1.0 / (k - 1)))))
-                gtau = (tau if n >= tau.size else
-                        np.linspace(float(tau.min()), float(tau.max()), n))
+                gtau = _kplan['grid_tau']
 
                 def _grid(fn):
                     out = np.empty((gtau.size,) * (k - 1), dtype=complex)
