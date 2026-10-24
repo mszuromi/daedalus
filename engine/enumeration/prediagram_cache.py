@@ -70,7 +70,7 @@ streamed (``load_prediagrams(..., use_cache=False)``, the default there)
     are those of a v2 file written by the same certificate backend.  The
     spatial path (``build_pipeline_records``, which never uses the cache)
     gets these records.  The TEMPORAL compute path does not, yet: with
-    ``use_cache=False`` it still gets the eager enumerator's records verbatim
+    ``use_cache=False`` it still gets the eager enumerator's records
     (``stream=False``, see :data:`TEMPORAL_CACHE_OFF_STREAMS` for why).
     ``DAEDALUS_PREDIAGRAM_EAGER`` overrides both defaults (:data:`_EAGER_ENV`).
 
@@ -553,7 +553,7 @@ _PROCS_ENV = 'DAEDALUS_PREDIAGRAM_PROCS'
 #:   unset or empty   -- each caller's ``stream`` argument decides (the
 #:                       spatial path streams; the temporal path passes
 #:                       :data:`TEMPORAL_CACHE_OFF_STREAMS`);
-#:   1/true/yes/on    -- the EAGER enumerator's records verbatim (source
+#:   1/true/yes/on    -- the EAGER enumerator's records (source
 #:                       ``'eager'``): rollback and A/B;
 #:   0/false/no/off   -- the streamed records (source ``'streamed'``), the
 #:                       temporal path included.
@@ -756,6 +756,120 @@ def _canon_vertex_order(order):
     return got
 
 
+def _graphs_from_recipe(verts, arcs):
+    """``(D, G)`` built from a vertex insertion order and the arcs in label
+    order: THE construction of every prediagram record (fresh or unpickled),
+    so equal inputs give equal backend state, iteration orders included."""
+    G = Graph(multiedges=True, loops=False)
+    G.add_vertices(verts)
+    G.add_edges(arcs)
+
+    D = DiGraph(multiedges=True, loops=False)
+    D.add_vertices(verts)
+    D.add_edges([(u, v, i) for i, (u, v) in enumerate(arcs)])
+    return D, G
+
+
+def _pack_recipe(verts, arcs, leaves, internal):
+    """One ``bytes`` blob of a record's construction inputs (vertex labels
+    < 256: ``|V| <= 3k+3ell-3``), or a plain tuple when a label does not fit."""
+    flat = [len(verts), *verts, len(arcs), *(x for a in arcs for x in a),
+            len(leaves), *leaves, *internal]
+    try:
+        return bytes(flat)
+    except (ValueError, TypeError):
+        return (tuple(verts), tuple(tuple(a) for a in arcs), tuple(leaves),
+                tuple(internal))
+
+
+def _unpack_recipe(recipe):
+    if not isinstance(recipe, bytes):
+        return recipe
+    b = list(recipe)
+    nv = b[0]
+    verts = b[1:1 + nv]
+    i = 1 + nv
+    na = b[i]
+    flat = b[i + 1:i + 1 + 2 * na]
+    i += 1 + 2 * na
+    nl = b[i]
+    leaves = b[i + 1:i + 1 + nl]
+    internal = b[i + 1 + nl:]
+    return verts, list(zip(flat[0::2], flat[1::2])), leaves, internal
+
+
+def _record_from_recipe(recipe):
+    """Unpickler of :class:`PrediagramRecord`."""
+    verts, arcs, leaves, internal = _unpack_recipe(recipe)
+    return PrediagramRecord(verts, arcs, leaves, internal)
+
+
+class PrediagramRecord(tuple):
+    """A ``(D, G, leaves, internal)`` prediagram record that pickles EXACTLY.
+
+    A Sage graph does not survive a pickle round trip unchanged: its backend
+    is rebuilt by re-adding the edges in iteration order, and the sparse
+    backend iterates parallel edges newest first, so every round trip
+    REVERSES each group of parallel edges in ``D.edges()`` (and, above 10
+    vertices, can move vertex slots and with them ``G``'s edge order).  Every
+    downstream stage inherits the record's iteration order, so a record
+    restored from the typed-diagram cache (``api._diagrams``) or returned by
+    a type-assignment worker summed the same diagrams in another order than
+    the record it was saved from: totals moved in the last bits between a
+    cold and a warm cache.
+
+    This record pickles its CONSTRUCTION INPUTS instead (vertex insertion
+    order, arcs in label order, ``leaves``, ``internal``; one small ``bytes``
+    blob) and is rebuilt by the same :func:`_graphs_from_recipe` that built
+    it, so the restored graphs are bit-for-bit the original ones.  It is a
+    plain tuple to every consumer (``D, G, leaves, internal = rec``).
+
+    ``leaves=None``: the degree-1 vertices (``internal`` the rest), in ``D``'s
+    vertex iteration order.
+    """
+
+    def __new__(cls, verts, arcs, leaves=None, internal=None):
+        verts = list(verts)
+        arcs = [tuple(a) for a in arcs]
+        D, G = _graphs_from_recipe(verts, arcs)
+        if leaves is None:
+            deg = dict.fromkeys(verts, 0)
+            for u, v in arcs:
+                deg[u] += 1
+                deg[v] += 1
+            vertices = D.vertices()
+            leaves = [v for v in vertices if deg[v] == 1]
+            internal = [v for v in vertices if deg[v] != 1]
+        else:
+            leaves, internal = list(leaves), list(internal)
+        self = tuple.__new__(cls, (D, G, leaves, internal))
+        self._recipe = _pack_recipe(verts, arcs, leaves, internal)
+        return self
+
+    def __reduce__(self):
+        return (_record_from_recipe, (self._recipe,))
+
+    def __copy__(self):
+        return self
+
+
+def canonical_record(rec):
+    """``rec`` as a :class:`PrediagramRecord` (itself when it already is one).
+
+    Another record (an eager enumerator's, a v1 file's) is REBUILT from its
+    content: ``D``'s vertex iteration order, its arcs sorted by edge label and
+    relabelled ``0..|E|-1`` (the labels those records already carry), the
+    given ``leaves`` and ``internal``.  Same labelled graph; only the backend
+    iteration order can change (``G`` becomes the undirected copy of ``D``'s
+    arcs, which is what it already holds as a multiset)."""
+    if isinstance(rec, PrediagramRecord):
+        return rec
+    D, _G, leaves, internal = rec
+    arcs = [(u, v) for u, v, _ in
+            sorted(D.edges(sort=False), key=lambda e: (e[2], e[0], e[1]))]
+    return PrediagramRecord(list(D), arcs, leaves, internal)
+
+
 def record_from_cert(blob):
     """Rebuild one ``(D, G, leaves, internal)`` record from a packed cert.
 
@@ -784,6 +898,9 @@ def record_from_cert(blob):
     * Edges go in through ``add_edges`` in sorted order; the ``data=``
       constructors are faster still but iterate the edges in a different
       order.
+
+    The record is a :class:`PrediagramRecord`, so it also survives a pickle
+    round trip (typed-diagram cache, worker results) bit for bit.
     """
     n = len(blob)
     order = blob[0] if n else 0
@@ -810,19 +927,8 @@ def record_from_cert(blob):
             next_internal += 1
     edges = sorted([(perm[u], perm[v]) for u, v in zip(us, vs)])
     verts = [perm[v] for v in _canon_vertex_order(order)]
-
-    G = Graph(multiedges=True, loops=False)
-    G.add_vertices(verts)
-    G.add_edges(edges)
-
-    D = DiGraph(multiedges=True, loops=False)
-    D.add_vertices(verts)
-    D.add_edges([(u, v, i) for i, (u, v) in enumerate(edges)])
-
-    vertices = D.vertices()
-    return (D, G,
-            [v for v in vertices if v < n_leaves],
-            [v for v in vertices if v >= n_leaves])
+    # leaves = the degree-1 vertices = labels < n_leaves here
+    return PrediagramRecord(verts, edges)
 
 
 def records_from_certs(certs):
@@ -909,8 +1015,11 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     shipped files are never written to.
 
     Because v1 wins over computing, a cell that already has a v1 file keeps
-    being served from v1 and keeps its exact previous numbers: no shipped cell
+    being served from v1 and keeps its labelled graphs: no shipped cell
     silently acquires the leaf relabelling described in the module docstring.
+    (Its records are rebuilt as :class:`PrediagramRecord` by
+    :func:`canonical_record`: same graphs, labels and leaves; the backend's
+    edge iteration order is re-fixed, which moved v1 totals once by rounding.)
     Only new cells, and cells whose v2 file was written by a streaming run,
     come from v2.  ``DAEDALUS_PREDIAGRAM_FORMAT=v2`` forces the other choice
     (it is what the A/B tests use); ``DAEDALUS_PREDIAGRAM_PROCS`` sets the
@@ -927,7 +1036,8 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     only, the records are rebuilt on every call).  The records are exactly
     those a v2 file written by the same certificate backend would give: same
     representatives, same labels, same order (sorted by packed cert).  With
-    ``stream=False`` they are the eager enumerator's records verbatim, in
+    ``stream=False`` they are the eager enumerator's records (the same
+    labelled graphs, rebuilt by :func:`canonical_record`), in
     generation order, source ``'eager'``: what this path returned before
     streaming existed, and what the temporal compute path still asks for
     (:data:`TEMPORAL_CACHE_OFF_STREAMS`).  ``DAEDALUS_PREDIAGRAM_EAGER``
@@ -960,7 +1070,8 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     _load_guard(k, ell, None)
     if not use_cache:
         if _cache_off_source(stream) == 'eager':
-            return (list(_enumerate_eager(k=k, ell=ell, verbose=verbose)[2]),
+            return ([canonical_record(r) for r in
+                     _enumerate_eager(k=k, ell=ell, verbose=verbose)[2]],
                     'eager')
         certs = _streamed_certs(k, ell, verbose, n_procs)
         _load_guard(k, ell, len(certs))
@@ -981,7 +1092,7 @@ def load_prediagrams(root, k, ell, *, use_cache=True, verbose=False,
     if fmt in ('auto', 'v1') and v1_exists(root, k, ell):
         recs = list(sage_load(v1_path(root, k, ell)))
         if _local_cell_ok(root, k, ell, len(recs), 'v1'):
-            return recs, 'v1'
+            return [canonical_record(r) for r in recs], 'v1'
 
     if fmt in ('auto', 'v2') and shipped_exists(k, ell):
         src_path = shipped_path(k, ell)
@@ -1075,12 +1186,13 @@ def _local_cell_ok(root, k, ell, n, fmt):
 #: small calibration cell on the machine it runs on.  The cert set costs
 #: ~90 bytes per class in a Python ``set`` at the small cells and 183 at
 #: (2,4) (table growth); the records :func:`load_prediagrams` later rebuilds
-#: from it cost ~11 kB per class (two Sage graphs), which is what limits the
-#: cells one can USE.
+#: from it cost ~11 kB per class (two Sage graphs, plus ~0.4 kB for the
+#: :class:`PrediagramRecord` recipe, measured at (4,2)), which is what limits
+#: the cells one can USE.
 _BUILD_OVERHEAD_S = 0.03
 _BUILD_US_PER_CLASS = 50.0
 _BUILD_BYTES_PER_CLASS = 200
-_LOAD_BYTES_PER_CLASS = 11_200
+_LOAD_BYTES_PER_CLASS = 11_600
 _CALIBRATION_CELL = (3, 2)
 _CALIBRATION_S = 0.145          # that cell's cold build on the reference machine
 
