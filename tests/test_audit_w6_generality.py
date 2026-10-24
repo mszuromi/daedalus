@@ -460,6 +460,12 @@ def test_loud02_printed_factorial_is_sages_and_gamma_stays_a_parameter_name():
     assert not SR(e).is_zero()                        # Sage 10.9: RuntimeError (operator mismatch)
     assert e.subs(cC=1, cY=SR(1) / 2, gamma=0) == factorial(-SR(1) / 2)
     assert SR.var('gamma') in e.variables()
+    # ... but not a user function name: its calls would mean Sage's function on some paths only
+    # (a user function gamma(v) in a rate failed the saddle check on Sage 10.8 already).
+    from api.sde import SDE, SDEError
+    for name in ('gamma', 'factorial'):
+        with pytest.raises(SDEError, match='reserved'):
+            SDE('w6 reserved fn').field('v').define_function(name, args=['v'], expression='v')
     """A voltage saddle at -100 lies outside the default seed box of the full
     saddle system; the solver falls back to the iteration saddles alone (the
     compound one substituted), as the former iteration solver did."""

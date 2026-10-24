@@ -93,7 +93,7 @@ from typing import Optional
 from sage.all import SR, integrate, oo, assume, assumptions, forget, function
 
 from api.noise import (NoiseError, NoiseSource, THETA, parse_expr,
-                       expr_to_text, expr_names, _MATH_FUNCS)
+                       expr_to_text, expr_names, _MATH_FUNCS, _SAGE_PRINTED_CALLS)
 
 __all__ = ['SDE', 'SDEError']
 
@@ -289,6 +289,10 @@ class SDE:
                         latex: Optional[str] = None, description: str = '',
                         population: Optional[str] = None):
         _check_declarable(name, 'function')
+        if name in _SAGE_PRINTED_CALLS:
+            # A call of it means Sage's own function in noise expressions and the saddle solve.
+            raise SDEError(f'function name {name!r} is reserved (Sage\'s {name}); choose another '
+                           f'name (e.g. {name}0).')
         self._functions.append(((name, list(args), expression),
                                 dict(latex=latex, description=description,
                                      population=population)))
