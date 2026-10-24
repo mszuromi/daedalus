@@ -33,7 +33,7 @@ def _exec(code, name):
 
 def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
-    markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", 'dd.build_cache(']
+    markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)", 'dd.build_cache(']
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -53,6 +53,17 @@ def test_readme_sde_hawkes_example_is_ok():
     res = _exec(head, 'Hawkes example')['res']
     assert res['status'] == 'ok', res['status']
     assert not res.get('phase_j_incomplete')
+
+
+def test_readme_spde_example_is_the_one_loop_allen_cahn():
+    """The SPDE in the declared-operator style runs tree + one loop; its equal-time variance at x = 0 is the tree
+    value T/(2 sqrt(mu D)) = 1/2 lowered by the phi^4 tadpole."""
+    res = _exec(_block("SDE('Allen-Cahn', space=1)"), 'SPDE example')['res']
+    assert res['status'] == 'ok', res['status']
+    C = res['C_tau_x']
+    it0, ix0 = list(res['tau_grid']).index(0.0), list(res['spatial_grid']).index(0.0)
+    assert res['C_tau_x_by_ell'][0][it0, ix0] == pytest.approx(0.5, rel=1e-12)
+    assert 0.4 < C[it0, ix0] < 0.5
 
 
 def test_readme_build_cache_dry_run_writes_nothing(tmp_path, monkeypatch):
