@@ -135,6 +135,34 @@ res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('n', 1), ('
 rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25)      # a simulator of the same model
 ```
 
+### Spectra and integrated correlators (k = 2)
+
+`spectra=` asks for exact spectral and integrated outputs, computed from the state-space triples of the run with no
+lag grid and no quadrature (`api/spectra.py`). They are given per loop order and in total:
+
+```python
+res = compute_cumulants(model, k=2, max_ell=1, external_fields=[('x', 1)] * 2,
+                        tau_grid=np.array([0.0]),             # the equal-time point is enough
+                        spectra={'omega': (0.0, 10.0, 201), 'T': [1.0, 10.0]})
+sp = res['spectra']       # also dd.Config(spectra=...), dd.spectra(res, omega, T), YAML question.spectra
+sp['S'], sp['S_by_ell']   # S(omega) on the grid
+sp['S0']                  # S(0)
+sp['integral']            # int_0^T C for each T (integral_neg: int_{-T}^0)
+sp['integral_inf']        # int_0^inf C
+sp['tau_c']               # int_0^inf C / C(0)
+```
+
+- **Conventions.** `C(tau) = kappa(x_1(t), x_2(t + tau))`, as `C_tau`. The spectrum is
+  `S(omega) = int C(tau) exp(+i omega tau) dtau`, with no `1/2pi`; for a cross pair it is `<x1^(omega) x2^(omega)*>`,
+  and `S_21 = conj(S_12)`. `Cumulant.spectrum` uses the opposite sign of the exponent.
+- **Shot-noise spikes.** The spike `w delta(tau)` at `tau = 0` is in `S` (as a flat floor `w`) and in `delta0`, and in
+  neither window, so `S(0) = integral_inf + integral_inf_neg + delta0`.
+- **Equal times.** `C0` is the Ito left limit `C(0-)`.
+- **Truncated correlation time.** `tau_c_by_ell[l]` is the correlation time of the cumulant truncated at order `l`.
+- **Fallback.** Loop orders without triples (pole engine, pole-cluster deformation) use adaptive quadrature, report
+  error estimates and give an `MEFallbackWarning`; `method='exact'` refuses them instead.
+- **Refused.** Spatial models, switch-on runs and `discard=True` are refused.
+
 ## Running from a config file
 
 The `daedalus run` command takes a YAML file instead of a script (needs PyYAML, which the conda environment has):

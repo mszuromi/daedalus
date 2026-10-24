@@ -924,8 +924,8 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     ests = {}
     prev = None
     sub_call = dict(call)
-    for key in ('model', 'delay', 'output_npz', 'output_csv'):
-        sub_call.pop(key, None)            # the files are written once, from the result
+    for key in ('model', 'delay', 'output_npz', 'output_csv', 'spectra'):
+        sub_call.pop(key, None)            # the files and the spectra: once, from the result
     incomplete = None
     # every order runs with its per-entry realizations balanced-truncated
     # (api._realization; the tolerance of each order: _next_truncation)
@@ -1260,6 +1260,10 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         cfg['delay_pade_model'] = cfg.get('model_name')
         cfg['model_name'] = model.get('name', cfg.get('model_name'))
     _record_in_report(r, report_true, info, call.get('policy'))
+    if call.get('spectra') not in (None, False):
+        # the spectral outputs of the final result (exact tree, Pade loops)
+        from api import spectra as _sp
+        _sp.attach(r, _sp.resolve_spectra_options(call['spectra']))
     if call.get('output_npz') or call.get('output_csv'):
         from api.save import save_npz, save_csv
         if call.get('output_npz'):
