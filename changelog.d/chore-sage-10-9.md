@@ -22,7 +22,7 @@ warning. The
   function, so a user function with that name would be silently replaced there. Before, a user function `gamma(v)`
   in a noise rate failed with a misleading "saddle does not satisfy its own equations", on Sage 10.8 as well, while
   the same function in a drift worked.
-- **No numbers moved.** Each comparison below ran the same code under Sage 10.8 (py 3.13.7, numpy 2.3.2, scipy
+- **No number moved beyond round-off, except one documented case.** Each comparison below ran the same code under Sage 10.8 (py 3.13.7, numpy 2.3.2, scipy
   1.15.2, sympy 1.13.2, numba 0.65.1) and under Sage 10.9:
   - **Tracked zoo, default engine.** 21 entries ran. 12 are bit-identical, and 9 differ by round-off only. The
     largest relative move is 7.5e-15, on one tau = 0 element: 1.6e-18 absolute on 2.2e-4 (array max 1.5e-3). Every
@@ -35,3 +35,13 @@ warning. The
     near-double root and tanh / exp ties. Roots, root order, the selected saddle and the k = 2 one-loop cumulants are
     all bit-identical.
   - **Caches.** A `saved_models/` cache written under 10.8 loads under 10.9 and gives bit-identical results.
+  - **One larger move.** The two-neuron delayed-alpha network of the slow tests (Padé loops at the automatic order,
+    which reaches n_max = 16 with an estimated error of 1.4e-5) moves 5.1e-12 relative at one loop (tree: 3e-15).
+    The cause is the automatic order's adaptive truncation. Its tolerance for order 16 is computed from the
+    lower-order error estimates, which are differences of approximations and move 3e-11 between the stacks. At a
+    fixed order the move is round-off: 2.0e-14 at n = 16 and 5.6e-15 at n = 8, against 8.3e-15 / 6.0e-15 for a
+    1-ulp change of the delay on 10.9 alone. On the automatic route, that same 1-ulp change on 10.9 alone moves the
+    one-loop value by 9.0e-13. The voltage and builder forms stay bit-identical on each stack.
+- **Slow test made deterministic.** The bit-identity test for that network now runs without the wall-time cap
+  (`delay={'wall_max': inf}`). On a slow CI runner, the predicted cost of the order-16 step (about 1025 s) passed
+  the default 900 s for one of the two forms only, so the forms were compared at different orders.
