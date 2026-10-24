@@ -72,7 +72,7 @@ def _theta(x):
 # plus ``sign`` (the action validator's built-in, Sage ``sgn``).  The numpy
 # namespace of the saddle solve and the Sage namespace of the linearization
 # (``_sage_math_namespace``) carry the same names: a function in one and not
-# the other is a bug (item 69: erf / arctan / heaviside raised a late
+# the other is a bug (erf / arctan / heaviside once raised a late
 # NameError from the compiled residual rows).
 _MATH_NS = {
     'tanh': np.tanh, 'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
