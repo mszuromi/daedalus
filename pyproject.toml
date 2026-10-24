@@ -21,12 +21,12 @@ classifiers = [
 ]
 # SageMath supplies the scientific stack (numpy / scipy / sympy / matplotlib / networkx / mpmath
 # / cysignals / the Jupyter stack) and is an EXTERNAL prerequisite — it is not pip-installable
-# here. Install SageMath 10.8 first (see the README), then:  sage -pip install -e .
+# here. Install SageMath 10.9 first (see the README), then:  sage -pip install -e .
 # The only pip extras Daedalus layers on top of Sage are below.
 dependencies = []
 
 [project.optional-dependencies]
-extras = ["numba>=0.61,<0.66", "pydot>=4,<5"]
+extras = ["numba>=0.61,<0.69", "pydot>=4,<5"]
 
 [project.scripts]
 # `daedalus run config.yaml [--dry-run]` (api/config_run.py); the interpreter must be Sage's

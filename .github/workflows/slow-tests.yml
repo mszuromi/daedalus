@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up SageMath 10.8 + extras (conda)
+      - name: Set up SageMath 10.9 + extras (conda)
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml
@@ -62,7 +62,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up SageMath 10.8 + extras (conda)
+      - name: Set up SageMath 10.9 + extras (conda)
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml

@@ -3,26 +3,29 @@
 #   conda env create -f environment.yml      # or:  mamba env create -f environment.yml
 #   conda activate daedalus
 #
-# SageMath brings Python (pinned to 3.12 below) and most of the stack (numpy, scipy, sympy, matplotlib,
+# SageMath brings Python (pinned to 3.14 below) and most of the stack (numpy, scipy, sympy, matplotlib,
 # networkx, cysignals, the Jupyter stack incl. ipywidgets, and a SageMath kernel).
 # The remaining lines are the only extras Daedalus adds on top.
 name: daedalus
 channels:
   - conda-forge
 dependencies:
-  - sage=10.8
+  - sage=10.9
   # Pin the scientific stack to the exact versions CI runs and the suite is tested against
   # (audit W5 / TST-07: ranges let a new conda-forge release change CI's stack between two runs,
-  # and the test tolerances are confirmed per stack).  Left unpinned, conda-forge resolves the
-  # bleeding edge (numpy 2.4 / scipy 1.18 / sympy 1.14 / py3.14), which removed np.trapz, made
-  # float(size-1 array) a hard error, and shifts the symbolic mean-field solve onto spurious
-  # saddles -- 105 CI failures (see git history).  Supported ranges, if you must relax a pin:
-  # python <3.14, numpy <2.4, scipy <1.18, sympy <1.14, numba >=0.61,<0.66.
-  - python=3.12
-  - numpy=2.3.5
+  # and the test tolerances are confirmed per stack).  This is the SageMath 10.9 stack (item 66,
+  # Oct 2026), validated against 10.8 number by number (bit-identical or documented round-off).
+  # An unvalidated stack has broken the suite before: numpy 2.4 removed np.trapz, and an earlier
+  # unpinned resolve moved the symbolic mean-field solve onto spurious saddles (105 CI failures,
+  # see git history).  Supported ranges, if you must relax a pin:
+  # python >=3.14,<3.15, numpy >=2.4,<2.5, scipy >=1.17,<1.18, sympy >=1.14,<1.15, numba >=0.68,<0.69.
+  - python=3.14.3
+  - numpy=2.4.4
   - scipy=1.17.1
-  - sympy=1.13.3
-  - numba=0.65.1         # loop-integrator speed; required by the sim cells in notebooks/examples/
+  - sympy=1.14.0
+  - numba=0.68.0         # loop-integrator speed; required by the sim cells in notebooks/examples/
+  - pip>=26.2.2          # security minimum (Oct 2026 pip / certifi CA incident)
+  - certifi>=2026.10.19  # security minimum (same incident: the revised CA bundle)
   - pydot>=4,<5          # optional: diagram / prediagram plots
   - graphviz             # optional: renders pydot output
   - pytest               # test runner (used by the CI workflow)
