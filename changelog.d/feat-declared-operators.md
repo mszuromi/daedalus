@@ -29,4 +29,5 @@ and kernel operators later.
   field `x`, UV-divergent subgraphs, the spatial k and loop-order gates, and the `approximate` status of a
   derivative-vertex loop) are the same as for the hand-written models. Conserved noise
   (`Gaussian(..., space='conserved')`) is refused; it is not supported yet. So are an operator acting on no field
-  (`lap(mu)`) and an operator name inside a `define_function` body.
+  (`lap(mu)`), and an operator (or the engine's `Dt` / `Laplacian` / `Lap` spelling, undeclared) inside a
+  `define_function` body or a noise expression.

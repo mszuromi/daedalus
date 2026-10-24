@@ -124,8 +124,9 @@ derivative vertex) writes the action in the spatial operator IR
 form (both vanish at the homogeneous saddle).  A product-style operator
 multiplies exactly one field (``lap*u^2`` is refused: write ``lap(u^2)``);
 the time derivative acts on fields linearly.  An operator acts on the
-model's fields (``lap(mu)`` is refused) and is written in the equations, not
-inside a :meth:`define_function` body.  Temporal-only features are
+model's fields (``lap(mu)`` is refused) and is written in the equations (or
+:meth:`extra_action`), not inside a :meth:`define_function` body or a noise
+expression.  Temporal-only features are
 refused with a Laplacian, never dropped: populations, kernels and delays
 (``Conv``, ``x(t - d)``), point processes and exposed sources, non-Gaussian
 or time-only noise, the Stratonovich and Marcus rules, and the SDE simulator.
@@ -526,6 +527,22 @@ class SDE:
                 if n in self._operators:
                     raise SDEError(f'{kind} {f!r}: its derived name {n!r} is a declared '
                                    f'operator; rename the operator or the {kind}.')
+                if n in _CANONICAL_OPS:
+                    # (a field D after renaming Dt: its response field would be
+                    # the engine's time-derivative symbol)
+                    raise SDEError(f'{kind} {f!r}: its derived name {n!r} is the '
+                                   f"engine's operator symbol; rename the {kind}.")
+
+    def _check_no_operator(self, text: str, where: str):
+        """Refuse an operator in a text that is not an equation (a function
+        body, a noise parameter or coefficient): a declared name, or an engine
+        spelling (``Dt`` renamed, ``Laplacian`` / ``Lap``) the model does not
+        declare.  The default ``Dt`` is left to the checks it always had."""
+        self._undeclared_canonical(text, where)
+        for n in self._operators:
+            if not (n == 'Dt' and self._dt_implicit) and self._has_token(text, n):
+                raise SDEError(f'{where} uses the operator {n!r}; operators act in the '
+                               f'equations only.')
 
     # ── dynamics ──────────────────────────────────────────────────────
     def equation(self, field: str, lhs: str, rhs: str = '0'):
@@ -1214,11 +1231,13 @@ class SDE:
         # operators act in the equations (and extra_action) only: one in a
         # function body would reach the engine as an undeclared symbol
         for (name, _a, expr), _kw in self._functions:
-            for n in self._operators:
-                if not (n == 'Dt' and self._dt_implicit) and self._has_token(expr, n):
-                    raise SDEError(f'define_function({name!r}): its expression uses the '
-                                   f'operator {n!r}; operators act in the equations only '
-                                   f'(write {n} on the function\'s argument there).')
+            self._check_no_operator(expr, f'define_function({name!r}): its expression')
+        for name, s in self._sources.items():
+            if s.get('source') is not None:
+                for k, v in s['source'].params.items():
+                    self._check_no_operator(str(v), f'noise({name!r}) {k}=')
+            for f, c in s['couples'].items():
+                self._check_no_operator(str(c), f'noise({name!r}) coefficient for {f!r}')
         used_space = any(op.spatial for op in info.get('used', ()))
         spatial = self._space is not None or used_space
         ir = spatial and bool(info.get('nonlinear'))
@@ -1389,6 +1408,9 @@ class SDE:
         mf_eqs.sort(key=lambda e: order.index(e['field']))
 
         if spatial:
+            if not ir:
+                for e_v1 in extras:
+                    self._check_v1_operator_terms(self._index(e_v1), 'extra_action')
             # one scalar action and scalar equations (SpatialModelBuilder form)
             p = self._populations()[0]['name']
             body = ' + '.join(field_terms.get(p, []) + source_terms.get(p, [])).replace('+ -', '- ')

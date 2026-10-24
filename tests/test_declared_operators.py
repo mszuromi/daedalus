@@ -624,6 +624,54 @@ def test_operator_inside_a_function_body_is_refused(make):
         make().build()
 
 
+def test_field_whose_response_field_is_the_engine_dt_is_refused_after_a_rename():
+    """Field ``D`` has the response field ``Dt``: refused whether the time derivative is renamed before or after."""
+    with pytest.raises(SDEError, match="derived name 'Dt' is the engine's operator symbol"):
+        SDE('m').operator('dt', TimeDerivative()).field('D')
+    with pytest.raises(SDEError, match="derived name 'Dt' is a declared operator"):
+        SDE('m').field('D')
+
+
+@pytest.mark.parametrize('body,match', [
+    ('Laplacian*v', 'Laplacian is not a declared operator'),
+    ('Lap(v^2)', 'Lap is not a declared operator'),
+    ('Dt*v', 'Dt is not declared in this model'),
+])
+def test_engine_operator_spellings_inside_a_function_body_are_refused(body, match):
+    s = (SDE('m', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+         .parameter('mu', default=1.0).parameter('D', default=1.0).define_function('f', ['v'], body)
+         .field('u').equation('u', lhs='dt(u)', rhs='D*lap(u) - mu*u + f(u)')
+         .noise('eta', _white(1), into={'u': 1}))
+    with pytest.raises(SDEError, match=match):
+        s.build()
+
+
+@pytest.mark.parametrize('kw,match', [
+    (dict(into={'u': 'lap'}), "coefficient for 'u' uses the operator 'lap'"),
+    (dict(into={'u': 'Laplacian'}), 'Laplacian is not a declared operator'),
+    (dict(into={'u': '1 + Dt'}), 'Dt is not declared in this model'),
+    (dict(into={'u': 1}, var='T*lap(u)'), "var= uses the operator 'lap'"),
+])
+def test_operators_in_noise_expressions_are_refused(kw, match):
+    s = (SDE('m', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+         .parameter('mu', default=1.0).parameter('D', default=1.0).parameter('T', default=1.0)
+         .field('u').equation('u', lhs='dt(u)', rhs='D*lap(u) - mu*u')
+         .noise('eta', _white(kw.pop('var', '2*T')), **kw))
+    with pytest.raises(SDEError, match=match):
+        s.build()
+
+
+def test_extra_action_gets_the_one_field_linear_check():
+    """``extra_action('ut*lap*u^2')`` is refused as the same term in an equation is (it used to reach the engine and
+    fail there as a 'free model'); a linear operator term in extra_action is the equation's term."""
+    def m(extra, rhs='-mu*u - g*u^2'):
+        return (_spde().parameter('g', default=0.3).parameter('T', default=1.0)
+                .equation('u', lhs='Dt*u', rhs=rhs).extra_action(extra).noise('eta', _white('2*T'), into={'u': 1}))
+    with pytest.raises(SDEError, match='extra_action: the operator term .* does not act on one field linearly'):
+        m('5*ut*lap*u^2').build()
+    assert _expanded(m('-D*ut*lap(u)').build()) == _expanded(m('0', rhs='D*lap(u) - mu*u - g*u^2').build())
+
+
 def test_spde_has_no_temporal_simulator():
     with pytest.raises(SDEError, match='simulator is temporal'):
         sde_allen_cahn().simulate(T=1.0, dt=0.1)
