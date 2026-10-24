@@ -14,10 +14,14 @@ warning. The
 - **Sage 10.9 Maxima bridge.** A noise expression that calls `factorial(...)` or `gamma(...)` now uses Sage's own
   function. This matters because Sage prints `gamma(1 - Y)` as `factorial(-Y)`, for example in a CGMY mean with a
   parameter-named `Y`. Before, the parser made a formal function with the same name. Sage 10.8 accepted that, but
-  10.9 stops with "operator mismatch in sr-to-maxima translation". The change applies only to calls, so a parameter
-  can still be named `gamma`. `SDE.define_function` now refuses the function names `gamma` and `factorial`, because
-  their calls mean Sage's functions in the saddle solve. Before, a user function `gamma(v)` in a rate failed with a
-  misleading "saddle does not satisfy its own equations", on Sage 10.8 as well.
+  10.9 stops with "operator mismatch in sr-to-maxima translation". This affected CGMY and
+  `TemperedStableSubordinator`. The change applies only to calls, so a parameter can still be named `gamma`. A
+  `CGF(...)` text may now call `gamma(...)` / `factorial(...)`; before, these were refused as undeclared names.
+- **Reserved function names (breaking).** `SDE.define_function` now refuses the names `gamma` and `factorial`.
+  Rename such a function, for example to `gamma0`. In a noise expression, a call of either name now means Sage's own
+  function, so a user function with that name would be silently replaced there. Before, a user function `gamma(v)`
+  in a noise rate failed with a misleading "saddle does not satisfy its own equations", on Sage 10.8 as well, while
+  the same function in a drift worked.
 - **No numbers moved.** Each comparison below ran the same code under Sage 10.8 (py 3.13.7, numpy 2.3.2, scipy
   1.15.2, sympy 1.13.2, numba 0.65.1) and under Sage 10.9:
   - **Tracked zoo, default engine.** 21 entries ran. 12 are bit-identical, and 9 differ by round-off only. The

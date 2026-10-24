@@ -466,6 +466,9 @@ def test_loud02_printed_factorial_is_sages_and_gamma_stays_a_parameter_name():
     for name in ('gamma', 'factorial'):
         with pytest.raises(SDEError, match='reserved'):
             SDE('w6 reserved fn').field('v').define_function(name, args=['v'], expression='v')
+
+
+def test_gen02_deeply_negative_compound_saddle_falls_back_to_iteration_saddles():
     """A voltage saddle at -100 lies outside the default seed box of the full
     saddle system; the solver falls back to the iteration saddles alone (the
     compound one substituted), as the former iteration solver did."""
