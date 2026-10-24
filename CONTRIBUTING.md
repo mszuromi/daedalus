@@ -2,7 +2,7 @@
 
 ## Setup
 
-See the [README](README.md): install **SageMath 10.8** (conda `environment.yml`, or native),
+See the [README](README.md): install **SageMath 10.9** (conda `environment.yml`, or native),
 then optionally `sage -pip install -e .` so `import daedalus` works from anywhere.
 
 All Python runs under Sage's interpreter: `sage -python ...` with a native Sage install, or plain

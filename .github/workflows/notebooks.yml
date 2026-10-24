@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up SageMath 10.8 + extras (conda)
+      - name: Set up SageMath 10.9 + extras (conda)
         uses: mamba-org/setup-micromamba@v1
         with:
           environment-file: environment.yml
@@ -51,13 +51,13 @@ jobs:
             micromamba install -y -n daedalus -c conda-forge "nbconvert" "ipykernel" || \
               python -m pip install nbconvert ipykernel
           fi
-          # The notebooks declare the kernel 'SageMath-10.8' (one of them in lower case; Jupyter
+          # The notebooks declare the kernel 'SageMath-10.9' (some in lower case; Jupyter
           # matches kernel names case-insensitively). Register it with the environment's python.
-          kdir="$(jupyter --data-dir)/kernels/sagemath-10.8"
+          kdir="$(jupyter --data-dir)/kernels/sagemath-10.9"
           mkdir -p "$kdir"
           cat > "$kdir/kernel.json" <<'JSON'
           {"argv": ["python", "-m", "sage.repl.ipython_kernel", "-f", "{connection_file}"],
-           "display_name": "SageMath 10.8", "language": "sage"}
+           "display_name": "SageMath 10.9", "language": "sage"}
           JSON
           jupyter kernelspec list
           jupyter nbconvert --version
@@ -76,7 +76,7 @@ jobs:
             if [ -n "$override" ]; then limit="$override"; fi
             start=$(date +%s)
             if timeout "${limit}m" jupyter nbconvert --to notebook --execute \
-                 --ExecutePreprocessor.kernel_name=sagemath-10.8 \
+                 --ExecutePreprocessor.kernel_name=sagemath-10.9 \
                  --ExecutePreprocessor.timeout=$((limit * 60)) \
                  --output-dir "$out" --output "$name" "$nb" > "$out/$name.log" 2>&1; then
               res=PASS

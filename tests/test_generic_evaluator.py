@@ -179,5 +179,5 @@ def test_tadpole_matches_allen_cahn_oracle(allencahn_ell1):
     qg = np.linspace(0.0, 60.0, 6000)
     dC0 = np.array([tadpole_delta_C(tad, pre, float(q), np.array([0.0]),
                                     A, B, mu, D)[0] for q in qg])
-    dvar = 2.0 * np.trapz(dC0, qg) / (2.0 * np.pi)     # even in q → 2∫₀
+    dvar = 2.0 * np.trapezoid(dC0, qg) / (2.0 * np.pi)     # even in q → 2∫₀
     assert abs(dvar - (-0.0375)) <= 5e-4, f"δ⟨φ²⟩={dvar:.6f}, expected −0.0375"

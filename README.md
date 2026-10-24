@@ -22,19 +22,19 @@ conda activate daedalus
 jupyter lab                             # then open notebooks/model_builder_tutorial.ipynb
 ```
 
-[`environment.yml`](environment.yml) pulls SageMath 10.8 and the extras from conda-forge —
+[`environment.yml`](environment.yml) pulls SageMath 10.9 and the extras from conda-forge —
 that is the entire setup. The sections below explain each step, give a non-conda alternative,
 and list tested versions.
 
 ## Requirements
 
-The one prerequisite is **SageMath 10.8**. Sage provides Python 3.13 and almost the entire
+The one prerequisite is **SageMath 10.9**. Sage provides Python 3.14 and almost the entire
 stack — numpy, scipy, sympy, matplotlib, mpmath, networkx, cysignals, the Jupyter stack
 (JupyterLab / notebook / ipykernel / **ipywidgets**), and a `SageMath` Jupyter kernel. Only a
 couple of extras are added on top (`numba`, optionally `pydot`).
 
-> Other Sage 10.x releases will likely work, but 10.8 is what the code and the embedded
-> notebook kernel (`sagemath-10.8`) are tested against.
+> Other Sage 10.x releases will likely work, but 10.9 is what the code and the embedded
+> notebook kernel (`sagemath-10.9`) are tested against (10.8 was, up to v0.3.1).
 
 ## Installation
 
@@ -49,7 +49,7 @@ conda env create -f environment.yml      # or:  mamba env create -f environment.
 conda activate daedalus
 ```
 
-[`environment.yml`](environment.yml) installs SageMath 10.8 plus the `numba`/`pydot`/`graphviz`
+[`environment.yml`](environment.yml) installs SageMath 10.9 plus the `numba`/`pydot`/`graphviz`
 extras from conda-forge (validated to resolve on macOS/Linux). For the optional GUI clipboard,
 also `pip install pyperclip`.
 
@@ -57,13 +57,13 @@ In the activated environment plain `python` is Sage's interpreter, and the conda
 launcher has no `-python` flag. Wherever this README or CONTRIBUTING says `sage -python`, run
 `python` instead (for example `python -m pytest tests/ -q`, `python -m daedalus run config.yaml`).
 The conda environment registers a Jupyter kernel named `sagemath`; if a notebook asks for
-`sagemath-10.8`, pick it from the kernel menu.
+`sagemath-10.9`, pick it from the kernel menu.
 
 ### Option B — native SageMath + extras
 
-1. Install **SageMath 10.8** from the official downloads:
+1. Install **SageMath 10.9** from the official downloads:
    <https://www.sagemath.org/download.html> (macOS app, Linux binary, or WSL2 on Windows).
-   This registers the `sagemath-10.8` Jupyter kernel the notebooks expect.
+   This registers the `sagemath-10.9` Jupyter kernel the notebooks expect.
 2. Add the extras into Sage's own Python:
 
    ```bash
@@ -276,26 +276,26 @@ Then open one of:
 | [`notebooks/model_runner.ipynb`](notebooks/model_runner.ipynb) | load and run any saved `models/*.model.py` |
 | [`notebooks/examples/`](notebooks/examples/) | one notebook per capability, each with a simulation overlay |
 
-If a notebook reports its kernel (`sagemath-10.8`) is missing — e.g. your Sage registered a
+If a notebook reports its kernel (`sagemath-10.9`) is missing — e.g. your Sage registered a
 differently-named kernel — just pick your **SageMath** kernel from Jupyter's kernel menu.
 
 ## Dependencies (tested versions)
 
 | component | tested version | source | needed for |
 |---|---|---|---|
-| **SageMath** | **10.8** | *install this* | the whole framework |
-| Python | 3.13 | Sage | — |
-| numpy / scipy / sympy / mpmath | 2.3.2 / 1.15.2 / 1.13.2 / 1.3.0 | Sage | core computation |
-| matplotlib | 3.10.5 | Sage | plotting |
-| networkx | 3.5 | Sage | diagram / report bookkeeping |
+| **SageMath** | **10.9** | *install this* | the whole framework |
+| Python | 3.14 | Sage | — |
+| numpy / scipy / sympy / mpmath | 2.4.4 / 1.17.1 / 1.14.0 / 1.4.1 | Sage | core computation |
+| matplotlib | 3.10.8 | Sage | plotting |
+| networkx | 3.6.1 | Sage | diagram / report bookkeeping |
 | cysignals | 1.12.6 | Sage | interruptible long computations |
-| JupyterLab / notebook / ipykernel | 4.5 / 7.5 / 7.1 | Sage | running the notebooks |
-| ipywidgets | 8.1.1 | Sage | the graphical model builder (`ModelUI`) |
-| **numba** (+ llvmlite) | 0.65.1 (+ 0.47.0) | **extra** (`sage -pip` / conda) | loop-integrator speed; **required** by the numba simulation cells in `examples/` (the pipeline itself falls back to pure Python without it) |
+| JupyterLab / notebook / ipykernel | 4.6 / 7.6 / 7.3 | Sage | running the notebooks |
+| ipywidgets | 8.1.8 | Sage | the graphical model builder (`ModelUI`) |
+| **numba** (+ llvmlite) | 0.68.0 (+ 0.50.0) | **extra** (`sage -pip` / conda) | loop-integrator speed; **required** by the numba simulation cells in `examples/` (the pipeline itself falls back to pure Python without it) |
 | pydot | 4.0.1 | extra (optional) | optional diagram / prediagram plots (needs the `graphviz` binary) |
 | pyperclip | — | extra (optional) | optional copy buttons in the GUI |
 
-Everything marked *Sage* comes with a standard SageMath 10.8 install; only the **extra** rows
+Everything marked *Sage* comes with a standard SageMath 10.9 install; only the **extra** rows
 are installed separately (Option A folds them into `environment.yml`; Option B uses
 `sage -pip install`).
 

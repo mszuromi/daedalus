@@ -443,14 +443,14 @@ def radial_inverse_ft(q_grid, Cq, x, spatial_dim):
     for i, xi in enumerate(xs):
         axi = abs(float(xi))
         if spatial_dim == 1:
-            out[i] = np.trapz(np.cos(q * axi) * Cq, q) / math.pi
+            out[i] = np.trapezoid(np.cos(q * axi) * Cq, q) / math.pi
         elif spatial_dim == 2:
-            out[i] = np.trapz(q * j0(q * axi) * Cq, q) / (2.0 * math.pi)
+            out[i] = np.trapezoid(q * j0(q * axi) * Cq, q) / (2.0 * math.pi)
         elif spatial_dim == 3:
             if axi < 1e-12:                       # sin(qx)/x → q as x→0
-                out[i] = np.trapz(q * q * Cq, q) / (2.0 * math.pi ** 2)
+                out[i] = np.trapezoid(q * q * Cq, q) / (2.0 * math.pi ** 2)
             else:
-                out[i] = (np.trapz(q * np.sin(q * axi) * Cq, q)
+                out[i] = (np.trapezoid(q * np.sin(q * axi) * Cq, q)
                           / (2.0 * math.pi ** 2 * axi))
         else:
             raise SpatialPropagatorError(

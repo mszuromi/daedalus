@@ -168,7 +168,7 @@ def bubble_delta_equal_time_via_C(q, mu, D, T, g=1.0, C_R=4.0, C_K=2.0,
     sK = np.array([sigma_parametric(bubble_edges('C'), q, a, mu, D, T,
                                     spatial_dim=spatial_dim) for a in ag])
     e = np.exp(-m * ag)
-    t1 = (T / (m * m)) * np.trapz(sR * e, ag)
-    t2 = (1.0 / m) * np.trapz(sK * e, ag)
+    t1 = (T / (m * m)) * np.trapezoid(sR * e, ag)
+    t2 = (1.0 / m) * np.trapezoid(sK * e, ag)
     return g * g * (C_R * t1 + C_K * t2)
 
