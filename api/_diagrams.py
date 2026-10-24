@@ -140,7 +140,7 @@ def enumerate_unique_diagrams(
     stream_prediagrams : bool, default False
         Only with ``use_cache=False``.  True: the in-memory streaming
         enumerator (source ``'streamed'``; the spatial path asks for it);
-        False: the eager enumerator's records verbatim (source ``'eager'``,
+        False: the eager enumerator's records (source ``'eager'``,
         what this path always returned before; the temporal compute path
         passes ``prediagram_cache.TEMPORAL_CACHE_OFF_STREAMS``, which is
         False).  ``DAEDALUS_PREDIAGRAM_EAGER`` overrides it.  The two
@@ -206,7 +206,14 @@ def enumerate_unique_diagrams(
     # diagram classes at k>=3 (e.g. 4 of the 11 a^3-sector 1-loop
     # classes at k=3 for OU+ax^2+bx^3), silently dropping their
     # integrals.  Loading a v2 cache would resurrect that bug.
-    stage_name = f'unique_typed_mult_v3_{ext_tag}_taylor{ft.taylor_order}'
+    # Cache version bumped 2026-10-24 (v3 → v4): v3 files pickled the
+    # prediagram records as plain Sage graphs, and a Sage graph comes back
+    # from a pickle with every group of parallel edges in REVERSED iteration
+    # order, so a warm run summed the same diagrams in another order than the
+    # cold run that wrote the file (totals moved in the last bits).  v4 files
+    # hold ``PrediagramRecord``s, which pickle their construction inputs and
+    # come back bit for bit (``engine.enumeration.prediagram_cache``).
+    stage_name = f'unique_typed_mult_v4_{ext_tag}_taylor{ft.taylor_order}'
     # Conductance vertices: before it a warm expand cache built
     # plain vertices for them and the typed-diagram cache stored those, so
     # a file under the plain name is not trusted for a model whose vertex
