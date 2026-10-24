@@ -63,9 +63,9 @@ def pp_composed(n_pop, p=ASYM):
                            population='E'))
 
 
-def _run(m, k, max_ell, ext, tau):
+def _run(m, k, max_ell, ext, tau, **kw):
     return compute_cumulants(m, k=k, max_ell=max_ell, external_fields=ext, tau_grid=tau,
-                             parallel=False, verbose=False, use_cache=False)
+                             parallel=False, verbose=False, use_cache=False, **kw)
 
 
 def _identical(r1, r2, max_ell, status='ok'):
@@ -290,8 +290,12 @@ def test_delayed_alpha_network_voltage_form_bit_identical_to_builder():
     ext, tau = [('n', 1), ('n', 2)], np.array([-3.0, 0.5, 3.0])
     _run(_delay_builder(), 2, 0, ext, tau)                      # warm-up
     # the automatic Pade order stops at n_max = 16 with an estimated 1.4e-5 against the 1e-8 target, which
-    # #50 marks status 'target_missed' (was 'ok'); both forms must agree on that too
-    r1, r2 = _run(_delay_pp('voltage').build(), 2, 1, ext, tau), _run(_delay_builder(), 2, 1, ext, tau)
+    # #50 marks status 'target_missed' (was 'ok'); both forms must agree on that too.  No wall-time cap: the
+    # order-16 step is predicted near the default 900 s, so on a slow runner one form stopped at n = 8
+    # and the other went on to 16 (different orders, not different arithmetic)
+    nocap = dict(delay={'wall_max': float('inf')})
+    r1 = _run(_delay_pp('voltage').build(), 2, 1, ext, tau, **nocap)
+    r2 = _run(_delay_builder(), 2, 1, ext, tau, **nocap)
     _identical(r1, r2, 1, status='target_missed')
     assert r1['delay']['n'] == r2['delay']['n'] == 16
     assert r1['delay']['est_rel_error'] == r2['delay']['est_rel_error'] < 1e-4
