@@ -135,6 +135,33 @@ res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('n', 1), ('
 rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25)      # a simulator of the same model
 ```
 
+Equations name their operators (`api/operators.py`). The time derivative is `Dt` by default, so the models above
+need no declaration; `.operator('dt', TimeDerivative())` renames it. An operator is written in product style
+(`(tau*dt + 1)*v`, `D*lap*u`) or call style (`dt(v)`, `lap(u)`). An operator name may not collide with a field,
+parameter or function. A `Laplacian()` together with `SDE(name, space=d)` makes the model an SPDE in `d` dimensions,
+with space-time white noise `Gaussian(var=..., space='white')`. It builds the same model as a hand-written
+`SpatialModelBuilder` action. One-loop stochastic Allen-Cahn, $\partial_t\phi = D\nabla^2\phi - \mu\phi - \lambda\phi^3 + \eta$:
+
+```python
+from api.sde import SDE
+from api.operators import TimeDerivative, Laplacian
+from api.noise import Gaussian
+from api import compute_cumulants
+m = (SDE('Allen-Cahn', space=1)                      # space=d: an SPDE in d dimensions
+     .operator('dt', TimeDerivative()).operator('lap', Laplacian())
+     .parameter('mu', default=1.0, domain='positive').parameter('D', default=1.0, domain='positive')
+     .parameter('lam', default=0.1, domain='positive').parameter('T', default=1.0, domain='positive')
+     .field('phi')
+     .equation('phi', lhs='dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
+     .noise('eta', Gaussian(var='2*T', space='white'), into={'phi': 1}))
+res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('phi', 1), ('phi', 2)],
+                        tau_max=1.0, tau_step=0.5, spatial_grid=(0.0, 4.0, 9))
+```
+
+A Laplacian of an expression (`g*lap(phi^2)`, a conserved derivative vertex) is supported, through the spatial
+operator IR. Temporal-only features with a Laplacian are refused, not dropped: populations, kernels and delays, point
+processes, non-Gaussian noise, and the Stratonovich and Marcus rules.
+
 ## Running from a config file
 
 The `daedalus run` command takes a YAML file instead of a script (needs PyYAML, which the conda environment has):
