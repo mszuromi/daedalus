@@ -26,6 +26,9 @@ dependencies:
   - numba=0.68.0         # loop-integrator speed; required by the sim cells in notebooks/examples/
   - pip>=26.2.2          # security minimum (Oct 2026 pip / certifi CA incident)
   - certifi>=2026.10.19  # security minimum (same incident: the revised CA bundle)
+  - setuptools=82.0.1    # distutils for pyximport: the compiled enumeration (engine/enumeration/fastenum.py);
+                         # Python >= 3.12 has none, and conda's sage 10.9 / py3.14 does not pull setuptools in
+                         # (without it the pure-Python enumeration runs, with a warning)
   - pydot>=4,<5          # optional: diagram / prediagram plots
   - graphviz             # optional: renders pydot output
   - pytest               # test runner (used by the CI workflow)

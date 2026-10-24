@@ -2,7 +2,10 @@
 
 Daedalus now runs on, and is pinned to, the SageMath 10.9 stack. `environment.yml` (which CI uses) pins sage 10.9,
 python 3.14.3, numpy 2.4.4, scipy 1.17.1, sympy 1.14.0 and numba 0.68.0 (llvmlite 0.50.0). It also requires
-pip >= 26.2.2 and certifi >= 2026.10.19, the security minimums from the October 2026 pip / certifi CA incident. The
+pip >= 26.2.2 and certifi >= 2026.10.19, the security minimums from the October 2026 pip / certifi CA incident. It
+also pins setuptools 82.0.1. The conda sage 10.9 / Python 3.14 environment does not bring setuptools along, and
+without it pyximport has no `distutils`. The compiled enumeration then falls back to the pure-Python path, with a
+warning. The
 `extras` numba range is now `>=0.61,<0.69`. The example notebooks declare the `sagemath-10.9` kernel.
 
 - **numpy 2.4.** `np.trapz` was removed, so every use is now `np.trapezoid`, which numpy has had since 2.0. In the
