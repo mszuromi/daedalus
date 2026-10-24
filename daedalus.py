@@ -130,6 +130,9 @@ _PIPELINE_EXPORTS = {
     'MEFallbackWarning':         'api.me_output',
     'MEConditioningWarning':     'api.me_output',
     'slice_me':                  'api.me_output',
+    # exact S(omega), S(0), int_0^T C, tau_c of a k = 2 result
+    'spectra':                   'api.spectra',
+    'SpectraWarning':            'api.spectra',
     # symbolic tree-level outputs (C1 Fourier domain, C2 time domain)
     'tree_covariance':           'api.symbolic_out',
     'tree_covariance_from_result': 'api.symbolic_out',
@@ -541,6 +544,14 @@ class Config:
     # the route's defaults (automatic order).
     delay: Optional[dict] = None
 
+    # ── exact spectral outputs (k = 2; api.spectra) ──
+    # ``compute_cumulants(spectra=...)``: None (off), True (S(0), the
+    # integrals to infinity, tau_c) or {'omega': (lo, hi, n) | array,
+    # 'T': number | array, 'method': 'auto' | 'exact' | 'quad'}.  The values
+    # land in result['spectra']; they do not use the lag grid
+    # (tau_grid=np.array([0.0]) is enough).  S(omega) = int C e^{+i omega tau}.
+    spectra: Any = None
+
     # ── numerical knobs shared with compute_cumulants (None = its default) ──
     taylor_order: Optional[int] = None      # vertex Taylor order (None: max(k + 2 max_ell, 2))
     use_cache: Optional[bool] = None        # on-disk caches (None: on)
@@ -656,6 +667,14 @@ class Config:
             raise ValueError(
                 f"Config.discard must be False, True or 'auto'; got "
                 f"{self.discard!r}.")
+        if self.spectra is not None:
+            from api.spectra import resolve_spectra_options
+            if resolve_spectra_options(self.spectra, 'Config.spectra') \
+                    is not None and self.output != 'cumulant':
+                raise ValueError(
+                    f"Config.spectra with output={self.output!r}: the "
+                    f"spectral outputs are those of the connected cumulant "
+                    f"(output='cumulant').")
         if self.tau_step is not None and not float(self.tau_step) > 0:
             raise ValueError(
                 f"Config.tau_step must be > 0; got {self.tau_step!r}.")
@@ -815,6 +834,9 @@ def config_options(spatial=None):
             ('accuracy',     'target relative accuracy of the G6 error estimate; None → 1e-10'),
             ('backend',      'an explicit backend name (api.routing); None → the router picks'),
             ('discard',      "False | True | 'auto': release each diagram after evaluating it at the run's points (memory; k≥3: the slice points)"),
+        ]),
+        ('exact spectra (k=2; api.spectra)', [
+            ('spectra', "None | True | {'omega': (lo,hi,n) or array, 'T': number or array, 'method': 'auto'|'exact'|'quad'} → result['spectra']: S(ω)=∫C e^{+iωτ}dτ, S(0), ∫_0^T C, τ_c per loop order (no lag grid needed)"),
         ]),
         ('delay kernels (api.delay)', [
             ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
@@ -1656,6 +1678,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         kw['policy'] = cfg.policy
     if getattr(cfg, 'delay', None) is not None:
         kw['delay'] = dict(cfg.delay)
+    if getattr(cfg, 'spectra', None) not in (None, False):
+        kw['spectra'] = (dict(cfg.spectra) if isinstance(cfg.spectra, dict)
+                         else cfg.spectra)
     if cfg.preflight is not None:
         kw['preflight'] = bool(cfg.preflight)
     cfg._check_switch_on()            # fields may be set after construction

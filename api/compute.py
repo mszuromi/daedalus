@@ -1622,6 +1622,7 @@ def compute_cumulants(
     delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
     discard=False,                   # evaluate each diagram on the grid, then release it (True / 'auto')
     points=None,                     # k>=3 temporal: the (n, k) external-time tuples the result is read at
+    spectra=None,                    # k=2: exact S(omega), S(0), int_0^T C, tau_c (api.spectra)
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1748,6 +1749,30 @@ def compute_cumulants(
         evaluation points for ``discard`` (``dd.run`` passes its slice
         points).  With evaluate-and-discard on, ``result['C_points']`` /
         ``result['C_points_by_ell']`` hold the values at ``result['points']``.
+    spectra : None, True or dict
+        k = 2 temporal stationary runs: the exact spectral and integrated
+        outputs in ``result['spectra']`` (:mod:`api.spectra`), computed from
+        the state-space triples after the run, per loop order and in total:
+        the spectrum ``S(omega) = int C(tau) exp(+i omega tau) dtau`` (δ
+        components included, no ``1/2pi``) on ``omega``, ``S(0)``, the
+        windows ``int_0^T C`` / ``int_{-T}^0 C`` for each ``T``, the
+        one-sided integrals to infinity, ``C(0)`` (the Itô left limit) and
+        the correlation time ``tau_c = int_0^inf C / C(0)``.  A dict takes
+        ``omega`` (an ``(lo, hi, n)`` tuple or an array, as ``tau_grid``),
+        ``T`` (a number or an array), ``method`` (``'auto'`` default: exact
+        where the triples exist, else adaptive quadrature of the Phase J
+        callables with error estimates and an ``MEFallbackWarning``;
+        ``'exact'`` refuses instead; ``'quad'``) and the quadrature
+        tolerances ``epsabs`` / ``epsrel`` / ``limit``; ``True`` asks for
+        ``S(0)``, the integrals to infinity and ``tau_c`` only.  The lag
+        grid is not used: ``tau_grid=np.array([0.0])`` keeps the run to the
+        equal-time point.  Refused before the run for k != 2, spatial
+        models, ``t_min``, and ``discard`` other than False; a refusal after
+        the run (``method='exact'`` for an order without triples, ...)
+        keeps the result and records ``{'status': 'refused', 'reason':
+        ...}`` with a :class:`api.spectra.SpectraWarning`; a ``C`` that does
+        not decay has NaN for ``S`` and the integrals to infinity (reason in
+        ``notes``).  Conventions: ``api.spectra``.
     verbose : bool
         Print progress messages.
     policy : api.analyze.Policy, dict or None
@@ -1852,6 +1877,17 @@ def compute_cumulants(
                              'ell'}
         'kernel_groups'   : list of dicts as fed to compute_correction_td
         'phase_j_by_ell'  : {ell: td_result dict}
+        'spectra'         : (only with ``spectra=``) the dict of
+                             :func:`api.spectra.spectra`: ``omega``, ``S``,
+                             ``S_by_ell``, ``S0``, ``T``, ``integral``,
+                             ``integral_neg``, ``integral_inf``,
+                             ``integral_inf_neg``, ``delta0``, ``C0``,
+                             ``tau_c`` (each also ``<name>_by_ell``;
+                             ``tau_c_by_ell`` is the correlation time of
+                             the cumulant truncated at that order),
+                             ``method_by_ell``, ``error_by_ell``,
+                             ``abs_error``, ``status``, ``notes``,
+                             ``conventions``
         'status'          : (Phase J backends) ``'ok'``, or ``'incomplete'``
                              when Phase J could
                              not evaluate some diagram(s): they are left out
@@ -2013,6 +2049,15 @@ def compute_cumulants(
     elif not (isinstance(discard, str) and discard == 'auto'):
         raise ValueError(f"discard={discard!r}: expected False, True or "
                          f"'auto'")
+    from api import spectra as _spectra_mod
+    _spectra_opts = _spectra_mod.resolve_spectra_options(spectra)
+    if _spectra_opts is not None:
+        _spectra_mod.check_spectra_question(
+            k, spatial=bool(spatial_grid is not None or chi_grid is not None
+                            or spatial_points is not None
+                            or (isinstance(model, dict)
+                                and model.get('spatial'))),
+            t_min=t_min, discard=discard)
     if points is not None:
         _pa = np.asarray(points, dtype=float)
         if k < 3:
@@ -2397,6 +2442,8 @@ def compute_cumulants(
         _ensure_warning_shown(SpatialAccuracyWarning, 'always',
                               message=_msg, stacklevel=2)
         warnings.warn(_msg, SpatialAccuracyWarning, stacklevel=2)
+    if _spectra_opts is not None and isinstance(result, dict):
+        _spectra_mod.attach(result, _spectra_opts)
     if route.backend.standard_tail:
         _standard_tail(state, result, output_npz, output_csv)
     return result

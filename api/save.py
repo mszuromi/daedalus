@@ -543,6 +543,39 @@ def _delta_payload(tab: dict) -> dict[str, np.ndarray]:
 
 # ── NPZ ───────────────────────────────────────────────────────────────
 
+def _spectra_payload(sp):
+    """``spectra_*`` arrays of ``result['spectra']`` (:mod:`api.spectra`):
+    ``spectra_ells``; per quantity the total (``spectra_<name>``) and the
+    loop orders stacked in the order of ``spectra_ells``
+    (``spectra_<name>_by_ell``: shape ``(n_ell,)`` for the numbers,
+    ``(n_ell, n)`` over ``spectra_omega`` / ``spectra_T``);
+    ``spectra_status``, ``spectra_conventions``; a refused request keeps
+    ``spectra_reason`` only."""
+    out = {'spectra_status': np.asarray([str(sp.get('status', ''))]),
+           'spectra_conventions': np.asarray([str(sp.get('conventions', ''))])}
+    if sp.get('status') != 'ok':
+        out['spectra_reason'] = np.asarray([str(sp.get('reason', ''))])
+        return out
+    ells = sorted(sp.get('C0_by_ell') or {})
+    out['spectra_ells'] = np.asarray(ells, dtype=int)
+    out['spectra_method_by_ell'] = np.asarray(
+        [str((sp.get('method_by_ell') or {}).get(e, '')) for e in ells])
+    for name in ('S0', 'integral_inf', 'integral_inf_neg', 'delta0', 'C0',
+                 'tau_c'):
+        out[f'spectra_{name}'] = np.asarray([sp[name]], dtype=complex)
+        out[f'spectra_{name}_by_ell'] = np.asarray(
+            [sp[f'{name}_by_ell'][e] for e in ells], dtype=complex)
+    for grid, names in (('omega', ('S',)), ('T', ('integral', 'integral_neg'))):
+        if sp.get(grid) is None:
+            continue
+        out[f'spectra_{grid}'] = np.asarray(sp[grid], dtype=float)
+        for name in names:
+            out[f'spectra_{name}'] = np.asarray(sp[name], dtype=complex)
+            out[f'spectra_{name}_by_ell'] = np.asarray(
+                [sp[f'{name}_by_ell'][e] for e in ells], dtype=complex)
+    return out
+
+
 def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
     """Serialize a ``compute_cumulants`` result dict to ``.npz``.
 
@@ -630,6 +663,10 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
     tab = _delta_table(result)
     if tab is not None:
         payload.update(_delta_payload(tab))
+
+    # the exact spectral outputs (``compute_cumulants(spectra=)``)
+    if isinstance(result.get('spectra'), dict):
+        payload.update(_spectra_payload(result['spectra']))
 
     # Merge user-supplied extras (sim sidecars etc.) — last writer wins
     if extra:

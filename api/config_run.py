@@ -21,6 +21,7 @@ Schema (all sections but ``model`` are optional; unknown keys are errors)::
       taylor_order: 4
       accuracy: 1e-10                            # target relative accuracy (G6)
       delay: {order: 8}                          # delay models (api.delay options)
+      spectra: {omega: {start: 0, stop: 5, num: 51}, T: [1, 10]}   # k=2: exact S(omega), int_0^T C, tau_c (api.spectra)
     policy: {use_cache: true, parallel: false, n_workers: 4, verbose: false,
              mode: permissive,                   # model analyzer: or strict
              allow_taylor_truncation: true,      # consents (api.analyze.Policy)
@@ -83,7 +84,10 @@ from api.noise import SOURCE_TYPES as SDE_NOISE_TYPES  # noqa: E402
 from engine.errors import DaedalusError
 
 QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'chi_grid',
-                 'spatial_grid', 'points', 'taylor_order', 'accuracy', 'delay')
+                 'spatial_grid', 'points', 'taylor_order', 'accuracy', 'delay',
+                 'spectra')
+#: the keys of ``question.spectra`` (``api.spectra``)
+SPECTRA_KEYS = ('omega', 'T', 'method')
 POLICY_KEYS = ('use_cache', 'parallel', 'n_workers', 'verbose', 'preflight',
                'backend', 'discard',
                'mode', 'allow_taylor_truncation', 'allow_markov_embedding',
@@ -408,8 +412,42 @@ class _Parser:
             q['accuracy'] = float(v)
         if 'delay' in items:
             q['delay'] = self.delay_options(items['delay'][1])
+        if 'spectra' in items:
+            sp = self.spectra_options(items['spectra'][1])
+            if sp is not None:
+                q['spectra'] = sp
         q['_lines'] = lines
         return q
+
+    def spectra_options(self, node):
+        """``question.spectra``: ``true`` (S(0), the integrals to infinity,
+        tau_c) or a mapping ``{omega: grid, T: number | list, method}``
+        (``compute_cumulants(spectra=)``, ``api.spectra``); ``false``: off.
+        Returned with the grids as ``{values: [...]}`` (literal points)."""
+        from api.spectra import resolve_spectra_options
+        if isinstance(node, self.yaml.ScalarNode):
+            return {} if self.boolean(node, 'question.spectra') else None
+        items = self.mapping(node, SPECTRA_KEYS, "'question.spectra'")
+        out = {}
+        if 'omega' in items:
+            out['omega'] = {'values': self._grid(
+                items['omega'][1], 'question.spectra.omega', increasing=False)}
+        if 'T' in items:
+            vn = items['T'][1]
+            if isinstance(vn, self.yaml.ScalarNode):
+                out['T'] = {'values': [float(self.number(
+                    vn, 'question.spectra.T'))]}
+            else:
+                out['T'] = {'values': self._grid(vn, 'question.spectra.T',
+                                                 increasing=False)}
+        if 'method' in items:
+            out['method'] = self.string(items['method'][1],
+                                        'question.spectra.method')
+        try:
+            resolve_spectra_options(spectra_config(out), 'question.spectra')
+        except (TypeError, ValueError) as exc:
+            self.fail(node, f'question.spectra: {exc}')
+        return out
 
     def delay_options(self, node):
         """``question.delay``: the options of the Pade route for models with
@@ -807,6 +845,20 @@ def _output_plan(spec, base):
     return {kind: stem + ext for kind, ext in OUTPUT_STEM_KINDS}, prefix
 
 
+def spectra_config(sp):
+    """``question.spectra`` (grids as ``{values: [...]}``) as the
+    ``dd.Config.spectra`` dict (arrays: literal points), or ``None``."""
+    if sp is None:
+        return None
+    out = {}
+    for key in ('omega', 'T'):
+        if sp.get(key) is not None:
+            out[key] = np.asarray(sp[key]['values'], dtype=float)
+    if 'method' in sp:
+        out['method'] = sp['method']
+    return out if out else True
+
+
 def resolve(raw, model, mod):
     """Validate the model-dependent parts and fill in every default.
 
@@ -959,6 +1011,8 @@ def resolve(raw, model, mod):
         question['accuracy'] = q['accuracy']
     if 'delay' in q:
         question['delay'] = dict(q['delay'])
+    if 'spectra' in q:
+        question['spectra'] = dict(q['spectra'])
     outputs = {}
     if raw.get('output'):
         try:
@@ -1103,7 +1157,8 @@ def run_config(path, dry_run=False, out=None):
         preflight=pol.get('preflight'), delay=q.get('delay'),
         taylor_order=q.get('taylor_order'), accuracy=q.get('accuracy'),
         use_cache=None if pol['use_cache'] else False,
-        backend=pol.get('backend'), discard=pol.get('discard'))
+        backend=pol.get('backend'), discard=pol.get('discard'),
+        spectra=spectra_config(q.get('spectra')))
     result = dd.run(model, cfg, mod)
 
     written = {}

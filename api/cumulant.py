@@ -938,7 +938,8 @@ class Cumulant:
         transform of the smooth part plus ``Σ w e^{-iω·location}`` (the flat
         δ floor for spikes at τ = 0).  For a cross-correlation, C(τ) =
         κ(x_1(0), x_2(τ)), this is ``⟨x̂_1(ω)* x̂_2(ω)⟩`` per unit time with
-        ``x̂(ω) = ∫ e^{-iωt} x(t) dt``.
+        ``x̂(ω) = ∫ e^{-iωt} x(t) dt``.  (``dd.spectra`` / ``spectra=`` use
+        the opposite sign, ``∫ C e^{+iωτ}`` = this method at ``−ω``.)
 
         ``method='exact'`` (C0): ``c (iω − G_+)^{-1} x0 + c (−iω −
         G_−)^{-1} x0`` from the matrix-exponential triples of the two sides

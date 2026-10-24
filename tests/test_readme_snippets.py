@@ -33,7 +33,8 @@ def _exec(code, name):
 
 def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
-    markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)", 'dd.build_cache(']
+    markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
+               'spectra={', 'dd.build_cache(']
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -70,3 +71,11 @@ def test_readme_build_cache_dry_run_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _exec(_block('dd.build_cache('), 'build_cache dry run')
     assert list(tmp_path.iterdir()) == []
+
+
+def test_readme_spectra_example_is_ok():
+    ns = _exec(_block('spectra={'), 'spectra example')
+    sp = ns['sp']
+    assert sp['status'] == 'ok' and set(sp['method_by_ell'].values()) == {'exact'}
+    assert sp['S'].shape == (201,) and sp['integral'].shape == (2,)
+    assert abs(sp['S0'] - 2 * sp['integral_inf']) <= 1e-13 * abs(sp['S0'])
