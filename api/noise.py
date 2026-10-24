@@ -306,6 +306,8 @@ class NoiseSource:
     #: True when the CGF is analytic at theta = 0 in closed form (a
     #: removable singularity, e.g. the uniform jump mgf, is False).
     regular = True
+    #: spatial structure of the noise of an SPDE (``'white'``); None: time-only
+    space = None
 
     def __init__(self, **params):
         self.params = {k: parse_expr(v, what=f'{type(self).__name__}({k}=...)')
@@ -453,10 +455,23 @@ class Gaussian(NoiseSource):
     (multiplicative noise, Ito by default).  A nonzero ``mean`` is moved
     into the drift by the SDE builder: ``Gaussian(mean=phi, var=phi^2)``
     is ``d eta = phi dt + phi dW``.
+
+    ``space='white'`` makes it space-time white noise for an SPDE
+    (``SDE(..., space=d)``): ``<eta(x,t) eta(x',t')> = var delta(x - x')
+    delta(t - t')``.  (Conserved noise, ``div`` of a white vector noise, is not
+    supported yet.)
     """
     is_gaussian = True
 
-    def __init__(self, var, mean=0):
+    def __init__(self, var, mean=0, *, space=None):
+        if space not in (None, 'white'):
+            if space == 'conserved':
+                raise NoiseError("Gaussian(space='conserved'): conserved noise (the divergence "
+                                 "of a white vector noise) is not supported yet; use "
+                                 "space='white'.")
+            raise NoiseError(f"Gaussian(space={space!r}): use space='white' (space-time white "
+                             f"noise of an SPDE) or omit it (time-only noise).")
+        self.space = space
         super().__init__(var=var, mean=mean)
 
     def _check_domain(self):
