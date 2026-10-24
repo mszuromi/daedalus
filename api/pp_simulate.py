@@ -55,7 +55,8 @@ class PPSimulationError(DaedalusError, ValueError):
 _NP = {'exp': np.exp, 'log': np.log, 'sqrt': np.sqrt, 'sin': np.sin, 'cos': np.cos,
        'tan': np.tan, 'tanh': np.tanh, 'sinh': np.sinh, 'cosh': np.cosh,
        'arctan': np.arctan, 'erf': None, 'abs': np.abs, 'pi': math.pi, 'e': math.e,
-       'heaviside': lambda x: np.heaviside(x, 1.0)}
+       # Theta(0) = 0, the value of the mean field and of Phase J
+       'heaviside': lambda x: np.heaviside(x, 0.0)}
 try:                                                        # optional
     from scipy.special import erf as _erf
     _NP['erf'] = _erf

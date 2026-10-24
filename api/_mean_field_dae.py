@@ -53,10 +53,32 @@ def _gamma(x):
     return gamma(np.asarray(x, dtype=float))
 
 
+def _erf(x):
+    from scipy.special import erf
+    return erf(np.asarray(x, dtype=float))
+
+
+def _theta(x):
+    """The step ``heaviside(x)``: 1 for ``x > 0``, 0 for ``x < 0`` and
+    **Theta(0) = 0**, the package's Ito convention (Phase J's constant rows,
+    the equal-time ``tau -> 0^-`` limit).  Sage keeps ``heaviside(0)``
+    unevaluated, so the action fixes no other value."""
+    return np.heaviside(np.asarray(x, dtype=float), 0.0)
+
+
+# One table for every function the expression parser accepts in a drift /
+# right-hand side (``api.noise._MATH_FUNCS``: exp log sqrt sin cos tan tanh
+# sinh cosh arctan heaviside erf abs; gamma / factorial are in _SPECIAL_NS)
+# plus ``sign`` (the action validator's built-in, Sage ``sgn``).  The numpy
+# namespace of the saddle solve and the Sage namespace of the linearization
+# (``_sage_math_namespace``) carry the same names: a function in one and not
+# the other is a bug (item 69: erf / arctan / heaviside raised a late
+# NameError from the compiled residual rows).
 _MATH_NS = {
     'tanh': np.tanh, 'sin': np.sin, 'cos': np.cos, 'tan': np.tan,
     'exp':  np.exp,  'log': np.log, 'sqrt': np.sqrt, 'abs': np.abs,
     'sinh': np.sinh, 'cosh': np.cosh,
+    'arctan': np.arctan, 'erf': _erf, 'heaviside': _theta, 'sign': np.sign,
     'pi':   float(np.pi),
 }
 
@@ -64,7 +86,95 @@ _MATH_NS = {
 # exponent carries Gamma functions (NameError 'factorial' in
 # the saddle solve).  Placed BEFORE the model's names in every namespace: a
 # parameter called ``gamma`` keeps its value.
-_SPECIAL_NS = {'gamma': _gamma, 'factorial': _factorial}
+_SPECIAL_NS = {'gamma': _gamma, 'factorial': _factorial,
+               'e': float(np.e)}        # the parser reads a bare ``e`` as Euler's number
+
+
+class UnsupportedMeanFieldFunctionError(DaedalusError, ValueError):
+    """An equation calls a function the mean-field solve cannot evaluate."""
+
+
+def _check_called_functions(texts, known, where):
+    """Refuse, before any evaluation, a call ``f(...)`` of a name in none of
+    the namespaces the equations are evaluated in (``known``): a function
+    the parser let through that has no numeric implementation, or a formal
+    function.  Without this the solve raised a late ``NameError`` from
+    inside the compiled rows."""
+    import ast
+    bad = {}
+    for text in texts:
+        try:
+            tree = ast.parse(_sage_to_python(text), mode='eval')
+        except SyntaxError:
+            continue                                   # the evaluation reports it
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id not in known):
+                bad.setdefault(node.func.id, text)
+    if bad:
+        name, text = next(iter(bad.items()))
+        supported = sorted((set(_MATH_NS) | set(_SPECIAL_NS)) - {'pi', 'e'})
+        raise UnsupportedMeanFieldFunctionError(
+            f'{where}: the function {name!r} (in {text!r}) has no numeric '
+            f'implementation in the mean-field solve'
+            + (f' (also: {sorted(set(bad) - {name})})' if len(bad) > 1 else '')
+            + f'.  Supported functions: {", ".join(supported)}; '
+            f'a declared function(...) of one argument is also available.  '
+            f'Rewrite the drift with these, or declare the function with '
+            f'define_function.')
+
+
+def _refuse_saddle_on_step(model, params_np, phi_callables, index_sets,
+                           state_vars, keys, selected):
+    """Refuse a saddle that sits ON the jump of a ``heaviside(arg)`` in an
+    equation (``arg`` zero to ~1e-10 of its own terms).
+
+    The residual takes Theta(0) = 0 (:func:`_theta`), so a root can sit there,
+    but the expansion about the saddle needs the slope of the step, a Dirac
+    delta at 0, which does not exist.  Before this check the run died deep in
+    the propagator with ``TypeError: unable to simplify to complex
+    approximation``."""
+    import ast
+    steps = []                                   # (arg code, magnitude code, text)
+    for eq in model.get('equations', []):
+        for text in (eq['lhs_text'], eq['rhs_text']):
+            try:
+                tree = ast.parse(_sage_to_python(text), mode='eval')
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                        and node.func.id == 'heaviside' and len(node.args) == 1):
+                    arg = ast.unparse(node.args[0])
+                    steps.append((compile(arg, '<step>', 'eval'),
+                                  compile(_magnitude_text(arg), '<step>', 'eval'),
+                                  arg, eq))
+    if not steps:
+        return
+    state = {var: np.asarray(selected[keys[var]], dtype=float)
+             for var, _, _ in state_vars}
+    base = {**_SPECIAL_NS, **params_np, **state, **phi_callables,
+            **index_sets, **_MATH_NS, 'Dt': 0, 'Laplacian': 0, 'sum': sum,
+            '__builtins__': {}}
+    with np.errstate(all='ignore'):
+        for code, mag_code, arg, eq in steps:
+            pop = eq['population']
+            for i in range(_pop_size(model, pop) if pop is not None else 1):
+                ns = {**base, 'i': i}
+                try:
+                    a = np.asarray(eval(code, ns), dtype=float).ravel()
+                    m = np.asarray(eval(mag_code, ns), dtype=float).ravel()
+                except Exception:                   # noqa: BLE001
+                    continue                        # the residual reports it
+                if a.size and m.size and abs(a[0]) <= 1e-10 * float(m[0]):
+                    raise UnsupportedMeanFieldFunctionError(
+                        f'mean-field solve: the saddle {dict((k, list(map(float, v))) for k, v in selected.items())} '
+                        f'sits exactly on the jump of heaviside({arg}) '
+                        f'(argument = {a[0]:.3g}).  The equations take '
+                        f'Theta(0) = 0, but the expansion about the saddle '
+                        f'needs the slope of the step, a Dirac delta at 0, '
+                        f'which is undefined.  Move the step or the '
+                        f'parameters off the saddle.')
 
 
 def _sage_to_python(text: str) -> str:
@@ -205,6 +315,9 @@ def _make_phi_callables(model: dict, params: dict) -> dict[str, '_PhiCallableLis
         arg_name = args_text[0]
         pop = fn_spec.get('population')
         pop_size_val = _pop_size(model, pop)
+        _check_called_functions(
+            [expr_text], {*_SPECIAL_NS, *params, *_MATH_NS, 'sum'},
+            f'mean-field solve (function {fn_spec["name"]!r})')
 
         # Translate Sage power ``^`` to Python ``**`` once.
         expr_py = _sage_to_python(expr_text)
@@ -357,6 +470,14 @@ def _build_residual(model: dict, params_np: dict,
     range.  ``Dt`` is hard-substituted to ``0`` for MF.
     """
     equations = model.get('equations', [])
+
+    # A call of a function in none of the evaluation namespaces is refused
+    # here, not as a NameError from a compiled row mid-solve.
+    _check_called_functions(
+        [t for eq in equations for t in (eq['lhs_text'], eq['rhs_text'])],
+        {*_SPECIAL_NS, *params_np, *slices, *phi_callables, *index_sets,
+         *_MATH_NS, 'sum', 'Dt', 'Laplacian'},
+        'mean-field solve')
 
     # Precompute, per-equation, the expanded (i-bound) (lhs, rhs)
     # source strings to avoid string ops in the hot loop.  Each
@@ -1713,6 +1834,10 @@ def solve_mean_field_dae(
         scale = np.where(scale > 0, scale, seed_med)
         _check_saddle_determined(R, x_sel, pure, expanded, scale)
 
+    if model.get('equations'):
+        _refuse_saddle_on_step(model, params_np, phi_callables, idx_sets,
+                               state_vars, keys, selected)
+
     return {
         'mf_values':           selected,
         # Error estimate of each selected value (the last Newton correction;
@@ -1892,6 +2017,28 @@ def _equilibrate_pencil(A, B, sweeps=8):
     return A, B
 
 
+def _float_at_root(expr, root_subs):
+    """``float(expr|_root)`` for a (derivative of a) residual that may carry
+    ``heaviside`` / ``dirac_delta`` of the state.  A step evaluated at exactly
+    0 takes the package value Theta(0) = 0 (see :func:`_theta`); the
+    derivative of a step, ``dirac_delta(c)``, is 0 at ``c != 0`` and
+    undefined at ``c == 0`` (the saddle sits exactly on the step), which is
+    refused."""
+    from sage.all import SR, dirac_delta, heaviside
+    v = SR(expr).subs(root_subs)
+    w = SR.wild(0)
+    for atom in set(v.find(dirac_delta(w))):
+        if float(atom.operands()[0]) == 0.0:
+            raise UnsupportedMeanFieldFunctionError(
+                'linear stability: the saddle sits exactly on the jump of a '
+                'heaviside(...) in the drift, where its slope (a Dirac delta) '
+                'is undefined; move the step or the parameters off the saddle.')
+        v = v.subs({atom: 0})
+    for atom in set(v.find(heaviside(w))):
+        v = v.subs({atom: 1 if float(atom.operands()[0]) > 0 else 0})
+    return float(v)
+
+
 def linear_stability(
         model: dict,
         fundamental: dict,
@@ -1947,7 +2094,10 @@ def linear_stability(
                           sqrt as _sage_sqrt, sinh as _sage_sinh,
                           cosh as _sage_cosh, pi as _sage_pi,
                           gamma as _sage_gamma,
-                          factorial as _sage_factorial)
+                          factorial as _sage_factorial,
+                          arctan as _sage_arctan, erf as _sage_erf,
+                          heaviside as _sage_heaviside, sgn as _sage_sgn,
+                          e as _sage_e)
     import scipy.linalg
 
     if not model.get('equations'):
@@ -1982,8 +2132,22 @@ def linear_stability(
         'tan':  _sage_tan,  'exp':  _sage_exp,  'log':  _sage_log,
         'sqrt': _sage_sqrt, 'sinh': _sage_sinh, 'cosh': _sage_cosh,
         'abs':  abs,        'pi':   _sage_pi,
+        # the same names as the numeric ``_MATH_NS`` (heaviside stays
+        # symbolic: its derivative ``dirac_delta`` is resolved at the root
+        # by ``_float_at_root``)
+        'arctan': _sage_arctan, 'erf': _sage_erf,
+        'heaviside': _sage_heaviside, 'sign': _sage_sgn,
     }
-    sage_special_ns = {'gamma': _sage_gamma, 'factorial': _sage_factorial}
+    sage_special_ns = {'gamma': _sage_gamma, 'factorial': _sage_factorial,
+                       'e': _sage_e}
+    # A bare size-1 field (scalar mode: ``erf(x)``, ``sign(x)``) arrives as a
+    # ``_FieldScalar``, which Sage's strict argument coercion refuses; unwrap
+    # it for every function (a no-op for an SR argument).
+    from api.model_compiler import _unwrap_builtin
+    sage_math_ns = {k: (v if k == 'pi' else _unwrap_builtin(v))
+                    for k, v in sage_math_ns.items()}
+    sage_special_ns = {k: (v if k == 'e' else _unwrap_builtin(v))
+                       for k, v in sage_special_ns.items()}
 
     params_np = _numpy_params(model, fundamental)
     if model.get('kernels'):
@@ -2025,6 +2189,11 @@ def linear_stability(
         var: (_FieldScalar(arr) if len(arr) == 1 else arr)
         for var, arr in sym_per_var.items()
     }
+    _check_called_functions(
+        [t for eq in model['equations'] for t in (eq['lhs_text'], eq['rhs_text'])],
+        {*sage_special_ns, *params_np, *sym_per_var, *phi_sym, *idx_sets,
+         *sage_math_ns, 'sum', 'Dt', 'Laplacian'},
+        'linear stability')
     residuals_sym = []
     for eq_no, eq in enumerate(model['equations'], start=1):
         pop = eq['population']
@@ -2082,7 +2251,7 @@ def linear_stability(
         F_k_alg = F_k.subs({Dt_sym: 0})
         for j, x_j in enumerate(flat_syms):
             d = diff(F_k_alg, x_j)
-            B_mat[k, j] = float(d.subs(root_subs))
+            B_mat[k, j] = _float_at_root(d, root_subs)
 
         # A[k, j] = ∂²F_k/∂Dt ∂x_j at x*.  Doing ∂Dt first reduces
         # the polynomial degree and avoids carrying a useless Dt
@@ -2090,7 +2259,7 @@ def linear_stability(
         F_k_dDt = diff(F_k, Dt_sym)
         for j, x_j in enumerate(flat_syms):
             d = diff(F_k_dDt, x_j)
-            A_mat[k, j] = float(d.subs(root_subs).subs({Dt_sym: 0}))
+            A_mat[k, j] = _float_at_root(d.subs({Dt_sym: 0}), root_subs)
 
     # ── Solve the generalized eigenvalue problem (σA + B) v = 0 ──
     # i.e. ``(-B) v = σ A v``.  scipy.linalg.eig(C, D) returns λ s.t.
