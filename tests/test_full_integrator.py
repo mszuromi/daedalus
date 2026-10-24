@@ -519,7 +519,7 @@ def test_analytic_ift_vs_numerical_ft():
     qg = np.linspace(0.0, 60.0, 3000)                                  # numerical FT
     dCq = np.array([correlator_2pt(descrs, float(q), 0.0, mu, D, spatial_dim=1)
                     for q in qg])
-    num = np.array([np.trapz(np.cos(qg * x) * np.real(dCq), qg) / math.pi for x in xs])
+    num = np.array([np.trapezoid(np.cos(qg * x) * np.real(dCq), qg) / math.pi for x in xs])
     for i, x in enumerate(xs):
         assert abs(an[i] - num[i]) <= 1e-4 * (abs(num[i]) + 1e-12), \
             f"analytic IFT {an[i]} vs numerical FT {num[i]} at x={x}"
@@ -594,7 +594,7 @@ def test_analytic_ift_derivative_vs_numerical_ft(kind, action, xs, qcut, nq, nt,
         dCq = np.array([diagram_correlator(dd, pv, float(q), 0.0, mu, D,
                                            spatial_dim=1, n_t=nt, n_s=ns,
                                            formfactor=ff) for q in qg])
-        num += np.array([np.trapz(np.cos(qg * x) * np.real(dCq), qg) / math.pi
+        num += np.array([np.trapezoid(np.cos(qg * x) * np.real(dCq), qg) / math.pi
                          for x in xs_a])
     for i, x in enumerate(xs_a):
         assert abs(np.real(an[i]) - num[i]) <= tol * (abs(num[i]) + 1e-12), \

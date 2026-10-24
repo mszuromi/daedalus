@@ -77,6 +77,10 @@ for _n in ('sin', 'cos', 'tan', 'tanh', 'sinh', 'cosh', 'arctan',
     _MATH_FUNCS[_n] = getattr(_sa, _n)
 _MATH_FUNCS['abs'] = _sa.abs_symbolic
 _RESERVED = {'sum', 'for', 'in', 'pi', 'I', 'e', 'Dt', 'theta'} | set(_MATH_FUNCS)
+# Sage's own functions for names it prints itself (gamma(1 - Y) prints as factorial(-Y), e.g. in a
+# CGMY mean), used only where the name is called, so a parameter may still be named gamma.  A formal
+# function of the same name breaks Sage 10.9's Maxima conversion ("operator mismatch").
+_SAGE_PRINTED_CALLS = {'factorial': _sa.factorial, 'gamma': _sa.gamma}
 
 _INDEX_RE = re.compile(
     r'\b([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*(?:,\s*([A-Za-z_]\w*)\s*)?\]')
@@ -128,6 +132,8 @@ def parse_expr(value, *, what: str = 'expression'):
         for n in names:
             if n in _MATH_FUNCS:
                 loc[n] = _MATH_FUNCS[n]
+            elif n in called and n in _SAGE_PRINTED_CALLS:
+                loc[n] = _SAGE_PRINTED_CALLS[n]
             elif n in called:
                 loc[n] = function(n)
             elif n == 'theta':

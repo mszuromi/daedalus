@@ -2211,7 +2211,7 @@ def compute_spatial_correlator_generic(
                 for it in range(len(taus)):
                     col = dC_qt[:, it]
                     for ix, x in enumerate(xg):
-                        add[it, ix] = np.trapz(np.cos(qg * float(x)) * col, qg) / math.pi
+                        add[it, ix] = np.trapezoid(np.cos(qg * float(x)) * col, qg) / math.pi
             else:
                 from engine.integration.spatial.spatial_correlator import radial_inverse_ft
                 for it in range(len(taus)):

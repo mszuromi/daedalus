@@ -42,14 +42,14 @@ def _dS_frequency(q):
     SRt = np.array([sigma_R_time(q, t, MU, D, T) for t in tg])
     SKt = np.array([sigma_K_time(q, t, MU, D, T) for t in tg])
     wg = np.linspace(-50.0, 50.0, 1500)
-    SRw = np.array([np.trapz(SRt * np.exp(1j * w * tg), tg) for w in wg])
-    SKw = np.array([np.trapz(2 * SKt * np.cos(w * tg), tg) for w in wg])
+    SRw = np.array([np.trapezoid(SRt * np.exp(1j * w * tg), tg) for w in wg])
+    SKw = np.array([np.trapezoid(2 * SKt * np.cos(w * tg), tg) for w in wg])
     m = _mq(q)
     GR = 1.0 / (m - 1j * wg)
     GA = 1.0 / (m + 1j * wg)
     C = 2 * T / (m * m + wg * wg)
     integ = GR * SRw * C + GR * SKw * GA + C * np.conj(SRw) * GA
-    return float(np.trapz(integ.real, wg) / (2 * math.pi))
+    return float(np.trapezoid(integ.real, wg) / (2 * math.pi))
 
 
 @pytest.mark.parametrize('q', [0.0, 0.6, 1.2, 2.0])

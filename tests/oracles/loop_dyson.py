@@ -156,8 +156,8 @@ def _sigma_grids(q, mu, D, T, t_max, n_t, n_l=2600, formfactor=None,
     ffK = (_fk(lg) if _fk is not None else 1.0) * np.ones_like(lg)
     E_l = np.exp(-np.outer(ml, tg))                  # (n_l, n_t)
     Cq = (T / mql)[:, None] * np.exp(-np.outer(mql, tg))
-    sR = np.trapz(ffR[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)   # ∫dℓ F_R G_R·C
-    sK = np.trapz(ffK[:, None] * (T / ml)[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)
+    sR = np.trapezoid(ffR[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)   # ∫dℓ F_R G_R·C
+    sK = np.trapezoid(ffK[:, None] * (T / ml)[:, None] * E_l * Cq, lg, axis=0) / (2 * math.pi)
     return tg, sR, sK
 
 
@@ -271,13 +271,13 @@ def bubble_delta_C_q_tau(q, taus, mu, D, T, g=1.0, t_max=60.0, n_t=4000,
     for i, tau in enumerate(taus):
         # Term1 = (T/m)∫₀^∞ σ_R(a) K(τ−a) da = sliver[0,a1] + trapz[a1,t_max]
         term1 = (T / m) * (slivR * _K(tau - aeffR)
-                           + np.trapz(sR * _K(tau - ag), ag))
+                           + np.trapezoid(sR * _K(tau - ag), ag))
         term1m = (T / m) * (slivR * _K(-tau - aeffR)
-                            + np.trapz(sR * _K(-tau - ag), ag))
+                            + np.trapezoid(sR * _K(-tau - ag), ag))
         # Term2 = (1/2m)∫ σ_K(|τ−d|) e^{−m|d|} dd  (σ_K finite ⇒ no sliver)
         argk = np.abs(tau - dg)
         sKshift = np.interp(argk, ag0, sK0, left=sK0[0], right=0.0)
-        term2 = (1.0 / (2.0 * m)) * np.trapz(sKshift * np.exp(-m * np.abs(dg)),
+        term2 = (1.0 / (2.0 * m)) * np.trapezoid(sKshift * np.exp(-m * np.abs(dg)),
                                              dg)
         out[i] = g * g * (C_R * (term1 + term1m) + C_K * term2)
     return out

@@ -960,8 +960,7 @@ class Cumulant:
             t = self.tau[order]
             c = self._smooth_on(self.tau, ell)[order]
             ph = np.exp(-1j * np.outer(omega, t))
-            S = np.trapezoid(ph * c[None, :], t, axis=1) if hasattr(
-                np, 'trapezoid') else np.trapz(ph * c[None, :], t, axis=1)
+            S = np.trapezoid(ph * c[None, :], t, axis=1)
         else:
             if method not in ('auto', 'exact', 'quad'):
                 raise ValueError(f"method must be 'auto', 'exact', 'quad' or "

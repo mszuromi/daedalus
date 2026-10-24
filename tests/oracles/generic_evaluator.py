@@ -169,8 +169,8 @@ def _dyson_retarded(ag, sR, m, N, taus):
 
     out = np.empty(len(taus))
     for i, tau in enumerate(taus):
-        t1 = (N / m) * (sliv * _K(tau - aeff) + np.trapz(sR * _K(tau - ag), ag))
-        t1m = (N / m) * (sliv * _K(-tau - aeff) + np.trapz(sR * _K(-tau - ag), ag))
+        t1 = (N / m) * (sliv * _K(tau - aeff) + np.trapezoid(sR * _K(tau - ag), ag))
+        t1m = (N / m) * (sliv * _K(-tau - aeff) + np.trapezoid(sR * _K(-tau - ag), ag))
         out[i] = t1 + t1m
     return out
 
@@ -184,7 +184,7 @@ def _dyson_keldysh(ag, sK, m, taus):
     out = np.empty(len(taus))
     for i, tau in enumerate(taus):
         sh = np.interp(np.abs(tau - dg), ag0, sK0, left=sK0[0], right=0.0)
-        out[i] = (1.0 / (2.0 * m)) * np.trapz(sh * np.exp(-m * np.abs(dg)), dg)
+        out[i] = (1.0 / (2.0 * m)) * np.trapezoid(sh * np.exp(-m * np.abs(dg)), dg)
     return out
 
 
