@@ -130,7 +130,7 @@ _PIPELINE_EXPORTS = {
     'MEFallbackWarning':         'api.me_output',
     'MEConditioningWarning':     'api.me_output',
     'slice_me':                  'api.me_output',
-    # exact S(omega), S(0), int_0^T C, tau_c of a k = 2 result (item 70)
+    # exact S(omega), S(0), int_0^T C, tau_c of a k = 2 result
     'spectra':                   'api.spectra',
     'SpectraWarning':            'api.spectra',
     # symbolic tree-level outputs (C1 Fourier domain, C2 time domain)

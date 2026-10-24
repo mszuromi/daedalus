@@ -1,8 +1,8 @@
 """
 api.spectra
 ===========
-Exact spectral and integrated outputs of a k = 2 result, without a lag grid
-(item 70, G6): the power / cross spectrum ``S(ω)`` on a frequency grid,
+Exact spectral and integrated outputs of a k = 2 result, without a lag
+grid: the power / cross spectrum ``S(ω)`` on a frequency grid,
 ``S(0)``, the integrated correlator ``∫_0^T C(τ) dτ`` for given windows ``T``
 (and its mirror ``∫_{-T}^0``), the one-sided integrals to infinity and the
 correlation time ``τ_c``, each per loop order and in total.
@@ -61,7 +61,9 @@ matrix-exponential triples of the state-space Phase J engine
   exponential ``exp([[G, x0], [0, 0]] T)`` (exact for any ``T``, no
   cancellation at small ``T``, no inverse of ``G``); a block beyond the dense
   forms (``me_output.MAX_BLOCK`` states) uses ``c (−G)^{-1} (x0 − e^{GT}
-  x0)`` with the segment's own action and resolvent instead.
+  x0)`` with the segment's own action and resolvent instead; once ``e^{GT}``
+  is below double precision (``T`` times the slowest rate > 2000) the
+  window is ``∫_0^∞``.
 
 No pole, residue or quadrature is involved; the values agree with a fine
 quadrature of ``C_tau`` to round-off.  The exact delayed tree of a delay
@@ -74,8 +76,8 @@ with the approximation error ``result['delay']['est_rel_error']``.
 ``method='quad'`` (and ``'auto'`` for a loop order without triples: a subset
 on the pole route, ``DAEDALUS_PHASE_J_ENGINE=poles``, the pole-cluster
 deformation): adaptive QUADPACK quadrature of the Phase J callables
-(``quad`` on ``[0, T]`` and ``[0, ∞)``, the Fourier-weight QAWF for
-``S(ω ≠ 0)``), with the estimated absolute error of every value in
+(``quad`` on ``[0, ∞)``, on ``[0, T]`` up to ten correlation times and as
+``∫_0^∞ − ∫_T^∞`` beyond, the Fourier-weight QAWF for ``S(ω ≠ 0)``), with the estimated absolute error of every value in
 ``error_by_ell`` / ``abs_error``; ``'auto'`` also issues an
 :class:`api.me_output.MEFallbackWarning` naming the orders and the reasons.
 ``'exact'`` refuses (:class:`api.me_output.MEUnavailable`) instead.
@@ -113,6 +115,16 @@ _LIMIT = 500
 #: magnitude of their summed weight is below this fraction of the side's
 #: ``Σ |weight|``
 _CONST_RTOL = 1e-12
+
+#: a decaying block's window ``∫_0^T`` is its ``∫_0^∞`` once ``T`` times its
+#: slowest rate exceeds this (``e^{-2000}`` is far below double precision,
+#: with room for the polynomial factors of repeated eigenvalues)
+_DECAYED = 2000.0
+
+#: the quadrature window ``∫_0^T`` is taken directly up to this many
+#: correlation times, beyond as ``∫_0^∞ − ∫_T^∞`` (QUADPACK on a long
+#: ``[0, T]`` misses a ``C`` concentrated near 0 and reports ~0 error)
+_DIRECT_SPANS = 10.0
 
 CONVENTIONS = (
     'C(tau) = kappa(x_1(t), x_2(t + tau)) (C_tau); '
@@ -274,6 +286,17 @@ def _laplace(side, zs):
     return out
 
 
+def _decay_rate(b):
+    """``min(−Re λ)`` over the eigenvalues of a block's generator (the
+    diagonal of its triangular form), or ``None`` when not decaying or
+    unknown (a block beyond the dense forms)."""
+    from api.me_output import MAX_BLOCK
+    if b.constant or b.n > MAX_BLOCK:
+        return None
+    r = -float(np.max(np.real(np.diag(b.tri()[0]))))
+    return r if r > 0 else None
+
+
 def _block_window(b, Ts):
     """``∫_0^T`` of one block for every ``T`` in ``Ts``."""
     from api.me_output import MAX_BLOCK, MEUnavailable
@@ -283,6 +306,15 @@ def _block_window(b, Ts):
         return out
     if b.constant:
         return b.weight * Ts.astype(complex)
+    rate = _decay_rate(b)
+    if rate is not None and np.any(rate * Ts > _DECAYED):
+        # e^{GT} has decayed below double precision: ∫_0^T = ∫_0^∞ (the
+        # exponential of a huge G T would overflow or stall)
+        far = rate * Ts > _DECAYED
+        out[far] = b.resolvent(0.0, 1)
+        if not np.all(far):
+            out[~far] = _block_window(b, np.where(far, 0.0, Ts))[~far]
+        return out
     if b.n <= MAX_BLOCK:
         G, x, c = b.triple()
         n = G.shape[0]
@@ -348,6 +380,7 @@ class _QuadSide:
         self.C = C
         self.kw = (epsabs, epsrel, limit)
         self.scale = None
+        self._inf = {}
 
     def _eabs(self):
         # an absolute tolerance on the scale of C
@@ -357,17 +390,38 @@ class _QuadSide:
         epsabs, epsrel, _l = self.kw
         return max(epsabs, 1e-2 * epsrel * self.scale)
 
-    def window(self, sg, T):
-        epsabs, epsrel, limit = self.kw
+    def window(self, sg, T, inf=None):
+        """``∫_0^T C(sg u) du``: directly up to ``_DIRECT_SPANS`` times the
+        side's correlation time ``|∫_0^∞ C| / |C(0)|``, beyond as ``∫_0^∞ −
+        ∫_T^∞`` (QUADPACK on a long ``[0, T]`` never samples a ``C``
+        concentrated near 0, and reports a ~0 error).  ``inf``: the side's
+        ``(∫_0^∞, abs_error)`` when known (else :meth:`infinite`)."""
+        _ea, epsrel, limit = self.kw
+        T = float(T)
         if T == 0:
             return 0j, 0.0
-        return _quad_c(lambda u: self.C(sg * u), 0.0, float(T),
-                       self._eabs(), epsrel, limit)
+        I, eI = self.infinite(sg) if inf is None else inf
+        c0 = abs(self.C(sg * 1e-9))
+        if not (c0 > 0 and np.isfinite(I)
+                and T > _DIRECT_SPANS * abs(I) / c0):
+            return _quad_c(lambda u: self.C(sg * u), 0.0, T,
+                           self._eabs(), epsrel, limit)
+        from api.me_output import MEUnavailable
+        try:
+            tail, et = _quad_c(lambda s: self.C(sg * (T + s)), 0.0, np.inf,
+                               self._eabs(), epsrel, limit)
+        except MEUnavailable:
+            # the exact delayed tree is capped at a finite lag: [0, T] only
+            return _quad_c(lambda u: self.C(sg * u), 0.0, T,
+                           self._eabs(), epsrel, limit)
+        return complex(I) - tail, float(eI) + et
 
     def infinite(self, sg):
-        _ea, epsrel, limit = self.kw
-        return _quad_c(lambda u: self.C(sg * u), 0.0, np.inf,
-                       self._eabs(), epsrel, limit)
+        if sg not in self._inf:
+            _ea, epsrel, limit = self.kw
+            self._inf[sg] = _quad_c(lambda u: self.C(sg * u), 0.0, np.inf,
+                                    self._eabs(), epsrel, limit)
+        return self._inf[sg]
 
     def spectrum(self, w):
         """``∫ C(τ) e^{iωτ} dτ = ∫_0^∞ cos(ωs)[C(s)+C(−s)] ds + i ∫_0^∞
@@ -472,6 +526,13 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
     if not c.complete:
         notes.append('δ components may be incomplete: '
                      + '; '.join(c.incomplete_reasons))
+    unplaced = [d for d in c.deltas if d.location is None]
+    if unplaced:
+        raise MEUnavailable(
+            f'spectra: {len(unplaced)} δ component(s) of this result are not '
+            f'a point of the lag τ (ell = '
+            f'{sorted({d.loop_order for d in unplaced})}): their weight in '
+            f'S(ω) and the windows is undefined')
     me = None if method == 'quad' else c.me
     quad_orders, why = [], {}
     for e in orders:
@@ -509,8 +570,7 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
     out_d0, meth, errs = {}, {}, {}
     for e in orders:
         # δ components of this order
-        dl = [d for d in c.deltas if d.loop_order == e
-              and d.location is not None]
+        dl = [d for d in c.deltas if d.loop_order == e]
         d0 = sum((d.weight for d in dl if d.location == 0.0), 0j)
         out_d0[e] = complex(d0)
         dS = (np.zeros(0) if om is None else
@@ -569,8 +629,8 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
                     # no triple: the windows by quadrature of the exact tree
                     q = _QuadSide(lambda t: complex(
                         (sp if t >= 0 else sm)(np.array([abs(t)]))[0]), *qkw)
-                    wp = [q.window(1.0, t) for t in Ts]
-                    wn = [q.window(-1.0, t) for t in Ts]
+                    wp = [q.window(1.0, t, (Ip, 0.0)) for t in Ts]
+                    wn = [q.window(-1.0, t, (In, 0.0)) for t in Ts]
                     IT = np.array([v for v, _ in wp], dtype=complex)
                     ITn = np.array([v for v, _ in wn], dtype=complex)
                     er = {'integral': np.array([x for _, x in wp]),

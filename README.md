@@ -141,7 +141,11 @@ rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25)      # a simulator of th
 lag grid and no quadrature (`api/spectra.py`). They are given per loop order and in total:
 
 ```python
-res = compute_cumulants(model, k=2, max_ell=1, external_fields=[('x', 1)] * 2,
+import numpy as np
+import daedalus as dd
+from api import compute_cumulants
+model = dd.load_model('ou_quartic')[0]
+res = compute_cumulants(model, k=2, max_ell=1, external_fields=[('dx', 1)] * 2,
                         tau_grid=np.array([0.0]),             # the equal-time point is enough
                         spectra={'omega': (0.0, 10.0, 201), 'T': [1.0, 10.0]})
 sp = res['spectra']       # also dd.Config(spectra=...), dd.spectra(res, omega, T), YAML question.spectra

@@ -138,6 +138,27 @@ def test_ou_exact_lorentzian():
     assert np.max(np.abs(np.imag(sp['S']))) <= 1e-16
 
 
+def test_long_windows_exact_and_quadrature():
+    """Windows of many correlation times: the exact route returns ∫_0^∞
+    once e^{GT} has decayed (no expm of a huge G T: it stalled at T = 1e40,
+    NaN at 1e300); the quadrature route takes ∫_0^∞ − ∫_T^∞ (QUADPACK on a
+    long [0, T] never sampled C and reported 0 ± 0)."""
+    res = _cc(_ou(), [('x', 1)] * 2, 0)
+    p = _params(res)
+    mu, D = p['mu'], p['D']
+    Ts = np.array([0.5, 30.0, 1e4, 1e5, 1e6, 1e40, 1e300])
+    ref = D / mu ** 2 * -np.expm1(-mu * Ts)
+    ex = dd.spectra(res, None, Ts, method='exact')
+    assert _rel(ex['integral'], ref) <= 1e-14
+    assert _rel(ex['integral_neg'], ref) <= 1e-14
+    q = dd.spectra(res, None, Ts[:5], method='quad')
+    assert _rel(q['integral'], ref[:5]) <= 1e-10
+    assert _rel(q['integral_neg'], ref[:5]) <= 1e-10
+    err = q['abs_error']['integral']
+    assert np.all(np.abs(q['integral'] - ref[:5]) <= np.maximum(10 * err,
+                                                                1e-12))
+
+
 def test_spectra_true_and_config_route():
     """``spectra=True``: S(0), the integrals to infinity and tau_c only; the
     same numbers through dd.Config / dd.run and post hoc dd.spectra."""
@@ -297,7 +318,7 @@ def test_nonlinear_cross_spectrum_one_loop():
 # D. shot noise: the δ at τ = 0
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_shot_noise_delta_floor_linear_hawkes():
+def test_shot_noise_delta_floor_linear_hawkes(monkeypatch):
     om = np.array([0.0, 0.3, 1.0, 4.0, 200.0])
     res = _cc(_hawkes(), [('n', 1)] * 2, 1, {'omega': om, 'T': TS})
     sp = res['spectra']
@@ -322,6 +343,11 @@ def test_shot_noise_delta_floor_linear_hawkes():
     # the spikes as Cumulant.deltas
     c = dd.cumulant(res)
     assert abs(sum(d.weight for d in c.deltas) - sp['delta0']) <= 1e-15
+    # a spike that is not a point of the lag is refused, never dropped
+    monkeypatch.setattr(type(c.deltas[0]), 'location',
+                        property(lambda self: None))
+    with pytest.raises(ME.MEUnavailable, match='not a point'):
+        dd.spectra(res, om)
 
 
 def test_shot_noise_cross_with_a_jump_at_zero():

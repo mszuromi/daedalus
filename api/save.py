@@ -664,7 +664,7 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
     if tab is not None:
         payload.update(_delta_payload(tab))
 
-    # item 70: the exact spectral outputs (``compute_cumulants(spectra=)``)
+    # the exact spectral outputs (``compute_cumulants(spectra=)``)
     if isinstance(result.get('spectra'), dict):
         payload.update(_spectra_payload(result['spectra']))
 
