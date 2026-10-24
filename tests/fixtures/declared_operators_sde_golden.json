@@ -1,0 +1,3327 @@
+{
+ "cumulants_source": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - ((1/24)*m*xt[i]^4 + (1/6)*w*xt[i]^3)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "0"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - ((1/24)*m*xt[i]^4 + (1/6)*w*xt[i]^3)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "0"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "cum",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "noise_declared_orders": {
+    "C": 4
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 1.5,
+     "indexed": false,
+     "name": "lam"
+    },
+    {
+     "default": 0.3,
+     "indexed": false,
+     "name": "w"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "m"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "c8905c15d967a30f",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': linear term -mu*x[i] moved to the lhs."
+  ]
+ },
+ "delay_ou": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-a*x[i] + c*Conv(delay_d, x[i]) - eps*x[i]^3))\n    - (D*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + a*x[i]",
+    "population": "pop",
+    "rhs": "-eps*x[i]^3 + c*((1))*(x[i])"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-a*x[i] + c*Conv(delay_d, x[i]) - eps*x[i]^3))\n    - (D*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + a*x[i]",
+     "population": "pop",
+     "rhs_text": "-eps*x[i]^3 + c*((1))*(x[i])"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernel_ft_image": "<callable>",
+   "kernel_td_image": "<callable>",
+   "kernels": [
+    {
+     "latex_name": "delay_d",
+     "name": "delay_d",
+     "sage_name": "z_delay_d"
+    }
+   ],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "delay OU",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "a"
+    },
+    {
+     "default": 0.4,
+     "indexed": false,
+     "name": "c"
+    },
+    {
+     "default": 0.5,
+     "domain": "positive",
+     "indexed": false,
+     "name": "d"
+    },
+    {
+     "default": 0.05,
+     "indexed": false,
+     "name": "eps"
+    },
+    {
+     "default": 0.2,
+     "indexed": false,
+     "name": "D"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "0515cf0a42d47cb3",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': linear term -a*x[i] moved to the lhs."
+  ]
+ },
+ "delay_product": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-a*x[i] + b - c*x[i]*Conv(delay_d, x[i])))\n    - (D*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + x[i]",
+    "population": "pop",
+    "rhs": "(-a*x[i] + b - c*x[i]*((1))*(x[i])) + x[i]"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-a*x[i] + b - c*x[i]*Conv(delay_d, x[i])))\n    - (D*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + x[i]",
+     "population": "pop",
+     "rhs_text": "(-a*x[i] + b - c*x[i]*((1))*(x[i])) + x[i]"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernel_ft_image": "<callable>",
+   "kernel_td_image": "<callable>",
+   "kernels": [
+    {
+     "latex_name": "delay_d",
+     "name": "delay_d",
+     "sage_name": "z_delay_d"
+    }
+   ],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "delay product",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "a"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "b"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "c"
+    },
+    {
+     "default": 0.5,
+     "domain": "positive",
+     "indexed": false,
+     "name": "d"
+    },
+    {
+     "default": 0.1,
+     "indexed": false,
+     "name": "D"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "02d5da8b874d431b",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': rhs has no field-independent linear term in x; added x[i] to both sides (lhs 'Dt*x[i] + x[i]', c = 1; the residual and the linear stability are unchanged)."
+  ]
+ },
+ "delayed_hawkes_voltage": {
+  "action_text": "sum(\n    vt[i]*((tau[i]*Dt + 1)*v[i] - (Em[i] + sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)))\n    + nt[i]*n[i] - (exp(nt[i]) - 1)*(phi[i](v[i]))\n    for i in E)",
+  "equations": [
+   {
+    "lhs": "n[i]",
+    "population": "E",
+    "rhs": "phi[i](v[i])"
+   },
+   {
+    "lhs": "(tau[i]*Dt + 1)*v[i]",
+    "population": "E",
+    "rhs": "Em[i] + sum(w[i,j]*((1))*(n[j]) for j in E)"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    vt[i]*((tau[i]*Dt + 1)*v[i] - (Em[i] + sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)))\n    + nt[i]*n[i] - (exp(nt[i]) - 1)*(phi[i](v[i]))\n    for i in E)",
+   "equations": [],
+   "functions": [
+    {
+     "args_text": [
+      "v"
+     ],
+     "deriv_prefix": "phi",
+     "description": "",
+     "expression": "<callable>",
+     "expression_text": "a[i]*exp(v)",
+     "indexed": true,
+     "latex": "phi",
+     "n_args": 1,
+     "name": "phi",
+     "population": "E"
+    }
+   ],
+   "index_sets": {
+    "pop": [
+     0,
+     1
+    ],
+    "pop_E": [
+     0,
+     1
+    ]
+   },
+   "iteration_saddles": [
+    "nstar"
+   ],
+   "kernel_ft_image": "<callable>",
+   "kernel_td_image": "<callable>",
+   "kernels": [
+    {
+     "indexed": "matrix",
+     "indexed_by": [
+      "E",
+      "E"
+     ],
+     "latex_name": "g",
+     "name": "g",
+     "sage_name": "z_g"
+    }
+   ],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [
+    {
+     "name": "taug",
+     "value": "<callable>"
+    },
+    {
+     "name": "w",
+     "value": "<callable>"
+    }
+   ],
+   "name": "Hawkes delayed alpha",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "n": "dn",
+     "v": "dv"
+    },
+    "mean_field_saddles": {
+     "n": "nstar",
+     "v": "vstar"
+    },
+    "mf_parameters": [
+     "nstar",
+     "vstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of n",
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "mean_field": true,
+     "name": "nstar",
+     "natural_name": "n"
+    },
+    {
+     "description": "mean-field saddle value of v",
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "mean_field": true,
+     "name": "vstar",
+     "natural_name": "v"
+    },
+    {
+     "default": [
+      -1.5,
+      -1.5
+     ],
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "name": "Em"
+    },
+    {
+     "default": [
+      2.0,
+      2.0
+     ],
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "name": "tau"
+    },
+    {
+     "default": [
+      [
+       1.0,
+       1.0
+      ],
+      [
+       1.0,
+       1.0
+      ]
+     ],
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "E",
+      "E"
+     ],
+     "name": "taug"
+    },
+    {
+     "default": [
+      1.0,
+      1.0
+     ],
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "name": "a"
+    },
+    {
+     "default": [
+      [
+       0.0,
+       0.5
+      ],
+      [
+       0.5,
+       0.0
+      ]
+     ],
+     "indexed": true,
+     "indexed_by": [
+      "E",
+      "E"
+     ],
+     "name": "w"
+    },
+    {
+     "default": 1.5,
+     "domain": "positive",
+     "indexed": false,
+     "name": "d"
+    }
+   ],
+   "phi_concrete": "<callable>",
+   "physical_fields": [
+    {
+     "description": "point process n",
+     "indexed": true,
+     "latex": "\\delta n",
+     "name": "dn",
+     "natural_name": "n",
+     "population": "E"
+    },
+    {
+     "indexed": true,
+     "latex": "\\delta v",
+     "name": "dv",
+     "natural_name": "v",
+     "population": "E"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "E",
+     "size": 2
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to n",
+     "indexed": true,
+     "latex": "\\tilde n",
+     "name": "nt",
+     "population": "E"
+    },
+    {
+     "description": "response field conjugate to v",
+     "indexed": true,
+     "latex": "\\tilde v",
+     "name": "vt",
+     "population": "E"
+    }
+   ],
+   "spec_signature": "5aa9760b26bc04d8",
+   "specializations": "<callable>",
+   "stability_analysis": false
+  },
+  "notes": []
+ },
+ "exp_hawkes": {
+  "action_text": "sum(\n    vt[i]*((tau*Dt + 1)*v[i] - (Em + w*g*n[i]))\n    + nt[i]*n[i] - (a*(exp(nt[i]) - 1)*exp(v[i]))\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "n[i]",
+    "population": "pop",
+    "rhs": "a*exp(v[i])"
+   },
+   {
+    "lhs": "(tau*Dt + 1)*v[i]",
+    "population": "pop",
+    "rhs": "Em + w*(1)*n[i]"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    vt[i]*((tau*Dt + 1)*v[i] - (Em + w*g*n[i]))\n    + nt[i]*n[i] - (a*(exp(nt[i]) - 1)*exp(v[i]))\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "algebraic",
+     "lhs_text": "n[i]",
+     "population": "pop",
+     "rhs_text": "a*exp(v[i])"
+    },
+    {
+     "kind": "differential",
+     "lhs_text": "(tau*Dt + 1)*v[i]",
+     "population": "pop",
+     "rhs_text": "Em + w*(1)*n[i]"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernel_ft_image": "<callable>",
+   "kernel_td_image": "<callable>",
+   "kernels": [
+    {
+     "latex_name": "g",
+     "name": "g",
+     "sage_name": "z_g"
+    }
+   ],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "exp Hawkes 1-pop (SDE)",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "n": "dn",
+     "v": "dv"
+    },
+    "mean_field_saddles": {
+     "n": "nstar",
+     "v": "vstar"
+    },
+    "mf_parameters": [
+     "nstar",
+     "vstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of n",
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "nstar",
+     "natural_name": "n"
+    },
+    {
+     "description": "mean-field saddle value of v",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "vstar",
+     "natural_name": "v"
+    },
+    {
+     "default": -1.5,
+     "indexed": false,
+     "name": "Em"
+    },
+    {
+     "default": 2.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "tau"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "taug"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "a"
+    },
+    {
+     "default": 0.4,
+     "indexed": false,
+     "name": "w"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "description": "exposed noise source spikes",
+     "indexed": true,
+     "latex": "\\delta n",
+     "name": "dn",
+     "natural_name": "n",
+     "population": "pop"
+    },
+    {
+     "indexed": true,
+     "latex": "\\delta v",
+     "name": "dv",
+     "natural_name": "v",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to n",
+     "indexed": true,
+     "latex": "\\tilde n",
+     "name": "nt",
+     "population": "pop"
+    },
+    {
+     "description": "response field conjugate to v",
+     "indexed": true,
+     "latex": "\\tilde v",
+     "name": "vt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "05bdf86cf0126ddb",
+   "stability_analysis": true
+  },
+  "notes": []
+ },
+ "gamma_process": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - (-lam*log(m*w*xt[i] + 1))\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "-lam*m*w"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - (-lam*log(m*w*xt[i] + 1))\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "-lam*m*w"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "g",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 1.5,
+     "indexed": false,
+     "name": "lam"
+    },
+    {
+     "default": 0.3,
+     "indexed": false,
+     "name": "w"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "m"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "9ca69c3f3b02efba",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': linear term -mu*x[i] moved to the lhs."
+  ]
+ },
+ "gaussian_mean_and_var": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] + (c*x[i]^2)))\n    - ((1/2)*(x[i]^2 + 1)*s^2*x[i]^2*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "c*x[i]^2"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] + (c*x[i]^2)))\n    - ((1/2)*(x[i]^2 + 1)*s^2*x[i]^2*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "c*x[i]^2"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "mv",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 0.3,
+     "indexed": false,
+     "name": "c"
+    },
+    {
+     "default": 0.4,
+     "indexed": false,
+     "name": "s"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "44e6a9052d5492be",
+   "stability_analysis": false
+  },
+  "notes": [
+   "Gaussian source 'W': mean c*x moved into the drift of x.",
+   "mean-field equation of 'x': linear term -mu*x[i] moved to the lhs."
+  ]
+ },
+ "kernel_conductance": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-a*x[i] + b - c*x[i]*Conv(g, x[i])))\n    - (D*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + x[i]",
+    "population": "pop",
+    "rhs": "(-a*x[i] + b - c*x[i]*((1))*(x[i])) + x[i]"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-a*x[i] + b - c*x[i]*Conv(g, x[i])))\n    - (D*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + x[i]",
+     "population": "pop",
+     "rhs_text": "(-a*x[i] + b - c*x[i]*((1))*(x[i])) + x[i]"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernel_ft_image": "<callable>",
+   "kernel_td_image": "<callable>",
+   "kernels": [
+    {
+     "latex_name": "g",
+     "name": "g",
+     "sage_name": "z_g"
+    }
+   ],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "kernel conductance",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "a"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "b"
+    },
+    {
+     "default": 0.3,
+     "indexed": false,
+     "name": "c"
+    },
+    {
+     "default": 0.5,
+     "domain": "positive",
+     "indexed": false,
+     "name": "d"
+    },
+    {
+     "default": 0.4,
+     "domain": "positive",
+     "indexed": false,
+     "name": "tau"
+    },
+    {
+     "default": 0.05,
+     "indexed": false,
+     "name": "D"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "fb67d5e92106452a",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': rhs has no field-independent linear term in x; added x[i] to both sides (lhs 'Dt*x[i] + x[i]', c = 1; the residual and the linear stability are unchanged)."
+  ]
+ },
+ "linear_hawkes": {
+  "action_text": "sum(\n    vt[i]*((tau*Dt + 1)*v[i] - (E[i] + sum(w[i, j]*g*n[j] for j in pop_all)))\n    + nt[i]*n[i] - ((exp(nt[i]) - 1)*phi[i](v[i]))\n    for i in pop_all)",
+  "equations": [
+   {
+    "lhs": "n[i]",
+    "population": "pop_all",
+    "rhs": "phi[i](v[i])"
+   },
+   {
+    "lhs": "(tau*Dt + 1)*v[i]",
+    "population": "pop_all",
+    "rhs": "E[i] + sum(w[i, j]*(1)*n[j] for j in pop_all)"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    vt[i]*((tau*Dt + 1)*v[i] - (E[i] + sum(w[i, j]*g*n[j] for j in pop_all)))\n    + nt[i]*n[i] - ((exp(nt[i]) - 1)*phi[i](v[i]))\n    for i in pop_all)",
+   "equations": [
+    {
+     "kind": "algebraic",
+     "lhs_text": "n[i]",
+     "population": "pop_all",
+     "rhs_text": "phi[i](v[i])"
+    },
+    {
+     "kind": "differential",
+     "lhs_text": "(tau*Dt + 1)*v[i]",
+     "population": "pop_all",
+     "rhs_text": "E[i] + sum(w[i, j]*(1)*n[j] for j in pop_all)"
+    }
+   ],
+   "functions": [
+    {
+     "args_text": [
+      "v"
+     ],
+     "deriv_prefix": "phi",
+     "description": "",
+     "expression": "<callable>",
+     "expression_text": "a * v",
+     "indexed": true,
+     "latex": "\\varphi",
+     "n_args": 1,
+     "name": "phi",
+     "population": "pop_all"
+    }
+   ],
+   "index_sets": {
+    "pop": [
+     0,
+     1
+    ],
+    "pop_pop_all": [
+     0,
+     1
+    ]
+   },
+   "iteration_saddles": [
+    "nstar"
+   ],
+   "kernel_ft_image": "<callable>",
+   "kernel_td_image": "<callable>",
+   "kernels": [
+    {
+     "latex_name": "g",
+     "name": "g",
+     "sage_name": "z_g"
+    }
+   ],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [
+    {
+     "name": "w",
+     "value": "<callable>"
+    }
+   ],
+   "name": "Linear Hawkes 2-pop",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "n": "dn",
+     "v": "dv"
+    },
+    "mean_field_saddles": {
+     "n": "nstar",
+     "v": "vstar"
+    },
+    "mf_parameters": [
+     "nstar",
+     "vstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of n",
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "pop_all"
+     ],
+     "mean_field": true,
+     "name": "nstar",
+     "natural_name": "n"
+    },
+    {
+     "description": "mean-field saddle value of v",
+     "indexed": true,
+     "indexed_by": [
+      "pop_all"
+     ],
+     "mean_field": true,
+     "name": "vstar",
+     "natural_name": "v"
+    },
+    {
+     "default": [
+      0.78,
+      0.81
+     ],
+     "indexed": true,
+     "indexed_by": [
+      "pop_all"
+     ],
+     "name": "E"
+    },
+    {
+     "default": 10.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "tau"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "a"
+    },
+    {
+     "default": 2.5,
+     "domain": "positive",
+     "indexed": false,
+     "name": "tau_g"
+    },
+    {
+     "default": [
+      [
+       0.3,
+       0.25
+      ],
+      [
+       0.3,
+       0.35
+      ]
+     ],
+     "indexed": true,
+     "indexed_by": [
+      "pop_all",
+      "pop_all"
+     ],
+     "name": "w"
+    }
+   ],
+   "phi_concrete": "<callable>",
+   "physical_fields": [
+    {
+     "description": "exposed noise source spikes",
+     "indexed": true,
+     "latex": "\\delta n",
+     "name": "dn",
+     "natural_name": "n",
+     "population": "pop_all"
+    },
+    {
+     "indexed": true,
+     "latex": "\\delta v",
+     "name": "dv",
+     "natural_name": "v",
+     "population": "pop_all"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop_all",
+     "size": 2
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to n",
+     "indexed": true,
+     "latex": "\\tilde n",
+     "name": "nt",
+     "population": "pop_all"
+    },
+    {
+     "description": "response field conjugate to v",
+     "indexed": true,
+     "latex": "\\tilde v",
+     "name": "vt",
+     "population": "pop_all"
+    }
+   ],
+   "spec_signature": "f1f0ae2b9431ac6a",
+   "specializations": "<callable>",
+   "stability_analysis": false
+  },
+  "notes": []
+ },
+ "marcus_affine": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - ((b*x[i] + a)^16*lam*mJ^16*xt[i]^16/((16*b*mJ - 1)*(15*b*mJ - 1)*(14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^15*lam*mJ^15*xt[i]^15/((15*b*mJ - 1)*(14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^14*lam*mJ^14*xt[i]^14/((14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^13*lam*mJ^13*xt[i]^13/((13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^12*lam*mJ^12*xt[i]^12/((12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^11*lam*mJ^11*xt[i]^11/((11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^10*lam*mJ^10*xt[i]^10/((10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^9*lam*mJ^9*xt[i]^9/((9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^8*lam*mJ^8*xt[i]^8/((8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^7*lam*mJ^7*xt[i]^7/((7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^6*lam*mJ^6*xt[i]^6/((6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^5*lam*mJ^5*xt[i]^5/((5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^4*lam*mJ^4*xt[i]^4/((4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^3*lam*mJ^3*xt[i]^3/((3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^2*lam*mJ^2*xt[i]^2/((2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)*lam*mJ*xt[i]/(b*mJ - 1))\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "b*lam*mJ*x[i]/(b*mJ - 1) + Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "-a*lam*mJ/(b*mJ - 1)"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - ((b*x[i] + a)^16*lam*mJ^16*xt[i]^16/((16*b*mJ - 1)*(15*b*mJ - 1)*(14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^15*lam*mJ^15*xt[i]^15/((15*b*mJ - 1)*(14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^14*lam*mJ^14*xt[i]^14/((14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^13*lam*mJ^13*xt[i]^13/((13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^12*lam*mJ^12*xt[i]^12/((12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^11*lam*mJ^11*xt[i]^11/((11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^10*lam*mJ^10*xt[i]^10/((10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^9*lam*mJ^9*xt[i]^9/((9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^8*lam*mJ^8*xt[i]^8/((8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^7*lam*mJ^7*xt[i]^7/((7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^6*lam*mJ^6*xt[i]^6/((6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^5*lam*mJ^5*xt[i]^5/((5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^4*lam*mJ^4*xt[i]^4/((4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)^3*lam*mJ^3*xt[i]^3/((3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1)) + (b*x[i] + a)^2*lam*mJ^2*xt[i]^2/((2*b*mJ - 1)*(b*mJ - 1)) - (b*x[i] + a)*lam*mJ*xt[i]/(b*mJ - 1))\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "b*lam*mJ*x[i]/(b*mJ - 1) + Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "-a*lam*mJ/(b*mJ - 1)"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "interpretation": "marcus",
+   "iteration_saddles": [],
+   "kernels": [],
+   "marcus_exact_order": {
+    "order": 16,
+    "sources": [
+     "L"
+    ]
+   },
+   "marcus_series": {
+    "L": {
+     "cgf": "-lam*(1/(mJ*theta - 1) + 1)",
+     "coefficients": {
+      "1": "-lam*mJ/(b*mJ - 1)",
+      "10": "3628800*lam*mJ^10/((10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "11": "-39916800*lam*mJ^11/((11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "12": "479001600*lam*mJ^12/((12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "13": "-6227020800*lam*mJ^13/((13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "14": "87178291200*lam*mJ^14/((14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "15": "-1307674368000*lam*mJ^15/((15*b*mJ - 1)*(14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "16": "20922789888000*lam*mJ^16/((16*b*mJ - 1)*(15*b*mJ - 1)*(14*b*mJ - 1)*(13*b*mJ - 1)*(12*b*mJ - 1)*(11*b*mJ - 1)*(10*b*mJ - 1)*(9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "2": "2*lam*mJ^2/((2*b*mJ - 1)*(b*mJ - 1))",
+      "3": "-6*lam*mJ^3/((3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "4": "24*lam*mJ^4/((4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "5": "-120*lam*mJ^5/((5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "6": "720*lam*mJ^6/((6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "7": "-5040*lam*mJ^7/((7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "8": "40320*lam*mJ^8/((8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))",
+      "9": "-362880*lam*mJ^9/((9*b*mJ - 1)*(8*b*mJ - 1)*(7*b*mJ - 1)*(6*b*mJ - 1)*(5*b*mJ - 1)*(4*b*mJ - 1)*(3*b*mJ - 1)*(2*b*mJ - 1)*(b*mJ - 1))"
+     },
+     "fields": [
+      "x"
+     ],
+     "mgf_bases": [
+      "mJ*theta - 1"
+     ],
+     "order": 16,
+     "population": "pop",
+     "responses": [
+      "xt"
+     ],
+     "route": "exact",
+     "slopes": {
+      "x": "b"
+     }
+    }
+   },
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "affine compound Poisson",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 1.5,
+     "domain": "positive",
+     "indexed": false,
+     "name": "lam"
+    },
+    {
+     "default": 0.4,
+     "indexed": false,
+     "name": "a"
+    },
+    {
+     "default": 0.15,
+     "indexed": false,
+     "name": "b"
+    },
+    {
+     "default": 0.2,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mJ"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "0ebc1dd4525ea35b",
+   "stability_analysis": true
+  },
+  "notes": [
+   "Marcus: source 'L' acts through the closed-form flow of its affine coupling; the action carries its exact noise term to 16 response legs (SDE.series_order), with no moment series.",
+   "mean-field equation of 'x': linear term -(b*lam*mJ/(b*mJ - 1) + mu)*x[i] moved to the lhs."
+  ]
+ },
+ "marcus_rotation": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    + yt[i]*(Dt*y[i] - (-mu*y[i]))\n    - ((1/5040)*lam*xt[i]^7*y[i]^7*z^7 - (1/720)*lam*x[i]*xt[i]^6*y[i]^6*yt[i]*z^7 + (1/240)*lam*x[i]^2*xt[i]^5*y[i]^5*yt[i]^2*z^7 - (1/144)*lam*x[i]^3*xt[i]^4*y[i]^4*yt[i]^3*z^7 + (1/144)*lam*x[i]^4*xt[i]^3*y[i]^3*yt[i]^4*z^7 - (1/240)*lam*x[i]^5*xt[i]^2*y[i]^2*yt[i]^5*z^7 + (1/720)*lam*x[i]^6*xt[i]*y[i]*yt[i]^6*z^7 - (1/5040)*lam*x[i]^7*yt[i]^7*z^7 - (1/240)*lam*x[i]*xt[i]^6*y[i]^5*z^7 + (1/48)*lam*x[i]^2*xt[i]^5*y[i]^4*yt[i]*z^7 - (1/240)*lam*xt[i]^5*y[i]^6*yt[i]*z^7 - (1/24)*lam*x[i]^3*xt[i]^4*y[i]^3*yt[i]^2*z^7 + (1/48)*lam*x[i]*xt[i]^4*y[i]^5*yt[i]^2*z^7 + (1/24)*lam*x[i]^4*xt[i]^3*y[i]^2*yt[i]^3*z^7 - (1/24)*lam*x[i]^2*xt[i]^3*y[i]^4*yt[i]^3*z^7 - (1/48)*lam*x[i]^5*xt[i]^2*y[i]*yt[i]^4*z^7 + (1/24)*lam*x[i]^3*xt[i]^2*y[i]^3*yt[i]^4*z^7 + (1/240)*lam*x[i]^6*xt[i]*yt[i]^5*z^7 - (1/48)*lam*x[i]^4*xt[i]*y[i]^2*yt[i]^5*z^7 + (1/240)*lam*x[i]^5*y[i]*yt[i]^6*z^7 + (1/720)*lam*xt[i]^6*y[i]^6*z^6 - (1/120)*lam*x[i]*xt[i]^5*y[i]^5*yt[i]*z^6 + (1/48)*lam*x[i]^2*xt[i]^4*y[i]^4*yt[i]^2*z^6 - (1/36)*lam*x[i]^3*xt[i]^3*y[i]^3*yt[i]^3*z^6 + (1/48)*lam*x[i]^4*xt[i]^2*y[i]^2*yt[i]^4*z^6 - (1/120)*lam*x[i]^5*xt[i]*y[i]*yt[i]^5*z^6 + (1/720)*lam*x[i]^6*yt[i]^6*z^6 + (1/48)*lam*x[i]^2*xt[i]^5*y[i]^3*z^7 - (1/144)*lam*xt[i]^5*y[i]^5*z^7 - (1/16)*lam*x[i]^3*xt[i]^4*y[i]^2*yt[i]*z^7 + (11/144)*lam*x[i]*xt[i]^4*y[i]^4*yt[i]*z^7 + (1/16)*lam*x[i]^4*xt[i]^3*y[i]*yt[i]^2*z^7 - (7/36)*lam*x[i]^2*xt[i]^3*y[i]^3*yt[i]^2*z^7 + (1/48)*lam*xt[i]^3*y[i]^5*yt[i]^2*z^7 - (1/48)*lam*x[i]^5*xt[i]^2*yt[i]^3*z^7 + (7/36)*lam*x[i]^3*xt[i]^2*y[i]^2*yt[i]^3*z^7 - (1/16)*lam*x[i]*xt[i]^2*y[i]^4*yt[i]^3*z^7 - (11/144)*lam*x[i]^4*xt[i]*y[i]*yt[i]^4*z^7 + (1/16)*lam*x[i]^2*xt[i]*y[i]^3*yt[i]^4*z^7 + (1/144)*lam*x[i]^5*yt[i]^5*z^7 - (1/48)*lam*x[i]^3*y[i]^2*yt[i]^5*z^7 - (1/48)*lam*x[i]*xt[i]^5*y[i]^4*z^6 + (1/12)*lam*x[i]^2*xt[i]^4*y[i]^3*yt[i]*z^6 - (1/48)*lam*xt[i]^4*y[i]^5*yt[i]*z^6 - (1/8)*lam*x[i]^3*xt[i]^3*y[i]^2*yt[i]^2*z^6 + (1/12)*lam*x[i]*xt[i]^3*y[i]^4*yt[i]^2*z^6 + (1/12)*lam*x[i]^4*xt[i]^2*y[i]*yt[i]^3*z^6 - (1/8)*lam*x[i]^2*xt[i]^2*y[i]^3*yt[i]^3*z^6 - (1/48)*lam*x[i]^5*xt[i]*yt[i]^4*z^6 + (1/12)*lam*x[i]^3*xt[i]*y[i]^2*yt[i]^4*z^6 - (1/48)*lam*x[i]^4*y[i]*yt[i]^5*z^6 + (1/120)*lam*xt[i]^5*y[i]^5*z^5 - (1/24)*lam*x[i]*xt[i]^4*y[i]^4*yt[i]*z^5 + (1/12)*lam*x[i]^2*xt[i]^3*y[i]^3*yt[i]^2*z^5 - (1/12)*lam*x[i]^3*xt[i]^2*y[i]^2*yt[i]^3*z^5 + (1/24)*lam*x[i]^4*xt[i]*y[i]*yt[i]^4*z^5 - (1/120)*lam*x[i]^5*yt[i]^5*z^5 - (1/48)*lam*x[i]^3*xt[i]^4*y[i]*z^7 + (7/144)*lam*x[i]*xt[i]^4*y[i]^3*z^7 + (1/48)*lam*x[i]^4*xt[i]^3*yt[i]*z^7 - (5/24)*lam*x[i]^2*xt[i]^3*y[i]^2*yt[i]*z^7 + (7/144)*lam*xt[i]^3*y[i]^4*yt[i]*z^7 + (5/24)*lam*x[i]^3*xt[i]^2*y[i]*yt[i]^2*z^7 - (5/24)*lam*x[i]*xt[i]^2*y[i]^3*yt[i]^2*z^7 - (7/144)*lam*x[i]^4*xt[i]*yt[i]^3*z^7 + (5/24)*lam*x[i]^2*xt[i]*y[i]^2*yt[i]^3*z^7 - (1/48)*lam*xt[i]*y[i]^4*yt[i]^3*z^7 - (7/144)*lam*x[i]^3*y[i]*yt[i]^4*z^7 + (1/48)*lam*x[i]*y[i]^3*yt[i]^4*z^7 + (1/16)*lam*x[i]^2*xt[i]^4*y[i]^2*z^6 - (1/36)*lam*xt[i]^4*y[i]^4*z^6 - (1/8)*lam*x[i]^3*xt[i]^3*y[i]*yt[i]*z^6 + (17/72)*lam*x[i]*xt[i]^3*y[i]^3*yt[i]*z^6 + (1/16)*lam*x[i]^4*xt[i]^2*yt[i]^2*z^6 - (5/12)*lam*x[i]^2*xt[i]^2*y[i]^2*yt[i]^2*z^6 + (1/16)*lam*xt[i]^2*y[i]^4*yt[i]^2*z^6 + (17/72)*lam*x[i]^3*xt[i]*y[i]*yt[i]^3*z^6 - (1/8)*lam*x[i]*xt[i]*y[i]^3*yt[i]^3*z^6 - (1/36)*lam*x[i]^4*yt[i]^4*z^6 + (1/16)*lam*x[i]^2*y[i]^2*yt[i]^4*z^6 - (1/12)*lam*x[i]*xt[i]^4*y[i]^3*z^5 + (1/4)*lam*x[i]^2*xt[i]^3*y[i]^2*yt[i]*z^5 - (1/12)*lam*xt[i]^3*y[i]^4*yt[i]*z^5 - (1/4)*lam*x[i]^3*xt[i]^2*y[i]*yt[i]^2*z^5 + (1/4)*lam*x[i]*xt[i]^2*y[i]^3*yt[i]^2*z^5 + (1/12)*lam*x[i]^4*xt[i]*yt[i]^3*z^5 - (1/4)*lam*x[i]^2*xt[i]*y[i]^2*yt[i]^3*z^5 + (1/12)*lam*x[i]^3*y[i]*yt[i]^4*z^5 - (1/24)*lam*x[i]^2*xt[i]^3*y[i]*z^7 + (13/720)*lam*xt[i]^3*y[i]^3*z^7 + (1/24)*lam*x[i]^3*xt[i]^2*yt[i]*z^7 - (11/80)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^7 + (11/80)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^7 - (1/24)*lam*xt[i]*y[i]^3*yt[i]^2*z^7 - (13/720)*lam*x[i]^3*yt[i]^3*z^7 + (1/24)*lam*x[i]*y[i]^2*yt[i]^3*z^7 + (1/24)*lam*xt[i]^4*y[i]^4*z^4 - (1/6)*lam*x[i]*xt[i]^3*y[i]^3*yt[i]*z^4 + (1/4)*lam*x[i]^2*xt[i]^2*y[i]^2*yt[i]^2*z^4 - (1/6)*lam*x[i]^3*xt[i]*y[i]*yt[i]^3*z^4 + (1/24)*lam*x[i]^4*yt[i]^4*z^4 - (1/48)*lam*x[i]^3*xt[i]^3*z^6 + (5/48)*lam*x[i]*xt[i]^3*y[i]^2*z^6 - (13/48)*lam*x[i]^2*xt[i]^2*y[i]*yt[i]*z^6 + (5/48)*lam*xt[i]^2*y[i]^3*yt[i]*z^6 + (5/48)*lam*x[i]^3*xt[i]*yt[i]^2*z^6 - (13/48)*lam*x[i]*xt[i]*y[i]^2*yt[i]^2*z^6 + (5/48)*lam*x[i]^2*y[i]*yt[i]^3*z^6 - (1/48)*lam*y[i]^3*yt[i]^3*z^6 + (1/8)*lam*x[i]^2*xt[i]^3*y[i]*z^5 - (1/12)*lam*xt[i]^3*y[i]^3*z^5 - (1/8)*lam*x[i]^3*xt[i]^2*yt[i]*z^5 + (1/2)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^5 - (1/2)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^5 + (1/8)*lam*xt[i]*y[i]^3*yt[i]^2*z^5 + (1/12)*lam*x[i]^3*yt[i]^3*z^5 - (1/8)*lam*x[i]*y[i]^2*yt[i]^3*z^5 - (1/80)*lam*x[i]*xt[i]^2*y[i]*z^7 + (1/80)*lam*x[i]^2*xt[i]*yt[i]*z^7 - (1/80)*lam*xt[i]*y[i]^2*yt[i]*z^7 + (1/80)*lam*x[i]*y[i]*yt[i]^2*z^7 - (1/4)*lam*x[i]*xt[i]^3*y[i]^2*z^4 + (1/2)*lam*x[i]^2*xt[i]^2*y[i]*yt[i]*z^4 - (1/4)*lam*xt[i]^2*y[i]^3*yt[i]*z^4 - (1/4)*lam*x[i]^3*xt[i]*yt[i]^2*z^4 + (1/2)*lam*x[i]*xt[i]*y[i]^2*yt[i]^2*z^4 - (1/4)*lam*x[i]^2*y[i]*yt[i]^3*z^4 - (1/48)*lam*x[i]^2*xt[i]^2*z^6 + (1/45)*lam*xt[i]^2*y[i]^2*z^6 - (31/360)*lam*x[i]*xt[i]*y[i]*yt[i]*z^6 + (1/45)*lam*x[i]^2*yt[i]^2*z^6 - (1/48)*lam*y[i]^2*yt[i]^2*z^6 + (1/6)*lam*xt[i]^3*y[i]^3*z^3 - (1/2)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^3 + (1/2)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^3 - (1/6)*lam*x[i]^3*yt[i]^3*z^3 + (1/8)*lam*x[i]*xt[i]^2*y[i]*z^5 - (1/8)*lam*x[i]^2*xt[i]*yt[i]*z^5 + (1/8)*lam*xt[i]*y[i]^2*yt[i]*z^5 - (1/8)*lam*x[i]*y[i]*yt[i]^2*z^5 - (1/5040)*lam*xt[i]*y[i]*z^7 + (1/5040)*lam*x[i]*yt[i]*z^7 + (1/8)*lam*x[i]^2*xt[i]^2*z^4 - (1/6)*lam*xt[i]^2*y[i]^2*z^4 + (7/12)*lam*x[i]*xt[i]*y[i]*yt[i]*z^4 - (1/6)*lam*x[i]^2*yt[i]^2*z^4 + (1/8)*lam*y[i]^2*yt[i]^2*z^4 - (1/720)*lam*x[i]*xt[i]*z^6 - (1/720)*lam*y[i]*yt[i]*z^6 - (1/2)*lam*x[i]*xt[i]^2*y[i]*z^3 + (1/2)*lam*x[i]^2*xt[i]*yt[i]*z^3 - (1/2)*lam*xt[i]*y[i]^2*yt[i]*z^3 + (1/2)*lam*x[i]*y[i]*yt[i]^2*z^3 + (1/120)*lam*xt[i]*y[i]*z^5 - (1/120)*lam*x[i]*yt[i]*z^5 + (1/2)*lam*xt[i]^2*y[i]^2*z^2 - lam*x[i]*xt[i]*y[i]*yt[i]*z^2 + (1/2)*lam*x[i]^2*yt[i]^2*z^2 + (1/24)*lam*x[i]*xt[i]*z^4 + (1/24)*lam*y[i]*yt[i]*z^4 - (1/6)*lam*xt[i]*y[i]*z^3 + (1/6)*lam*x[i]*yt[i]*z^3 - (1/2)*lam*x[i]*xt[i]*z^2 - (1/2)*lam*y[i]*yt[i]*z^2 + lam*xt[i]*y[i]*z - lam*x[i]*yt[i]*z)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "(1/720)*lam*x[i]*z^6 - (1/24)*lam*x[i]*z^4 + (1/2)*lam*x[i]*z^2 + Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "-(1/5040)*lam*y[i]*z^7 + (1/120)*lam*y[i]*z^5 - (1/6)*lam*y[i]*z^3 + lam*y[i]*z"
+   },
+   {
+    "lhs": "(1/720)*lam*y[i]*z^6 - (1/24)*lam*y[i]*z^4 + (1/2)*lam*y[i]*z^2 + Dt*y[i] + mu*y[i]",
+    "population": "pop",
+    "rhs": "(1/5040)*lam*x[i]*z^7 - (1/120)*lam*x[i]*z^5 + (1/6)*lam*x[i]*z^3 - lam*x[i]*z"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    + yt[i]*(Dt*y[i] - (-mu*y[i]))\n    - ((1/5040)*lam*xt[i]^7*y[i]^7*z^7 - (1/720)*lam*x[i]*xt[i]^6*y[i]^6*yt[i]*z^7 + (1/240)*lam*x[i]^2*xt[i]^5*y[i]^5*yt[i]^2*z^7 - (1/144)*lam*x[i]^3*xt[i]^4*y[i]^4*yt[i]^3*z^7 + (1/144)*lam*x[i]^4*xt[i]^3*y[i]^3*yt[i]^4*z^7 - (1/240)*lam*x[i]^5*xt[i]^2*y[i]^2*yt[i]^5*z^7 + (1/720)*lam*x[i]^6*xt[i]*y[i]*yt[i]^6*z^7 - (1/5040)*lam*x[i]^7*yt[i]^7*z^7 - (1/240)*lam*x[i]*xt[i]^6*y[i]^5*z^7 + (1/48)*lam*x[i]^2*xt[i]^5*y[i]^4*yt[i]*z^7 - (1/240)*lam*xt[i]^5*y[i]^6*yt[i]*z^7 - (1/24)*lam*x[i]^3*xt[i]^4*y[i]^3*yt[i]^2*z^7 + (1/48)*lam*x[i]*xt[i]^4*y[i]^5*yt[i]^2*z^7 + (1/24)*lam*x[i]^4*xt[i]^3*y[i]^2*yt[i]^3*z^7 - (1/24)*lam*x[i]^2*xt[i]^3*y[i]^4*yt[i]^3*z^7 - (1/48)*lam*x[i]^5*xt[i]^2*y[i]*yt[i]^4*z^7 + (1/24)*lam*x[i]^3*xt[i]^2*y[i]^3*yt[i]^4*z^7 + (1/240)*lam*x[i]^6*xt[i]*yt[i]^5*z^7 - (1/48)*lam*x[i]^4*xt[i]*y[i]^2*yt[i]^5*z^7 + (1/240)*lam*x[i]^5*y[i]*yt[i]^6*z^7 + (1/720)*lam*xt[i]^6*y[i]^6*z^6 - (1/120)*lam*x[i]*xt[i]^5*y[i]^5*yt[i]*z^6 + (1/48)*lam*x[i]^2*xt[i]^4*y[i]^4*yt[i]^2*z^6 - (1/36)*lam*x[i]^3*xt[i]^3*y[i]^3*yt[i]^3*z^6 + (1/48)*lam*x[i]^4*xt[i]^2*y[i]^2*yt[i]^4*z^6 - (1/120)*lam*x[i]^5*xt[i]*y[i]*yt[i]^5*z^6 + (1/720)*lam*x[i]^6*yt[i]^6*z^6 + (1/48)*lam*x[i]^2*xt[i]^5*y[i]^3*z^7 - (1/144)*lam*xt[i]^5*y[i]^5*z^7 - (1/16)*lam*x[i]^3*xt[i]^4*y[i]^2*yt[i]*z^7 + (11/144)*lam*x[i]*xt[i]^4*y[i]^4*yt[i]*z^7 + (1/16)*lam*x[i]^4*xt[i]^3*y[i]*yt[i]^2*z^7 - (7/36)*lam*x[i]^2*xt[i]^3*y[i]^3*yt[i]^2*z^7 + (1/48)*lam*xt[i]^3*y[i]^5*yt[i]^2*z^7 - (1/48)*lam*x[i]^5*xt[i]^2*yt[i]^3*z^7 + (7/36)*lam*x[i]^3*xt[i]^2*y[i]^2*yt[i]^3*z^7 - (1/16)*lam*x[i]*xt[i]^2*y[i]^4*yt[i]^3*z^7 - (11/144)*lam*x[i]^4*xt[i]*y[i]*yt[i]^4*z^7 + (1/16)*lam*x[i]^2*xt[i]*y[i]^3*yt[i]^4*z^7 + (1/144)*lam*x[i]^5*yt[i]^5*z^7 - (1/48)*lam*x[i]^3*y[i]^2*yt[i]^5*z^7 - (1/48)*lam*x[i]*xt[i]^5*y[i]^4*z^6 + (1/12)*lam*x[i]^2*xt[i]^4*y[i]^3*yt[i]*z^6 - (1/48)*lam*xt[i]^4*y[i]^5*yt[i]*z^6 - (1/8)*lam*x[i]^3*xt[i]^3*y[i]^2*yt[i]^2*z^6 + (1/12)*lam*x[i]*xt[i]^3*y[i]^4*yt[i]^2*z^6 + (1/12)*lam*x[i]^4*xt[i]^2*y[i]*yt[i]^3*z^6 - (1/8)*lam*x[i]^2*xt[i]^2*y[i]^3*yt[i]^3*z^6 - (1/48)*lam*x[i]^5*xt[i]*yt[i]^4*z^6 + (1/12)*lam*x[i]^3*xt[i]*y[i]^2*yt[i]^4*z^6 - (1/48)*lam*x[i]^4*y[i]*yt[i]^5*z^6 + (1/120)*lam*xt[i]^5*y[i]^5*z^5 - (1/24)*lam*x[i]*xt[i]^4*y[i]^4*yt[i]*z^5 + (1/12)*lam*x[i]^2*xt[i]^3*y[i]^3*yt[i]^2*z^5 - (1/12)*lam*x[i]^3*xt[i]^2*y[i]^2*yt[i]^3*z^5 + (1/24)*lam*x[i]^4*xt[i]*y[i]*yt[i]^4*z^5 - (1/120)*lam*x[i]^5*yt[i]^5*z^5 - (1/48)*lam*x[i]^3*xt[i]^4*y[i]*z^7 + (7/144)*lam*x[i]*xt[i]^4*y[i]^3*z^7 + (1/48)*lam*x[i]^4*xt[i]^3*yt[i]*z^7 - (5/24)*lam*x[i]^2*xt[i]^3*y[i]^2*yt[i]*z^7 + (7/144)*lam*xt[i]^3*y[i]^4*yt[i]*z^7 + (5/24)*lam*x[i]^3*xt[i]^2*y[i]*yt[i]^2*z^7 - (5/24)*lam*x[i]*xt[i]^2*y[i]^3*yt[i]^2*z^7 - (7/144)*lam*x[i]^4*xt[i]*yt[i]^3*z^7 + (5/24)*lam*x[i]^2*xt[i]*y[i]^2*yt[i]^3*z^7 - (1/48)*lam*xt[i]*y[i]^4*yt[i]^3*z^7 - (7/144)*lam*x[i]^3*y[i]*yt[i]^4*z^7 + (1/48)*lam*x[i]*y[i]^3*yt[i]^4*z^7 + (1/16)*lam*x[i]^2*xt[i]^4*y[i]^2*z^6 - (1/36)*lam*xt[i]^4*y[i]^4*z^6 - (1/8)*lam*x[i]^3*xt[i]^3*y[i]*yt[i]*z^6 + (17/72)*lam*x[i]*xt[i]^3*y[i]^3*yt[i]*z^6 + (1/16)*lam*x[i]^4*xt[i]^2*yt[i]^2*z^6 - (5/12)*lam*x[i]^2*xt[i]^2*y[i]^2*yt[i]^2*z^6 + (1/16)*lam*xt[i]^2*y[i]^4*yt[i]^2*z^6 + (17/72)*lam*x[i]^3*xt[i]*y[i]*yt[i]^3*z^6 - (1/8)*lam*x[i]*xt[i]*y[i]^3*yt[i]^3*z^6 - (1/36)*lam*x[i]^4*yt[i]^4*z^6 + (1/16)*lam*x[i]^2*y[i]^2*yt[i]^4*z^6 - (1/12)*lam*x[i]*xt[i]^4*y[i]^3*z^5 + (1/4)*lam*x[i]^2*xt[i]^3*y[i]^2*yt[i]*z^5 - (1/12)*lam*xt[i]^3*y[i]^4*yt[i]*z^5 - (1/4)*lam*x[i]^3*xt[i]^2*y[i]*yt[i]^2*z^5 + (1/4)*lam*x[i]*xt[i]^2*y[i]^3*yt[i]^2*z^5 + (1/12)*lam*x[i]^4*xt[i]*yt[i]^3*z^5 - (1/4)*lam*x[i]^2*xt[i]*y[i]^2*yt[i]^3*z^5 + (1/12)*lam*x[i]^3*y[i]*yt[i]^4*z^5 - (1/24)*lam*x[i]^2*xt[i]^3*y[i]*z^7 + (13/720)*lam*xt[i]^3*y[i]^3*z^7 + (1/24)*lam*x[i]^3*xt[i]^2*yt[i]*z^7 - (11/80)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^7 + (11/80)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^7 - (1/24)*lam*xt[i]*y[i]^3*yt[i]^2*z^7 - (13/720)*lam*x[i]^3*yt[i]^3*z^7 + (1/24)*lam*x[i]*y[i]^2*yt[i]^3*z^7 + (1/24)*lam*xt[i]^4*y[i]^4*z^4 - (1/6)*lam*x[i]*xt[i]^3*y[i]^3*yt[i]*z^4 + (1/4)*lam*x[i]^2*xt[i]^2*y[i]^2*yt[i]^2*z^4 - (1/6)*lam*x[i]^3*xt[i]*y[i]*yt[i]^3*z^4 + (1/24)*lam*x[i]^4*yt[i]^4*z^4 - (1/48)*lam*x[i]^3*xt[i]^3*z^6 + (5/48)*lam*x[i]*xt[i]^3*y[i]^2*z^6 - (13/48)*lam*x[i]^2*xt[i]^2*y[i]*yt[i]*z^6 + (5/48)*lam*xt[i]^2*y[i]^3*yt[i]*z^6 + (5/48)*lam*x[i]^3*xt[i]*yt[i]^2*z^6 - (13/48)*lam*x[i]*xt[i]*y[i]^2*yt[i]^2*z^6 + (5/48)*lam*x[i]^2*y[i]*yt[i]^3*z^6 - (1/48)*lam*y[i]^3*yt[i]^3*z^6 + (1/8)*lam*x[i]^2*xt[i]^3*y[i]*z^5 - (1/12)*lam*xt[i]^3*y[i]^3*z^5 - (1/8)*lam*x[i]^3*xt[i]^2*yt[i]*z^5 + (1/2)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^5 - (1/2)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^5 + (1/8)*lam*xt[i]*y[i]^3*yt[i]^2*z^5 + (1/12)*lam*x[i]^3*yt[i]^3*z^5 - (1/8)*lam*x[i]*y[i]^2*yt[i]^3*z^5 - (1/80)*lam*x[i]*xt[i]^2*y[i]*z^7 + (1/80)*lam*x[i]^2*xt[i]*yt[i]*z^7 - (1/80)*lam*xt[i]*y[i]^2*yt[i]*z^7 + (1/80)*lam*x[i]*y[i]*yt[i]^2*z^7 - (1/4)*lam*x[i]*xt[i]^3*y[i]^2*z^4 + (1/2)*lam*x[i]^2*xt[i]^2*y[i]*yt[i]*z^4 - (1/4)*lam*xt[i]^2*y[i]^3*yt[i]*z^4 - (1/4)*lam*x[i]^3*xt[i]*yt[i]^2*z^4 + (1/2)*lam*x[i]*xt[i]*y[i]^2*yt[i]^2*z^4 - (1/4)*lam*x[i]^2*y[i]*yt[i]^3*z^4 - (1/48)*lam*x[i]^2*xt[i]^2*z^6 + (1/45)*lam*xt[i]^2*y[i]^2*z^6 - (31/360)*lam*x[i]*xt[i]*y[i]*yt[i]*z^6 + (1/45)*lam*x[i]^2*yt[i]^2*z^6 - (1/48)*lam*y[i]^2*yt[i]^2*z^6 + (1/6)*lam*xt[i]^3*y[i]^3*z^3 - (1/2)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^3 + (1/2)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^3 - (1/6)*lam*x[i]^3*yt[i]^3*z^3 + (1/8)*lam*x[i]*xt[i]^2*y[i]*z^5 - (1/8)*lam*x[i]^2*xt[i]*yt[i]*z^5 + (1/8)*lam*xt[i]*y[i]^2*yt[i]*z^5 - (1/8)*lam*x[i]*y[i]*yt[i]^2*z^5 - (1/5040)*lam*xt[i]*y[i]*z^7 + (1/5040)*lam*x[i]*yt[i]*z^7 + (1/8)*lam*x[i]^2*xt[i]^2*z^4 - (1/6)*lam*xt[i]^2*y[i]^2*z^4 + (7/12)*lam*x[i]*xt[i]*y[i]*yt[i]*z^4 - (1/6)*lam*x[i]^2*yt[i]^2*z^4 + (1/8)*lam*y[i]^2*yt[i]^2*z^4 - (1/720)*lam*x[i]*xt[i]*z^6 - (1/720)*lam*y[i]*yt[i]*z^6 - (1/2)*lam*x[i]*xt[i]^2*y[i]*z^3 + (1/2)*lam*x[i]^2*xt[i]*yt[i]*z^3 - (1/2)*lam*xt[i]*y[i]^2*yt[i]*z^3 + (1/2)*lam*x[i]*y[i]*yt[i]^2*z^3 + (1/120)*lam*xt[i]*y[i]*z^5 - (1/120)*lam*x[i]*yt[i]*z^5 + (1/2)*lam*xt[i]^2*y[i]^2*z^2 - lam*x[i]*xt[i]*y[i]*yt[i]*z^2 + (1/2)*lam*x[i]^2*yt[i]^2*z^2 + (1/24)*lam*x[i]*xt[i]*z^4 + (1/24)*lam*y[i]*yt[i]*z^4 - (1/6)*lam*xt[i]*y[i]*z^3 + (1/6)*lam*x[i]*yt[i]*z^3 - (1/2)*lam*x[i]*xt[i]*z^2 - (1/2)*lam*y[i]*yt[i]*z^2 + lam*xt[i]*y[i]*z - lam*x[i]*yt[i]*z)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "(1/720)*lam*x[i]*z^6 - (1/24)*lam*x[i]*z^4 + (1/2)*lam*x[i]*z^2 + Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "-(1/5040)*lam*y[i]*z^7 + (1/120)*lam*y[i]*z^5 - (1/6)*lam*y[i]*z^3 + lam*y[i]*z"
+    },
+    {
+     "kind": "differential",
+     "lhs_text": "(1/720)*lam*y[i]*z^6 - (1/24)*lam*y[i]*z^4 + (1/2)*lam*y[i]*z^2 + Dt*y[i] + mu*y[i]",
+     "population": "pop",
+     "rhs_text": "(1/5040)*lam*x[i]*z^7 - (1/120)*lam*x[i]*z^5 + (1/6)*lam*x[i]*z^3 - lam*x[i]*z"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "interpretation": "marcus",
+   "iteration_saddles": [],
+   "kernels": [],
+   "marcus_series": {
+    "L": {
+     "fields": [
+      "x",
+      "y"
+     ],
+     "kept": "(1/5040)*lam*xt[i]^7*y[i]^7*z^7 - (1/720)*lam*x[i]*xt[i]^6*y[i]^6*yt[i]*z^7 + (1/240)*lam*x[i]^2*xt[i]^5*y[i]^5*yt[i]^2*z^7 - (1/144)*lam*x[i]^3*xt[i]^4*y[i]^4*yt[i]^3*z^7 + (1/144)*lam*x[i]^4*xt[i]^3*y[i]^3*yt[i]^4*z^7 - (1/240)*lam*x[i]^5*xt[i]^2*y[i]^2*yt[i]^5*z^7 + (1/720)*lam*x[i]^6*xt[i]*y[i]*yt[i]^6*z^7 - (1/5040)*lam*x[i]^7*yt[i]^7*z^7 - (1/240)*lam*x[i]*xt[i]^6*y[i]^5*z^7 + (1/48)*lam*x[i]^2*xt[i]^5*y[i]^4*yt[i]*z^7 - (1/240)*lam*xt[i]^5*y[i]^6*yt[i]*z^7 - (1/24)*lam*x[i]^3*xt[i]^4*y[i]^3*yt[i]^2*z^7 + (1/48)*lam*x[i]*xt[i]^4*y[i]^5*yt[i]^2*z^7 + (1/24)*lam*x[i]^4*xt[i]^3*y[i]^2*yt[i]^3*z^7 - (1/24)*lam*x[i]^2*xt[i]^3*y[i]^4*yt[i]^3*z^7 - (1/48)*lam*x[i]^5*xt[i]^2*y[i]*yt[i]^4*z^7 + (1/24)*lam*x[i]^3*xt[i]^2*y[i]^3*yt[i]^4*z^7 + (1/240)*lam*x[i]^6*xt[i]*yt[i]^5*z^7 - (1/48)*lam*x[i]^4*xt[i]*y[i]^2*yt[i]^5*z^7 + (1/240)*lam*x[i]^5*y[i]*yt[i]^6*z^7 + (1/720)*lam*xt[i]^6*y[i]^6*z^6 - (1/120)*lam*x[i]*xt[i]^5*y[i]^5*yt[i]*z^6 + (1/48)*lam*x[i]^2*xt[i]^4*y[i]^4*yt[i]^2*z^6 - (1/36)*lam*x[i]^3*xt[i]^3*y[i]^3*yt[i]^3*z^6 + (1/48)*lam*x[i]^4*xt[i]^2*y[i]^2*yt[i]^4*z^6 - (1/120)*lam*x[i]^5*xt[i]*y[i]*yt[i]^5*z^6 + (1/720)*lam*x[i]^6*yt[i]^6*z^6 + (1/48)*lam*x[i]^2*xt[i]^5*y[i]^3*z^7 - (1/144)*lam*xt[i]^5*y[i]^5*z^7 - (1/16)*lam*x[i]^3*xt[i]^4*y[i]^2*yt[i]*z^7 + (11/144)*lam*x[i]*xt[i]^4*y[i]^4*yt[i]*z^7 + (1/16)*lam*x[i]^4*xt[i]^3*y[i]*yt[i]^2*z^7 - (7/36)*lam*x[i]^2*xt[i]^3*y[i]^3*yt[i]^2*z^7 + (1/48)*lam*xt[i]^3*y[i]^5*yt[i]^2*z^7 - (1/48)*lam*x[i]^5*xt[i]^2*yt[i]^3*z^7 + (7/36)*lam*x[i]^3*xt[i]^2*y[i]^2*yt[i]^3*z^7 - (1/16)*lam*x[i]*xt[i]^2*y[i]^4*yt[i]^3*z^7 - (11/144)*lam*x[i]^4*xt[i]*y[i]*yt[i]^4*z^7 + (1/16)*lam*x[i]^2*xt[i]*y[i]^3*yt[i]^4*z^7 + (1/144)*lam*x[i]^5*yt[i]^5*z^7 - (1/48)*lam*x[i]^3*y[i]^2*yt[i]^5*z^7 - (1/48)*lam*x[i]*xt[i]^5*y[i]^4*z^6 + (1/12)*lam*x[i]^2*xt[i]^4*y[i]^3*yt[i]*z^6 - (1/48)*lam*xt[i]^4*y[i]^5*yt[i]*z^6 - (1/8)*lam*x[i]^3*xt[i]^3*y[i]^2*yt[i]^2*z^6 + (1/12)*lam*x[i]*xt[i]^3*y[i]^4*yt[i]^2*z^6 + (1/12)*lam*x[i]^4*xt[i]^2*y[i]*yt[i]^3*z^6 - (1/8)*lam*x[i]^2*xt[i]^2*y[i]^3*yt[i]^3*z^6 - (1/48)*lam*x[i]^5*xt[i]*yt[i]^4*z^6 + (1/12)*lam*x[i]^3*xt[i]*y[i]^2*yt[i]^4*z^6 - (1/48)*lam*x[i]^4*y[i]*yt[i]^5*z^6 + (1/120)*lam*xt[i]^5*y[i]^5*z^5 - (1/24)*lam*x[i]*xt[i]^4*y[i]^4*yt[i]*z^5 + (1/12)*lam*x[i]^2*xt[i]^3*y[i]^3*yt[i]^2*z^5 - (1/12)*lam*x[i]^3*xt[i]^2*y[i]^2*yt[i]^3*z^5 + (1/24)*lam*x[i]^4*xt[i]*y[i]*yt[i]^4*z^5 - (1/120)*lam*x[i]^5*yt[i]^5*z^5 - (1/48)*lam*x[i]^3*xt[i]^4*y[i]*z^7 + (7/144)*lam*x[i]*xt[i]^4*y[i]^3*z^7 + (1/48)*lam*x[i]^4*xt[i]^3*yt[i]*z^7 - (5/24)*lam*x[i]^2*xt[i]^3*y[i]^2*yt[i]*z^7 + (7/144)*lam*xt[i]^3*y[i]^4*yt[i]*z^7 + (5/24)*lam*x[i]^3*xt[i]^2*y[i]*yt[i]^2*z^7 - (5/24)*lam*x[i]*xt[i]^2*y[i]^3*yt[i]^2*z^7 - (7/144)*lam*x[i]^4*xt[i]*yt[i]^3*z^7 + (5/24)*lam*x[i]^2*xt[i]*y[i]^2*yt[i]^3*z^7 - (1/48)*lam*xt[i]*y[i]^4*yt[i]^3*z^7 - (7/144)*lam*x[i]^3*y[i]*yt[i]^4*z^7 + (1/48)*lam*x[i]*y[i]^3*yt[i]^4*z^7 + (1/16)*lam*x[i]^2*xt[i]^4*y[i]^2*z^6 - (1/36)*lam*xt[i]^4*y[i]^4*z^6 - (1/8)*lam*x[i]^3*xt[i]^3*y[i]*yt[i]*z^6 + (17/72)*lam*x[i]*xt[i]^3*y[i]^3*yt[i]*z^6 + (1/16)*lam*x[i]^4*xt[i]^2*yt[i]^2*z^6 - (5/12)*lam*x[i]^2*xt[i]^2*y[i]^2*yt[i]^2*z^6 + (1/16)*lam*xt[i]^2*y[i]^4*yt[i]^2*z^6 + (17/72)*lam*x[i]^3*xt[i]*y[i]*yt[i]^3*z^6 - (1/8)*lam*x[i]*xt[i]*y[i]^3*yt[i]^3*z^6 - (1/36)*lam*x[i]^4*yt[i]^4*z^6 + (1/16)*lam*x[i]^2*y[i]^2*yt[i]^4*z^6 - (1/12)*lam*x[i]*xt[i]^4*y[i]^3*z^5 + (1/4)*lam*x[i]^2*xt[i]^3*y[i]^2*yt[i]*z^5 - (1/12)*lam*xt[i]^3*y[i]^4*yt[i]*z^5 - (1/4)*lam*x[i]^3*xt[i]^2*y[i]*yt[i]^2*z^5 + (1/4)*lam*x[i]*xt[i]^2*y[i]^3*yt[i]^2*z^5 + (1/12)*lam*x[i]^4*xt[i]*yt[i]^3*z^5 - (1/4)*lam*x[i]^2*xt[i]*y[i]^2*yt[i]^3*z^5 + (1/12)*lam*x[i]^3*y[i]*yt[i]^4*z^5 - (1/24)*lam*x[i]^2*xt[i]^3*y[i]*z^7 + (13/720)*lam*xt[i]^3*y[i]^3*z^7 + (1/24)*lam*x[i]^3*xt[i]^2*yt[i]*z^7 - (11/80)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^7 + (11/80)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^7 - (1/24)*lam*xt[i]*y[i]^3*yt[i]^2*z^7 - (13/720)*lam*x[i]^3*yt[i]^3*z^7 + (1/24)*lam*x[i]*y[i]^2*yt[i]^3*z^7 + (1/24)*lam*xt[i]^4*y[i]^4*z^4 - (1/6)*lam*x[i]*xt[i]^3*y[i]^3*yt[i]*z^4 + (1/4)*lam*x[i]^2*xt[i]^2*y[i]^2*yt[i]^2*z^4 - (1/6)*lam*x[i]^3*xt[i]*y[i]*yt[i]^3*z^4 + (1/24)*lam*x[i]^4*yt[i]^4*z^4 - (1/48)*lam*x[i]^3*xt[i]^3*z^6 + (5/48)*lam*x[i]*xt[i]^3*y[i]^2*z^6 - (13/48)*lam*x[i]^2*xt[i]^2*y[i]*yt[i]*z^6 + (5/48)*lam*xt[i]^2*y[i]^3*yt[i]*z^6 + (5/48)*lam*x[i]^3*xt[i]*yt[i]^2*z^6 - (13/48)*lam*x[i]*xt[i]*y[i]^2*yt[i]^2*z^6 + (5/48)*lam*x[i]^2*y[i]*yt[i]^3*z^6 - (1/48)*lam*y[i]^3*yt[i]^3*z^6 + (1/8)*lam*x[i]^2*xt[i]^3*y[i]*z^5 - (1/12)*lam*xt[i]^3*y[i]^3*z^5 - (1/8)*lam*x[i]^3*xt[i]^2*yt[i]*z^5 + (1/2)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^5 - (1/2)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^5 + (1/8)*lam*xt[i]*y[i]^3*yt[i]^2*z^5 + (1/12)*lam*x[i]^3*yt[i]^3*z^5 - (1/8)*lam*x[i]*y[i]^2*yt[i]^3*z^5 - (1/80)*lam*x[i]*xt[i]^2*y[i]*z^7 + (1/80)*lam*x[i]^2*xt[i]*yt[i]*z^7 - (1/80)*lam*xt[i]*y[i]^2*yt[i]*z^7 + (1/80)*lam*x[i]*y[i]*yt[i]^2*z^7 - (1/4)*lam*x[i]*xt[i]^3*y[i]^2*z^4 + (1/2)*lam*x[i]^2*xt[i]^2*y[i]*yt[i]*z^4 - (1/4)*lam*xt[i]^2*y[i]^3*yt[i]*z^4 - (1/4)*lam*x[i]^3*xt[i]*yt[i]^2*z^4 + (1/2)*lam*x[i]*xt[i]*y[i]^2*yt[i]^2*z^4 - (1/4)*lam*x[i]^2*y[i]*yt[i]^3*z^4 - (1/48)*lam*x[i]^2*xt[i]^2*z^6 + (1/45)*lam*xt[i]^2*y[i]^2*z^6 - (31/360)*lam*x[i]*xt[i]*y[i]*yt[i]*z^6 + (1/45)*lam*x[i]^2*yt[i]^2*z^6 - (1/48)*lam*y[i]^2*yt[i]^2*z^6 + (1/6)*lam*xt[i]^3*y[i]^3*z^3 - (1/2)*lam*x[i]*xt[i]^2*y[i]^2*yt[i]*z^3 + (1/2)*lam*x[i]^2*xt[i]*y[i]*yt[i]^2*z^3 - (1/6)*lam*x[i]^3*yt[i]^3*z^3 + (1/8)*lam*x[i]*xt[i]^2*y[i]*z^5 - (1/8)*lam*x[i]^2*xt[i]*yt[i]*z^5 + (1/8)*lam*xt[i]*y[i]^2*yt[i]*z^5 - (1/8)*lam*x[i]*y[i]*yt[i]^2*z^5 - (1/5040)*lam*xt[i]*y[i]*z^7 + (1/5040)*lam*x[i]*yt[i]*z^7 + (1/8)*lam*x[i]^2*xt[i]^2*z^4 - (1/6)*lam*xt[i]^2*y[i]^2*z^4 + (7/12)*lam*x[i]*xt[i]*y[i]*yt[i]*z^4 - (1/6)*lam*x[i]^2*yt[i]^2*z^4 + (1/8)*lam*y[i]^2*yt[i]^2*z^4 - (1/720)*lam*x[i]*xt[i]*z^6 - (1/720)*lam*y[i]*yt[i]*z^6 - (1/2)*lam*x[i]*xt[i]^2*y[i]*z^3 + (1/2)*lam*x[i]^2*xt[i]*yt[i]*z^3 - (1/2)*lam*xt[i]*y[i]^2*yt[i]*z^3 + (1/2)*lam*x[i]*y[i]*yt[i]^2*z^3 + (1/120)*lam*xt[i]*y[i]*z^5 - (1/120)*lam*x[i]*yt[i]*z^5 + (1/2)*lam*xt[i]^2*y[i]^2*z^2 - lam*x[i]*xt[i]*y[i]*yt[i]*z^2 + (1/2)*lam*x[i]^2*yt[i]^2*z^2 + (1/24)*lam*x[i]*xt[i]*z^4 + (1/24)*lam*y[i]*yt[i]*z^4 - (1/6)*lam*xt[i]*y[i]*z^3 + (1/6)*lam*x[i]*yt[i]*z^3 - (1/2)*lam*x[i]*xt[i]*z^2 - (1/2)*lam*y[i]*yt[i]*z^2 + lam*xt[i]*y[i]*z - lam*x[i]*yt[i]*z",
+     "next": "(1/40320)*lam*xt[i]^8*y[i]^8*z^8 - (1/5040)*lam*x[i]*xt[i]^7*y[i]^7*yt[i]*z^8 + (1/1440)*lam*x[i]^2*xt[i]^6*y[i]^6*yt[i]^2*z^8 - (1/720)*lam*x[i]^3*xt[i]^5*y[i]^5*yt[i]^3*z^8 + (1/576)*lam*x[i]^4*xt[i]^4*y[i]^4*yt[i]^4*z^8 - (1/720)*lam*x[i]^5*xt[i]^3*y[i]^3*yt[i]^5*z^8 + (1/1440)*lam*x[i]^6*xt[i]^2*y[i]^2*yt[i]^6*z^8 - (1/5040)*lam*x[i]^7*xt[i]*y[i]*yt[i]^7*z^8 + (1/40320)*lam*x[i]^8*yt[i]^8*z^8 - (1/1440)*lam*x[i]*xt[i]^7*y[i]^6*z^8 + (1/240)*lam*x[i]^2*xt[i]^6*y[i]^5*yt[i]*z^8 - (1/1440)*lam*xt[i]^6*y[i]^7*yt[i]*z^8 - (1/96)*lam*x[i]^3*xt[i]^5*y[i]^4*yt[i]^2*z^8 + (1/240)*lam*x[i]*xt[i]^5*y[i]^6*yt[i]^2*z^8 + (1/72)*lam*x[i]^4*xt[i]^4*y[i]^3*yt[i]^3*z^8 - (1/96)*lam*x[i]^2*xt[i]^4*y[i]^5*yt[i]^3*z^8 - (1/96)*lam*x[i]^5*xt[i]^3*y[i]^2*yt[i]^4*z^8 + (1/72)*lam*x[i]^3*xt[i]^3*y[i]^4*yt[i]^4*z^8 + (1/240)*lam*x[i]^6*xt[i]^2*y[i]*yt[i]^5*z^8 - (1/96)*lam*x[i]^4*xt[i]^2*y[i]^3*yt[i]^5*z^8 - (1/1440)*lam*x[i]^7*xt[i]*yt[i]^6*z^8 + (1/240)*lam*x[i]^5*xt[i]*y[i]^2*yt[i]^6*z^8 - (1/1440)*lam*x[i]^6*y[i]*yt[i]^7*z^8 + (1/192)*lam*x[i]^2*xt[i]^6*y[i]^4*z^8 - (1/720)*lam*xt[i]^6*y[i]^6*z^8 - (1/48)*lam*x[i]^3*xt[i]^5*y[i]^3*yt[i]*z^8 + (3/160)*lam*x[i]*xt[i]^5*y[i]^5*yt[i]*z^8 + (1/32)*lam*x[i]^4*xt[i]^4*y[i]^2*yt[i]^2*z^8 - (1/16)*lam*x[i]^2*xt[i]^4*y[i]^4*yt[i]^2*z^8 + (1/192)*lam*xt[i]^4*y[i]^6*yt[i]^2*z^8 - (1/48)*lam*x[i]^5*xt[i]^3*y[i]*yt[i]^3*z^8 + (13/144)*lam*x[i]^3*xt[i]^3*y[i]^3*yt[i]^3*z^8 - (1/48)*lam*x[i]*xt[i]^3*y[i]^5*yt[i]^3*z^8 + (1/192)*lam*x[i]^6*xt[i]^2*yt[i]^4*z^8 - (1/16)*lam*x[i]^4*xt[i]^2*y[i]^2*yt[i]^4*z^8 + (1/32)*lam*x[i]^2*xt[i]^2*y[i]^4*yt[i]^4*z^8 + (3/160)*lam*x[i]^5*xt[i]*y[i]*yt[i]^5*z^8 - (1/48)*lam*x[i]^3*xt[i]*y[i]^3*yt[i]^5*z^8 - (1/720)*lam*x[i]^6*yt[i]^6*z^8 + (1/192)*lam*x[i]^4*y[i]^2*yt[i]^6*z^8 - (1/96)*lam*x[i]^3*xt[i]^5*y[i]^2*z^8 + (1/64)*lam*x[i]*xt[i]^5*y[i]^4*z^8 + (1/48)*lam*x[i]^4*xt[i]^4*y[i]*yt[i]*z^8 - (3/32)*lam*x[i]^2*xt[i]^4*y[i]^3*yt[i]*z^8 + (1/64)*lam*xt[i]^4*y[i]^5*yt[i]*z^8 - (1/96)*lam*x[i]^5*xt[i]^3*yt[i]^2*z^8 + (5/32)*lam*x[i]^3*xt[i]^3*y[i]^2*yt[i]^2*z^8 - (3/32)*lam*x[i]*xt[i]^3*y[i]^4*yt[i]^2*z^8 - (3/32)*lam*x[i]^4*xt[i]^2*y[i]*yt[i]^3*z^8 + (5/32)*lam*x[i]^2*xt[i]^2*y[i]^3*yt[i]^3*z^8 - (1/96)*lam*xt[i]^2*y[i]^5*yt[i]^3*z^8 + (1/64)*lam*x[i]^5*xt[i]*yt[i]^4*z^8 - (3/32)*lam*x[i]^3*xt[i]*y[i]^2*yt[i]^4*z^8 + (1/48)*lam*x[i]*xt[i]*y[i]^4*yt[i]^4*z^8 + (1/64)*lam*x[i]^4*y[i]*yt[i]^5*z^8 - (1/96)*lam*x[i]^2*y[i]^3*yt[i]^5*z^8 + (1/384)*lam*x[i]^4*xt[i]^4*z^8 - (1/32)*lam*x[i]^2*xt[i]^4*y[i]^2*z^8 + (1/120)*lam*xt[i]^4*y[i]^4*z^8 + (7/96)*lam*x[i]^3*xt[i]^3*y[i]*yt[i]*z^8 - (23/240)*lam*x[i]*xt[i]^3*y[i]^3*yt[i]*z^8 - (1/32)*lam*x[i]^4*xt[i]^2*yt[i]^2*z^8 + (61/320)*lam*x[i]^2*xt[i]^2*y[i]^2*yt[i]^2*z^8 - (1/32)*lam*xt[i]^2*y[i]^4*yt[i]^2*z^8 - (23/240)*lam*x[i]^3*xt[i]*y[i]*yt[i]^3*z^8 + (7/96)*lam*x[i]*xt[i]*y[i]^3*yt[i]^3*z^8 + (1/120)*lam*x[i]^4*yt[i]^4*z^8 - (1/32)*lam*x[i]^2*y[i]^2*yt[i]^4*z^8 + (1/384)*lam*y[i]^4*yt[i]^4*z^8 + (1/192)*lam*x[i]^3*xt[i]^3*z^8 - (3/160)*lam*x[i]*xt[i]^3*y[i]^2*z^8 + (17/320)*lam*x[i]^2*xt[i]^2*y[i]*yt[i]*z^8 - (3/160)*lam*xt[i]^2*y[i]^3*yt[i]*z^8 - (3/160)*lam*x[i]^3*xt[i]*yt[i]^2*z^8 + (17/320)*lam*x[i]*xt[i]*y[i]^2*yt[i]^2*z^8 - (3/160)*lam*x[i]^2*y[i]*yt[i]^3*z^8 + (1/192)*lam*y[i]^3*yt[i]^3*z^8 + (1/640)*lam*x[i]^2*xt[i]^2*z^8 - (1/630)*lam*xt[i]^2*y[i]^2*z^8 + (127/20160)*lam*x[i]*xt[i]*y[i]*yt[i]*z^8 - (1/630)*lam*x[i]^2*yt[i]^2*z^8 + (1/640)*lam*y[i]^2*yt[i]^2*z^8 + (1/40320)*lam*x[i]*xt[i]*z^8 + (1/40320)*lam*y[i]*yt[i]*z^8",
+     "order": 7,
+     "population": "pop",
+     "responses": [
+      "xt",
+      "yt"
+     ],
+     "route": "series"
+    }
+   },
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "rotation",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx",
+     "y": "dy"
+    },
+    "mean_field_saddles": {
+     "x": "xstar",
+     "y": "ystar"
+    },
+    "mf_parameters": [
+     "xstar",
+     "ystar"
+    ]
+   },
+   "noise_series_order": {
+    "order": 7,
+    "sources": [
+     "L"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "description": "mean-field saddle value of y",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "ystar",
+     "natural_name": "y"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "lam"
+    },
+    {
+     "default": 0.7,
+     "indexed": false,
+     "name": "z"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    },
+    {
+     "indexed": true,
+     "latex": "\\delta y",
+     "name": "dy",
+     "natural_name": "y",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    },
+    {
+     "description": "response field conjugate to y",
+     "indexed": true,
+     "latex": "\\tilde y",
+     "name": "yt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "1dc15c0157e59f1a",
+   "stability_analysis": false
+  },
+  "notes": [
+   "Marcus: source 'L' acts through the flow of its coupling; the action carries sum_k kappa_k/k! D_k to order 7 (SDE.series_order); the size of the next term at the saddle is result['marcus_truncation'].",
+   "mean-field equation of 'x': linear term -(1/720)*(lam*z^6 - 30*lam*z^4 + 360*lam*z^2 + 720*mu)*x[i] moved to the lhs.",
+   "mean-field equation of 'y': linear term -(1/720)*(lam*z^6 - 30*lam*z^4 + 360*lam*z^2 + 720*mu)*y[i] moved to the lhs."
+  ]
+ },
+ "nonpolynomial_drift": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-x[i]/(1+eps*x[i]^2)))\n    - ((1/25)*(x[i] + 5)^2*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + x[i]",
+    "population": "pop",
+    "rhs": "(-x[i]/(1+eps*x[i]^2)) + x[i]"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-x[i]/(1+eps*x[i]^2)))\n    - ((1/25)*(x[i] + 5)^2*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + x[i]",
+     "population": "pop",
+     "rhs_text": "(-x[i]/(1+eps*x[i]^2)) + x[i]"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "nonpolynomial",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 0.05,
+     "domain": "positive",
+     "indexed": false,
+     "name": "eps"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "b010a8025be63f30",
+   "stability_analysis": true
+  },
+  "notes": [
+   "mean-field equation of 'x': rhs has no field-independent linear term in x; added x[i] to both sides (lhs 'Dt*x[i] + x[i]', c = 1; the residual and the linear stability are unchanged)."
+  ]
+ },
+ "ou_quartic_drift": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] - eps*x[i]^3))\n    - (D*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "-eps*x[i]^3"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] - eps*x[i]^3))\n    - (D*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "-eps*x[i]^3"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "OU Quartic (white noise)",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 0.02,
+     "domain": "positive",
+     "indexed": false,
+     "name": "eps"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "D"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "description": "variable",
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "0d8d9c854b27ab49",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': linear term -mu*x[i] moved to the lhs."
+  ]
+ },
+ "ou_quartic_equation": {
+  "action_text": "sum(\n    xt[i]*((Dt+mu)*x[i] - (-eps*x[i]^3))\n    - (D*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "(Dt+mu)*x[i]",
+    "population": "pop",
+    "rhs": "-eps*x[i]^3"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*((Dt+mu)*x[i] - (-eps*x[i]^3))\n    - (D*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "(Dt+mu)*x[i]",
+     "population": "pop",
+     "rhs_text": "-eps*x[i]^3"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "OU Quartic (white noise)",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 0.02,
+     "domain": "positive",
+     "indexed": false,
+     "name": "eps"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "D"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "description": "variable",
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "89b8632b8311b0fe",
+   "stability_analysis": false
+  },
+  "notes": []
+ },
+ "ou_sextic_drift": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] - eps*x[i]^3 - gamma*x[i]^5))\n    - (D*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "-gamma*x[i]^5 - eps*x[i]^3"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] - eps*x[i]^3 - gamma*x[i]^5))\n    - (D*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "-gamma*x[i]^5 - eps*x[i]^3"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "OU Sextic",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 0.05,
+     "domain": "positive",
+     "indexed": false,
+     "name": "eps"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "D"
+    },
+    {
+     "default": 0.05,
+     "domain": "positive",
+     "indexed": false,
+     "name": "gamma"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "description": "variable",
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "03ff708daf8fc45b",
+   "stability_analysis": true
+  },
+  "notes": [
+   "mean-field equation of 'x': linear term -mu*x[i] moved to the lhs."
+  ]
+ },
+ "ou_sextic_equation": {
+  "action_text": "sum(\n    xt[i]*((Dt+mu)*x[i] - (-eps*x[i]^3 - gamma*x[i]^5))\n    - (D*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "(Dt+mu)*x[i]",
+    "population": "pop",
+    "rhs": "-eps*x[i]^3 - gamma*x[i]^5"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*((Dt+mu)*x[i] - (-eps*x[i]^3 - gamma*x[i]^5))\n    - (D*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "(Dt+mu)*x[i]",
+     "population": "pop",
+     "rhs_text": "-eps*x[i]^3 - gamma*x[i]^5"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "OU Sextic",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 0.05,
+     "domain": "positive",
+     "indexed": false,
+     "name": "eps"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "D"
+    },
+    {
+     "default": 0.05,
+     "domain": "positive",
+     "indexed": false,
+     "name": "gamma"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "description": "variable",
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "4ee0e6b49f8fbf21",
+   "stability_analysis": true
+  },
+  "notes": []
+ },
+ "point_process_voltage": {
+  "action_text": "sum(\n    vt[i]*((tau*Dt + 1)*v[i] - (w*n[i]))\n    + nt[i]*n[i] - (exp(nt[i]) - 1)*a\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "(tau*Dt + 1)*v[i]",
+    "population": "pop",
+    "rhs": "w*n[i]"
+   },
+   {
+    "lhs": "n[i]",
+    "population": "pop",
+    "rhs": "a"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    vt[i]*((tau*Dt + 1)*v[i] - (w*n[i]))\n    + nt[i]*n[i] - (exp(nt[i]) - 1)*a\n    for i in pop)",
+   "equations": [],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "pp",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "n": "dn",
+     "v": "dv"
+    },
+    "mean_field_saddles": {
+     "n": "nstar",
+     "v": "vstar"
+    },
+    "mf_parameters": [
+     "vstar",
+     "nstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of v",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "vstar",
+     "natural_name": "v"
+    },
+    {
+     "description": "mean-field saddle value of n",
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "nstar",
+     "natural_name": "n"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "tau"
+    },
+    {
+     "default": 0.2,
+     "indexed": false,
+     "name": "w"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "a"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta v",
+     "name": "dv",
+     "natural_name": "v",
+     "population": "pop"
+    },
+    {
+     "description": "point process n",
+     "indexed": true,
+     "latex": "\\delta n",
+     "name": "dn",
+     "natural_name": "n",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to v",
+     "indexed": true,
+     "latex": "\\tilde v",
+     "name": "vt",
+     "population": "pop"
+    },
+    {
+     "description": "response field conjugate to n",
+     "indexed": true,
+     "latex": "\\tilde n",
+     "name": "nt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "0acb19ea0d421ab2",
+   "stability_analysis": false
+  },
+  "notes": []
+ },
+ "poisson_driven": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - (lam*(exp(w*xt[i]) - 1))\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "lam*w"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - (lam*(exp(w*xt[i]) - 1))\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "lam*w"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "p",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 1.5,
+     "indexed": false,
+     "name": "lam"
+    },
+    {
+     "default": 0.3,
+     "indexed": false,
+     "name": "w"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "m"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "0526738b0b098e2f",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': linear term -mu*x[i] moved to the lhs."
+  ]
+ },
+ "readme_hawkes": {
+  "action_text": "sum(\n    nt[i]*n[i] - (exp(nt[i]) - 1)*(a[i]*exp(Em[i] + sum(w[i,j]*Conv(r, n[j]) for j in E)))\n    for i in E)",
+  "equations": [
+   {
+    "lhs": "n[i]",
+    "population": "E",
+    "rhs": "a[i]*exp(Em[i] + sum(w[i,j]*((1))*(n[j]) for j in E))"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    nt[i]*n[i] - (exp(nt[i]) - 1)*(a[i]*exp(Em[i] + sum(w[i,j]*Conv(r, n[j]) for j in E)))\n    for i in E)",
+   "equations": [],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0,
+     1
+    ],
+    "pop_E": [
+     0,
+     1
+    ]
+   },
+   "iteration_saddles": [],
+   "kernel_ft_image": "<callable>",
+   "kernel_td_image": "<callable>",
+   "kernels": [
+    {
+     "latex_name": "r",
+     "name": "r",
+     "sage_name": "z_r"
+    }
+   ],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [
+    {
+     "name": "w",
+     "value": "<callable>"
+    }
+   ],
+   "name": "Hawkes",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "n": "dn"
+    },
+    "mean_field_saddles": {
+     "n": "nstar"
+    },
+    "mf_parameters": [
+     "nstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of n",
+     "domain": "positive",
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "mean_field": true,
+     "name": "nstar",
+     "natural_name": "n"
+    },
+    {
+     "default": [
+      1.0,
+      1.0
+     ],
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "name": "a"
+    },
+    {
+     "default": [
+      -1.5,
+      -1.5
+     ],
+     "indexed": true,
+     "indexed_by": [
+      "E"
+     ],
+     "name": "Em"
+    },
+    {
+     "default": 2.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "tau"
+    },
+    {
+     "default": [
+      [
+       0.4,
+       0.4
+      ],
+      [
+       0.4,
+       0.4
+      ]
+     ],
+     "indexed": true,
+     "indexed_by": [
+      "E",
+      "E"
+     ],
+     "name": "w"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "description": "point process n",
+     "indexed": true,
+     "latex": "\\delta n",
+     "name": "dn",
+     "natural_name": "n",
+     "population": "E"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "E",
+     "size": 2
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to n",
+     "indexed": true,
+     "latex": "\\tilde n",
+     "name": "nt",
+     "population": "E"
+    }
+   ],
+   "spec_signature": "ac133828c46eaee3",
+   "stability_analysis": false
+  },
+  "notes": []
+ },
+ "stratonovich_multiplicative": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] + ((1/2)*s1^2*x[i] + (1/2)*s0*s1)))\n    - ((1/2)*(s1*x[i] + s0)^2*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "-(1/2)*s1^2*x[i] + Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "(1/2)*s0*s1"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i] + ((1/2)*s1^2*x[i] + (1/2)*s0*s1)))\n    - ((1/2)*(s1*x[i] + s0)^2*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "-(1/2)*s1^2*x[i] + Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "(1/2)*s0*s1"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "Stratonovich multiplicative",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 0.6,
+     "domain": "positive",
+     "indexed": false,
+     "name": "s0"
+    },
+    {
+     "default": 0.2,
+     "domain": "positive",
+     "indexed": false,
+     "name": "s1"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "ea855d76635e96c3",
+   "stability_analysis": true
+  },
+  "notes": [
+   "Stratonovich -> Ito: drift of 'x' += (1/2)*s1^2*x[i] + (1/2)*s0*s1 (source 'W').",
+   "mean-field equation of 'x': linear term (1/2)*(s1^2 - 2*mu)*x[i] moved to the lhs."
+  ]
+ },
+ "stratonovich_tau_lhs": {
+  "action_text": "sum(\n    xt[i]*((tau*Dt + 1)*x[i] - (0 + ((1/2)*(c1^2*x[i] + c0*c1)/(tau))))\n    - ((1/2)*(c1*x[i] + c0)^2*xt[i]^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "(tau*Dt + 1)*x[i]",
+    "population": "pop",
+    "rhs": "0 + ((1/2)*(c1^2*x[i] + c0*c1)/(tau))"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*((tau*Dt + 1)*x[i] - (0 + ((1/2)*(c1^2*x[i] + c0*c1)/(tau))))\n    - ((1/2)*(c1*x[i] + c0)^2*xt[i]^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "(tau*Dt + 1)*x[i]",
+     "population": "pop",
+     "rhs_text": "0 + ((1/2)*(c1^2*x[i] + c0*c1)/(tau))"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "strat tau",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 2.0,
+     "indexed": false,
+     "name": "tau"
+    },
+    {
+     "default": 1.0,
+     "indexed": false,
+     "name": "c0"
+    },
+    {
+     "default": 0.1,
+     "indexed": false,
+     "name": "c1"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "d7bb2476f8bf08cb",
+   "stability_analysis": false
+  },
+  "notes": [
+   "Stratonovich -> Ito: drift of 'x' += (1/2)*(c1^2*x[i] + c0*c1)/(tau) (source 'W')."
+  ]
+ },
+ "two_field_cross": {
+  "action_text": "sum(\n    xt[i]*((Dt+mu1)*x[i] - (J1*y[i]))\n    + yt[i]*((Dt+mu2)*y[i] - (J2*x[i] - eps*x[i]^2))\n    - (D1*xt[i]^2)\n    - (D2*yt[i]^2)\n    - (r*(xt[i] + yt[i])^2)\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "(Dt+mu1)*x[i]",
+    "population": "pop",
+    "rhs": "J1*y[i]"
+   },
+   {
+    "lhs": "(Dt+mu2)*y[i]",
+    "population": "pop",
+    "rhs": "J2*x[i] - eps*x[i]^2"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*((Dt+mu1)*x[i] - (J1*y[i]))\n    + yt[i]*((Dt+mu2)*y[i] - (J2*x[i] - eps*x[i]^2))\n    - (D1*xt[i]^2)\n    - (D2*yt[i]^2)\n    - (r*(xt[i] + yt[i])^2)\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "(Dt+mu1)*x[i]",
+     "population": "pop",
+     "rhs_text": "J1*y[i]"
+    },
+    {
+     "kind": "differential",
+     "lhs_text": "(Dt+mu2)*y[i]",
+     "population": "pop",
+     "rhs_text": "J2*x[i] - eps*x[i]^2"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "two-field",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx",
+     "y": "dy"
+    },
+    "mean_field_saddles": {
+     "x": "xstar",
+     "y": "ystar"
+    },
+    "mf_parameters": [
+     "xstar",
+     "ystar"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "description": "mean-field saddle value of y",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "ystar",
+     "natural_name": "y"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "mu1"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "mu2"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "J1"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "J2"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "eps"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "D1"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "D2"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "r"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    },
+    {
+     "indexed": true,
+     "latex": "\\delta y",
+     "name": "dy",
+     "natural_name": "y",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    },
+    {
+     "description": "response field conjugate to y",
+     "indexed": true,
+     "latex": "\\tilde y",
+     "name": "yt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "773321d5449c81f0",
+   "stability_analysis": false
+  },
+  "notes": []
+ },
+ "uniform_jumps": {
+  "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - ((1/720)*lam*m^5*xt[i]^5 + (1/120)*lam*m^4*xt[i]^4 + (1/24)*lam*m^3*xt[i]^3 + (1/6)*lam*m^2*xt[i]^2 + (1/2)*lam*m*xt[i])\n    for i in pop)",
+  "equations": [
+   {
+    "lhs": "Dt*x[i] + mu*x[i]",
+    "population": "pop",
+    "rhs": "(1/2)*lam*m"
+   }
+  ],
+  "model": {
+   "action": "<callable>",
+   "action_text": "sum(\n    xt[i]*(Dt*x[i] - (-mu*x[i]))\n    - ((1/720)*lam*m^5*xt[i]^5 + (1/120)*lam*m^4*xt[i]^4 + (1/24)*lam*m^3*xt[i]^3 + (1/6)*lam*m^2*xt[i]^2 + (1/2)*lam*m*xt[i])\n    for i in pop)",
+   "equations": [
+    {
+     "kind": "differential",
+     "lhs_text": "Dt*x[i] + mu*x[i]",
+     "population": "pop",
+     "rhs_text": "(1/2)*lam*m"
+    }
+   ],
+   "functions": [],
+   "index_sets": {
+    "pop": [
+     0
+    ],
+    "pop_pop": [
+     0
+    ]
+   },
+   "iteration_saddles": [],
+   "kernels": [],
+   "mf_bg_conditions": "<callable>",
+   "mf_bg_conditions_action": "<callable>",
+   "mf_equations": "<callable>",
+   "mf_substitutions": [],
+   "name": "u",
+   "naming_convention": {
+    "fluctuation_fields": {
+     "x": "dx"
+    },
+    "mean_field_saddles": {
+     "x": "xstar"
+    },
+    "mf_parameters": [
+     "xstar"
+    ]
+   },
+   "noise_series_order": {
+    "order": 5,
+    "sources": [
+     "U"
+    ]
+   },
+   "operator_ir": false,
+   "operators": [
+    {
+     "description": "d/dt",
+     "latex_name": "\\partial_t",
+     "name": "Dt",
+     "sage_name": "Dt"
+    }
+   ],
+   "parameters": [
+    {
+     "description": "mean-field saddle value of x",
+     "indexed": true,
+     "indexed_by": [
+      "pop"
+     ],
+     "mean_field": true,
+     "name": "xstar",
+     "natural_name": "x"
+    },
+    {
+     "default": 1.0,
+     "domain": "positive",
+     "indexed": false,
+     "name": "mu"
+    },
+    {
+     "default": 1.5,
+     "indexed": false,
+     "name": "lam"
+    },
+    {
+     "default": 0.3,
+     "indexed": false,
+     "name": "w"
+    },
+    {
+     "default": 0.5,
+     "indexed": false,
+     "name": "m"
+    }
+   ],
+   "phi_concrete": null,
+   "physical_fields": [
+    {
+     "indexed": true,
+     "latex": "\\delta x",
+     "name": "dx",
+     "natural_name": "x",
+     "population": "pop"
+    }
+   ],
+   "populations": [
+    {
+     "description": "",
+     "name": "pop",
+     "size": 1
+    }
+   ],
+   "response_fields": [
+    {
+     "description": "response field conjugate to x",
+     "indexed": true,
+     "latex": "\\tilde x",
+     "name": "xt",
+     "population": "pop"
+    }
+   ],
+   "spec_signature": "3d5869283bf101ab",
+   "stability_analysis": false
+  },
+  "notes": [
+   "mean-field equation of 'x': linear term -mu*x[i] moved to the lhs."
+  ]
+ }
+}

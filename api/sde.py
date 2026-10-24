@@ -1,6 +1,8 @@
 """SDE front-end: declare fields, drift and noise SOURCES; derive the MSR
 action and the mean-field equations; emit the same model dict
-:class:`api.model.TemporalModelBuilder` produces.
+:class:`api.model.TemporalModelBuilder` produces (for an SPDE, the one
+:class:`api.model.SpatialModelBuilder` produces; see *Declared operators and
+SPDEs* below).
 
 Each field ``x`` obeys one equation in the repository's operator form,
 
@@ -10,7 +12,8 @@ where ``lhs_x`` is the linear differential operator on ``x`` (contains
 ``Dt``: ``'Dt*x'``, ``'(tau*Dt + 1)*v'``), ``rhs_x`` is everything
 deterministic (fields, parameters, defined functions, kernels), and the
 noise sources ``eta_a`` (:mod:`api.noise`) couple in through
-``couples={field: coefficient}``.  The derived action is
+``couples={field: coefficient}`` (or ``into=``, the same keyword).  The
+derived action is
 
     S = sum_x xt*(lhs_x - rhs_x) - sum_a K_a( sum_x c_xa*xt )
 
@@ -82,6 +85,55 @@ coefficient) moves onto the lhs; where there is none (``-x/(1 + eps*x^2)``,
 stability do not depend on ``c`` and the action is untouched; ``SDE.notes``
 records the step.  Writing ``lhs='(Dt + c)*x'``, ``rhs='drift + c*x'`` by hand
 gives the same model.
+
+Declared operators and SPDEs
+----------------------------
+The operators an equation uses are named with :meth:`SDE.operator` and the
+objects of :mod:`api.operators`.  ``Dt`` is a ``TimeDerivative`` declared by
+default, so a model that never declares an operator is unchanged; declaring
+the time derivative under another name renames it (``Dt`` is then refused).
+Each operator is written in product style (``(tau*dt + 1)*x``, ``D*lap*u``)
+or call style (``dt(x)``, ``lap(u)``): ``dt(x)`` is ``Dt*x``, byte for byte.
+An operator name may not collide with a field (or its ``xt`` / ``dx`` /
+``xstar``), parameter, function, kernel or population, nor with a built-in
+name.
+
+A ``Laplacian`` (or ``SDE(name, space=d)``) makes the model an SPDE in ``d``
+dimensions, built for the spatial pipeline as by hand with
+:class:`api.model.SpatialModelBuilder`: one scalar action, one field per
+species, space-time white noise ``Gaussian(var=..., space='white')``
+(``<eta(x,t) eta(x',t')> = var delta(x - x') delta(t - t')``), the boundary
+of :meth:`SDE.boundary` (default infinite) and a stationary initial
+condition::
+
+    m = (SDE('Allen-Cahn', space=1)
+         .operator('dt', TimeDerivative()).operator('lap', Laplacian())
+         .parameter('mu', default=1.0, domain='positive')
+         .parameter('D', default=1.0, domain='positive')
+         .parameter('lam', default=0.1, domain='positive')
+         .parameter('T', default=1.0, domain='positive')
+         .field('phi')
+         .equation('phi', lhs='dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
+         .noise('eta', Gaussian(var='2*T', space='white'), into={'phi': 1})
+         .build())
+
+The Laplacian of a field is the plain symbol ``Laplacian`` (``D*lap(u)`` ->
+``D*Laplacian*u``); a Laplacian of an expression (``g*lap(u^2)``, a conserved
+derivative vertex) writes the action in the spatial operator IR
+(``Lap(u^2)``, ``.operator_ir()``), the mean-field equations keep the plain
+form (both vanish at the homogeneous saddle).  A product-style operator
+multiplies exactly one field (``lap*u^2`` is refused: write ``lap(u^2)``);
+the time derivative acts on fields linearly.  An operator acts on the
+model's fields (``lap(mu)`` is refused) and is written in the equations (or
+:meth:`extra_action`), not inside a :meth:`define_function` body or a noise
+expression.  Temporal-only features are
+refused with a Laplacian, never dropped: populations, kernels and delays
+(``Conv``, ``x(t - d)``), point processes and exposed sources, non-Gaussian
+or time-only noise, the Stratonovich and Marcus rules, and the SDE simulator.
+Everything the spatial pipeline refuses (UV-divergent subgraphs, periodic
+loops, switch-on transients, ...) it refuses for these models as for the
+hand-written ones.  Conserved noise (``div`` of a white vector noise) is not
+supported yet.
 """
 from __future__ import annotations
 
@@ -94,6 +146,7 @@ from sage.all import SR, integrate, oo, assume, assumptions, forget, function
 
 from api.noise import (NoiseError, NoiseSource, THETA, parse_expr,
                        expr_to_text, expr_names, _MATH_FUNCS, _SAGE_PRINTED_CALLS)
+from api.operators import Laplacian, Operator, TimeDerivative
 
 __all__ = ['SDE', 'SDEError']
 
@@ -105,6 +158,13 @@ class SDEError(NoiseError):
 _KEYWORDS = {'sum', 'for', 'in', 'Dt', 'Conv', 'I', 'pi', 'e',
              'if', 'else', 'range'} | set(_MATH_FUNCS)
 _DT = SR.var('Dt')
+_LAP = SR.var('Laplacian')
+# the engine's own operator spellings: accepted in a model's text only under a
+# declared operator of that name (``Dt`` is declared by default)
+_CANONICAL_OPS = {'Dt', 'Laplacian', 'Lap'}
+# names an operator may not take (besides the model's own declarations)
+_NO_OPERATOR = ((_KEYWORDS | {'theta', 't', 'i', 'j', 'k', 'l', 'pop', 'pop_all', 'Dx', 'omega'}
+                 | set(_SAGE_PRINTED_CALLS)) - _CANONICAL_OPS)
 _NO_DECLARE = _KEYWORDS | {'theta', 't'}
 _NO_POPULATION = {'Dt', 'Conv', 'theta', 't'}
 
@@ -141,6 +201,12 @@ def _split_top_level(text: str, sep: str = ','):
 def _wrap(text) -> str:
     t = str(text).strip()
     return t if re.fullmatch(r'[\w\[\],.\s]*', t) else f'({t})'
+
+
+def _strip_index(text: str) -> str:
+    """``u[i]`` -> ``u``, ``phi[i](u[i])`` -> ``phi(u)``: the scalar text of a
+    spatial model (one field per species, no population index)."""
+    return re.sub(r'\b(\w+)\[i\]', r'\1', str(text))
 
 
 def _compositions(n: int, parts: int):
@@ -235,9 +301,22 @@ def _cgf_shapes(K):
 class SDE:
     """Builder for an SDE model; see the module docstring."""
 
-    def __init__(self, name: str, n_populations: Optional[int] = None):
+    def __init__(self, name: str, n_populations: Optional[int] = None, *,
+                 space: Optional[int] = None):
         self.name = name
         self._n_pop_default = int(n_populations) if n_populations else 1
+        if space is not None:
+            if isinstance(space, bool) or not str(space).isdigit() or int(space) < 1:
+                raise SDEError(f'SDE({name!r}, space={space!r}): the spatial dimension must be '
+                               f'an integer d >= 1 (omit space= for a time-only SDE).')
+            space = int(space)
+        self._space = space
+        # declared operators, name -> Operator; ``Dt`` is declared by default
+        # (``_dt_implicit``) and dropped when the time derivative is renamed
+        self._operators: 'OrderedDict[str, Operator]' = OrderedDict([('Dt', TimeDerivative())])
+        self._dt_implicit = True
+        self._boundary: Optional[dict] = None
+        self._dyson: Optional[dict] = None
         self._pops: list[dict] = []
         self._fields: 'OrderedDict[str, dict]' = OrderedDict()
         self._params: list[tuple[tuple, dict]] = []
@@ -259,6 +338,7 @@ class SDE:
     # ── declarations (passed through to TemporalModelBuilder) ─────────
     def population(self, name: str, *, size: int = 1, description: str = ''):
         _check_declarable(name, 'population')
+        self._check_not_operator(name, 'population')
         self._pops.append({'name': name, 'size': max(int(size), 1),
                            'description': description})
         return self
@@ -277,6 +357,7 @@ class SDE:
                   domain: Optional[str] = None, description: str = '',
                   indexed_by: Optional[list] = None):
         _check_declarable(name, 'parameter')
+        self._check_not_operator(name, 'parameter')
         if name in self._param_names:
             raise SDEError(f'parameter {name!r} is declared twice.')
         self._params.append(((name,), dict(default=default, indexed=indexed,
@@ -289,6 +370,7 @@ class SDE:
                         latex: Optional[str] = None, description: str = '',
                         population: Optional[str] = None):
         _check_declarable(name, 'function')
+        self._check_not_operator(name, 'function')
         if name in _SAGE_PRINTED_CALLS:
             # A call of it means Sage's own function in noise expressions and the saddle solve.
             raise SDEError(f'function name {name!r} is reserved (Sage\'s {name}); choose another '
@@ -309,6 +391,7 @@ class SDE:
         delay ``delta(t - d)`` alone), or ``kernel=Kernel.delay('d') *
         Kernel.exponential('tau')`` (:class:`api.delay.Kernel`)."""
         _check_declarable(name, 'kernel')
+        self._check_not_operator(name, 'kernel')
         if kernel is not None:
             if time_expr is not None or freq_image is not None or delay is not None:
                 raise SDEError(f'define_kernel({name!r}): give kernel= alone.')
@@ -356,26 +439,142 @@ class SDE:
         self._marcus_route = route
         return self
 
+    # ── operators and space ───────────────────────────────────────────
+    def operator(self, name: str, op):
+        """Declare the operator ``op`` (:mod:`api.operators`) under ``name``.
+
+        ``m.operator('dt', TimeDerivative())`` names the time derivative ``dt``
+        (it replaces the default ``Dt``, which is then no longer accepted);
+        ``m.operator('lap', Laplacian())`` declares the spatial Laplacian, which
+        makes the model an SPDE (``SDE(name, space=d)``).  An operator is
+        written in product style (``(tau*dt + 1)*x``, ``D*lap*u``) or call style
+        (``dt(x)``, ``lap(u)``, ``lap(u^2)``).  Declare an operator before the
+        equations that use it.  Its name must be a Python identifier that no
+        field, response field, parameter, function, kernel or population of the
+        model takes; ``Dt`` is reserved for the time derivative, ``Laplacian``
+        and ``Lap`` for the Laplacian."""
+        if isinstance(op, type) and issubclass(op, Operator):
+            op = op()
+        if not isinstance(op, Operator):
+            raise SDEError(f'operator({name!r}): give an operator from api.operators '
+                           f'(TimeDerivative(), Laplacian()); got {type(op).__name__}.')
+        name = str(name)
+        if not name.isidentifier() or keyword.iskeyword(name) or '__' in name:
+            raise SDEError(f'operator({name!r}): an operator name must be a Python identifier '
+                           f'(e.g. dt, lap, Δ) without a double underscore.')
+        for cls in (TimeDerivative, Laplacian):
+            if name in cls.canonical_names and not isinstance(op, cls):
+                raise SDEError(f'operator({name!r}): {name!r} is reserved for the '
+                               f'{cls.__name__}; choose another name.')
+        if name in self._operators:
+            if name == 'Dt' and self._dt_implicit and isinstance(op, TimeDerivative):
+                self._dt_implicit = False          # the default Dt, now explicit
+                return self
+            raise SDEError(f'operator({name!r}): an operator with this name is declared.')
+        if name in _NO_OPERATOR:
+            raise SDEError(f'operator({name!r}): {name!r} is reserved (built-in constant, '
+                           f'keyword, index or function); choose another name.')
+        taken = self._name_owner(name)
+        if taken:
+            raise SDEError(f'operator({name!r}): {name!r} is already the {taken}; an operator '
+                           f'name must not collide with fields, parameters or functions.')
+        if isinstance(op, TimeDerivative) and self._dt_implicit and 'Dt' in self._operators:
+            del self._operators['Dt']              # the time derivative is renamed
+        self._dt_implicit = False if isinstance(op, TimeDerivative) else self._dt_implicit
+        self._operators[name] = op
+        return self
+
+    def boundary(self, mode: str, **params):
+        """The spatial boundary condition of an SPDE (``'infinite'``, the
+        default, or ``'periodic'`` with ``length=``); see
+        :meth:`api.model.SpatialModelBuilder.boundary`."""
+        self._boundary = {'mode': mode, **params}
+        return self
+
+    def dyson(self, mode: str = 'fixed', order: Optional[int] = None):
+        """The Dyson truncation of a coupled SPDE with unequal diffusion; see
+        :meth:`api.model.SpatialModelBuilder.dyson`."""
+        self._dyson = {'mode': mode, 'order': order}
+        return self
+
+    def _name_owner(self, name: str) -> str:
+        """What ``name`` already is in this model (``''`` if free): a field,
+        a field's response / fluctuation / saddle, a parameter, a function, a
+        kernel, a population or an exposed source."""
+        for f in self._fields:
+            for n, what in ((f, 'field'), (f + 't', 'response field'),
+                            ('d' + f, 'fluctuation'), (f + 'star', 'mean-field saddle')):
+                if n == name:
+                    return f'{what} of {f!r}' if n != f else f'field {f!r}'
+        if name in self._param_names:
+            return f'parameter {name!r}'
+        if name in self._function_names:
+            return f'function {name!r}'
+        if name in self._kernels:
+            return f'kernel {name!r}'
+        if name in {p['name'] for p in self._pops}:
+            return f'population {name!r}'
+        return ''
+
+    def _check_not_operator(self, name: str, kind: str):
+        """Refuse a declaration named like a declared operator (any order of
+        declaration is caught: :meth:`operator` checks the other way)."""
+        if name in self._operators:
+            raise SDEError(f'{kind} name {name!r} is a declared operator '
+                           f'({type(self._operators[name]).__name__}); choose another name.')
+        for f in ([name] if kind in ('field', 'exposed field', 'point process') else []):
+            for n in (f + 't', 'd' + f, f + 'star'):
+                if n in self._operators:
+                    raise SDEError(f'{kind} {f!r}: its derived name {n!r} is a declared '
+                                   f'operator; rename the operator or the {kind}.')
+                if n in _CANONICAL_OPS:
+                    # (a field D after renaming Dt: its response field would be
+                    # the engine's time-derivative symbol)
+                    raise SDEError(f'{kind} {f!r}: its derived name {n!r} is the '
+                                   f"engine's operator symbol; rename the {kind}.")
+
+    def _check_no_operator(self, text: str, where: str):
+        """Refuse an operator in a text that is not an equation (a function
+        body, a noise parameter or coefficient): a declared name, or an engine
+        spelling (``Dt`` renamed, ``Laplacian`` / ``Lap``) the model does not
+        declare.  The default ``Dt`` is left to the checks it always had."""
+        self._undeclared_canonical(text, where)
+        for n in self._operators:
+            if not (n == 'Dt' and self._dt_implicit) and self._has_token(text, n):
+                raise SDEError(f'{where} uses the operator {n!r}; operators act in the '
+                               f'equations only.')
+
     # ── dynamics ──────────────────────────────────────────────────────
     def equation(self, field: str, lhs: str, rhs: str = '0'):
         """``lhs = rhs + noise`` for ``field``; ``lhs`` holds the linear
-        differential operator (contains ``Dt``), ``rhs`` no noise."""
+        differential operator (contains the time derivative, ``Dt`` unless it
+        is renamed with :meth:`operator`), ``rhs`` no noise.  Declared operators
+        are written in product style (``(tau*Dt + 1)*x``, ``D*lap*u``) or call
+        style (``Dt(x)``, ``lap(u)``)."""
         if field not in self._fields:
             raise SDEError(f'equation({field!r}): declare the field first with .field().')
         if field in self._eqs:
             raise SDEError(f'equation({field!r}): the field already has an equation.')
-        if not re.search(r'\bDt\b', lhs):
+        tnames = self._time_names()
+        self._undeclared_canonical(lhs, f'equation({field!r}) lhs')
+        self._undeclared_canonical(rhs, f'equation({field!r}) rhs')
+        if not any(self._has_token(lhs, n) for n in tnames):
             raise SDEError(f'equation({field!r}): lhs={lhs!r} must contain the time '
-                           f'derivative Dt (a dynamical equation).')
-        if re.search(r'\bDt\b', rhs):
-            raise SDEError(f'equation({field!r}): Dt found in rhs; it belongs on the lhs.')
+                           f'derivative {" or ".join(tnames) or "Dt"} (a dynamical equation).')
+        for n in tnames:
+            if self._has_token(rhs, n):
+                raise SDEError(f'equation({field!r}): {n} found in rhs; it belongs on the lhs.')
         rhs = self._delayed_fields(rhs, field)
         rhs = self._compose_kernels(rhs, f'equation({field!r})')
         if re.search(r'\bt\b', rhs) or re.search(r'\bt\b', lhs):
             raise SDEError(f'equation({field!r}): explicit time t is not supported '
                            f'(time-independent dynamics only; a delayed field is '
                            f'written x(t - d)).')
-        self._eqs[field] = {'lhs': lhs, 'rhs': rhs}
+        # ``lhs`` / ``rhs``: the engine's spelling (the time derivative as
+        # ``Dt``; refreshed by _derive); ``*_raw``: as declared
+        self._eqs[field] = {'lhs': self._translate(lhs, 'v1', where=f'equation({field!r}) lhs'),
+                            'rhs': self._translate(rhs, 'v1', where=f'equation({field!r}) rhs'),
+                            'lhs_raw': lhs, 'rhs_raw': rhs}
         return self
 
     def _delayed_fields(self, text: str, where: str) -> str:
@@ -424,15 +623,23 @@ class SDE:
         return out + text[pos:]
 
     def drift(self, field: str, f: str):
-        """Shorthand for ``equation(field, lhs='Dt*field', rhs=f)``."""
-        return self.equation(field, lhs=f'Dt*{field}', rhs=f)
+        """Shorthand for ``equation(field, lhs='Dt*field', rhs=f)`` (with the
+        declared name of the time derivative)."""
+        tnames = self._time_names()
+        return self.equation(field, lhs=f'{tnames[0] if tnames else "Dt"}*{field}', rhs=f)
 
     def noise(self, name: str, source: NoiseSource, couples: Optional[dict] = None,
               *, expose: Optional[str] = None, domain: Optional[str] = None,
-              population: Optional[str] = None):
-        """Declare a noise source ``name`` feeding ``couples={field: c}``
-        (``dx_field += c * d eta``).  ``expose='n'`` exposes it as the field
-        ``n`` (use ``n`` in the equations' rhs)."""
+              population: Optional[str] = None, into: Optional[dict] = None):
+        """Declare a noise source ``name`` feeding ``into={field: c}``
+        (``dx_field += c * d eta``; ``couples=`` is the same keyword).
+        ``expose='n'`` exposes it as the field ``n`` (use ``n`` in the
+        equations' rhs).  An SPDE takes space-time white Gaussian noise,
+        ``Gaussian(var=..., space='white')``."""
+        if into is not None:
+            if couples is not None:
+                raise SDEError(f'noise({name!r}): give into= or couples= (the same), not both.')
+            couples = into
         if not isinstance(source, NoiseSource):
             raise SDEError(
                 f'noise({name!r}): source must be a noise source from api.noise '
@@ -481,6 +688,10 @@ class SDE:
             raise SDEError(f'point_process({name!r}): the rate may not contain Dt or '
                            f'the time t (a delayed field is Conv(K, x) with '
                            f"define_kernel('K', delay='d')).")
+        for n in self._operators:
+            if self._has_token(rate, n):
+                raise SDEError(f'point_process({name!r}): the rate may not contain the '
+                               f'operator {n!r}.')
         self._fields[name] = {'population': population, 'description':
                               description or f'point process {name}',
                               'domain': domain, 'latex': '', 'exposed': name}
@@ -519,6 +730,7 @@ class SDE:
             raise SDEError(f'field {name!r} is declared twice.')
         if name in ('Dt', 't', 'theta', 'i', 'j'):
             raise SDEError(f'{name!r} is a reserved name.')
+        self._check_not_operator(name, 'field')
 
     def _populations(self) -> list[dict]:
         if self._pops:
@@ -570,7 +782,174 @@ class SDE:
         names |= set(self._param_names) | set(self._function_names) | set(self._kernels)
         names |= {p['name'] for p in self._populations()} | {'pop'}
         names |= {'i', 'j', 'k', 'l'} | _KEYWORDS
+        names |= {o.v1_symbol for o in self._operators.values()}
         return names
+
+    # ── operator translation ──────────────────────────────────────────
+    def _time_names(self) -> list:
+        return [n for n, o in self._operators.items() if isinstance(o, TimeDerivative)]
+
+    @staticmethod
+    def _has_token(text: str, name: str) -> bool:
+        return re.search(rf'(?<!\w){re.escape(name)}(?!\w)', str(text)) is not None
+
+    def _undeclared_canonical(self, text: str, where: str):
+        """Refuse ``Dt`` / ``Laplacian`` / ``Lap`` in a text when the model does
+        not declare that operator name (the time derivative renamed; a
+        Laplacian not declared).  ``Laplacian`` / ``Lap`` declared as something
+        else (a parameter) stay that."""
+        for c in sorted(_CANONICAL_OPS - set(self._operators)):
+            if not self._has_token(text, c) or self._name_owner(c):
+                continue
+            if c == 'Dt':
+                raise SDEError(f'{where}: Dt is not declared in this model; its time '
+                               f'derivative is named {" or ".join(self._time_names())}.')
+            lap = [n for n, o in self._operators.items() if isinstance(o, Laplacian)]
+            raise SDEError(f'{where}: {c} is not a declared operator of this model; '
+                           + (f'its Laplacian is named {" or ".join(lap)}.' if lap else
+                              f"declare it with .operator({c!r}, Laplacian()) "
+                              f"(an SPDE: SDE(name, space=d))."))
+
+    def _op_pattern(self):
+        names = sorted(self._operators, key=len, reverse=True)
+        return re.compile(r'(?<!\w)(' + '|'.join(map(re.escape, names)) + r')(?!\w)')
+
+    def _translate(self, text, style: str = 'v1', info: Optional[dict] = None,
+                   where: str = 'expression') -> str:
+        """``text`` with the declared operator names in the engine's spelling.
+
+        ``style='v1'``: the plain multiplicative symbols (``Dt``, ``Laplacian``):
+        product style ``dt*x`` -> ``Dt*x``, call style ``dt(x)`` -> ``Dt*x``
+        (parenthesised where precedence needs it).  ``style='ir'``: the spatial
+        operator IR calls (``Dt(u)``, ``Lap(u^2)``); a product-style use is
+        left as a placeholder for :meth:`_ir_text`.  ``info`` collects the
+        operator kinds used (``'used'``), whether a call acts on a nonlinear
+        expression (``'nonlinear'``) and whether product style occurs.  A model
+        that uses only ``Dt`` in product style gets ``text`` back unchanged."""
+        info = {} if info is None else info
+        text = str(text)
+        self._undeclared_canonical(text, where)
+        pat = self._op_pattern()
+        out, pos = '', 0
+        for m in pat.finditer(text):
+            if m.start() < pos:
+                continue
+            name = m.group(1)
+            op = self._operators[name]
+            info.setdefault('used', set()).add(type(op))
+            j = m.end()
+            while j < len(text) and text[j] == ' ':
+                j += 1
+            if j < len(text) and text[j] == '(':                     # call style
+                depth, k = 0, j
+                while k < len(text):
+                    depth += {'(': 1, ')': -1, '[': 1, ']': -1}.get(text[k], 0)
+                    k += 1
+                    if depth == 0:
+                        break
+                if depth:
+                    raise SDEError(f'{where}: unbalanced parentheses after {name}(.')
+                arg_raw = text[j + 1:k - 1]
+                if not arg_raw.strip() or len(_split_top_level(arg_raw)) != 1:
+                    raise SDEError(f'{where}: {name}(...) takes one argument; got '
+                                   f'{text[m.start():k]!r}.')
+                arg_v1 = self._translate(arg_raw, 'v1', info, where).strip()
+                if not self._linear_in_fields(arg_v1, f'{where}: {name}({arg_raw.strip()})'):
+                    if not op.nonlinear_argument:
+                        raise SDEError(
+                            f'{where}: {name}({arg_raw.strip()}) acts on a nonlinear '
+                            f'expression; the {type(op).__name__} '
+                            f'acts linearly on fields here (e.g. {name}(x), '
+                            f'{name}(a*x + b*y)).')
+                    info['nonlinear'] = True
+                if style == 'ir':
+                    rep = f'{op.ir_call}({self._translate(arg_raw, "ir", info, where).strip()})'
+                else:
+                    # an atom or a power of one (phi, x[i], phi^2) needs no parentheses
+                    tight = re.fullmatch(r'[\w\[\],.]+(\^(\w+|\([^()]*\)))?', arg_v1)
+                    rep = f'{op.v1_symbol}*{arg_v1 if tight else _wrap(arg_v1)}'
+                    before = text[:m.start()].rstrip()[-1:]
+                    after = text[k:].lstrip()[:1]
+                    if before not in ('', '+', '-', '(', '*', ',') or \
+                            after not in ('', '+', '-', ')', '*', '/', ','):
+                        rep = f'({rep})'
+                out += text[pos:m.start()] + rep
+                pos = k
+            else:                                                     # product style
+                info['product'] = True
+                rep = op.v1_symbol if style == 'v1' else f'_opprod_{op.ir_call}'
+                out += text[pos:m.start()] + rep
+                pos = m.end()
+        return out + text[pos:]
+
+    def _field_syms(self) -> list:
+        return [SR.var(f + '__i') for f in self._fields]
+
+    def _linear_in_fields(self, text_v1: str, where: str) -> bool:
+        """True when ``text_v1`` is homogeneous of degree one in the fields
+        (``u``, ``a*u + b*v``, ``Laplacian*u``): an operator argument the plain
+        multiplicative form represents exactly."""
+        try:
+            E = parse_expr(self._index(text_v1), what=where)
+        except NoiseError as exc:
+            raise SDEError(f'{where}: cannot read the operator argument ({exc}).') from exc
+        xs = [x for x in self._field_syms() if E.has(x)]
+        if not xs:
+            # (dt(mu), lap(c): zero, or a symbol the engine would misread)
+            raise SDEError(f'{where} acts on no field; an operator acts on the '
+                           f"model's fields (e.g. lap(u), lap(u^2)).")
+        lam = SR.var('_lin_scale')
+        return bool((E.subs({x: lam * x for x in xs}) - lam * E).expand()
+                    .simplify_full().is_zero())
+
+    def _ir_text(self, raw: str, where: str) -> str:
+        """``raw`` in the spatial operator IR form (``Dt(u)``, ``Lap(u)``,
+        ``Lap(u^2)``), unindexed; a product-style use (``(dt + mu - D*lap)*u``)
+        is distributed onto its field (``Dt(u) + mu*u - D*Lap(u)``)."""
+        text = self._translate(raw, 'ir', where=where)
+        if '_opprod_' not in text:
+            return text
+        from sage.symbolic.operators import add_vararg
+        P = {SR.var('_opprod_Dt'): 'Dt', SR.var('_opprod_Lap'): 'Lap'}
+        E = parse_expr(self._index(text), what=where).expand()
+        out = SR(0)
+        for t in (E.operands() if E.operator() is add_vararg else [E]):
+            pw = {p: t.degree(p) if t.is_polynomial(p) else -1 for p in P}
+            if all(v == 0 for v in pw.values()):
+                out += t
+                continue
+            c = t.subs({p: 1 for p in P})
+            xs = [x for x in self._field_syms() if c.has(x)]
+            if (min(pw.values()) < 0 or len(xs) != 1 or not c.is_polynomial(xs[0])
+                    or c.degree(xs[0]) != 1):
+                raise SDEError(
+                    f'{where}: a product-style operator multiplies {expr_to_text(c)}; it '
+                    f'must multiply exactly one field linearly (write the call style, '
+                    f'e.g. lap(u^2), for an operator acting on an expression).')
+            base = xs[0]
+            for p, call in P.items():
+                for _ in range(pw[p]):
+                    base = function(call)(base)
+            out += c.coefficient(xs[0], 1) * base
+        return _strip_index(expr_to_text(out))
+
+    def _check_v1_operator_terms(self, text_indexed: str, where: str):
+        """Spatial plain form: every term holding ``Dt`` or ``Laplacian`` is one
+        field times a field-free coefficient (``D*Laplacian*u``); a product-style
+        operator in front of a nonlinear term (``lap*u^2``) is refused."""
+        from sage.symbolic.operators import add_vararg
+        E = parse_expr(text_indexed, what=where).expand()
+        for t in (E.operands() if E.operator() is add_vararg else [E]):
+            if not (t.has(_DT) or t.has(_LAP)):
+                continue
+            c = t.subs({_DT: 1, _LAP: 1})
+            xs = [x for x in self._field_syms() if c.has(x)]
+            if (len(xs) != 1 or not c.is_polynomial(xs[0]) or c.degree(xs[0]) != 1
+                    or not (t.is_polynomial(_DT) and t.is_polynomial(_LAP))):
+                raise SDEError(
+                    f'{where}: the operator term {expr_to_text(t)} does not act on one '
+                    f'field linearly; write an operator acting on an expression in call '
+                    f'style (e.g. lap(u^2)).')
 
     def _check_text(self, text: str, what: str):
         toks = set(re.findall(r'\b([A-Za-z_]\w*)\b', text))
@@ -841,6 +1220,31 @@ class SDE:
         for f, info in self._fields.items():
             if info['exposed'] is None and f not in self._eqs:
                 raise SDEError(f'field {f!r} has no equation; call .equation() or .drift().')
+        # declared operators -> the engine's spelling; a Laplacian (or space=d)
+        # makes the model an SPDE, a Laplacian on an expression (lap(u^2)) puts
+        # its action in the spatial operator IR
+        info = {}
+        for f, eq in self._eqs.items():
+            eq['lhs'] = self._translate(eq['lhs_raw'], 'v1', info, f'equation({f!r}) lhs')
+            eq['rhs'] = self._translate(eq['rhs_raw'], 'v1', info, f'equation({f!r}) rhs')
+        extras = [self._translate(e, 'v1', info, 'extra_action') for e in self._extra]
+        # operators act in the equations (and extra_action) only: one in a
+        # function body would reach the engine as an undeclared symbol
+        for (name, _a, expr), _kw in self._functions:
+            self._check_no_operator(expr, f'define_function({name!r}): its expression')
+        for name, s in self._sources.items():
+            if s.get('source') is not None:
+                for k, v in s['source'].params.items():
+                    self._check_no_operator(str(v), f'noise({name!r}) {k}=')
+            for f, c in s['couples'].items():
+                self._check_no_operator(str(c), f'noise({name!r}) coefficient for {f!r}')
+        used_space = any(op.spatial for op in info.get('used', ()))
+        spatial = self._space is not None or used_space
+        ir = spatial and bool(info.get('nonlinear'))
+        if spatial:
+            self._check_spatial_scope()
+        else:
+            self._check_temporal_scope(info)
         if self._interp == 'marcus':
             self._check_marcus_joint()
         allowed_src = (set(self._fields) | set(self._param_names)
@@ -976,8 +1380,20 @@ class SDE:
             lhs_txt, rhs_txt = self._index(eq['lhs']), self._index(eq['rhs'])
             add = sum(extra_rhs[f], SR(0))
             rhs_act = rhs_txt if add.is_zero() else f'{rhs_txt} + {_wrap(expr_to_text(add))}'
-            field_terms.setdefault(pop, []).append(
-                f'{f}t[i]*({lhs_txt} - {_wrap(rhs_act)})')
+            if ir:
+                # the action in the operator IR (Dt(u), Lap(u^2)); the mean-field
+                # equations keep the plain form (both operators vanish there)
+                where = f'equation({f!r})'
+                lhs_ir = self._index(self._ir_text(eq['lhs_raw'], f'{where} lhs'))
+                rhs_ir = self._index(self._ir_text(eq['rhs_raw'], f'{where} rhs'))
+                rhs_ir = rhs_ir if add.is_zero() else f'{rhs_ir} + {_wrap(expr_to_text(add))}'
+                field_terms.setdefault(pop, []).append(f'{f}t[i]*({lhs_ir} - {_wrap(rhs_ir)})')
+            else:
+                if spatial:
+                    self._check_v1_operator_terms(f'({lhs_txt}) - ({rhs_act})',
+                                                  f'equation({f!r})')
+                field_terms.setdefault(pop, []).append(
+                    f'{f}t[i]*({lhs_txt} - {_wrap(rhs_act)})')
             add_mf = sum(mf_rhs[f], SR(0))
             rhs_mf = rhs_act if add_mf.is_zero() else f'{rhs_act} + {_wrap(expr_to_text(add_mf))}'
             lhs_mf, rhs_mf = self._normalise_lhs(f, lhs_txt, rhs_mf)
@@ -991,6 +1407,22 @@ class SDE:
         order = list(self._fields)
         mf_eqs.sort(key=lambda e: order.index(e['field']))
 
+        if spatial:
+            if not ir:
+                for e_v1 in extras:
+                    self._check_v1_operator_terms(self._index(e_v1), 'extra_action')
+            # one scalar action and scalar equations (SpatialModelBuilder form)
+            p = self._populations()[0]['name']
+            body = ' + '.join(field_terms.get(p, []) + source_terms.get(p, [])).replace('+ -', '- ')
+            action = _strip_index(body)
+            for e, e_v1 in zip(self._extra, extras):
+                e_txt = self._ir_text(e, 'extra_action') if ir else e_v1
+                action += f' + ({_strip_index(" ".join(e_txt.split()))})'
+            for e in mf_eqs:
+                e.update(lhs=_strip_index(e['lhs']), rhs=_strip_index(e['rhs']), population=None)
+            self.notes = [_strip_index(n) for n in self.notes]
+            return {'action': action, 'equations': mf_eqs, 'spatial': True, 'operator_ir': ir}
+
         parts = []
         for p in self._populations():
             terms = field_terms.get(p['name'], []) + source_terms.get(p['name'], [])
@@ -999,9 +1431,78 @@ class SDE:
             body = '\n    + '.join(terms).replace('+ -', '- ')
             parts.append(f"sum(\n    {body}\n    for i in {p['name']})")
         action = '\n+ '.join(parts)
-        for e in self._extra:
+        for e in extras:
             action += f'\n+ ({self._rename_pop(" ".join(e.split()))})'
         return {'action': action, 'equations': mf_eqs}
+
+    def _check_spatial_scope(self):
+        """An SPDE (``space=d`` or a Laplacian) builds the spatial pipeline's
+        model: refuse what that pipeline does not take, never drop it."""
+        who = f'SDE({self.name!r})'
+        if self._space is None:
+            raise SDEError(f'{who}: a Laplacian makes the model an SPDE; give its spatial '
+                           f'dimension, SDE({self.name!r}, space=d).')
+        temporal_only = ('temporal-only feature, not supported by the spatial pipeline '
+                         '(an SPDE built from SDE(..., space=d) or a Laplacian)')
+        if self._pops or self._n_pop_default > 1:
+            raise SDEError(f'{who}: populations are a {temporal_only}; declare one field per '
+                           f'species.')
+        if self._kernels:
+            raise SDEError(f'{who}: convolution kernels and delays (Conv(K, x), x(t - d), '
+                           f'define_kernel) are a {temporal_only}: '
+                           f'{", ".join(self._kernels)}.')
+        for f, info in self._fields.items():
+            if info['population'] is not None:
+                raise SDEError(f'{who}: field {f!r} has a population; populations are a '
+                               f'{temporal_only}.')
+        for (name,), kw in self._params:
+            if kw.get('indexed') or kw.get('indexed_by'):
+                raise SDEError(f'{who}: parameter {name!r} is indexed by a population; '
+                               f'populations are a {temporal_only}.')
+        for (name, _a, _e), kw in self._functions:
+            if kw.get('population'):
+                raise SDEError(f'{who}: function {name!r} has a population; populations are '
+                               f'a {temporal_only}.')
+        for n in ('Laplacian', 'Lap'):
+            owner = self._name_owner(n)
+            if owner:
+                raise SDEError(f'{who}: the {owner} is reserved in a spatial model (the '
+                               f'Laplacian); rename it.')
+        if self._interp != 'ito':
+            raise SDEError(f"{who}: interpretation({self._interp!r}) is a {temporal_only}; "
+                           f"spatial noise is Ito.")
+        for name, s in self._sources.items():
+            if s.get('pp'):
+                raise SDEError(f'{who}: point_process({name!r}) is a {temporal_only}.')
+            if s['expose']:
+                raise SDEError(f'{who}: an exposed noise source ({name!r}, expose=) is a '
+                               f'{temporal_only}.')
+            src = s['source']
+            if not src.is_gaussian:
+                raise SDEError(f'{who}: noise({name!r}) is a {type(src).__name__} source; an '
+                               f'SPDE takes space-time white Gaussian noise, '
+                               f"Gaussian(var=..., space='white') (non-Gaussian spatial noise "
+                               f'is not supported yet).')
+            if getattr(src, 'space', None) != 'white':
+                raise SDEError(f"{who}: noise({name!r}) needs its spatial structure: an SPDE "
+                               f"takes space-time white noise, Gaussian(var=..., "
+                               f"space='white').")
+
+    def _check_temporal_scope(self, info):
+        """A time-only SDE: refuse the spatial-only declarations."""
+        who = f'SDE({self.name!r})'
+        for name, s in self._sources.items():
+            if getattr(s.get('source'), 'space', None) is not None:
+                raise SDEError(f"{who}: noise({name!r}) is spatial (space="
+                               f"{s['source'].space!r}); give SDE(..., space=d) and a "
+                               f"Laplacian for an SPDE.")
+        if self._boundary is not None or self._dyson is not None:
+            raise SDEError(f'{who}: boundary() / dyson() describe an SPDE; give '
+                           f'SDE(..., space=d).')
+        for op in info.get('used', ()):
+            if not op().supports('temporal'):
+                raise SDEError(f'{who}: the {op.__name__} is not supported by the temporal '
+                               f'pipeline.')
 
     def _normalise_lhs(self, f, lhs, rhs):
         """If ``lhs`` vanishes at Dt = 0 (``Dt*x``), make the mean-field
@@ -1023,7 +1524,10 @@ class SDE:
             raise SDEError(
                 f'equation({f!r}): lhs={lhs!r} cannot be read symbolically ({exc}); '
                 f'if it vanishes at Dt=0, {workaround}.') from exc
-        if not L.subs({_DT: 0}).simplify_full().is_zero():
+        zero = {_DT: 0}
+        if any(isinstance(o, Laplacian) for o in self._operators.values()):
+            zero[_LAP] = 0          # a homogeneous saddle: the Laplacian vanishes like Dt
+        if not L.subs(zero).simplify_full().is_zero():
             return lhs, rhs
         try:
             R = parse_expr(rhs, what=f'rhs of {f}')
@@ -1033,7 +1537,8 @@ class SDE:
                 f'split symbolically ({exc}); {workaround}.') from exc
         x = self._sym(f)
         Re = R.expand()
-        c1 = Re.coefficient(x, 1)
+        # (a diffusion term D*Laplacian*x is no restoring term: it vanishes at the saddle)
+        c1 = Re.subs({_LAP: 0}).coefficient(x, 1) if _LAP in zero else Re.coefficient(x, 1)
         fieldsyms = {g + '__i' for g in self._fields}
         if not (c1.is_zero() or set(map(str, c1.variables())) & fieldsyms):
             new_lhs = expr_to_text((L - c1 * x).expand())
@@ -1356,9 +1861,12 @@ class SDE:
 
     def to_builder(self):
         """A :class:`TemporalModelBuilder` with the derived action and
-        mean-field equations set (continue by hand from here)."""
+        mean-field equations set (continue by hand from here); for an SPDE
+        (``space=d`` or a Laplacian), a :class:`SpatialModelBuilder`."""
         from api.model import TemporalModelBuilder
         d = self._derive()
+        if d.get('spatial'):
+            return self._spatial_builder(d)
         b = TemporalModelBuilder(self.name)
         pops = self._populations()
         for p in pops:
@@ -1399,6 +1907,42 @@ class SDE:
             b.stability_analysis(self._stability)
         return b
 
+    def _spatial_builder(self, d):
+        """The :class:`SpatialModelBuilder` of an SPDE: the calls a hand-written
+        spatial model makes (fields of dimension ``space``, parameters, the
+        scalar action -- in the operator IR when an operator acts on an
+        expression --, the equations, the boundary and the stationary initial
+        condition)."""
+        from api.model import SpatialModelBuilder
+        b = SpatialModelBuilder(self.name)
+        for f, info in self._fields.items():
+            kw = dict(spatial_dim=self._space, description=info['description'])
+            if info['domain'] is not None:
+                kw['domain'] = info['domain']
+            if info['latex']:
+                kw['latex'] = info['latex']
+            b.physical_field(f, **kw)
+        for (name,), kw in self._params:
+            b.parameter(name, default=kw['default'], domain=kw['domain'],
+                        description=kw['description'])
+        for (name, args, expr), kw in self._functions:
+            b.define_function(name, args=args, expression=expr,
+                              **{k: v for k, v in kw.items()
+                                 if v is not None and k != 'population'})
+        b.set_action_text(d['action'])
+        if d['operator_ir']:
+            b.operator_ir()
+        for e in d['equations']:
+            b.equation(lhs=e['lhs'], rhs=e['rhs'])
+        if self._stability is not None:
+            b.stability_analysis(self._stability)
+        bd = dict(self._boundary or {'mode': 'infinite'})
+        b.boundary(bd.pop('mode'), **bd)
+        b.initial('stationary')
+        if self._dyson is not None:
+            b.dyson(**self._dyson)
+        return b
+
     def _star_equations(self, eqs):
         """For a model with a point process whose every mean-field equation
         reads ``x = rhs`` at Dt = 0: the saddle equations ``xstar = rhs*``
@@ -1434,6 +1978,10 @@ class SDE:
         """Simulate the model's point processes, drifts and Gaussian sources
         (:func:`api.pp_simulate.simulate`; keywords ``T``, ``dt``, ``n_paths``,
         ``burn_in``, ``bin``, ``params``, ``seed``)."""
+        if self._derive().get('spatial'):
+            raise SDEError(f'SDE({self.name!r}).simulate(): the SDE simulator is temporal; an '
+                           f'SPDE is simulated with simulations/spatial_field_1d_sim / '
+                           f'spatial_field_2d_sim.')
         from api.pp_simulate import simulate
         return simulate(self, **kw)
 
@@ -1492,11 +2040,19 @@ class SDE:
         """Print (and return) the derived action and mean-field equations as
         TemporalModelBuilder calls, copyable into a hand-written model."""
         d = self._derive()
-        lines = [f"# SDE {self.name!r} ({self._interp})",
-                 ".set_action_text('''", d['action'], "''')"]
-        for e in d['equations']:
-            lines.append(f".equation(lhs={e['lhs']!r}, rhs={e['rhs']!r}, "
-                         f"population={e['population']!r})")
+        if d.get('spatial'):
+            lines = [f"# SPDE {self.name!r} (space={self._space}; SpatialModelBuilder)",
+                     f".set_action_text({d['action']!r})"]
+            if d['operator_ir']:
+                lines.append('.operator_ir()')
+            for e in d['equations']:
+                lines.append(f".equation(lhs={e['lhs']!r}, rhs={e['rhs']!r})")
+        else:
+            lines = [f"# SDE {self.name!r} ({self._interp})",
+                     ".set_action_text('''", d['action'], "''')"]
+            for e in d['equations']:
+                lines.append(f".equation(lhs={e['lhs']!r}, rhs={e['rhs']!r}, "
+                             f"population={e['population']!r})")
         for n in self.notes:
             lines.append(f'# note: {n}')
         out = '\n'.join(lines)
