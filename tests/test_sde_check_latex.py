@@ -458,3 +458,13 @@ def test_check_accepts_sage_and_numpy_integers():
     from sage.all import Integer
     r = C.ou_quartic().check(k=Integer(2), max_ell=np.int64(1), verbose=False)
     assert r['k'] == 2 and r['max_ell'] == 1 and r['vertices']['rows']
+
+
+def test_latex_separates_consecutive_numbers_with_a_dot():
+    def sde(rhs):
+        return (SDE('n').parameter('mu', default=1.0).field('x').drift('x', rhs)
+                .noise('xi', Gaussian(var=1), couples={'x': 1})).latex()['sde']
+    assert r'0.2 \cdot 0.1 x' in sde('0.1*0.2*x')
+    assert r'2 \cdot 0.5 x' in sde('2*0.5*x') or r'0.5 \cdot 2 x' in sde('2*0.5*x')
+    assert r'\cdot' in sde('0.5*0.25*0.125*x') and sde('0.5*0.25*0.125*x').count(r'\cdot') == 2
+    assert r'\cdot' not in sde('-mu*x + 0.3*x')            # a sum is not a product of numbers

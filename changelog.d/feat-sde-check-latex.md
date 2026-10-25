@@ -29,3 +29,5 @@ snapshot of 23 models still passes).
 - Tests: `tests/test_sde_check_latex.py` (check on an OU quartic, a Stratonovich multiplicative model, a Marcus jump
   model, a population model and an SPDE through the bridge; deterministic LaTeX; caret errors for typical mistakes),
   and a README example in `tests/test_readme_snippets.py`.
+- Known cosmetic difference: a model with a call-style `dt(u)` and an operator acting on an expression (`lap(u^2)`)
+  is typeset as `\partial_t u = ... + \dot W` rather than `\mathrm{d}u = (...)\mathrm{d}t + ...`; both are correct.

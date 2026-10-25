@@ -282,7 +282,9 @@ class _Typesetter:
     def expr(self, text, *, zero_ops: bool = False) -> str:
         """LaTeX of the expression ``text`` (the engine's or the user's spelling)."""
         try:
-            return self._tidy(latex(self._parse(text, zero_ops)[0]))
+            # consecutive numbers (0.2 0.1 x, 2 \\, 0.5 x) read as a digit string: multiply them
+            return re.sub(r'(?<=\d)(?: \\, | )(?=\d)', r' \\cdot ',
+                          self._tidy(latex(self._parse(text, zero_ops)[0])))
         except Exception:                                    # noqa: BLE001
             return _escape(' '.join(str(text).split()))
 
