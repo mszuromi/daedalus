@@ -34,7 +34,8 @@ def _exec(code, name):
 def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
-               'spectra={', 'dd.build_cache(', 'dd.master_equation(', 'dd.covariance_matrix(']
+               "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(',
+               'dd.covariance_matrix(']
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -86,6 +87,28 @@ def test_readme_master_equation_example_is_the_poisson_law():
     import numpy as np
     np.testing.assert_allclose(ns['k4'].ravel(), 20.0, rtol=1e-9)             # lam / mu
     np.testing.assert_allclose(ns['cc'][:, 0, 0], 20.0 * np.exp(-np.array([0.0, 1.0, 2.0])), rtol=1e-9)
+
+
+def test_readme_check_and_latex_example(capsys):
+    ns = _exec(_block("SDE('OU quartic')"), 'check example')
+    out = capsys.readouterr().out
+    rows = ns['report']['vertices']['rows']
+    assert [(r['response_legs'], r['field_legs'], r['coefficient']) for r in rows] == [
+        (1, 2, '3*eps*xstar1'), (1, 3, 'eps')]
+    assert '     1      2       3  interaction           1  xt1*dx1^2 -> 3*eps*xstar1' in out
+    assert set(ns['tex']) == {'sde', 'noise', 'action', 'mean_field'}
+    assert r'\sqrt{2 \, D}\,\mathrm{d}W_{\xi}' in ns['tex']['sde']
+    from api.noise import Gaussian
+    from api.sde import SDE, SDEError
+    bad = (SDE('OU quartic').parameter('mu', default=1.0).parameter('eps', default=0.02)
+           .parameter('D', default=1.0).field('x').drift('x', '-mu*x - epsilon*x^3')
+           .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+    with pytest.raises(SDEError) as ei:
+        bad.build()
+    shown = '\n'.join(re.search(r'```text\n(equation\(.*?)```', open(os.path.join(ROOT, 'README.md'),
+                                                                       encoding='utf-8').read(), re.S)
+                      .group(1).splitlines())
+    assert str(ei.value) == shown.rstrip()
 
 
 def test_readme_covariance_example_is_ok():
