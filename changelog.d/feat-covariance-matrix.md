@@ -8,7 +8,8 @@ per entry, and each call repeated the expansion, the propagator, the mean field 
 - **Shared stages.** `api.compute.stage_memo()` is a context in which `compute_cumulants` calls at one parameter
   point (the same model dict, parameter values, Taylor order, cache setting and mean-field options) reuse the
   expansion, the propagator, the mean field and the poles and residues of the first call. It hands on the objects
-  that call built, so a later call computes what it would have computed alone. Outside the block nothing is shared.
+  that call built, so a later call computes what it would have computed alone. A model whose top-level value was
+  replaced since then is a miss. Outside the block nothing is shared, and models with delay kernels share nothing.
   The diagrams of each pair (one external-leg typing) are enumerated, classified and evaluated once.
   - At one loop, the two-field OU quartic matrix takes about 0.55x the CPU of the three separate calls.
   - The four-leg linear Hawkes matrix (`n_1, n_2, v_1, v_2`) takes 0.42x the CPU of the ten separate calls.
@@ -32,6 +33,8 @@ per entry, and each call repeated the expansion, the propagator, the mean field 
   - The saddle's sensitivity `dx*/dtheta = -J^{-1} dF/dtheta` is computed by implicit differentiation of the
     mean-field equations (`dmf`). It is checked against the stencil saddles (`dmf_fd`), and a stencil that crosses
     to another branch is refused with `CovarianceDerivativeError`.
+  - The differences assume `Sigma` is smooth in the parameter. At a kink, such as `tau = +-d` when differentiating a
+    delay `d`, the error estimate is not a bound.
   - Exact tangents of Phase J and a complex step were not used. The state-space realization refuses complex inputs,
     and differentiating the matrix-exponential and pole-cluster routes would mean rewriting them.
 - **Refused.** Spatial models, `t_min`, `spectra`, `points`, `external_fields` and `output_*`. The other

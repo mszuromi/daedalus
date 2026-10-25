@@ -1204,11 +1204,21 @@ class _StageMemo:
                 _value_key(fundamental), int(fixed_point_index),
                 int(n_starts), _value_key(seed_box or {}))
 
+    @staticmethod
+    def _top(model):
+        # the model's top-level values (strong references): a value replaced
+        # in place since the stages were stored is a miss
+        return tuple((str(k), v) for k, v in sorted(
+            model.items(), key=lambda kv: str(kv[0])))
+
     def get(self, key, model, tau_extent):
         hit = self.entries.get(key)
         # the poles were resolved for the largest time difference of the
         # first call; a later call may use them for that extent or less
-        if hit is None or hit['model'] is not model or not (
+        if hit is None or hit['model'] is not model or len(
+                hit['top']) != len(model) or any(
+                a != b or u is not v for (a, u), (b, v)
+                in zip(hit['top'], self._top(model))) or not (
                 tau_extent is None or hit['tau_extent'] is None
                 or tau_extent <= hit['tau_extent']):
             self.misses += 1
@@ -1217,7 +1227,8 @@ class _StageMemo:
         return hit
 
     def put(self, key, model, tau_extent, **stages):
-        self.entries[key] = dict(stages, model=model, tau_extent=tau_extent)
+        self.entries[key] = dict(stages, model=model, tau_extent=tau_extent,
+                                 top=self._top(model))
 
 
 def stage_memo():

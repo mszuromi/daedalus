@@ -16,7 +16,11 @@ Lower triangle (``pairs='upper'``, the default).  Stationarity gives
 ``C_ji(tau) = C_ij(-tau)``, so the ``(j, i)`` entry (``i < j``) is read from
 the ``(i, j)`` run at ``-tau`` wherever ``-tau`` is a grid point and
 ``tau != 0``.  The other points -- ``tau = 0`` and every ``tau`` whose mirror
-is not on the grid -- come from a ``(j, i)`` run on those points only.  At
+is not on the grid -- come from a ``(j, i)`` run on those points only, with
+the poles resolved for the whole grid's extent (the full-grid ``(j, i)`` run's
+values at those rows; a separate call on just those points can differ in the
+last bits when the poles are clustered).  Models with delay kernels share
+nothing (the delay route recomputes every stage per pair).  At
 ``tau = 0`` the value is the Ito left limit ``C_ji(0-)``, which is the RIGHT
 limit ``C_ij(0+)``; it differs from ``C_ij(0)`` when ``C_ij`` jumps at 0 (a
 spike-train cross-covariance, for instance), so it is never reflected.
@@ -30,7 +34,9 @@ neither an exact tangent nor a complex step is available without rewriting it.
 The saddle's sensitivity ``dx*/dtheta = -J^{-1} dF/dtheta`` is computed
 separately by implicit differentiation of the mean-field equations and checked
 against the saddles of the stencil runs: a stencil that crosses to another
-branch of saddles is refused instead of differenced.
+branch of saddles is refused instead of differenced.  The differences assume
+``Sigma`` is smooth in the parameter: at a lag where it has a kink in it (a
+delay ``d`` at ``tau = +-d``) the error estimate is not a bound.
 """
 from __future__ import annotations
 

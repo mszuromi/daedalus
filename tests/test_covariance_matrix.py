@@ -154,6 +154,15 @@ def test_stage_memo_separates_parameter_points_and_is_off_outside(quartic):
                             parameters=p2)['C_tau'])
     assert b2['propagator'] is a2['propagator']
     assert a1['propagator'] is not a2['propagator']
+    # a model value replaced in place is a miss, not a stale hit
+    m2 = dict(quartic)
+    with stage_memo() as memo:
+        _entry(m2, ('x', 1), ('y', 1), 0, GRID, parameters=QUARTIC_P)
+        m2['action'] = (lambda *a, _f=m2['action'], **kw: _f(*a, **kw))
+        r = _entry(m2, ('x', 1), ('y', 1), 0, GRID, parameters=QUARTIC_P)
+    assert (memo.hits, memo.misses) == (0, 2)
+    assert np.array_equal(r['C_tau'], _entry(
+        m2, ('x', 1), ('y', 1), 0, GRID, parameters=QUARTIC_P)['C_tau'])
     # outside the block nothing is shared
     r1 = _entry(quartic, ('x', 1), ('y', 1), 1, GRID, parameters=QUARTIC_P)
     r2 = _entry(quartic, ('x', 1), ('y', 1), 1, GRID, parameters=QUARTIC_P)
