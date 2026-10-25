@@ -31,6 +31,7 @@ _KEPT = {
     'api.analyze.AnalyzerError': ValueError,
     'api._mean_field_dae.UnstableSaddleError': ValueError,
     'api.compute.SpatialAccuracyError': RuntimeError,
+    'api.covariance.CovarianceDerivativeError': RuntimeError,
     'api.compute.PhaseJIncompleteError': RuntimeError,
     'engine.integration.time_domain.pipeline.DiscardedDiagramsError': RuntimeError,
     'engine.core.dt_order.NonlinearDtError': ValueError,

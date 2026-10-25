@@ -8,6 +8,8 @@ chain, and returns a result dict (with optional .npz save).
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import time
 import warnings
@@ -1157,6 +1159,82 @@ class _PipelineState:
         self.__dict__.update(kw)
 
 
+# ── shared stages across calls (api.covariance) ─────────────────────────────
+# Inside ``stage_memo()`` the parameter-point stages of compute_cumulants --
+# the expansion [1], the propagator [2], the mean field [3] and the poles and
+# residues [4] -- run once per (model, parameter point, options) and later
+# calls with other external fields reuse them; outside it (the default)
+# nothing is shared.  The same objects the first call built are handed on, so
+# a later call computes exactly what it would have computed on its own.
+_STAGE_MEMO = contextvars.ContextVar('daedalus_stage_memo', default=None)
+
+
+def _value_key(v):
+    """An exact, hashable key of a parameter value (numbers by their binary
+    value, nested lists / arrays elementwise)."""
+    if isinstance(v, dict):
+        return ('dict', tuple(sorted((str(a), _value_key(b))
+                                     for a, b in v.items())))
+    if isinstance(v, np.ndarray):
+        return ('array', v.shape, tuple(_value_key(x)
+                                        for x in v.ravel().tolist()))
+    if isinstance(v, (list, tuple)):
+        return ('seq', tuple(_value_key(x) for x in v))
+    try:
+        z = complex(v)
+        return (z.real.hex(), z.imag.hex())
+    except (TypeError, ValueError, OverflowError):
+        return ('repr', repr(v))
+
+
+class _StageMemo:
+    """The stage results of compute_cumulants for each parameter point seen
+    inside one ``stage_memo()`` block.  Holds strong references to the model
+    dicts, so a key's ``id`` cannot be recycled while the block is open."""
+
+    def __init__(self):
+        self.entries = {}
+        self.hits = 0
+        self.misses = 0
+
+    @staticmethod
+    def key(model, taylor_order, use_cache, fundamental, fixed_point_index,
+            n_starts, seed_box):
+        return (id(model), int(taylor_order), bool(use_cache),
+                _value_key(fundamental), int(fixed_point_index),
+                int(n_starts), _value_key(seed_box or {}))
+
+    def get(self, key, model, tau_extent):
+        hit = self.entries.get(key)
+        # the poles were resolved for the largest time difference of the
+        # first call; a later call may use them for that extent or less
+        if hit is None or hit['model'] is not model or not (
+                tau_extent is None or hit['tau_extent'] is None
+                or tau_extent <= hit['tau_extent']):
+            self.misses += 1
+            return None
+        self.hits += 1
+        return hit
+
+    def put(self, key, model, tau_extent, **stages):
+        self.entries[key] = dict(stages, model=model, tau_extent=tau_extent)
+
+
+def stage_memo():
+    """Context manager: share the parameter-point stages (expansion,
+    propagator, mean field, poles) of the ``compute_cumulants`` calls made
+    inside it.  Yields the :class:`_StageMemo` (``hits`` / ``misses``)."""
+    @contextlib.contextmanager
+    def scope():
+        memo = _StageMemo()
+        token = _STAGE_MEMO.set(memo)
+        try:
+            yield memo
+        finally:
+            _STAGE_MEMO.reset(token)
+    return scope()
+
+
 def _preflight_default() -> bool:
     """``DAEDALUS_PREFLIGHT`` (read at call time): ``0``/``off``/``false``
     turns the analyzer gates off; default on; any other value raises."""
@@ -1957,6 +2035,31 @@ def compute_cumulants(
                              ``(n_pts, k-1, 2)`` of ``(x_j, τ_j)`` offsets
         'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
         'k', 'max_ell', 'mf'
+
+    COVARIANCE MATRIX (``api.covariance.covariance_matrix``,
+    ``dd.covariance_matrix``, ``dd.Config(covariance=...)``): one call per
+    pair of fields inside :func:`stage_memo`, returning its own dict:
+        'Sigma'           : complex ``(n_tau, N, N)``,
+                             ``Sigma[n, i, j] = <dx_i(0) dx_j(tau_n)>``
+                             (each computed entry is this function's
+                             ``C_tau`` of the pair, bit for bit)
+        'Sigma_by_ell'    : {ell: (n_tau, N, N)} the loop-order increments
+        'Sigma0'          : the ``tau = 0`` matrix (``None`` if 0 is not on
+                             the grid); ``Sigma0[j, i]`` is the left limit
+                             ``C_ji(0-)``, not the transpose, where ``C_ij``
+                             jumps at 0
+        'fields', 'tau_grid', 'pairs', 'max_ell', 'status', 'mf_values',
+        'params', 'wall', 'cpu'
+        'runs'            : one record per call (fields, indices, tau_grid
+                             'all' | 'points', n_tau, status,
+                             phase_j_incomplete, n_diagrams, wall)
+        'reflected'       : how many entries ``C_ji(tau) = C_ij(-tau)`` filled
+        'shared_stages'   : {'hits', 'misses'} of the stage memo
+        'entries'         : (``keep_entries=True``) {(i, j): result}
+        'derivatives'     : (``derivatives=``) {label: {'dSigma', 'error',
+                             'dSigma_by_ell', 'error_by_ell', 'step',
+                             'value', 'dmf', 'dmf_fd', 'dmf_note', 'status',
+                             'wall', 'cpu'}}
     """
     model = as_model_dict(model)         # an SDE / builder is built here
     # Grouped Phase J is retired: the flag is accepted
@@ -2218,38 +2321,51 @@ def compute_cumulants(
     # bigrade-classified action dict) at each previously-computed
     # taylor_order; we accept any cached order >= the requested one
     # and downgrade-filter to total degree <= target.
+    # inside ``stage_memo()`` (api.covariance): stages [1]-[4] of an earlier
+    # call at this parameter point, reused as built
+    _memo = _STAGE_MEMO.get()
+    _memo_key = (None if _memo is None or spatial_points is not None
+                 or spatial_grid is not None else _StageMemo.key(
+                     model, taylor_order, use_cache, fundamental,
+                     fixed_point_index, mf_dae_n_starts, mf_dae_seed_box))
+    _tau_ext = _tau_extent(tau_grid, tau_max)
+    _shared = (None if _memo_key is None
+               else _memo.get(_memo_key, model, _tau_ext))
     if verbose:
-        print(f'[1/7] FieldTheory.expand (taylor_order={taylor_order})...')
+        print(f'[1/7] FieldTheory.expand (taylor_order={taylor_order})'
+              + (' -- shared with an earlier call' if _shared else '') + '...')
     _t_phase = time.perf_counter()
-    ft = FieldTheory(model, taylor_order=taylor_order)
+    ft = (FieldTheory(model, taylor_order=taylor_order) if _shared is None
+          else _shared['ft'])
     try:
-        from api import _expand_cache as _ec
-        cache_hit = False
-        if use_cache:
-            cached_order = _ec.find_best_cached_order(model, taylor_order)
-            if cached_order is not None:
-                _ec.prepare_for_load(ft)
-                cache_hit = _ec.load_expand(
-                    model, ft,
-                    target_order=taylor_order,
-                    cached_order=cached_order,
-                    verbose=verbose,
-                )
-        if not cache_hit:
-            ft.expand()
+        if _shared is None:
+            from api import _expand_cache as _ec
+            cache_hit = False
             if use_cache:
-                try:
-                    _ec.save_expand(model, ft, verbose=verbose)
-                except Exception as e:
-                    if verbose:
-                        print(f'      [expand-cache] save failed ({e!r}); '
-                              f'continuing without persistence.')
+                cached_order = _ec.find_best_cached_order(model, taylor_order)
+                if cached_order is not None:
+                    _ec.prepare_for_load(ft)
+                    cache_hit = _ec.load_expand(
+                        model, ft,
+                        target_order=taylor_order,
+                        cached_order=cached_order,
+                        verbose=verbose,
+                    )
+            if not cache_hit:
+                ft.expand()
+                if use_cache:
+                    try:
+                        _ec.save_expand(model, ft, verbose=verbose)
+                    except Exception as e:
+                        if verbose:
+                            print(f'      [expand-cache] save failed ({e!r}); '
+                                  f'continuing without persistence.')
 
-        sanity_ok = ft.sanity_check(verbose=verbose)
-        if not sanity_ok:
-            raise RuntimeError(
-                'FieldTheory.sanity_check() failed — see printout above.'
-            )
+            sanity_ok = ft.sanity_check(verbose=verbose)
+            if not sanity_ok:
+                raise RuntimeError(
+                    'FieldTheory.sanity_check() failed — see printout above.'
+                )
     except Exception as _exp_exc:
         if _pf is not None:               # e.g. no real saddle: name it
             _pf.failed('expanded', _exp_exc)
@@ -2271,8 +2387,11 @@ def compute_cumulants(
         if _delays:
             return _delay.compute_delayed(model, _delay_call, _delays, ns=ft._ns)
 
-    vtypes = extract_vertex_types(ft)
-    stypes = extract_source_types(ft)
+    if _shared is None:
+        vtypes = extract_vertex_types(ft)
+        stypes = extract_source_types(ft)
+    else:
+        vtypes, stypes = _shared['vtypes'], _shared['stypes']
     n_noise = sum(1 for s in stypes if isinstance(s, NoiseSourceType))
     if verbose:
         print(f'      vtypes: {len(vtypes)}, sources: {len(stypes)} '
@@ -2284,7 +2403,8 @@ def compute_cumulants(
     if verbose:
         print('[2/7] Build propagator (K_ker → K_ft → G_ft → D_delta)...')
     _t_phase = time.perf_counter()
-    prop = build_propagator(ft, model, use_cache=use_cache, verbose=verbose)
+    prop = (build_propagator(ft, model, use_cache=use_cache, verbose=verbose)
+            if _shared is None else _shared['prop'])  # poles filled in [4]
     _phase_time('propagator', _t_phase)
     if _pf is not None:
         _pf.propagator(prop)              # G3: propagator class
@@ -2302,7 +2422,7 @@ def compute_cumulants(
             fixed_point_index=fixed_point_index,
             n_starts=mf_dae_n_starts,
             seed_box=mf_dae_seed_box,
-        )
+        ) if _shared is None else _shared['mf']
     except Exception as _mf_exc:
         if _pf is not None:               # name the cause when a gate can
             _pf.failed('mean_field', _mf_exc)
@@ -2367,7 +2487,14 @@ def compute_cumulants(
         verbose=verbose, naming_convention=naming_convention,
         vtypes=vtypes, stypes=stypes, phase_walls=phase_walls,
         phase_time=_phase_time, t_phase=_t_phase, preflight=_pf,
-        route=route, evaluated_grid=False, switch_on=switch_on)
+        route=route, evaluated_grid=False, switch_on=switch_on,
+        # stage sharing (``stage_memo``): the poles of [4] are already in
+        # ``prop``, or the stages are stored for later calls once they are
+        poles_shared=_shared is not None,
+        stage_store=(None if _memo_key is None or _shared is not None else
+                     (lambda _m=_memo, _k=_memo_key: _m.put(
+                         _k, model, _tau_ext, ft=ft, vtypes=vtypes,
+                         stypes=stypes, prop=prop, mf=mf))))
     _snap = _counter_snapshot()
     try:
         result = route.backend.run(state)
@@ -2719,9 +2846,12 @@ def _run_phase_j(state):
     if verbose:
         print('[4/7] Compute numerical poles + residue matrices...')
     _t_phase = time.perf_counter()
-    compute_poles_and_residues(prop, num_params, verbose=verbose,
-                               tau_max=_tau_extent(tau_grid, tau_max),
-                               resolve_clusters=True)
+    if not getattr(state, 'poles_shared', False):
+        compute_poles_and_residues(prop, num_params, verbose=verbose,
+                                   tau_max=_tau_extent(tau_grid, tau_max),
+                                   resolve_clusters=True)
+        if getattr(state, 'stage_store', None) is not None:
+            state.stage_store()
     _phase_time('poles', _t_phase)
     # whether the state-space route takes the whole run (no noise-kernel
     # sources, every conductance kernel realizable, a Hurwitz realization)
