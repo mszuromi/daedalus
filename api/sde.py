@@ -2379,8 +2379,14 @@ class SDE:
         action and the equations are those of :meth:`action_text` and
         :meth:`equations`; ``check`` only reads them."""
         for what, v, lo in (('k', k, 1), ('max_ell', max_ell, 0)):
-            if isinstance(v, bool) or not isinstance(v, int) or v < lo:
+            try:
+                from operator import index
+                ok = not isinstance(v, bool) and index(v) >= lo      # (int, numpy and Sage integers)
+            except TypeError:
+                ok = False
+            if not ok:
                 raise SDEError(f'check({what}={v!r}): {what} must be an integer >= {lo}.')
+        k, max_ell = index(k), index(max_ell)
         self._check_derived_names()
         d = self._derive()
         notes = list(self.notes)

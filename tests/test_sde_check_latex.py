@@ -451,3 +451,10 @@ def test_valid_models_are_not_refused_by_the_syntax_check():
                'phi[i](v[i])', 'x(t - d)', 'Dt*x', '(tau*dt + 1)*x'):
         from api.noise import expression_syntax_problem
         assert expression_syntax_problem(ok) is None, ok
+
+
+def test_check_accepts_sage_and_numpy_integers():
+    import numpy as np
+    from sage.all import Integer
+    r = C.ou_quartic().check(k=Integer(2), max_ell=np.int64(1), verbose=False)
+    assert r['k'] == 2 and r['max_ell'] == 1 and r['vertices']['rows']
