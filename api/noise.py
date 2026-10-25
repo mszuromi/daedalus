@@ -102,6 +102,148 @@ def _unflatten_name(name: str) -> str:
     return f'{parts[0]}[{",".join(parts[1:])}]'
 
 
+_PY_KEYWORDS = frozenset(__import__('keyword').kwlist) - {'for', 'in', 'if', 'else'}
+_TOKEN_RE = re.compile(r'\s*(?:(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+)|([^\W\d]\w*)|(\*\*|[-+*/^%<>=!]=?|.))')
+
+
+def caret_block(text: str, index: int, *, indent: str = '    ') -> str:
+    """``text`` (the line holding character ``index``) and a ``^`` line under
+    that character."""
+    index = max(0, min(int(index), len(text)))
+    start = text.rfind('\n', 0, index) + 1
+    end = text.find('\n', index)
+    line = text[start:end if end >= 0 else len(text)]
+    return f'{indent}{line}\n{indent}{" " * (index - start)}^'
+
+
+def format_caret_error(text: str, index: int, headline: str, hint: str = '') -> str:
+    """``headline``, then ``text`` with a caret under character ``index``,
+    then the hint."""
+    out = f'{headline}\n{caret_block(text, index)}'
+    return out + (f'\n    hint: {hint}' if hint else '')
+
+
+def _bracket_problem(text: str):
+    """The first unmatched bracket: ``(index, reason, hint)`` or ``None``."""
+    pairs, stack = {')': '(', ']': '['}, []
+    for k, ch in enumerate(text):
+        if ch in '([':
+            stack.append((ch, k))
+        elif ch in ')]':
+            if not stack or stack[-1][0] != pairs[ch]:
+                return (k, f"unmatched {ch!r}",
+                        f"remove the extra {ch!r}"
+                        + (f" or close the {stack[-1][0]!r} opened at column {stack[-1][1] + 1}"
+                           if stack else ' (nothing is open here)'))
+            stack.pop()
+    if stack:
+        ch, k = stack[-1]
+        return (k, f'{ch!r} is never closed',
+                f"add the closing {')' if ch == '(' else ']'!r} (brackets must balance)")
+    return None
+
+
+def expression_syntax_problem(text: str):
+    """Where ``text`` stops being an expression: ``(index, reason, hint)`` for
+    the first syntax problem (``index`` a character of ``text``), or ``None``
+    when it reads as one.  No Sage is involved; the grammar is the one the
+    parser accepts (Python's, with ``^`` for the power)."""
+    import ast
+    text = str(text)
+    if not text.strip():
+        return (0, 'the expression is empty', 'give an expression, e.g. -mu*x')
+    prob = _bracket_problem(text)
+    if prob:
+        return prob
+    toks = [(m.start(m.lastindex), m.group(m.lastindex)) for m in _TOKEN_RE.finditer(text)
+            if m.lastindex]
+    for k, tok in toks:
+        if tok in _PY_KEYWORDS:
+            return (k, f'{tok!r} is a Python keyword and cannot be a name',
+                    f'rename the symbol (e.g. {tok[:3]} or {tok}0)')
+    for (a, t1), (b, t2) in zip(toks, toks[1:]):
+        if t2 == '(' and (re.fullmatch(r'\d[\w.]*|\.\d+', t1) or t1 == ')'):
+            return (b, f'missing operator between {t1!r} and {t2!r}',
+                    f'write the product with "*", e.g. {t1}*(...)')
+    py, idx = [], []
+    for k, ch in enumerate(text):
+        piece = '**' if ch == '^' else (' ' if ch == '\n' else ch)
+        py.append(piece)
+        idx.extend([k] * len(piece))
+    try:
+        ast.parse(''.join(py), mode='eval')
+        return None
+    except SyntaxError as exc:
+        off = (exc.offset or 0) - 1
+        msg = str(exc.msg)
+        if exc.lineno and exc.lineno > 1:                    # (never: newlines are blanked)
+            off = 0
+    except (ValueError, MemoryError, RecursionError):
+        return (0, 'the expression cannot be read', '')
+    end = len(text.rstrip())
+    k = end if off < 0 or off >= len(idx) else idx[off]
+    operand = re.compile(r'[\w.(]')
+    prev = [(a, t) for a, t in toks if a < k]
+    cur = next(((a, t) for a, t in toks if a >= k and t.strip()), None)
+    p_tok = prev[-1][1] if prev else ''
+    c_tok = cur[1] if cur else ''
+    if k >= end:
+        if p_tok and re.fullmatch(r'\*\*|[-+*/^%]', p_tok):
+            return (end - 1 if p_tok != '**' else end - 2,
+                    f'the expression ends after the operator {p_tok!r}',
+                    'an operator needs a right-hand operand')
+        return (end, 'the expression ends too early', 'is something missing at the end?')
+    if c_tok == '=':
+        return (cur[0], "'=' (assignment) in an expression",
+                'an expression has no "="; an equation is written '
+                "equation('x', lhs='Dt*x', rhs='...')")
+    if c_tok and not re.fullmatch(r'[\w.]+|\*\*|[-+*/^%<>=!]=?|[()\[\],]', c_tok):
+        return (cur[0], f'unexpected character {c_tok!r}', 'remove it')
+    if re.fullmatch(r'\*\*|[-+*/^%]', p_tok) and re.fullmatch(r'\*\*|[*/^%]', c_tok):
+        return (cur[0], f'two operators in a row ({p_tok!r} then {c_tok!r})',
+                'an operator needs an operand on each side')
+    if re.search(r'\bfor\b', text) and not re.search(r'\bfor\s+\w+\s+in\b', text):
+        at = re.search(r'\bfor\b(?:\s+\w+\s*)?', text).end()
+        return (at, "a population sum needs 'in' after the index",
+                'write sum(expression for j in pop)')
+    if 'forgot a comma' in msg:
+        for (a, t1), (b, t2) in zip(toks, toks[1:]):
+            if a >= k and t2 == 'in' and re.fullmatch(r'\w+', t1):
+                return (b, "a population sum needs 'for' before the index",
+                        'write sum(expression for j in pop)')
+            if a >= k and re.fullmatch(r'[\w.]+', t1) and re.fullmatch(r'[\w.]+', t2):
+                return (b, f'missing operator between {t1!r} and {t2!r}',
+                        f'write the product with "*", e.g. {t1}*{t2}')
+    if c_tok == 'in' and p_tok and re.fullmatch(r'\w+', p_tok):
+        return (cur[0], "a population sum needs 'for' before the index",
+                'write sum(expression for j in pop)')
+    if p_tok and re.fullmatch(r'[\w.]+', p_tok) and operand.match(c_tok):
+        return (cur[0], f'missing operator between {p_tok!r} and {c_tok!r}',
+                f'write the product with "*", e.g. {p_tok}*{c_tok}')
+    if 'decimal literal' in msg:
+        m = re.match(r'[\d.]+(?:[eE][+-]?\d+)?', text[k:])
+        at = k + (m.end() if m else 0)
+        return (at, 'a number runs into a name', 'write the product with "*", e.g. 2*x')
+    if re.fullmatch(r'\*\*|[-+*/^%]', p_tok) and c_tok in (')', ']', ','):
+        return (cur[0], f'the operator {p_tok!r} has no right-hand operand',
+                'an operator needs an operand on each side')
+    if p_tok in ('(', '[', ',') and c_tok in (')', ']', ','):
+        return (cur[0], f'nothing between {p_tok!r} and {c_tok!r}', 'an argument is missing')
+    return (k, msg, '')
+
+
+def parse_failure_message(value, what: str, exc=None) -> str:
+    """The text of a parse failure for ``value``: the reason, the string with
+    a caret under the failing character, and a hint."""
+    txt = ' '.join(str(value).split())
+    prob = expression_syntax_problem(txt)
+    if prob:
+        index, reason, hint = prob
+        return format_caret_error(txt, index, f'{what}: cannot parse the expression: {reason}',
+                                  hint)
+    return f'{what}: cannot parse {value!r}' + (f' ({exc})' if exc is not None else '')
+
+
 def parse_expr(value, *, what: str = 'expression'):
     """Parse a parameter value (str / number / SR) into a Sage expression.
 
@@ -125,6 +267,9 @@ def parse_expr(value, *, what: str = 'expression'):
                 f'parameter or function '
                 f'for the summed quantity instead (a spike train whose rate '
                 f'sums or filters fields: SDE.point_process).')
+        bad = expression_syntax_problem(txt)
+        if bad:
+            raise NoiseError(parse_failure_message(txt, what))
         txt = _flatten_indices(txt)
         called = set(re.findall(r'\b([A-Za-z_]\w*)\s*\(', txt))
         names = set(re.findall(r'\b([A-Za-z_]\w*)\b', txt))
