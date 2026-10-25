@@ -50,6 +50,9 @@ The orchestration layer `dd` drives:
 - `spectra.py` — the exact spectral and integrated outputs of a k = 2 result (`spectra=`, `dd.spectra`):
   `S(ω)`, `S(0)`, `∫_0^T C`, `∫_0^∞ C` and `τ_c` per loop order, from the triples of `me_output.py`
   (resolvents and augmented matrix exponentials), with a quadrature fallback that reports error estimates.
+- `master_equation.py` — the exact master-equation oracle for lattice jump processes (`dd.master_equation`): sparse
+  stationary solve, cumulants `k <= 4`, Krylov / `expm_multiply` lag correlations, truncation diagnostics, the
+  Kramers-Moyal extrapolation, and the bridge to `compute_cumulants` (`docs/master_equation.md`).
 - `covariance.py` — the k = 2 covariance matrix over many fields in one call (`dd.covariance_matrix`,
   `Config(covariance=)`): `compute_cumulants` per pair inside `compute.stage_memo()`, which shares the
   expansion, propagator, mean field and poles of one parameter point; parameter derivatives by

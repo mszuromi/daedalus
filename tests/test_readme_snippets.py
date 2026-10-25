@@ -34,7 +34,8 @@ def _exec(code, name):
 def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
-               "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.covariance_matrix(']
+               "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(',
+               'dd.covariance_matrix(']
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -79,6 +80,13 @@ def test_readme_spectra_example_is_ok():
     assert sp['status'] == 'ok' and set(sp['method_by_ell'].values()) == {'exact'}
     assert sp['S'].shape == (201,) and sp['integral'].shape == (2,)
     assert abs(sp['S0'] - 2 * sp['integral_inf']) <= 1e-13 * abs(sp['S0'])
+
+
+def test_readme_master_equation_example_is_the_poisson_law():
+    ns = _exec(_block('dd.master_equation('), 'master-equation example')
+    import numpy as np
+    np.testing.assert_allclose(ns['k4'].ravel(), 20.0, rtol=1e-9)             # lam / mu
+    np.testing.assert_allclose(ns['cc'][:, 0, 0], 20.0 * np.exp(-np.array([0.0, 1.0, 2.0])), rtol=1e-9)
 
 
 def test_readme_check_and_latex_example(capsys):

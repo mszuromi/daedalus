@@ -228,6 +228,23 @@ sp['tau_c']               # int_0^inf C / C(0)
   error estimates and give an `MEFallbackWarning`; `method='exact'` refuses them instead.
 - **Refused.** Spatial models, switch-on runs and `discard=True` are refused.
 
+### Exact master-equation oracle for jump models
+
+`dd.master_equation(transitions, ...)` (`api/master_equation.py`) solves a lattice jump process exactly: the stationary
+law, the cumulants `kappa_1..kappa_4` and the lag correlations `C(tau)` (sparse LU and Krylov `e^{tau Q}`), each with a
+residual, a truncation flux and a Krylov error. It extrapolates to the diffusion limit and, for string rates, builds the
+matching SDE-front-end model and tabulates `compute_cumulants` against the exact values (`compare_with_daedalus`).
+
+```python
+import daedalus as dd
+me = dd.master_equation([('lam', +1), ('mu*x', -1)], params=dict(lam=20.0, mu=1.0), box=(0, 100))
+k4 = me.cumulants(4)[4]                  # kappa_4 = lam/mu
+cc = me.correlation([0.0, 1.0, 2.0]).C   # (lam/mu) exp(-mu tau)
+```
+
+See `docs/master_equation.md` for the conventions, the diagnostics and what the loop expansion should and should not
+match.
+
 ### Covariance matrix over many fields, and parameter derivatives (k = 2)
 
 `dd.covariance_matrix` returns `Sigma[n, i, j] = <dx_i(0) dx_j(tau_n)>` for every pair of a list of fields in one call

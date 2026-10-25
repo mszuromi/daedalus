@@ -70,6 +70,7 @@ docs/*
 !docs/correlated_noise_capabilities.md
 !docs/dyson_duhamel_integration_plan.md
 !docs/m_ge3_precision_bug_audit.md
+!docs/master_equation.md
 !docs/spatial_kpz_burgers_plan.md
 !docs/spatial_loop_integral_analytic_mc.md
 !docs/spatial_pipeline.md
