@@ -202,6 +202,21 @@ def expression_syntax_problem(text: str):
     if re.fullmatch(r'\*\*|[-+*/^%]', p_tok) and re.fullmatch(r'\*\*|[*/^%]', c_tok):
         return (cur[0], f'two operators in a row ({p_tok!r} then {c_tok!r})',
                 'an operator needs an operand on each side')
+    if re.search(r'\bfor\b', text) and not re.search(r'\bfor\s+\w+\s+in\b', text):
+        at = re.search(r'\bfor\b(?:\s+\w+\s*)?', text).end()
+        return (at, "a population sum needs 'in' after the index",
+                'write sum(expression for j in pop)')
+    if 'forgot a comma' in msg:
+        for (a, t1), (b, t2) in zip(toks, toks[1:]):
+            if a >= k and t2 == 'in' and re.fullmatch(r'\w+', t1):
+                return (b, "a population sum needs 'for' before the index",
+                        'write sum(expression for j in pop)')
+            if a >= k and re.fullmatch(r'[\w.]+', t1) and re.fullmatch(r'[\w.]+', t2):
+                return (b, f'missing operator between {t1!r} and {t2!r}',
+                        f'write the product with "*", e.g. {t1}*{t2}')
+    if c_tok == 'in' and p_tok and re.fullmatch(r'\w+', p_tok):
+        return (cur[0], "a population sum needs 'for' before the index",
+                'write sum(expression for j in pop)')
     if p_tok and re.fullmatch(r'[\w.]+', p_tok) and operand.match(c_tok):
         return (cur[0], f'missing operator between {p_tok!r} and {c_tok!r}',
                 f'write the product with "*", e.g. {p_tok}*{c_tok}')

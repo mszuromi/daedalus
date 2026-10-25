@@ -68,11 +68,26 @@ def _conv(a, b):
 
 
 def _dt_call(x):
-    return r'\partial_t ' + x
+    return r'\partial_t ' + _unbrace(x)
+
+
+def _unbrace(x: str) -> str:
+    """``{u}`` -> ``u`` (Sage groups a symbol that has a LaTeX name)."""
+    x = x.strip()
+    while x.startswith('{') and x.endswith('}'):
+        depth = 0
+        for k, ch in enumerate(x):
+            depth += {'{': 1, '}': -1}.get(ch, 0)
+            if depth == 0 and k < len(x) - 1:
+                return x
+        x = x[1:-1].strip()
+    return x
 
 
 def _lap_call(x):
-    atom = re.fullmatch(r'[\\\w{}^_]+', x.strip()) is not None
+    x = _unbrace(x)
+    atom = re.fullmatch(r'(\\[A-Za-z]+|[A-Za-z])(_\{[^{}]*\})?|\\tilde\{[^{}]*\}(_\{[^{}]*\})?',
+                        x.strip()) is not None
     return r'\nabla^2 ' + (x if atom else r'\left(' + x + r'\right)')
 
 
@@ -130,13 +145,14 @@ class _Typesetter:
     def _locals(self, text: str) -> dict:
         called = set(re.findall(r'\b([A-Za-z_]\w*)\s*\(', text))
         loc = {}
+        self._ops = {}
         for n in set(re.findall(r'\b([A-Za-z_]\w*)\b', text)):
             if n in self._ph:
                 loc[n] = self._ph[n]
             elif n == 'Dt' and n not in called:
-                loc[n] = self._sym(n, r'\partial_t', 't')
+                loc[n] = self._ops[n] = self._sym(n, r'\partial_t', 't')
             elif n == 'Laplacian':
-                loc[n] = self._sym(n, r'\nabla^2', 't')
+                loc[n] = self._ops[n] = self._sym(n, r'\nabla^2', 't')
             elif n == 'Conv' and n in called:
                 loc[n] = _func('Conv', '', _conv)
             elif n in ('Dt', 'Lap') and n in called:
@@ -208,7 +224,7 @@ class _Typesetter:
         """Put each operator in front of the one field it acts on:
         ``tau*Dt*v + v`` -> ``tau*(dt v) + v`` with ``dt v`` one symbol."""
         from sage.symbolic.operators import add_vararg
-        ops = {n: loc[n] for n in ('Dt', 'Laplacian') if n in loc and E.has(loc[n])}
+        ops = {n: sym for n, sym in self._ops.items() if E.has(sym)}
         if not ops:
             return E
         dt, lap = ops.get('Dt'), ops.get('Laplacian')
@@ -239,12 +255,28 @@ class _Typesetter:
         return out
 
     # ── expressions ──
+    def _floats(self, text: str) -> str:
+        """Float literals -> placeholder symbols that print as written
+        (Sage would print ``0.3`` as ``0.300000000000000``)."""
+        def sub(m):
+            lit = m.group(0)
+            f = repr(float(lit))
+            if 'e' in f:
+                mant, ex = f.split('e')
+                f = f'{mant} \\times 10^{{{int(ex)}}}'
+            ph = f'_phnum{_crc(f)}'
+            self._ph[ph] = self._sym(ph, f, 'a')
+            self.bare_ok.add(f)
+            return ph
+        return re.sub(r'(?<![\w.])(?:\d+\.\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?|\d+[eE][+-]?\d+)(?![\w.])',
+                      sub, text)
+
     def _parse(self, text: str, zero_ops: bool = False):
-        t2 = _flatten_indices(self._sums(self._delays(' '.join(str(text).split()))))
+        t2 = self._floats(_flatten_indices(self._sums(self._delays(' '.join(str(text).split())))))
         loc = self._locals(t2)
         E = SR(sage_eval(t2, locals=loc))
         if zero_ops:
-            return E.subs({s: 0 for n, s in loc.items() if n in ('Dt', 'Laplacian')}), loc
+            return E.subs({s: 0 for s in self._ops.values()}), loc
         return self._group_ops(E, loc), loc
 
     def expr(self, text, *, zero_ops: bool = False) -> str:
@@ -305,11 +337,26 @@ def render_latex(sde) -> dict:
     def paren(text, ln, neg=False):
         return r'\left(' + ln + r'\right)' if ts.is_sum(idx(text)) or (neg and ln.startswith('-')) else ln
 
+    # the interpretation of the stochastic integral: Stratonovich (and the Gaussian
+    # part of a Marcus model) is dW with a circle, a Marcus jump dN with a diamond
+    interp = sde._interp
+
+    def mark(src):
+        if interp == 'ito':
+            return ''
+        if src.is_gaussian:
+            return r'\circ\,'
+        return r'\diamond\,' if interp == 'marcus' else ''
+
     # the SDE as written: dx = (...) dt + c sqrt(var) dW + c dN
     rows = []
     for f, eq in sde._eqs.items():
         lhs_txt, rhs_txt = eq['lhs'], eq['rhs']
+        if d.get('operator_ir'):                  # an operator on an expression: Lap(u^2)
+            lhs_txt = sde._ir_text(eq['lhs_raw'], f'equation({f!r}) lhs')
+            rhs_txt = sde._ir_text(eq['rhs_raw'], f'equation({f!r}) rhs')
         rhs_ln = ts.expr(idx(rhs_txt))
+        zero_rhs = rhs_txt.strip() in ('', '0')
         diff_terms, dot_terms = [], []
         for name, s in sde._sources.items():
             if f not in s['couples'] or s.get('pp'):
@@ -323,19 +370,24 @@ def render_latex(sde) -> dict:
                 if not SR(src.params['mean']).is_zero():
                     m = expr_to_text(src.params['mean'])
                     diff_terms.append(ts.expr(idx(f'({c})*({m})')) + r'\,\mathrm{d}t')
-            diff_terms.append(lead + rf'\mathrm{{d}}{ltr}_{{{sub[name]}}}')
-            dot_terms.append(lead + rf'\dot{{{ltr}}}_{{{sub[name]}}}')
+            diff_terms.append(lead + mark(src) + rf'\mathrm{{d}}{ltr}_{{{sub[name]}}}')
+            dot_terms.append(lead + mark(src) + rf'\dot{{{ltr}}}_{{{sub[name]}}}')
         f_ln = ts.field_latex[f] + ('' if ts.trivial else '_{i}')
         try:
             dt_form = (sde._parse(lhs_txt, f'lhs of {f}') - _DT * sde._sym(f)).expand().is_zero()
         except Exception:                                    # noqa: BLE001
             dt_form = False
         if dt_form:
-            rows.append(rf'\mathrm{{d}}{f_ln} &= {paren(rhs_txt, rhs_ln)}\,\mathrm{{d}}t'
-                        + _join(diff_terms))
+            drift = [] if zero_rhs else [paren(rhs_txt, rhs_ln) + r'\,\mathrm{d}t']
+            first = _join(drift + diff_terms)
+            rows.append(rf'\mathrm{{d}}{f_ln} &= ' + (first[3:] if first.startswith(' + ') else
+                                                     '-' + first[3:] if first.startswith(' - ') else '0'))
         else:
-            rows.append(f'{ts.expr(idx(lhs_txt))} &= {rhs_ln}' + _join(dot_terms))
-    out = {'sde': _block(rows)}
+            rest = _join(([] if zero_rhs else [rhs_ln]) + dot_terms)
+            rows.append(f'{ts.expr(idx(lhs_txt))} &= '
+                        + (rest[3:] if rest.startswith(' + ') else '-' + rest[3:] if rest.startswith(' - ')
+                           else '0'))
+    out = {'sde': _block(rows) if rows else ''}
 
     # the noise sources
     rows = []
@@ -360,6 +412,11 @@ def render_latex(sde) -> dict:
         else:
             ps = ', '.join(rf'\mathrm{{{k.replace("_", chr(92) + "_")}}}={ts.expr(expr_to_text(v))}'
                            for k, v in (getattr(src, 'params', None) or {}).items())
+            jump = getattr(src, 'jump', None)
+            if jump is not None:
+                jp = ', '.join(rf'\mathrm{{{k.replace("_", chr(92) + "_")}}}={ts.expr(expr_to_text(v))}'
+                               for k, v in jump.params.items())
+                ps += rf', \text{{jump}}=\text{{{type(jump).__name__}}}({jp})'
             rows.append(rf'{nm} &\sim \text{{{type(src).__name__}}}({ps}){tail}')
     out['noise'] = _block(rows) if rows else ''
 

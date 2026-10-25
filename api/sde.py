@@ -246,6 +246,9 @@ def _report_text(r) -> str:
             ps = st.get('params')
             desc = st.get('type', '') + (' ' + ', '.join(f'{q}={v}' for q, v in ps.items())
                                          if ps else '')
+            if st.get('jump'):
+                desc += (f", jump={st['jump']['type']}("
+                         + ', '.join(f'{q}={v}' for q, v in st['jump']['params'].items()) + ')')
             L.append(f"  [noise {t['source']}: {desc.strip()}]  {_clip(t['text'])}")
         else:
             L.append(f"  [extra]  {_clip(t['text'])}")
@@ -2375,6 +2378,9 @@ class SDE:
         expansion of the action (about a second for a small model).  The
         action and the equations are those of :meth:`action_text` and
         :meth:`equations`; ``check`` only reads them."""
+        for what, v, lo in (('k', k, 1), ('max_ell', max_ell, 0)):
+            if isinstance(v, bool) or not isinstance(v, int) or v < lo:
+                raise SDEError(f'check({what}={v!r}): {what} must be an integer >= {lo}.')
         self._check_derived_names()
         d = self._derive()
         notes = list(self.notes)
@@ -2442,6 +2448,10 @@ class SDE:
         params = getattr(src, 'params', None)
         if params:
             out['params'] = {q: expr_to_text(v) for q, v in params.items()}
+        jump = getattr(src, 'jump', None)
+        if jump is not None:
+            out['jump'] = {'type': type(jump).__name__,
+                           'params': {q: expr_to_text(v) for q, v in jump.params.items()}}
         return out
 
     def _action_report(self, d) -> dict:

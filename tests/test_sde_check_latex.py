@@ -244,11 +244,65 @@ def test_latex_population_model_with_a_function_and_a_kernel():
 
 
 def test_latex_stratonovich_marcus_delay_and_noise_kinds():
-    assert r'\left(s_{1} x + s_{0}\right)\,\mathrm{d}W_{W}' in C.stratonovich_multiplicative().latex()['sde']
+    assert (r'\left(s_{1} x + s_{0}\right)\,\circ\,\mathrm{d}W_{W}'
+            in C.stratonovich_multiplicative().latex()['sde'])                       # not read as Ito
+    assert r'\circ\,\dot{W}_{W}' in C.stratonovich_tau_lhs().latex()['sde']
+    assert r'\diamond\,\mathrm{d}N_{L}' in C.marcus_rotation().latex()['sde']
+    assert r'\circ' not in C.ou_quartic().latex()['sde'] and r'\diamond' not in C.poisson_driven().latex()['sde']
     jump = C.marcus_affine().latex()
     assert r'\mathrm{d}N_{L}' in jump['sde'] and r'\text{CompoundPoisson}' in jump['noise']
+    assert (r'\text{jump}=\text{Uniform}(\mathrm{lo}=0, \mathrm{hi}=m)'
+            in C.uniform_jumps().latex()['noise'])
     assert r'\mathrm{d}L_{G}' in C.gamma_process().latex()['sde']
     assert r'c x(t - d)' in C.delay_ou().latex()['sde']
+
+
+def _spde_with_lap_of_square(rhs='D*lap(u) - mu*u - lap(u^2)', lhs='dt(u)'):
+    return (SDE('m', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+            .parameter('D', default=1.0, domain='positive').parameter('mu', default=1.0, domain='positive')
+            .field('u').equation('u', lhs=lhs, rhs=rhs)
+            .noise('eta', Gaussian(var=2, space='white'), into={'u': 1}))
+
+
+def test_latex_laplacian_of_an_expression_is_grouped_and_never_falls_back():
+    L = _spde_with_lap_of_square().latex()
+    assert L['sde'] == (r'\begin{aligned}' '\n'
+                        r'\partial_t u &= -\mu u + D \nabla^2 u - \nabla^2 \left(u^{2}\right) + \sqrt{2}\,\dot{W}_{\eta}' '\n'
+                        r'\end{aligned}')
+    assert r'- \nabla^2 \left(u^{2}\right)\right)\right)' in L['action']
+    assert not any('texttt' in v for v in L.values())
+    # product-style operators on a model that also has an operator on an expression
+    mixed = _spde_with_lap_of_square(lhs='(dt + mu)*u', rhs='D*lap(u) - lap(u^2)').latex()
+    assert not any('texttt' in v for v in mixed.values())
+    assert r'\mu u + \partial_t u' in mixed['sde'] or r'\partial_t u + \mu u' in mixed['sde']
+
+
+def test_latex_without_equations_or_zero_rhs_is_well_formed():
+    assert C.readme_hawkes().latex()['sde'] == ''                       # a model of point processes only
+    m = (SDE('z').parameter('tau', default=2.0).parameter('c', default=0.5).field('x')
+         .equation('x', lhs='(tau*Dt + 1)*x', rhs='0').noise('W', Gaussian(var=1), couples={'x': 'c'}))
+    sde = m.latex()['sde']
+    assert '= 0 +' not in sde and r'&= c\,\dot{W}_{W}' in sde
+
+
+def test_latex_floats_print_as_written():
+    m = (SDE('f').parameter('mu', default=1.0).field('x').drift('x', '-0.3*mu*x + 1e-3 + 0.01/x')
+         .noise('xi', Gaussian(var=2), couples={'x': 1}))
+    sde = m.latex()['sde']
+    assert '0.3 \\mu x' in sde and '0.001' in sde and r'\frac{0.01}{x}' in sde and '0000' not in sde
+
+
+def test_check_shows_the_jump_law_of_a_compound_poisson_source():
+    r = C.uniform_jumps().check(verbose=False)
+    t = [t for t in r['action']['terms'] if t['kind'] == 'noise'][0]
+    assert t['source_type']['jump'] == {'type': 'Uniform', 'params': {'lo': '0', 'hi': 'm'}}
+    assert 'jump=Uniform(lo=0, hi=m)' in str(r)
+
+
+@pytest.mark.parametrize('kw', [{'k': 0}, {'k': -1}, {'k': 2.7}, {'max_ell': -1}, {'max_ell': 1.5}, {'k': True}])
+def test_check_refuses_a_nonsense_question(kw):
+    with pytest.raises(SDEError, match='must be an integer'):
+        C.ou_quartic().check(verbose=False, **kw)
 
 
 def test_latex_never_raises_and_never_falls_back_on_the_catalogue():
@@ -310,6 +364,9 @@ def test_unbalanced_parenthesis_has_a_caret_under_the_failing_character():
     ('-lambda*x', 'l', 'Python keyword'),
     ('x = 3', '=', 'assignment'),
     ('2(x)', '(', 'missing operator'),
+    ('sum(w[i,j]*x[j] j in E)', 'i', "needs 'for'"),
+    ('sum(w[i,j]*x[j] for j E)', 'E', "needs 'in'"),
+    ('Conv(g x)', 'x', 'missing operator'),
 ])
 def test_typical_syntax_mistakes_point_at_the_problem(expr, char, word):
     with pytest.raises(SDEError, match=word) as ei:
