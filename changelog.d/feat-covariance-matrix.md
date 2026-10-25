@@ -10,7 +10,8 @@ per entry, and each call repeated the expansion, the propagator, the mean field 
   expansion, the propagator, the mean field and the poles and residues of the first call. It hands on the objects
   that call built, so a later call computes what it would have computed alone. Outside the block nothing is shared.
   The diagrams of each pair (one external-leg typing) are enumerated, classified and evaluated once.
-  - On the two-field OU quartic at one loop the matrix takes about 0.55x the CPU of the three separate calls.
+  - At one loop, the two-field OU quartic matrix takes about 0.55x the CPU of the three separate calls.
+  - The four-leg linear Hawkes matrix (`n_1, n_2, v_1, v_2`) takes 0.42x the CPU of the ten separate calls.
 - **Bit for bit.** Every computed entry is the separate `compute_cumulants` result on the same grid, per loop order
   too. The tests check this on OU quartic two-field, a three-field linear-plus-cubic model and the linear Hawkes
   population model.
