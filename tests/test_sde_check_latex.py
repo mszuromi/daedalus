@@ -312,6 +312,7 @@ def test_latex_never_raises_and_never_falls_back_on_the_catalogue():
         for v in L.values():
             assert v == '' or v.startswith(r'\begin{aligned}'), name
             assert v.count('{') == v.count('}'), name
+            assert '\n\n' not in v, name                      # (a blank line ends a math environment)
 
 
 def test_latex_is_deterministic_across_processes():
