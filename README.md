@@ -162,6 +162,40 @@ A Laplacian of an expression (`g*lap(phi^2)`, a conserved derivative vertex) is 
 operator IR. Temporal-only features with a Laplacian are refused, not dropped: populations, kernels and delays, point
 processes, non-Gaussian noise, and the Stratonovich and Marcus rules.
 
+Before computing anything, an `SDE` can show what it derived. `m.check()` prints and returns a report (a dict) with the
+declarations, the derived action split by origin (one term per field and per noise source), the mean-field equations,
+the interpretation corrections (the Stratonovich or Marcus terms, each labelled with its source), the vertex table (the
+numbers of response and field legs, the coefficient at the saddle, the degree and the loop orders a vertex can enter),
+the propagator structure, and warnings (a truncated Marcus series, terms that enter the mean field only, the
+analyzer's findings). It integrates nothing; it costs the expansion of the action, about a second for a small model.
+`m.latex()` returns LaTeX strings (`'sde'`, `'noise'`, `'action'`, `'mean_field'`) and compiles nothing. A malformed
+expression is refused when it is declared, with a caret under the failing character, the field or noise it belongs
+to, and a hint:
+
+```python
+from api.sde import SDE
+from api.noise import Gaussian
+m = (SDE('OU quartic').parameter('mu', default=1.0, domain='positive')
+     .parameter('eps', default=0.02, domain='positive').parameter('D', default=1.0, domain='positive')
+     .field('x').drift('x', '-mu*x - eps*x^3').noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+report = m.check()                  # prints the report below; report['vertices']['rows'] is the vertex table
+tex = m.latex()                     # tex['sde'] is dx = (-eps x^3 - mu x) dt + sqrt(2 D) dW_xi, as LaTeX
+```
+
+```text
+Vertices (Taylor order 4; loops listed for k=2, max_ell=1)
+  resp  field  degree  kind              loops  monomial -> coefficient
+     1      2       3  interaction           1  xt1*dx1^2 -> 3*eps*xstar1
+     1      3       4  interaction           1  xt1*dx1^3 -> eps
+```
+
+```text
+equation('x') rhs: undeclared symbol 'epsilon'
+    -mu*x - epsilon*x^3
+            ^
+    hint: did you mean 'eps'? (otherwise declare 'epsilon')
+```
+
 ### Spectra and integrated correlators (k = 2)
 
 `spectra=` asks for exact spectral and integrated outputs, computed from the state-space triples of the run with no
