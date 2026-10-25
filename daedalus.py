@@ -133,6 +133,10 @@ _PIPELINE_EXPORTS = {
     # exact S(omega), S(0), int_0^T C, tau_c of a k = 2 result
     'spectra':                   'api.spectra',
     'SpectraWarning':            'api.spectra',
+    # the k = 2 covariance matrix over many fields, and dSigma/dtheta
+    'covariance_matrix':         'api.covariance',
+    'CovarianceDerivativeError': 'api.covariance',
+    'CovarianceWarning':         'api.covariance',
     # symbolic tree-level outputs (C1 Fourier domain, C2 time domain)
     'tree_covariance':           'api.symbolic_out',
     'tree_covariance_from_result': 'api.symbolic_out',
@@ -552,6 +556,15 @@ class Config:
     # (tau_grid=np.array([0.0]) is enough).  S(omega) = int C e^{+i omega tau}.
     spectra: Any = None
 
+    # ── the k = 2 covariance matrix over many fields (api.covariance) ──
+    # ``covariance_matrix(...)`` instead of one compute_cumulants call: None
+    # (off), True (every physical field leg) or {'fields': [...], 'pairs':
+    # 'upper' | 'all', 'derivatives': [parameter, ...] or {'parameters': [...],
+    # 'step': 1e-3}, 'keep_entries': bool}.  run() then returns the
+    # covariance_matrix dict (Sigma[n, i, j] = <dx_i(0) dx_j(tau_n)>, per
+    # loop order in Sigma_by_ell, derivatives in 'derivatives').
+    covariance: Any = None
+
     # ── numerical knobs shared with compute_cumulants (None = its default) ──
     taylor_order: Optional[int] = None      # vertex Taylor order (None: max(k + 2 max_ell, 2))
     use_cache: Optional[bool] = None        # on-disk caches (None: on)
@@ -675,6 +688,22 @@ class Config:
                     f"Config.spectra with output={self.output!r}: the "
                     f"spectral outputs are those of the connected cumulant "
                     f"(output='cumulant').")
+        if self.covariance is not None:
+            from api.covariance import resolve_covariance_options
+            if resolve_covariance_options(
+                    self.covariance, 'Config.covariance') is not None:
+                for _bad, _why in (
+                        (self.output != 'cumulant',
+                         f'output={self.output!r} (the covariance is the '
+                         f'connected cumulant)'),
+                        (self.k not in (None, 2), f'k={self.k!r} (it is k = 2)'),
+                        (self.spectra is not None, 'spectra'),
+                        (self.t_min is not None, 't_min'),
+                        (self.spatial_points is not None, 'spatial_points')):
+                    if _bad:
+                        raise ValueError(
+                            f'Config.covariance with {_why} is not '
+                            f'supported.')
         if self.tau_step is not None and not float(self.tau_step) > 0:
             raise ValueError(
                 f"Config.tau_step must be > 0; got {self.tau_step!r}.")
@@ -837,6 +866,9 @@ def config_options(spatial=None):
         ]),
         ('exact spectra (k=2; api.spectra)', [
             ('spectra', "None | True | {'omega': (lo,hi,n) or array, 'T': number or array, 'method': 'auto'|'exact'|'quad'} → result['spectra']: S(ω)=∫C e^{+iωτ}dτ, S(0), ∫_0^T C, τ_c per loop order (no lag grid needed)"),
+        ]),
+        ('covariance matrix (k=2; api.covariance)', [
+            ('covariance', "None | True | {'fields': [...], 'pairs': 'upper'|'all', 'derivatives': [param, ...] or {'parameters': [...], 'step': 1e-3}, 'keep_entries': bool} → run() returns Sigma[n,i,j]=<dx_i(0) dx_j(τ_n)> over every pair (one shared MF/propagator/pole pass) and dSigma/dθ"),
         ]),
         ('delay kernels (api.delay)', [
             ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
@@ -1770,6 +1802,29 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     tg = cfg.resolved_tau_grid()
     if tg is not None and not (is_spatial(model) and k != 2):
         kw['tau_grid'] = tg
+
+    from api.covariance import resolve_covariance_options
+    _cov = resolve_covariance_options(getattr(cfg, 'covariance', None),
+                                      'Config.covariance')
+    if _cov is not None:
+        # every pair of the fields in one shared pass (api.covariance)
+        from api.covariance import covariance_matrix
+        if is_spatial(model):
+            raise NotImplementedError(
+                'Config.covariance is for temporal models')
+        _opts = {key: v for key, v in kw.items()
+                 if key not in ('model', 'k', 'max_ell', 'fundamental',
+                                'external_fields')}
+        res = covariance_matrix(
+            model, _cov['fields'], max_ell, parameters=fundamental,
+            pairs=_cov['pairs'], derivatives=_cov['derivatives'],
+            keep_entries=_cov['keep_entries'], **_opts)
+        res['_cfg'] = cfg
+        res['_model'] = model
+        res['_resolved'] = dict(k=2, max_ell=max_ell, fields=res['fields'],
+                                parameters=fundamental,
+                                fundamental=fundamental)
+        return res
 
     if (is_spatial(model) and k == 2 and max_ell >= 1
             and (getattr(cfg, 'output', 'cumulant') or 'cumulant') == 'moment'):
