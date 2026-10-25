@@ -94,11 +94,14 @@ the finite windows are still given.
 from __future__ import annotations
 
 import math
+import operator
 import warnings
 from typing import Any, Optional
 
 import numpy as np
 import scipy.linalg as sl
+
+from api._grids import is_real_number
 
 __all__ = ['spectra', 'resolve_spectra_options', 'SPECTRA_OPTIONS',
            'SpectraWarning']
@@ -190,15 +193,18 @@ def resolve_spectra_options(spec, name='spectra'):
     out['method'] = meth
     for key, dflt in (('epsabs', _EPSABS), ('epsrel', _EPSREL)):
         v = spec.get(key, dflt)
-        if (isinstance(v, bool) or not isinstance(v, (int, float, np.integer,
-                                                      np.floating))
+        if (not is_real_number(v)
                 or not np.isfinite(float(v)) or float(v) <= 0):
             raise ValueError(f'{name}.{key} must be a finite number > 0; got '
                              f'{v!r}.')
         out[key] = float(v)
     lim = spec.get('limit', _LIMIT)
-    if (isinstance(lim, bool) or not isinstance(lim, (int, np.integer))
-            or int(lim) < 1):
+    try:                         # int, numpy and Sage integers; not a bool
+        lim_ok = (not isinstance(lim, (bool, np.bool_))
+                  and operator.index(lim) >= 1)
+    except TypeError:
+        lim_ok = False
+    if not lim_ok:
         raise ValueError(f'{name}.limit must be an integer >= 1; got '
                          f'{lim!r}.')
     out['limit'] = int(lim)
