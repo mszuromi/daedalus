@@ -735,7 +735,7 @@ class SDE:
                 in_call = re.search(r'\b(?!' + re.escape(n) + r'\b)[A-Za-z_]\w*\s*\([^()]*$',
                                     shown[:at]) is not None
                 raise SDEError(format_caret_error(
-                    shown, at, f'equation({field!r}) rhs: the time derivative {n!r} is in the rhs',
+                    shown, at, f'equation({field!r}): {n} found in rhs; it belongs on the lhs.',
                     (f'{n} is an operator and cannot be the argument of a function; operators '
                      f'act on fields, e.g. {n}(x)' if in_call else
                      f'the time derivative belongs on the lhs: lhs={n}({field}) or '
@@ -1170,10 +1170,10 @@ class SDE:
                 op = next((o for o in ('Laplacian', 'Dt') if self._has_token(shown, o)), 'Laplacian')
                 raise SDEError(format_caret_error(
                     shown, max(self._token_at(shown, op), 0),
-                    f'{where}: the operator term does not act on one field linearly',
-                    'an operator acts on one field, outside any function: write '
-                    'lap(u) or D*lap(u); an operator acting on an expression is written in '
-                    'call style (e.g. lap(u^2))'))
+                    f'{where}: the operator term {shown} does not act on one field linearly; '
+                    f'write an operator acting on an expression in call style (e.g. lap(u^2)).',
+                    'an operator acts on one field, outside any function: lap(u) or '
+                    'D*lap(u)'))
 
     def _check_text(self, text: str, what: str, display: Optional[str] = None):
         """Refuse a symbol of ``text`` that is not declared.  ``display``: the
