@@ -202,9 +202,10 @@ residual, a truncation flux and a Krylov error. It extrapolates to the diffusion
 matching SDE-front-end model and tabulates `compute_cumulants` against the exact values (`compare_with_daedalus`).
 
 ```python
+import daedalus as dd
 me = dd.master_equation([('lam', +1), ('mu*x', -1)], params=dict(lam=20.0, mu=1.0), box=(0, 100))
-me.cumulants(4)[4]                       # kappa_4 = lam/mu
-me.correlation([0.0, 1.0, 2.0]).C        # (lam/mu) exp(-mu tau)
+k4 = me.cumulants(4)[4]                  # kappa_4 = lam/mu
+cc = me.correlation([0.0, 1.0, 2.0]).C   # (lam/mu) exp(-mu tau)
 ```
 
 See `docs/master_equation.md` for the conventions, the diagnostics and what the loop expansion should and should not
