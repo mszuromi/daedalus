@@ -183,6 +183,25 @@ def test_truncation_quiet_when_box_edge_has_zero_rate():
         _imm_death(box=(26, 60)).stationary()
 
 
+def test_pin_far_in_the_tail_does_not_poison_the_solve():
+    # a box whose centre is 100 sigma from the bulk: the LU pin must follow the mean field
+    for B in (120, 1000):
+        me = dd.master_equation([('5.0', 1), ('1.0*x', -1)], box=(0, B))
+        st = me.stationary()
+        assert st.residual < 1e-10 and st.negative_mass < 1e-8
+        np.testing.assert_allclose(me.cumulants(2)[1][0], 5.0, rtol=1e-8)
+        np.testing.assert_allclose(me.cumulants(2)[2][0, 0], 5.0, rtol=1e-8)
+        assert np.all(np.isfinite(me.correlation([0.0, 1.0]).C))
+    for guess in (60.0, 150.0):                          # a bad guess is only a starting point
+        me = dd.master_equation([('5.0', 1), ('1.0*x', -1)], box=(0, 400), guess=guess)
+        np.testing.assert_allclose(me.cumulants(1)[1][0], 5.0, rtol=1e-8)
+    # a stiff chain whose box centre is far from the bulk of the slow species
+    for G in (1e2, 1e5):
+        tr = [(f'{G}', (1, 0)), (f'{G}*x1', (-1, 0)), (f'x1/{G}', (0, 1)), (f'x2/{G}', (0, -1))]
+        me = dd.master_equation(tr, fields=['x1', 'x2'], box=[(0, 15), (0, 40)])
+        np.testing.assert_allclose(me.cumulants(1)[1], [1.0, 1.0], rtol=1e-5)
+
+
 def test_refusals():
     with pytest.raises(MasterEquationError, match='negative rate'):
         dd.master_equation([('x - 5', 1), ('1', -1)], box=(0, 10)).generator()

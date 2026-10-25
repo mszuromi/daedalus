@@ -27,7 +27,7 @@ D = me.integrated_correlation()               # int_0^inf C_jk dtau
 ```
 
 `box` is `[(lo, hi), ...]` (inclusive integer indices, one pair per field) or `'auto'`: the linear-noise box
-`mean +- K sigma` (`K = 9`) about the mean field from `guess`, clipped by `lower` / `upper` (physical bounds).
+`mean +- K sigma` (`K = 9`) about the mean field from `guess`, clipped by `lower` / `upper` (physical bounds; pass `lower=0` for counts, or the box reaches negative states and the rates there are refused).
 `me.lna()` returns the mean-field fixed point, the Jacobian, the diffusion matrix and the Lyapunov covariance.
 
 ## Errors and diagnostics
@@ -40,7 +40,7 @@ D = me.integrated_correlation()               # int_0^inf C_jk dtau
 | `negative_mass` | stationary | mass clipped from negative LU round-off |
 | `krylov_error`, `krylov_dim` | correlation | the last relative change between successive Krylov projections, and the dimension used (0 for `'direct'`) |
 
-An edge where the rate vanishes anyway (the death rate at 0 particles) suppresses nothing and costs nothing. When the
+The stationary LU pins one state at `p = 1`; it pins the mean-field fixed point (a far-tail pin makes the solve meaningless), and the solve re-pins and finally refuses rather than return a vector with a large residual or negative mass. An edge where the rate vanishes anyway (the death rate at 0 particles) suppresses nothing and costs nothing. When the
 flux exceeds `truncation_tol` (default 1e-10) a `TruncationWarning` is given (`on_truncation='raise'` or `'ignore'`).
 The cumulant error from the box is about the flux times the distance of the edge from the mean to the power `k`; a box
 of `mean +- 9 sigma` typically gives a flux near 1e-10 for a Poisson-like law and cumulants good to about 1e-8.

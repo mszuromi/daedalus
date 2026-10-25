@@ -585,15 +585,48 @@ class MasterEquation:
                 f'splits the state space).  Restrict the box to one class.')
         return np.flatnonzero(lab == closed[0])
 
-    def _pin_index(self, keep):
-        """Index (into ``keep``) of the state nearest the LU pin target."""
-        if self._guess is not None:
-            target = (self._guess - self.origin) / self.h
-        else:
-            target = self.box.mean(axis=1)
+    def _pin_candidates(self, keep):
+        """Indices (into ``keep``) of states to pin at ``p = 1``, best first:
+        the mean-field fixed point, the user's ``guess``, the box centre.  The
+        pinned LU is only accurate when the pin carries non-negligible
+        probability, so the mean-field state comes first."""
         grid = np.indices(self.shape).reshape(self.d, -1)[:, keep] + self.box[:, 0][:, None]
-        dist = ((grid - target[:, None]) ** 2).sum(axis=0)
-        return int(np.argmin(dist))
+
+        def nearest(target):
+            return int(np.argmin(((grid - np.asarray(target)[:, None]) ** 2).sum(axis=0)))
+
+        cands = []
+        try:
+            cands.append(nearest((self.lna()['mean'] - self.origin) / self.h))
+        except (MasterEquationError, FloatingPointError, ValueError):
+            pass
+        if self._guess is not None:
+            cands.append(nearest((self._guess - self.origin) / self.h))
+        cands.append(nearest(self.box.mean(axis=1)))
+        return list(dict.fromkeys(cands))
+
+    @staticmethod
+    def _solve_pinned(Qw, c):
+        """Stationary vector of ``Qw`` with state ``c`` pinned: returns
+        ``(pk, negative_mass, residual)`` (``pk`` clipped and normalised)."""
+        nk = Qw.shape[0]
+        M = Qw.T.tocsr()
+        mask = np.ones(nk); mask[c] = 0.0
+        M = (sp.diags(mask) @ M + sp.csr_matrix(([1.0], ([c], [c])), shape=(nk, nk))).tocsc()
+        rhs = np.zeros(nk); rhs[c] = 1.0
+        lu = spla.splu(M, permc_spec='COLAMD')
+        pk = lu.solve(rhs)
+        for _ in range(2):                               # iterative refinement
+            res = rhs - M @ pk
+            pk = pk + lu.solve(res)
+        if not np.all(np.isfinite(pk)) or np.abs(pk).sum() == 0.0:
+            return None, np.inf, np.inf
+        neg = float(np.abs(pk[pk < 0]).sum() / np.abs(pk).sum())
+        pk = np.maximum(pk, 0.0)
+        pk /= pk.sum()
+        diag = np.abs(Qw.diagonal())
+        resid = float(np.abs(Qw.T @ pk).sum() / max((diag * pk).sum(), 1e-300))
+        return pk, neg, resid
 
     def stationary(self) -> StationaryResult:
         """Stationary law (cached).  See the module docstring."""
@@ -604,21 +637,26 @@ class MasterEquation:
         keep = self._closed_class(Q)
         Qw = Q if len(keep) == N else Q[keep, :][:, keep]
         nk = len(keep)
-        c = self._pin_index(keep)
-        M = Qw.T.tocsr()
-        mask = np.ones(nk); mask[c] = 0.0
-        M = (sp.diags(mask) @ M + sp.csr_matrix(([1.0], ([c], [c])), shape=(nk, nk))).tocsc()
-        rhs = np.zeros(nk); rhs[c] = 1.0
-        lu = spla.splu(M, permc_spec='COLAMD')
-        pk = lu.solve(rhs)
-        for _ in range(2):                               # iterative refinement
-            res = rhs - M @ pk
-            pk = pk + lu.solve(res)
-        neg = float(np.abs(pk[pk < 0]).sum() / max(np.abs(pk).sum(), 1e-300))
-        pk = np.maximum(pk, 0.0)
-        pk /= pk.sum()
-        diag = np.abs(Qw.diagonal())
-        resid = float(np.abs(Qw.T @ pk).sum() / max((diag * pk).sum(), 1e-300))
+        tried, tried_local, best = [], [], None
+        queue = self._pin_candidates(keep)
+        while queue:
+            c = queue.pop(0)
+            pk, neg, resid = self._solve_pinned(Qw, c)
+            tried.append((int(keep[c]), neg, resid))
+            tried_local.append(c)
+            if pk is not None and neg < 1e-6 and resid < 1e-8:
+                best = (c, pk, neg, resid)
+                break
+            if pk is not None and len(tried) <= 3:         # re-pin where the failed solve put its mass
+                alt = int(np.argmax(pk))
+                if alt not in tried_local and alt not in queue:
+                    queue.append(alt)
+        if best is None:
+            raise MasterEquationError(
+                'the stationary solve failed for every pin state tried (state, negative mass, '
+                f'residual): {tried}.  The law is probably too wide or too stiff for one LU '
+                'over this box; give a guess near the bulk, or a smaller box.')
+        c, pk, neg, resid = best
         p = np.zeros(N)
         p[keep] = pk
         tot = float((self._exit * p).sum() + (self._blocked * p).sum())
@@ -799,8 +837,11 @@ class MasterEquation:
                     err = 0.0
                     break
                 if prev is not None:
-                    scale = max(np.max(np.abs(cur)), 1e-300)
-                    err = float(np.max(np.abs(cur - prev)) / scale)
+                    # relative change per lag (floored at 1e-6 of the largest value, where
+                    # the correlation has decayed into round-off)
+                    scale = np.maximum(np.max(np.abs(cur), axis=1, keepdims=True),
+                                       1e-6 * max(np.max(np.abs(cur)), 1e-300))
+                    err = float(np.max(np.abs(cur - prev) / scale))
                     if err <= tol:
                         break
                 prev = cur
