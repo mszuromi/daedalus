@@ -16,7 +16,8 @@ snapshot of 23 models still passes).
 - **`m.latex()`** returns `{'sde', 'noise', 'action', 'mean_field'}` as LaTeX strings (`api/sde_latex.py`): the SDE as
   written (`dx = (...) dt + ... dW`, `dN` for jump sources, the operator form when the left side is not `Dt x`), with
   `\partial_t` and `\nabla^2` for the operators, `\sum_{j \in E}` for population sums and `x(t - d)` for a delay; the
-  derived action; and the stationary mean-field equations. The output is deterministic across runs and sessions.
+  derived action; and the stationary mean-field equations. A Stratonovich noise term is written `\circ dW`, a Marcus
+  jump `\diamond dN`, and a compound-Poisson source shows its jump law. The output is deterministic across runs and sessions.
   Nothing is compiled.
 - **Caret parse errors.** An expression that is not an expression is refused when it is declared (`equation`,
   `drift`, `noise` coefficients, `define_function`, `define_kernel`, `point_process`, `extra_action`, and the
