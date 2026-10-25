@@ -130,6 +130,10 @@ _PIPELINE_EXPORTS = {
     'MEFallbackWarning':         'api.me_output',
     'MEConditioningWarning':     'api.me_output',
     'slice_me':                  'api.me_output',
+    # exact master-equation oracle for lattice jump processes
+    'master_equation':           'api.master_equation',
+    'MasterEquation':            'api.master_equation',
+    'TruncationWarning':         'api.master_equation',
     # exact S(omega), S(0), int_0^T C, tau_c of a k = 2 result
     'spectra':                   'api.spectra',
     'SpectraWarning':            'api.spectra',
