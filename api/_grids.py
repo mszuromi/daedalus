@@ -15,6 +15,31 @@ from __future__ import annotations
 import numpy as np
 
 
+def is_real_number(v):
+    """``v`` is a real scalar: a Python / numpy number or a Sage ``Integer`` /
+    ``Rational`` / ``RealNumber`` (the Sage Jupyter kernel turns every literal
+    into one of those, and none is an ``int`` / ``float``).  Not a bool, not a
+    string."""
+    if isinstance(v, (bool, np.bool_, str, bytes, complex, np.complexfloating)):
+        return False
+    try:
+        float(v)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def is_integer_number(v):
+    """``v`` is a real scalar with an integer value (a Sage ``Integer``, or
+    ``13.0``)."""
+    if not is_real_number(v):
+        return False
+    try:
+        return float(v) == int(v)
+    except (OverflowError, ValueError):
+        return False
+
+
 def require_finite(arr, name):
     bad = ~np.isfinite(arr)
     if bad.any():
@@ -34,9 +59,7 @@ def resolve_grid(g, name='grid'):
                 f"{name} tuple must be (lo, hi, n); got a {len(g)}-tuple "
                 f"{g!r}. For an arbitrary grid pass a list/array instead.")
         n = g[2]
-        if (isinstance(n, bool) or not isinstance(n, (int, float, np.integer,
-                                                      np.floating))
-                or float(n) != int(n) or int(n) < 1):
+        if not is_integer_number(n) or int(n) < 1:
             raise ValueError(
                 f"{name}={g!r}: the third entry of a (lo, hi, n) range is "
                 f"the number of points and must be an integer >= 1.")
@@ -44,9 +67,7 @@ def resolve_grid(g, name='grid'):
         require_finite(arr, name)
         return arr
     if (isinstance(g, list) and len(g) == 3
-            and isinstance(g[2], (int, float))
-            and not isinstance(g[2], bool)
-            and float(g[2]) >= 2 and float(g[2]) == int(g[2])):
+            and is_integer_number(g[2]) and float(g[2]) >= 2):
         lo, hi, n = g[0], g[1], int(g[2])
         raise ValueError(
             f"{name}={g!r} is a 3-element LIST, so it is read as 3 literal "

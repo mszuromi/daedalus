@@ -281,7 +281,7 @@ def _ext_is_valid(model: dict, ext, k: int) -> bool:
         if len(e) < 2:
             return True
         pop = e[1]
-        if isinstance(pop, bool) or not isinstance(pop, (int, np.integer)):
+        if isinstance(pop, (bool, np.bool_)) or not hasattr(pop, '__index__'):
             return False
         return 1 <= int(pop) <= _field_pop_size(model, e[0])
     return all(_ok(e) for e in ext)
@@ -636,6 +636,7 @@ class Config:
         again by :func:`run`, as fields may be set afterwards) instead of
         deep inside the run."""
         from api.compute import _entry_int
+        from api._grids import is_real_number
         for _n, _lo in (('k', 1), ('max_ell', 0), ('n_workers', 1),
                         ('fixed_point_index', 0), ('mf_dae_n_starts', 1),
                         ('taylor_order', 1)):
@@ -654,8 +655,7 @@ class Config:
                 f"Config.use_cache must be True, False or None; got "
                 f"{self.use_cache!r}.")
         if self.accuracy is not None and not (
-                isinstance(self.accuracy, (int, float, np.integer, np.floating))
-                and not isinstance(self.accuracy, bool)
+                is_real_number(self.accuracy)
                 and np.isfinite(float(self.accuracy))
                 and float(self.accuracy) > 0):
             raise ValueError(
