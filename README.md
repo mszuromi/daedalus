@@ -211,6 +211,35 @@ cc = me.correlation([0.0, 1.0, 2.0]).C   # (lam/mu) exp(-mu tau)
 See `docs/master_equation.md` for the conventions, the diagnostics and what the loop expansion should and should not
 match.
 
+### Covariance matrix over many fields, and parameter derivatives (k = 2)
+
+`dd.covariance_matrix` returns `Sigma[n, i, j] = <dx_i(0) dx_j(tau_n)>` for every pair of a list of fields in one call
+(`api/covariance.py`). The mean field, propagator and poles are computed once for the whole matrix, and each pair's
+diagrams are enumerated and evaluated once. Every computed entry is the separate `compute_cumulants` result on the
+same grid, bit for bit:
+
+```python
+import numpy as np
+import daedalus as dd
+model = dd.load_model('ou_quartic_coupled')[0]
+cm = dd.covariance_matrix(model, ['x', 'y'], 1, tau_grid=np.array([-2.0, 0.0, 2.0]),
+                          derivatives=['J1'])     # also dd.Config(covariance={...})
+cm['Sigma']                    # (n_tau, 2, 2), complex like C_tau; per loop order: cm['Sigma_by_ell']
+cm['Sigma0']                   # the tau = 0 matrix
+d = cm['derivatives']['J1']
+d['dSigma'], d['error']        # dSigma/dJ1 and its error estimate
+d['dmf']                       # dx*/dJ1 of the saddle (implicit differentiation)
+```
+
+- **Lower triangle.** The pairs `i <= j` are run. The `(j, i)` entry is `C_ij(-tau)` where `-tau` is on the grid and
+  `tau != 0`. The other points get their own `(j, i)` run: `tau = 0` is the Ito left limit `C_ji(0-)`, which differs
+  from `C_ij(0)` when `C_ij` jumps at 0, as a spike train's cross-covariance can. `pairs='all'` runs every ordered pair.
+- **Derivatives.** They are fourth-order central differences (steps `h` and `2h`, `h = 1e-3 |theta|`) of the shared
+  pass, with four extra passes per parameter. `error` is a conservative estimate. A stencil whose saddles leave the
+  base point's branch is refused with `CovarianceDerivativeError`.
+- **Options.** The other `compute_cumulants` options are passed to every run, and each run keeps its own memory
+  guard. Spatial models, `t_min` and `spectra` are refused.
+
 ## Running from a config file
 
 The `daedalus run` command takes a YAML file instead of a script (needs PyYAML, which the conda environment has):

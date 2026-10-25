@@ -34,7 +34,7 @@ def _exec(code, name):
 def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
-               'spectra={', 'dd.build_cache(', 'dd.master_equation(']
+               'spectra={', 'dd.build_cache(', 'dd.master_equation(', 'dd.covariance_matrix(']
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -86,3 +86,11 @@ def test_readme_master_equation_example_is_the_poisson_law():
     import numpy as np
     np.testing.assert_allclose(ns['k4'].ravel(), 20.0, rtol=1e-9)             # lam / mu
     np.testing.assert_allclose(ns['cc'][:, 0, 0], 20.0 * np.exp(-np.array([0.0, 1.0, 2.0])), rtol=1e-9)
+
+
+def test_readme_covariance_example_is_ok():
+    ns = _exec(_block('dd.covariance_matrix('), 'covariance example')
+    cm, d = ns['cm'], ns['d']
+    assert cm['status'] == 'ok' and cm['Sigma'].shape == (3, 2, 2)
+    assert cm['shared_stages']['misses'] == 1
+    assert d['status'] == 'ok' and float(d['error'].max()) < 1e-5

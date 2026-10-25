@@ -53,6 +53,10 @@ The orchestration layer `dd` drives:
 - `master_equation.py` — the exact master-equation oracle for lattice jump processes (`dd.master_equation`): sparse
   stationary solve, cumulants `k <= 4`, Krylov / `expm_multiply` lag correlations, truncation diagnostics, the
   Kramers-Moyal extrapolation, and the bridge to `compute_cumulants` (`docs/master_equation.md`).
+- `covariance.py` — the k = 2 covariance matrix over many fields in one call (`dd.covariance_matrix`,
+  `Config(covariance=)`): `compute_cumulants` per pair inside `compute.stage_memo()`, which shares the
+  expansion, propagator, mean field and poles of one parameter point; parameter derivatives by
+  fourth-order differences, with an implicit-function check of the saddle.
 - `symbolic_out.py` — the tree-level covariance as symbolic expressions in the Fourier domain,
   with exports (sympy, LaTeX, a numpy callable, JSON) and its time-domain inverse.
 - `_pole_clusters.py` — near-degenerate and repeated propagator poles: replaces a nearly
