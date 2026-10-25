@@ -134,6 +134,47 @@ Everything the spatial pipeline refuses (UV-divergent subgraphs, periodic
 loops, switch-on transients, ...) it refuses for these models as for the
 hand-written ones.  Conserved noise (``div`` of a white vector noise) is not
 supported yet.
+
+Diagnostics: ``check``, ``latex`` and parse errors
+--------------------------------------------------
+Presentation only: none of these changes the action, the equations or the built
+model.
+
+:meth:`SDE.check` ``(k=2, max_ell=1, params=None)`` returns an
+:class:`SDEReport` (a dict, printed unless ``verbose=False``): the declarations
+(fields with their response fields, parameters, functions, kernels,
+populations, operators); the derived action, split into one ``dynamics`` term
+per field, one ``noise`` term per source (with the source's type and
+parameters) and the ``extra_action`` terms; the mean-field equations; the
+interpretation corrections, each labelled with its source (the Stratonovich ->
+Ito drift terms, and the Marcus noise terms with their route and order); the
+vertex table of the action expanded at the saddle (response and field leg
+counts, coefficient, degree, and the loop orders the vertex can enter for
+``k`` external legs: the degree count ``ell >= (degree - k)/2``, to which the
+enumerator's causality rules add); the propagator structure (class, poles,
+stability, saddle, linear operator and noise matrix, from the analyzer); and
+warnings (a Marcus series or CGF truncation, terms that enter the mean field
+only, the analyzer's warnings and errors).  No integration is done: the cost
+is the build and the expansion of the action.  It reads
+:meth:`action_text`, :meth:`equations` and the analyzer (:mod:`api.analyze`)
+rather than deriving anything a second time.
+
+:meth:`SDE.latex` returns ``{'sde', 'noise', 'action', 'mean_field'}``, LaTeX
+strings from Sage's ``latex()`` (:mod:`api.sde_latex`): the equations as written
+(``dx = (...) dt + c sqrt(var) dW`` with ``dN`` for jump sources, the operator
+form ``(tau dt + 1) v = ...`` when the left side is not ``Dt x``, ``Dt`` typeset
+as ``\\partial_t`` and the Laplacian as ``\\nabla^2``), the noise sources, the
+derived action, and the stationary mean-field equations.  The output depends on
+the declarations only and is the same on every run.  Nothing is compiled.
+
+Parse errors: every expression the front end reads (equation sides, noise
+coefficients and parameters, function bodies, kernels, point-process rates,
+``extra_action``) is checked when it is declared.  A malformed one raises
+:class:`SDEError` with the string, a caret (``^``) under the failing character,
+the field or noise it belongs to, and a hint; an undeclared name suggests the
+closest declared one, and an operator written inside a function argument or a
+noise coefficient says so.  The exception types are unchanged (``SDEError`` is
+a :class:`~api.noise.NoiseError` and a ``ValueError``).
 """
 from __future__ import annotations
 
@@ -145,14 +186,115 @@ from typing import Optional
 from sage.all import SR, integrate, oo, assume, assumptions, forget, function
 
 from api.noise import (NoiseError, NoiseSource, THETA, parse_expr,
-                       expr_to_text, expr_names, _MATH_FUNCS, _SAGE_PRINTED_CALLS)
+                       expr_to_text, expr_names, _MATH_FUNCS, _SAGE_PRINTED_CALLS,
+                       expression_syntax_problem, format_caret_error, parse_failure_message)
 from api.operators import Laplacian, Operator, TimeDerivative
 
-__all__ = ['SDE', 'SDEError']
+__all__ = ['SDE', 'SDEError', 'SDEReport']
 
 
 class SDEError(NoiseError):
     """Raised for an invalid SDE declaration."""
+
+
+class SDEReport(dict):
+    """The result of :meth:`SDE.check`: a dict with the keys documented there;
+    ``str(report)`` / :meth:`text` is the printed form."""
+
+    def text(self) -> str:
+        return _report_text(self)
+
+    __str__ = text
+
+
+_MAX_VERTEX_ROWS = 24
+
+
+def _clip(text, n: int = 160) -> str:
+    text = str(text)
+    return text if len(text) <= n else text[:n - 1].rstrip() + f' ... [{len(text)} characters]'
+
+
+def _report_text(r) -> str:
+    L = []
+    decl = r['declarations']
+    L.append(f"SDE {r['name']!r}: {r['interpretation']}"
+             + (f", space dimension {r['space']}" if r['space'] else ', time only'))
+    L.append('')
+    L.append('Declarations')
+    L.append('  fields:     ' + ', '.join(
+        f"{f['name']} (response {f['response']}"
+        + (f", spike train of {f['exposed_source']}" if f['exposed_source'] else '') + ')'
+        for f in decl['fields']))
+    if decl['parameters']:
+        L.append('  parameters: ' + ', '.join(
+            p['name'] + ('' if p['default'] is None else f"={p['default']}")
+            + (f" [{p['domain']}]" if p['domain'] else '') for p in decl['parameters']))
+    for fn in decl['functions']:
+        L.append(f"  function:   {fn['name']}({', '.join(fn['args'])}) = {fn['expression']}")
+    for kn in decl['kernels']:
+        L.append('  kernel:     ' + kn['name'] + ' ' + ', '.join(
+            f'{q}={kn[q]}' for q in ('time_expr', 'freq_image', 'delay') if q in kn))
+    L.append('  operators:  ' + ', '.join(f'{n}: {t}' for n, t in decl['operators'].items()))
+    L.append('')
+    L.append('Action  S = sum of')
+    for t in r['action']['terms']:
+        if t['kind'] == 'dynamics':
+            L.append(f"  [dynamics {t['field']}]  {_clip(t['text'])}")
+        elif t['kind'] == 'noise':
+            st = t.get('source_type', {})
+            ps = st.get('params')
+            desc = st.get('type', '') + (' ' + ', '.join(f'{q}={v}' for q, v in ps.items())
+                                         if ps else '')
+            L.append(f"  [noise {t['source']}: {desc.strip()}]  {_clip(t['text'])}")
+        else:
+            L.append(f"  [extra]  {_clip(t['text'])}")
+    L.append('')
+    L.append('Mean-field equations (lhs at Dt = 0 equals rhs)')
+    for e in r['mean_field']:
+        L.append(f"  {e['field']}:  {_clip(e['lhs'])}  =  {_clip(e['rhs'])}")
+    if r['corrections']:
+        L.append('')
+        L.append('Interpretation corrections')
+        for c in r['corrections']:
+            L.append(f"  [{c['source']}]  {c['meaning']}")
+    v = r.get('vertices')
+    L.append('')
+    if v is None:
+        L.append('Vertices: not available (' + str(r.get('analysis_error')) + ')')
+    else:
+        L.append(f"Vertices (Taylor order {v['taylor_order']}; loops listed for k={v['k']}, "
+                 f"max_ell={v['max_ell']})")
+        L.append('  resp  field  degree  kind              loops  monomial -> coefficient')
+        for row in v['rows'][:_MAX_VERTEX_ROWS]:
+            loops = ','.join(map(str, row['loops'])) or '-'
+            L.append(f"  {row['response_legs']:>4}  {row['field_legs']:>5}  {row['degree']:>6}  "
+                     f"{row['kind']:<16}  {loops:>5}  {row['monomial']} -> "
+                     f"{_clip(row['coefficient'], 100)}")
+        if len(v['rows']) > _MAX_VERTEX_ROWS:
+            L.append(f"  ... {len(v['rows']) - _MAX_VERTEX_ROWS} more monomials "
+                     f"(report['vertices']['rows'])")
+    p = r.get('propagator')
+    if p:
+        L.append('')
+        L.append('Propagator')
+        L.append(f"  class {p['class']}, poles {p['n_poles']}"
+                 + (f", stable {p['stable']}" if p['stable'] is not None else '')
+                 + f", noise {p['noise_class']}")
+        if p['saddle']:
+            L.append('  saddle: ' + ', '.join(f'{n}={v_}' for n, v_ in p['saddle'].items()))
+        if p['linear_operator']:
+            L.append('  K(Dt) = ' + _clip(' + '.join(f'({c})*{m}'
+                                                 for m, c in p['linear_operator'].items())))
+        if p['noise_matrix']:
+            L.append('  noise = ' + _clip(' + '.join(f'({c})*{m}'
+                                               for m, c in p['noise_matrix'].items())))
+    if r.get('warnings'):
+        L.append('')
+        L.append('Warnings')
+        for w in r['warnings']:
+            L.append(f"  {w['level']:<7} {w['code']}: {_clip(w['message'], 220)}")
+    return '\n'.join(L)
 
 
 _KEYWORDS = {'sum', 'for', 'in', 'Dt', 'Conv', 'I', 'pi', 'e',
@@ -196,6 +338,15 @@ def _split_top_level(text: str, sep: str = ','):
             cur += ch
     out.append(cur)
     return out
+
+
+def _norm_at(text, index: int):
+    """``text`` with its whitespace collapsed, and where character ``index`` of
+    ``text`` falls in it."""
+    text = str(text)
+    head = text[:index]
+    return ' '.join(text.split()), len(' '.join(head.split())) + (
+        1 if head.strip() and head[-1:].isspace() else 0)
 
 
 def _wrap(text) -> str:
@@ -333,6 +484,11 @@ class SDE:
         self._marcus_route = 'auto'
         self._marcus_terms: 'OrderedDict[str, dict]' = OrderedDict()
         self._ito_drift: dict = {}
+        # what the last derivation emitted, by origin (read by check() and
+        # latex(); the action text itself is unchanged by it)
+        self._action_log: list[dict] = []
+        self._drift_log: list[dict] = []
+        self._mf_only_log: list[dict] = []
         self.notes: list[str] = []
 
     # ── declarations (passed through to TemporalModelBuilder) ─────────
@@ -371,6 +527,7 @@ class SDE:
                         population: Optional[str] = None):
         _check_declarable(name, 'function')
         self._check_not_operator(name, 'function')
+        self._syntax_check(expression, f'define_function({name!r}) expression')
         if name in _SAGE_PRINTED_CALLS:
             # A call of it means Sage's own function in noise expressions and the saddle solve.
             raise SDEError(f'function name {name!r} is reserved (Sage\'s {name}); choose another '
@@ -392,6 +549,9 @@ class SDE:
         Kernel.exponential('tau')`` (:class:`api.delay.Kernel`)."""
         _check_declarable(name, 'kernel')
         self._check_not_operator(name, 'kernel')
+        for what, expr in (('time_expr', time_expr), ('freq_image', freq_image), ('delay', delay)):
+            if isinstance(expr, str):
+                self._syntax_check(expr, f'define_kernel({name!r}) {what}')
         if kernel is not None:
             if time_expr is not None or freq_image is not None or delay is not None:
                 raise SDEError(f'define_kernel({name!r}): give kernel= alone.')
@@ -541,8 +701,13 @@ class SDE:
         self._undeclared_canonical(text, where)
         for n in self._operators:
             if not (n == 'Dt' and self._dt_implicit) and self._has_token(text, n):
-                raise SDEError(f'{where} uses the operator {n!r}; operators act in the '
-                               f'equations only.')
+                shown = ' '.join(str(text).split())
+                raise SDEError(format_caret_error(
+                    shown, max(self._token_at(shown, n), 0),
+                    f'{where} uses the operator {n!r}; operators act in the equations '
+                    f'only.',
+                    f'move the operator to the equation\'s lhs/rhs, e.g. '
+                    f'{n}(x) or {n}*x, not inside a function argument or a coefficient'))
 
     # ── dynamics ──────────────────────────────────────────────────────
     def equation(self, field: str, lhs: str, rhs: str = '0'):
@@ -555,6 +720,8 @@ class SDE:
             raise SDEError(f'equation({field!r}): declare the field first with .field().')
         if field in self._eqs:
             raise SDEError(f'equation({field!r}): the field already has an equation.')
+        self._syntax_check(lhs, f'equation({field!r}) lhs')
+        self._syntax_check(rhs, f'equation({field!r}) rhs')
         tnames = self._time_names()
         self._undeclared_canonical(lhs, f'equation({field!r}) lhs')
         self._undeclared_canonical(rhs, f'equation({field!r}) rhs')
@@ -563,7 +730,16 @@ class SDE:
                            f'derivative {" or ".join(tnames) or "Dt"} (a dynamical equation).')
         for n in tnames:
             if self._has_token(rhs, n):
-                raise SDEError(f'equation({field!r}): {n} found in rhs; it belongs on the lhs.')
+                shown = ' '.join(str(rhs).split())
+                at = max(self._token_at(shown, n), 0)
+                in_call = re.search(r'\b(?!' + re.escape(n) + r'\b)[A-Za-z_]\w*\s*\([^()]*$',
+                                    shown[:at]) is not None
+                raise SDEError(format_caret_error(
+                    shown, at, f'equation({field!r}) rhs: the time derivative {n!r} is in the rhs',
+                    (f'{n} is an operator and cannot be the argument of a function; operators '
+                     f'act on fields, e.g. {n}(x)' if in_call else
+                     f'the time derivative belongs on the lhs: lhs={n}({field}) or '
+                     f"lhs='{n}*{field}'")))
         rhs = self._delayed_fields(rhs, field)
         rhs = self._compose_kernels(rhs, f'equation({field!r})')
         if re.search(r'\bt\b', rhs) or re.search(r'\bt\b', lhs):
@@ -649,6 +825,9 @@ class SDE:
         if name in self._sources:
             raise SDEError(f'noise({name!r}): a source with this name exists.')
         couples = dict(couples or {})
+        for f, c in couples.items():
+            if isinstance(c, str):
+                self._syntax_check(c, f'noise({name!r}) coefficient for {f!r}')
         if not couples and expose is None:
             raise SDEError(f'noise({name!r}): give couples={{field: coefficient}} '
                            f'or expose=<field name>.')
@@ -684,6 +863,8 @@ class SDE:
         rate = ' '.join(str(rate).split())
         if not rate:
             raise SDEError(f'point_process({name!r}): empty rate.')
+        self._syntax_check(rate, f'point_process({name!r}) rate')
+        self._syntax_check(size, f'point_process({name!r}) size')
         if re.search(r'\bDt\b', rate) or re.search(r'\bt\b', rate):
             raise SDEError(f'point_process({name!r}): the rate may not contain Dt or '
                            f'the time t (a delayed field is Conv(K, x) with '
@@ -713,6 +894,7 @@ class SDE:
     def extra_action(self, text: str):
         """Append ``text`` to the derived action (written with its own
         ``sum(... for i in pop)`` wrapper if it is indexed)."""
+        self._syntax_check(text, 'extra_action')
         self._extra.append(text)
         return self
 
@@ -723,6 +905,13 @@ class SDE:
             'on the builder returned by to_builder().')
 
     # ── helpers ───────────────────────────────────────────────────────
+    @staticmethod
+    def _syntax_check(text, where: str):
+        """Refuse an expression string that is not an expression, naming
+        ``where`` it was declared and marking the failing character."""
+        if isinstance(text, str) and expression_syntax_problem(' '.join(text.split())):
+            raise SDEError(parse_failure_message(text, where))
+
     def _check_new_name(self, name):
         if not re.fullmatch(r'[A-Za-z]\w*', name) or '__' in name:
             raise SDEError(f'{name!r} is not a valid field name.')
@@ -851,10 +1040,18 @@ class SDE:
                     raise SDEError(f'{where}: unbalanced parentheses after {name}(.')
                 arg_raw = text[j + 1:k - 1]
                 if not arg_raw.strip() or len(_split_top_level(arg_raw)) != 1:
-                    raise SDEError(f'{where}: {name}(...) takes one argument; got '
-                                   f'{text[m.start():k]!r}.')
+                    shown, at = _norm_at(text, m.start())
+                    raise SDEError(format_caret_error(
+                        shown, at, f'{where}: {name}(...) takes one argument; got '
+                        f'{text[m.start():k]!r}', f'write {name}(u) for one field or '
+                        f'expression u'))
                 arg_v1 = self._translate(arg_raw, 'v1', info, where).strip()
-                if not self._linear_in_fields(arg_v1, f'{where}: {name}({arg_raw.strip()})'):
+                try:
+                    linear = self._linear_in_fields(arg_v1, f'{where}: {name}({arg_raw.strip()})')
+                except SDEError as exc:
+                    shown, at = _norm_at(text, m.start())
+                    raise SDEError(format_caret_error(shown, at, str(exc))) from exc
+                if not linear:
                     if not op.nonlinear_argument:
                         raise SDEError(
                             f'{where}: {name}({arg_raw.strip()}) acts on a nonlinear '
@@ -876,11 +1073,34 @@ class SDE:
                 out += text[pos:m.start()] + rep
                 pos = k
             else:                                                     # product style
+                self._refuse_operator_argument(text, m, name, where)
                 info['product'] = True
                 rep = op.v1_symbol if style == 'v1' else f'_opprod_{op.ir_call}'
                 out += text[pos:m.start()] + rep
                 pos = m.end()
         return out + text[pos:]
+
+    def _refuse_operator_argument(self, text: str, m, name: str, where: str):
+        """An operator written bare inside the argument of a function
+        (``exp(lap)``, ``sin(dt)``): operators act on fields."""
+        depth = 0
+        for k in range(m.start() - 1, -1, -1):
+            if text[k] in ')]':
+                depth += 1
+            elif text[k] in '([':
+                if depth == 0:
+                    fn = re.search(r'([A-Za-z_]\w*)\s*$', text[:k])
+                    if (text[k] == '(' and fn and fn.group(1) not in self._operators
+                            and fn.group(1) not in ('sum', 'Conv')):
+                        shown, at = _norm_at(text, m.start())
+                        raise SDEError(format_caret_error(
+                            shown, at,
+                            f'{where}: the operator {name!r} is the argument of the function '
+                            f'{fn.group(1)!r}',
+                            f'operators act on fields, not inside a function: write '
+                            f'{name}(u) for a field u (or {name}*u), outside {fn.group(1)}(...)'))
+                    return
+                depth -= 1
 
     def _field_syms(self) -> list:
         return [SR.var(f + '__i') for f in self._fields]
@@ -946,17 +1166,70 @@ class SDE:
             xs = [x for x in self._field_syms() if c.has(x)]
             if (len(xs) != 1 or not c.is_polynomial(xs[0]) or c.degree(xs[0]) != 1
                     or not (t.is_polynomial(_DT) and t.is_polynomial(_LAP))):
-                raise SDEError(
-                    f'{where}: the operator term {expr_to_text(t)} does not act on one '
-                    f'field linearly; write an operator acting on an expression in call '
-                    f'style (e.g. lap(u^2)).')
+                shown = expr_to_text(t)
+                op = next((o for o in ('Laplacian', 'Dt') if self._has_token(shown, o)), 'Laplacian')
+                raise SDEError(format_caret_error(
+                    shown, max(self._token_at(shown, op), 0),
+                    f'{where}: the operator term does not act on one field linearly',
+                    'an operator acts on one field, outside any function: write '
+                    'lap(u) or D*lap(u); an operator acting on an expression is written in '
+                    'call style (e.g. lap(u^2))'))
 
-    def _check_text(self, text: str, what: str):
+    def _check_text(self, text: str, what: str, display: Optional[str] = None):
+        """Refuse a symbol of ``text`` that is not declared.  ``display``: the
+        text as the user wrote it (``text`` has the operators in the engine's
+        spelling), where the caret is placed."""
         toks = set(re.findall(r'\b([A-Za-z_]\w*)\b', text))
-        unknown = sorted(toks - self._allowed_names())
+        allowed = self._allowed_names()
+        unknown = sorted(toks - allowed)
         if unknown:
-            raise SDEError(f'{what}: undeclared symbol(s) {unknown}; every symbol must '
-                           f'be a declared field, parameter, function, kernel or index.')
+            shown = ' '.join(str(text if display is None else display).split())
+            first = min(unknown, key=lambda u: (self._token_at(shown, u), u))
+            at = self._token_at(shown, first)
+            if at < 0:
+                shown, at = ' '.join(str(text).split()), self._token_at(' '.join(str(text).split()), first)
+            more = [u for u in unknown if u != first]
+            raise SDEError(format_caret_error(
+                shown, max(at, 0),
+                f'{what}: undeclared symbol {first!r}'
+                + (f' (also undeclared: {more})' if more else ''),
+                self._name_hint(first, allowed, shown, at)))
+
+    def _source_error(self, name, src, allowed, exc) -> SDEError:
+        """The undeclared symbol of a noise source's parameter, with a caret
+        under it in that parameter's text."""
+        names = set(allowed) | self._allowed_names()
+        for k, v in (getattr(src, 'params', None) or {}).items():
+            text = expr_to_text(v)
+            unknown = [u for u in re.findall(r'\b([A-Za-z_]\w*)\b', text)
+                       if u not in names and u not in ('theta',)]
+            if unknown:
+                u = unknown[0]
+                at = self._token_at(text, u)
+                return SDEError(format_caret_error(
+                    text, max(at, 0),
+                    f'noise({name!r}) {type(src).__name__}({k}=...): undeclared symbol {u!r}',
+                    self._name_hint(u, names, text, at)))
+        return SDEError(f'noise({name!r}): {exc}')
+
+    @staticmethod
+    def _token_at(text: str, name: str) -> int:
+        m = re.search(rf'(?<![\w.]){re.escape(name)}(?![\w])', text)
+        return m.start() if m else -1
+
+    def _name_hint(self, name: str, allowed, text: str = '', at: int = -1) -> str:
+        import difflib
+        pool = sorted(a for a in allowed if not a.endswith('__i') and a not in _KEYWORDS
+                      and a not in ('pop', 'pop_all', 'i', 'j', 'k', 'l'))
+        close = difflib.get_close_matches(name, pool, n=1, cutoff=0.6)
+        if close:
+            return f'did you mean {close[0]!r}? (otherwise declare {name!r})'
+        called = at >= 0 and re.match(r'\s*\(', text[at + len(name):]) is not None
+        if called:
+            return (f"declare the function with .define_function({name!r}, args=[...], "
+                    f"expression=...) (a math function is exp, log, sqrt, sin, ...)")
+        return (f'declare {name!r} with .parameter({name!r}, default=...) or .field({name!r}); '
+                f'every symbol must be a declared field, parameter, function, kernel or index')
 
     def _index(self, text) -> str:
         """Bare field names -> ``x[i]``; bare function calls -> ``phi[i](``;
@@ -981,7 +1254,16 @@ class SDE:
         return out
 
     def _parse(self, text, what):
-        return parse_expr(self._index(text), what=what)
+        try:
+            return parse_expr(self._index(text), what=what)
+        except NoiseError as exc:
+            if not isinstance(exc, SDEError):
+                # point at the user's own text, not the indexed one
+                raw = ' '.join(str(text).split())
+                if raw and expression_syntax_problem(raw):
+                    raise SDEError(parse_failure_message(raw, what)) from exc
+                raise SDEError(str(exc)) from exc
+            raise
 
     def _sym(self, f: str):
         return SR.var(f'{f}__i')
@@ -1217,6 +1499,7 @@ class SDE:
     def _derive(self) -> dict:
         """Derive the action terms and the mean-field equations."""
         self.notes = []
+        self._action_log, self._drift_log, self._mf_only_log = [], [], []
         for f, info in self._fields.items():
             if info['exposed'] is None and f not in self._eqs:
                 raise SDEError(f'field {f!r} has no equation; call .equation() or .drift().')
@@ -1260,7 +1543,7 @@ class SDE:
                     raise SDEError(f'noise({name!r}): {exc} A spike train whose rate filters '
                                    f'fields (Conv) is declared with point_process({s["expose"]!r}, '
                                    f'rate=...).') from exc
-                raise
+                raise self._source_error(name, s['source'], allowed_src, exc) from exc
             for f, c in s['couples'].items():
                 if f not in self._fields:
                     raise SDEError(f'noise({name!r}): couples to undeclared field {f!r}.')
@@ -1268,8 +1551,8 @@ class SDE:
                 if 't' in expr_names(parse_expr(self._index(str(c)))):
                     raise SDEError(f'noise({name!r}): coefficient depends on t.')
         for f, eq in self._eqs.items():
-            self._check_text(eq['lhs'], f'equation({f!r}) lhs')
-            self._check_text(eq['rhs'], f'equation({f!r}) rhs')
+            self._check_text(eq['lhs'], f'equation({f!r}) lhs', eq['lhs_raw'])
+            self._check_text(eq['rhs'], f'equation({f!r}) rhs', eq['rhs_raw'])
         if self._interp == 'stratonovich':
             for name, s in self._sources.items():
                 if s.get('pp') or not s['source'].is_gaussian:
@@ -1300,8 +1583,7 @@ class SDE:
                 n, size = s['expose'], s['pp']['size']
                 rate = self._index(self._compose_kernels(s['pp']['rate'], f'point_process({n!r})'))
                 jump = f'{n}t[i]' if size == '1' else f'{_wrap(size)}*{n}t[i]'
-                source_terms.setdefault(pop, []).append(
-                    f'{n}t[i]*{n}[i] - (exp({jump}) - 1)*{_wrap(rate)}')
+                self._emit(source_terms, pop, f'{n}t[i]*{n}[i] - (exp({jump}) - 1)*{_wrap(rate)}', name)
                 exposed_eqs.append((n, rate if size == '1' else f'{_wrap(size)}*{_wrap(rate)}'))
                 continue
             coup = {f: self._parse(str(c), f'coefficient of {name} in {f}')
@@ -1325,7 +1607,7 @@ class SDE:
                     n = s['expose']
                     nt = SR.var(f'{n}t__i')
                     term = f'{n}t[i]*{n}[i] - {_wrap(expr_to_text(K_full.subs({THETA: nt})))}'
-                    source_terms.setdefault(pop, []).append(term)
+                    self._emit(source_terms, pop, term, uname)
                     exposed_eqs.append((n, expr_to_text(mean)))
                     for f, c in coup.items():
                         extra_rhs[f].append(c * SR.var(f'{n}__i'))
@@ -1347,9 +1629,11 @@ class SDE:
                     for f, c in coup.items():
                         if not SR(mean).is_zero():
                             mf_rhs[f].append(c * mean)
+                            self._mf_only_log.append({'field': f, 'source': uname,
+                                                      'text': expr_to_text(c * mean)})
                 theta_val = sum(c * SR.var(f'{f}t__i') for f, c in coup.items())
                 K_term = K_full.subs({THETA: theta_val})
-                source_terms.setdefault(pop, []).append(f'-{_wrap(expr_to_text(K_term))}')
+                self._emit(source_terms, pop, f'-{_wrap(expr_to_text(K_term))}', uname)
 
         # Stratonovich -> Ito drift correction (Gaussian sources; under Marcus
         # the Gaussian sources and Gaussian parts, whose Marcus rule it is).
@@ -1369,6 +1653,9 @@ class SDE:
                     if not corr.is_zero():
                         extra_rhs[fi].append(dtcoef[fi] * corr)
                         self._ito_drift.setdefault(fi, []).append(dtcoef[fi] * corr)
+                        self._drift_log.append({'field': fi, 'source': name,
+                                                'rule': self._interp,
+                                                'text': expr_to_text(dtcoef[fi] * corr)})
                         self.notes.append(
                             f'Stratonovich -> Ito: drift of {fi!r} += '
                             f'{expr_to_text(dtcoef[fi] * corr)} (source {name!r}).')
@@ -1388,12 +1675,18 @@ class SDE:
                 rhs_ir = self._index(self._ir_text(eq['rhs_raw'], f'{where} rhs'))
                 rhs_ir = rhs_ir if add.is_zero() else f'{rhs_ir} + {_wrap(expr_to_text(add))}'
                 field_terms.setdefault(pop, []).append(f'{f}t[i]*({lhs_ir} - {_wrap(rhs_ir)})')
+                self._action_log.append({'kind': 'dynamics', 'field': f,
+                                         'text': field_terms[pop][-1],
+                                         'lhs': lhs_ir, 'rhs': rhs_ir})
             else:
                 if spatial:
                     self._check_v1_operator_terms(f'({lhs_txt}) - ({rhs_act})',
                                                   f'equation({f!r})')
                 field_terms.setdefault(pop, []).append(
                     f'{f}t[i]*({lhs_txt} - {_wrap(rhs_act)})')
+                self._action_log.append({'kind': 'dynamics', 'field': f,
+                                         'text': field_terms[pop][-1],
+                                         'lhs': lhs_txt, 'rhs': rhs_act})
             add_mf = sum(mf_rhs[f], SR(0))
             rhs_mf = rhs_act if add_mf.is_zero() else f'{rhs_act} + {_wrap(expr_to_text(add_mf))}'
             lhs_mf, rhs_mf = self._normalise_lhs(f, lhs_txt, rhs_mf)
@@ -1418,6 +1711,7 @@ class SDE:
             for e, e_v1 in zip(self._extra, extras):
                 e_txt = self._ir_text(e, 'extra_action') if ir else e_v1
                 action += f' + ({_strip_index(" ".join(e_txt.split()))})'
+                self._action_log.append({'kind': 'extra', 'text': _strip_index(" ".join(e_txt.split()))})
             for e in mf_eqs:
                 e.update(lhs=_strip_index(e['lhs']), rhs=_strip_index(e['rhs']), population=None)
             self.notes = [_strip_index(n) for n in self.notes]
@@ -1433,6 +1727,7 @@ class SDE:
         action = '\n+ '.join(parts)
         for e in extras:
             action += f'\n+ ({self._rename_pop(" ".join(e.split()))})'
+            self._action_log.append({'kind': 'extra', 'text': self._rename_pop(" ".join(e.split()))})
         return {'action': action, 'equations': mf_eqs}
 
     def _check_spatial_scope(self):
@@ -1731,7 +2026,8 @@ class SDE:
             lin = H.diff(resp[f]).subs(zero)
             if not lin.is_zero():
                 mf_rhs[f].append(lin)
-        source_terms.setdefault(pop, []).append(f'-{_wrap(expr_to_text(H))}')
+                self._mf_only_log.append({'field': f, 'source': name, 'text': expr_to_text(lin)})
+        self._emit(source_terms, pop, f'-{_wrap(expr_to_text(H))}', name)
         self.notes.append(
             f"Marcus: source {name!r} acts through the flow of its coupling; the "
             f"action carries sum_k kappa_k/k! D_k to order {N} (SDE.series_order); "
@@ -1838,7 +2134,8 @@ class SDE:
             lin = H.diff(resp[f]).subs(zero)
             if not lin.is_zero():
                 mf_rhs[f].append(lin)
-        source_terms.setdefault(pop, []).append(f'-{_wrap(expr_to_text(H))}')
+                self._mf_only_log.append({'field': f, 'source': name, 'text': expr_to_text(lin)})
+        self._emit(source_terms, pop, f'-{_wrap(expr_to_text(H))}', name)
         self.notes.append(
             f"Marcus: source {name!r} acts through the closed-form flow of its affine "
             f"coupling; the action carries its exact noise term to {N} response legs "
@@ -1985,6 +2282,11 @@ class SDE:
         from api.pp_simulate import simulate
         return simulate(self, **kw)
 
+    def _emit(self, source_terms, pop, text, owner):
+        """Add the noise term ``text`` of source ``owner`` to the action."""
+        source_terms.setdefault(pop, []).append(text)
+        self._action_log.append({'kind': 'noise', 'source': owner, 'text': text})
+
     def _check_derived_names(self):
         """Refuse a parameter, function or kernel named like a symbol the
         compiler derives from a field ``f``: its response field ``ft``, its
@@ -2035,6 +2337,252 @@ class SDE:
             # compute_cumulants warns when (k, max_ell) can reach them
             m['noise_declared_orders'] = declared
         return m
+
+    # ── diagnostics ───────────────────────────────────────────────────
+    def check(self, k: int = 2, max_ell: int = 1, *, params: Optional[dict] = None,
+              verbose: bool = True) -> 'SDEReport':
+        """What the front end derives from the declarations, without any
+        Phase J work.
+
+        Returns an :class:`SDEReport` (a dict, printed as text when
+        ``verbose``; ``str(report)`` is the text) with the keys
+
+        * ``declarations``: fields (with their response fields), parameters,
+          functions, kernels, populations, operators;
+        * ``action``: the derived MSR action (``text``, identical to
+          :meth:`action_text`) and its ``terms``: one ``dynamics`` term per
+          field, one ``noise`` term per source (``source``, the source's type
+          and parameters), the ``extra_action`` terms;
+        * ``mean_field``: the mean-field equations (as :meth:`equations`);
+        * ``corrections``: the interpretation-conversion drift terms
+          (Stratonovich, Marcus Gaussian parts), each with its ``source``,
+          and the Marcus noise terms of the jump sources (``route``,
+          ``order``);
+        * ``vertices``: the expanded action at the mean-field saddle for the
+          cumulant order ``k`` with loops up to ``max_ell`` (Taylor order
+          ``max(k + 2*max_ell, 2)``): one row per monomial with the numbers of
+          response and field legs, the coefficient, the degree and the loop
+          orders (for ``k`` external legs) it can enter; ``None`` when the
+          model cannot be expanded (``analysis_error`` says why);
+        * ``propagator``: the structure of the linear operator and the noise
+          matrix (class, poles, stability, saddle), from the analyzer;
+        * ``warnings``: ``{'code', 'message'}`` for a truncated Marcus series
+          or noise CGF, terms that enter the mean field only, and the
+          analyzer's warnings and errors.
+
+        ``params`` overrides the declared parameter defaults for the
+        saddle.  Nothing is integrated: the cost is the build and the
+        expansion of the action (about a second for a small model).  The
+        action and the equations are those of :meth:`action_text` and
+        :meth:`equations`; ``check`` only reads them."""
+        self._check_derived_names()
+        d = self._derive()
+        notes = list(self.notes)
+        rep = SDEReport(
+            name=self.name, interpretation=self._interp, space=self._space,
+            declarations=self._declarations_report(),
+            action=self._action_report(d),
+            mean_field=[{k_: e[k_] for k_ in ('field', 'lhs', 'rhs', 'population')}
+                        for e in d['equations']],
+            corrections=self._corrections_report(),
+            notes=notes, k=int(k), max_ell=int(max_ell))
+        warnings_ = self._truncation_warnings()
+        rep['vertices'], rep['propagator'], rep['analysis_error'] = None, None, None
+        try:
+            model = self.build()
+            self._analysis_report(rep, model, int(k), int(max_ell), params, warnings_)
+        except Exception as exc:                          # noqa: BLE001
+            rep['analysis_error'] = f'{type(exc).__name__}: {exc}'
+            warnings_.append({'code': 'ANALYSIS_UNAVAILABLE', 'level': 'warning',
+                              'message': f'the vertex table and the propagator could not be '
+                                         f'derived ({type(exc).__name__}: {exc})'})
+        rep['warnings'] = warnings_
+        if verbose:
+            print(rep.text())
+        return rep
+
+    def latex(self) -> dict:
+        """LaTeX strings for the model: ``'sde'`` (the equations as written,
+        ``dx = (...) dt + ... dW``, operators typeset as ``\\partial_t`` and
+        ``\\nabla^2``), ``'noise'`` (the sources: ``W`` Gaussian, ``N`` Poisson
+        or compound Poisson, ``L`` other Levy sources), ``'action'`` (the
+        derived MSR action, as :meth:`action_text`) and ``'mean_field'`` (the
+        stationary mean-field equations, fields at the saddle).  Each is an
+        ``aligned`` environment (``'noise'`` is empty without sources).
+        Nothing is compiled; the output depends on the declarations only."""
+        from api.sde_latex import render_latex
+        self._check_derived_names()
+        return render_latex(self)
+
+    def _declarations_report(self) -> dict:
+        pops = self._populations()
+        return {
+            'populations': [{'name': p['name'], 'size': p['size']} for p in pops],
+            'fields': [{'name': f, 'response': f + 't', 'population': info['population'],
+                        'exposed_source': info['exposed'], 'description': info['description']}
+                       for f, info in self._fields.items()],
+            'parameters': [{'name': n, 'default': kw['default'], 'domain': kw['domain'],
+                            'indexed_by': kw['indexed_by'] if kw['indexed_by'] is not None
+                            else (['pop'] if kw['indexed'] else None)}
+                           for (n,), kw in self._params],
+            'functions': [{'name': n, 'args': list(a), 'expression': e}
+                          for (n, a, e), _kw in self._functions],
+            'kernels': [{'name': n, **{q: v for q, v in kn.items()
+                                       if q in ('time_expr', 'freq_image', 'delay')
+                                       and v is not None}}
+                        for n, kn in self._kernels.items()],
+            'operators': {n: type(o).__name__ for n, o in self._operators.items()},
+        }
+
+    @staticmethod
+    def _describe_source(src) -> dict:
+        if src is None:
+            return {'type': 'PointProcess'}
+        out = {'type': type(src).__name__}
+        params = getattr(src, 'params', None)
+        if params:
+            out['params'] = {q: expr_to_text(v) for q, v in params.items()}
+        return out
+
+    def _action_report(self, d) -> dict:
+        terms = []
+        for t in self._action_log:
+            t = dict(t)
+            if t['kind'] == 'noise':
+                s = self._sources.get(t['source'].split(' (part')[0])
+                if s is not None:
+                    t['source_type'] = (self._describe_source(s.get('source')) if not s.get('pp')
+                                        else {'type': 'PointProcess',
+                                              'rate': s['pp']['rate'], 'size': s['pp']['size']})
+                    t['couples'] = {f: str(c) for f, c in s['couples'].items()}
+                    if s['expose']:
+                        t['exposed_as'] = s['expose']
+            terms.append(t)
+        rank = {'dynamics': 0, 'noise': 1, 'extra': 2}
+        terms.sort(key=lambda t: rank[t['kind']])               # (stable: the action's order)
+        return {'text': d['action'], 'terms': terms,
+                'operator_ir': bool(d.get('operator_ir'))}
+
+    def _corrections_report(self) -> list:
+        out = []
+        for c in self._drift_log:
+            out.append({'kind': 'ito_drift', 'rule': c['rule'], 'source': c['source'],
+                        'field': c['field'], 'text': c['text'],
+                        'meaning': f"{c['rule']} -> Ito: drift of {c['field']!r} += {c['text']}"})
+        for name, t in self._marcus_terms.items():
+            out.append({'kind': 'marcus_noise', 'rule': 'marcus', 'source': name,
+                        'route': t['route'], 'order': t['order'],
+                        'responses': list(t['responses']),
+                        'meaning': (f"Marcus: the noise term of {name!r} is the "
+                                    + ('exact ' if t['route'] == 'exact' else 'series ')
+                                    + f"term kept to {t['order']} response legs")})
+        return out
+
+    def _truncation_warnings(self) -> list:
+        w = []
+        for name, t in self._marcus_terms.items():
+            if t['route'] == 'series':
+                w.append({'code': 'MARCUS_SERIES_TRUNCATED', 'level': 'warning',
+                          'source': name,
+                          'message': f"Marcus series of source {name!r} is truncated at order "
+                                     f"{t['order']} (SDE.series_order); compute_cumulants "
+                                     f"reports the size of the next term at the saddle "
+                                     f"(result['marcus_truncation'])."})
+            else:
+                w.append({'code': 'MARCUS_EXACT_ORDER', 'level': 'info', 'source': name,
+                          'message': f"Marcus noise term of source {name!r} is exact, kept to "
+                                     f"{t['order']} response legs (SDE.series_order); "
+                                     f"compute_cumulants refuses k + max_ell above it."})
+        for name, s in self._sources.items():
+            src = s.get('source')
+            if src is not None and not getattr(src, 'regular', True):
+                w.append({'code': 'NOISE_CGF_TAYLOR', 'level': 'warning', 'source': name,
+                          'message': f"source {name!r}: its CGF has a removable singularity and "
+                                     f"enters the action as a Taylor polynomial of order "
+                                     f"{self._series_order} (SDE.series_order)."})
+            if src is not None and hasattr(src, 'declared_order'):
+                w.append({'code': 'NOISE_DECLARED_ORDER', 'level': 'info', 'source': name,
+                          'message': f"source {name!r}: cumulants above order "
+                                     f"{src.declared_order} are taken as 0."})
+        for e in self._mf_only_log:
+            w.append({'code': 'MEAN_FIELD_ONLY', 'level': 'info', 'source': e['source'],
+                      'field': e['field'], 'text': e['text'],
+                      'message': f"source {e['source']!r}: its mean (the term {e['text']}) enters "
+                                 f"the mean-field equation of {e['field']!r} through the linear "
+                                 f"response part of its noise term; it is no interaction vertex."})
+        for n in self.notes:
+            if not n.startswith(('Stratonovich -> Ito', 'Marcus:')):     # (under corrections)
+                w.append({'code': 'NOTE', 'level': 'info', 'message': n})
+        return w
+
+    @staticmethod
+    def _min_loop(degree: int, k: int) -> int:
+        """Fewest loops of a connected k-point diagram that holds a vertex
+        of the given degree: with V vertices, ``sum(d_v - 2) = k - 2 + 2*ell``,
+        so ``ell >= (degree - k)/2`` (rounded up).  The enumerator applies the
+        causality rules on top, so this is a necessary condition."""
+        return max(0, -((k - degree) // 2))
+
+    def _analysis_report(self, rep, model, k, max_ell, params, warnings_):
+        from api.analyze import analyze_with_context, Question
+        from sage.all import SR as _SR
+        from api.analyze import Policy
+        q = Question(k=k, max_ell=max_ell, parameters=params)
+        # the SDE has declared its convention and derived a Taylor-truncated
+        # action itself: the run-time consents are not what check() reports
+        # (the derived action is Ito-ordered under Stratonovich as well)
+        pol = Policy(interpretation='marcus' if self._interp == 'marcus' else 'ito',
+                     allow_taylor_truncation=True)
+        report, ctx = analyze_with_context(model, q, pol, use_cache=False)
+        tr = report.traits
+        nt = int(ctx.n_tilde or 0)
+        names = list(ctx.ring_names or [])
+        sectors = ctx.sectors or {}
+        order = max(k + 2 * max_ell, 2)
+
+        def mono(exps):
+            parts = [n if e == 1 else f'{n}^{e}' for n, e in zip(names, exps) if e]
+            return '*'.join(parts) if parts else '1'
+
+        verts = []
+        for (a, b), poly in sorted(sectors.items(), key=lambda kv: (kv[0][0] + kv[0][1], kv[0])):
+            if a + b < 3 or a < 1 or not isinstance(poly, dict):
+                continue
+            for exps, c in sorted(poly.items()):
+                verts.append({
+                    'response_legs': int(a), 'field_legs': int(b),
+                    'degree': int(a + b), 'monomial': mono(exps),
+                    'coefficient': expr_to_text(_SR(c)),
+                    'kind': 'interaction' if b >= 1 else 'noise cumulant',
+                    'loops': list(range(self._min_loop(a + b, k), max_ell + 1)),
+                    'min_loop': {kk: self._min_loop(a + b, kk) for kk in range(1, max(k, 4) + 1)}})
+        rep['vertices'] = {'taylor_order': order, 'k': k, 'max_ell': max_ell,
+                           'rows': verts,
+                           'species': [list(sp) for sp in sorted(sectors) if sum(sp) >= 3
+                                       and sp[0] >= 1],
+                           'note': 'loops: the loop orders (up to max_ell) at which a vertex of '
+                                   'this degree can enter a k-point cumulant (degree count; '
+                                   'causality prunes further)'}
+
+        def sector_text(key):
+            poly = sectors.get(key)
+            if not isinstance(poly, dict):
+                return None
+            return {mono(e): expr_to_text(_SR(c)) for e, c in sorted(poly.items())}
+
+        rep['propagator'] = {
+            'class': tr.propagator_class, 'n_poles': tr.n_poles,
+            'poles': [f'{complex(p).real:.6g}{complex(p).imag:+.6g}j' for p in (tr.poles or ())],
+            'stable': tr.stable, 'kernel_stability': tr.kernel_stability,
+            'noise_class': tr.noise_class, 'n_saddles': tr.n_saddles,
+            'saddle': {n: [float(x) for x in v] for n, v in (tr.saddle or ())},
+            'linear_operator': sector_text((1, 1)),
+            'noise_matrix': sector_text((2, 0)),
+            'spatial': bool(tr.spatial)}
+        for f in report.findings:
+            if f.level in ('warning', 'error'):
+                warnings_.append({'code': f.code, 'level': f.level, 'message': f.message,
+                                  'remedy': f.remedy})
 
     def show(self) -> str:
         """Print (and return) the derived action and mean-field equations as
