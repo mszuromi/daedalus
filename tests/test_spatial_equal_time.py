@@ -315,6 +315,7 @@ def test_plain_diagrams_of_a_mixed_model_have_no_form_factor():
     sub = {SR.var(str(p['name'])): float(p['default'])
            for p in m.get('parameters', []) if p.get('default') is not None
            and not isinstance(p.get('default'), (list, tuple))}
+    sub[SR.var('phistar1')] = 0.0                  # the phi* = 0 saddle
     vt = [{'weight': float(SR(t['weight']).subs(sub)), 'n_phys': t['n_phys'],
            'chain': t['chain'], 'mode': t['mode']}
           for t in ft._ns._operator_ir_vertex_terms]

@@ -441,12 +441,13 @@ def test_operator_ir_multivertex_table_and_formfactor():
     ft = FieldTheory(m, taylor_order=4)
     ft.expand()                                  # used to raise the single-mode gate
 
-    # (a) two distinct vertex types, both φ̃φ², weights c_t/Σc summing to 1
+    # (a) two distinct vertex types, both φ̃φ², weights c_t/c_group with
+    # c_group the norm of the couplings (so Σ w_t² = 1, never a 0/0)
     tbl = ft._ns._operator_ir_vertex_terms
     assert len(tbl) == 2
     assert {t['mode'] for t in tbl} == {'composite', 'perleg'}
     assert all(t['n_phys'] == 2 for t in tbl)
-    assert (SR(sum(SR(t['weight']) for t in tbl)) - 1).simplify_full().is_zero()
+    assert (SR(sum(SR(t['weight']) ** 2 for t in tbl)) - 1).simplify_full().is_zero()
 
     # (b) per-node form factor reduces to single-mode when the other weight is 0
     prop = build_propagator(ft, m, use_cache=False, verbose=False)

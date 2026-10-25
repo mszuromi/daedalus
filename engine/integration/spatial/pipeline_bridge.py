@@ -955,9 +955,11 @@ def diagram_form_factor(td, vertex_terms, mode=None, d=1):
 
         𝔉(v) = Σ_{type t : n_phys(t)=deg(v)}  w_t · 𝔣_t(v),
 
-    with ``w_t`` the coupling weight (``c_t / Σ c``, from the operator-IR table
-    ``ns._operator_ir_vertex_terms``; ``Σ w_t = 1`` so the prefactor's merged
-    coupling reconstructs every cross term) and ``𝔣_t`` the type's kernel:
+    with ``w_t`` the coupling weight (``c_t / c_group``, from the operator-IR
+    table ``ns._operator_ir_vertex_terms``; the prefactor carries ``c_group``,
+    so a node gives ``Σ_t c_t 𝔣_t`` and every cross term is reconstructed — a
+    plain local vertex of the same fields is a type with an empty chain,
+    ``𝔣 = 1``) and ``𝔣_t`` the type's kernel:
 
       * ``mode='composite'`` — ``f_chain`` at the **response-leg** momentum
         (``out_mom[v][0]`` — the φ² composite momentum; Model B ∇²(φ²),
@@ -1905,16 +1907,21 @@ def compute_spatial_correlator_generic(
     nps_sr = _norm_sr(num_params)
     base_np_sr = {kk: vv for kk, vv in nps_sr.items() if str(kk) != 'Laplacian'}
 
-    # Substitute the numeric couplings into the symbolic weights c_t/Σc → a
-    # numeric form-factor table (the lambdified Rcal then carries only momentum
-    # symbols).  For a single derivative vertex the weight is 1 (unchanged).  A
-    # 0/0 weight means ALL couplings of that signature are 0 — the diagram's
-    # prefactor is then 0 too (dropped by the live filter), so weight 0 is safe.
+    # Substitute the numeric couplings into the symbolic weights c_t/c_group →
+    # a numeric form-factor table (the lambdified Rcal then carries only
+    # momentum symbols).  For a single derivative vertex the weight is 1
+    # (unchanged).  A 0/0 weight means ALL couplings of that group are 0 — the
+    # diagram's prefactor is then 0 too (dropped by the live filter), so weight
+    # 0 is safe; a weight left with free symbols is an error, not a 0.
     def _num_weight(w):
         try:
             return float(np.real(complex(SR(w).subs(base_np_sr))))
-        except (ValueError, ZeroDivisionError, TypeError):
+        except (ValueError, ZeroDivisionError):
             return 0.0
+        except TypeError:
+            raise SpatialPropagatorError(
+                f'derivative-vertex weight {w} does not evaluate at the '
+                f'parameters and saddle (free symbols left).') from None
     vterms = [{'weight': _num_weight(t['weight']),
                'n_phys': t['n_phys'], 'chain': t['chain'], 'mode': t['mode']}
               for t in vterms_sym]
@@ -2430,8 +2437,12 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     def _num_w(w):
         try:
             return float(_np.real(complex(_SR(w).subs(base_np_sr))))
-        except (ValueError, ZeroDivisionError, TypeError):
+        except (ValueError, ZeroDivisionError):
             return 0.0
+        except TypeError:
+            raise SpatialPropagatorError(
+                f'derivative-vertex weight {w} does not evaluate at the '
+                f'parameters and saddle (free symbols left).') from None
     _vterms = [{'weight': _num_w(t['weight']), 'n_phys': t['n_phys'],
                 'chain': t['chain'], 'mode': t['mode']} for t in _vt_sym]
     from engine.integration.spatial.full_integrator import (

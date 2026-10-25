@@ -237,11 +237,14 @@ saddle `φ*=0` (KPZ/Burgers) `V→0` and the propagator is the pure heat kernel.
 `ℓ=1` runs fast end-to-end; `ℓ≥2` is *correct but expensive* (a runtime warning,
 not a hard gate).  **MULTIPLE distinct derivative vertices in one theory** are
 supported: the operator-IR lowering stashes a per-vertex-type TABLE
-(`ns._operator_ir_vertex_terms` = each type's coupling weight `c_t/Σc`, leg
+(`ns._operator_ir_vertex_terms` = each type's coupling weight `c_t/c_group`, leg
 count, chain, mode), and `diagram_form_factor` sums the matching types PER NODE
 (`𝔉(v)=Σ_t w_t 𝔣_t`), so a mixed diagram reconstructs every cross term while the
-prefactor's merged coupling cancels the weight normalisation — exactly the
-single-type behaviour when one vertex.  **Remaining (genuine, non-bespoke)
+prefactor's group coupling `c_group` cancels the weight normalisation — exactly
+the single-type behaviour when one vertex.  A plain local vertex with the same
+fields as a derivative one (`g∇²(φ²)` and `cφ²`, both `φ̃φ²`) is a type of its
+own (empty chain, `𝔣=1`), and `c_group = sqrt(Σ_t c_t²)` (not `Σ_t c_t`), so
+couplings that sum to zero do not cancel the vertex.  **Remaining (genuine, non-bespoke)
 limits:** field-degree≥3 composite vertices (`∇²φ³` — a ≥3-leg/sunset topology,
 gated in `theory_compiler`); a drift `V` that is not one common `v·∂ₓφ` for
 every field (see *Constant drift* below).

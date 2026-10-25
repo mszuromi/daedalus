@@ -908,6 +908,155 @@ def _safe_eval(text: str, locals_dict: dict, what: str) -> Any:
 
 # ── Lambda factories (one per model hook) ─────────────────────────────
 
+def _bdeg_check(vertex, genmap, flucts):
+    """Refuse a derivative vertex whose base is not of field-degree 1 or 2."""
+    for g in vertex:
+        base, _chain = genmap[g]
+        bdeg = sum(int(SR(base).degree(SR(f))) for f in flucts)
+        if bdeg not in (1, 2):
+            raise NotImplementedError(
+                f"operator IR: derivative VERTEX of base field-degree {bdeg} "
+                f"({base}) is not yet validated through the form-factor "
+                "integrator (per-leg (∂φ)² and composite ∂(φ²)/∇²(φ²) bubble "
+                "vertices are wired through compute_cumulants).")
+
+
+def _vertex_species(se, genmap, vertex, flucts, tildes):
+    """Group the derivative-vertex terms of the lowered action ``se`` by the
+    monomial they unfold to, together with any plain LOCAL term of that same
+    monomial.
+
+    Returns ``{unfolded exponent tuple (over flucts): [species, ...]}``; a
+    species is ``{'coef', 'terms', 'chain', 'mode', 'n_phys'}`` (a local one has
+    ``chain=()`` — form factor 1; ``coef`` sums the coefficients of its
+    ``terms``).  Only groups holding a derivative vertex are
+    returned.  A derivative term the form-factor table cannot represent is
+    refused: one generator times further fields or generators (``φ̃·φ·∇²φ``),
+    other than one response leg, an operator on a response field, or a
+    composite base raised to a power (``φ̃·(∇²(φ²))²``)."""
+    from api.spatial_operator_ir import _is_add
+    flucts = [SR(f) for f in flucts]
+    is_resp = [str(f) in {str(t) for t in tildes} for f in flucts]
+    gens = [SR(g) for g in vertex]
+    e = SR(se).expand()
+    terms = e.operands() if _is_add(e) else [e]
+    groups, local = {}, {}
+
+    def _add(sp, coef, t, chain, mode, n_phys):
+        # terms of one species may stay apart after expand() (different
+        # symbolic coefficients: c2a*phi^2 + c2b*phi^2, c2*phi^2 + 3*lam*pstar*phi^2)
+        for x in sp:
+            if (x['chain'], x['mode']) == (chain, mode):
+                x['coef'] = x['coef'] + coef
+                x['terms'].append(t)
+                return
+        sp.append({'coef': coef, 'terms': [t], 'chain': chain, 'mode': mode,
+                   'n_phys': n_phys})
+    for t in terms:
+        fx = [int(t.degree(f)) for f in flucts]
+        mono = SR(1)
+        for f, k in zip(flucts, fx):
+            mono *= f ** k
+        gp = [(g, int(t.degree(g))) for g in gens if int(t.degree(g)) > 0]
+        if not gp:
+            local.setdefault(tuple(fx), []).append((SR(t / mono), t))
+            continue
+        g, p = gp[0]
+        base, chain = genmap[g]
+        bx = [int(SR(base).degree(f)) for f in flucts]
+        n_resp = sum(k for k, r in zip(fx, is_resp) if r)
+        if (len(gp) > 1 or n_resp != 1
+                or any(k for k, r in zip(fx, is_resp) if not r)
+                or any(k for k, r in zip(bx, is_resp) if r)
+                or (sum(bx) == 2 and p != 1)):
+            raise NotImplementedError(
+                f"operator IR: the derivative vertex term {t} is not yet "
+                "supported by the form-factor table (one response leg times "
+                "ONE operator generator: Op(φ^n) or (Op φ)^p, with no further "
+                "plain fields).")
+        key = tuple(a + p * b for a, b in zip(fx, bx))
+        _add(groups.setdefault(key, []), SR(t / (mono * g ** p)), t, chain,
+             'perleg' if sum(bx) == 1 else 'composite', sum(bx) * p)
+    for key, sp in groups.items():
+        n_phys = sp[0]['n_phys']
+        for coef, t in local.get(key, []):
+            _add(sp, coef, t, (), 'composite', n_phys)
+    return groups
+
+
+def _single_species_table(se, genmap, vertex, flucts):
+    """The form-factor table of a model whose every vertex group holds ONE
+    species: weight ``c_t / Σ c`` over the derivative vertices of the same
+    physical-leg count (1 for a lone derivative vertex)."""
+    from collections import defaultdict as _dd
+    _fluct_set = {SR(f) for f in flucts}
+    _raw = []
+    for g in vertex:
+        base, chain = genmap[g]
+        bdeg = sum(int(SR(base).degree(SR(f))) for f in flucts)
+        gv = SR(g)
+        p = int(se.degree(gv))                       # power g appears in (KPZ: 2)
+        c_t = se.coefficient(gv, p)                  # coupling × (shared) response leg
+        for rv in [v for v in c_t.variables() if v in _fluct_set]:
+            c_t = c_t / rv                           # divide out the response field
+        _raw.append({'coupling': SR(c_t), 'n_phys': bdeg * p, 'chain': chain,
+                     'mode': ('perleg' if bdeg == 1 else 'composite')})
+    _by_sig = _dd(list)
+    for t in _raw:
+        _by_sig[t['n_phys']].append(t)
+    vtable = []
+    for n_phys, ts in _by_sig.items():
+        c_merged = sum((t['coupling'] for t in ts), SR(0))   # = the prefactor's coupling
+        for t in ts:
+            w = SR(t['coupling'] / c_merged)         # response field + comb. cancel
+            try:
+                w = w.simplify_full()
+            except Exception:
+                pass
+            vtable.append({'weight': w, 'n_phys': n_phys,
+                           'chain': t['chain'], 'mode': t['mode']})
+    return vtable
+
+
+def _species_table(se, groups, flucts, tildes):
+    """The form-factor table of a model with a multi-species vertex group.
+
+    Each group's terms leave the action and come back as ONE unfolded
+    monomial with coefficient ``c_group = sqrt(Σ_t c_t²)`` (never zero unless
+    every coupling is); each species gets weight ``c_t / c_group``, so a node
+    carries ``c_group · Σ_t (c_t/c_group)·𝔣_t = Σ_t c_t·𝔣_t``.  Returns
+    ``(vtable, se_rest, unfolded)``: the action without the grouped terms and
+    the rescaled monomials to add after unfolding."""
+    from sage.all import sqrt
+    flucts = [SR(f) for f in flucts]
+    is_resp = [str(f) in {str(t) for t in tildes} for f in flucts]
+    rest = SR(se).expand()
+    vtable, unfolded, seen = [], SR(0), {}
+    for key, sp in groups.items():
+        n_phys = sum(k for k, r in zip(key, is_resp) if not r)
+        if n_phys in seen and seen[n_phys] != key:
+            raise NotImplementedError(
+                "operator IR: two vertex groups with the same physical-leg "
+                f"count ({n_phys}) but different fields; the form-factor "
+                "table matches nodes by leg count only.")
+        seen[n_phys] = key
+        if len(sp) == 1:
+            vtable.append({'weight': SR(1), 'n_phys': n_phys,
+                           'chain': sp[0]['chain'], 'mode': sp[0]['mode']})
+            continue
+        c_grp = sqrt(sum((x['coef'] ** 2 for x in sp), SR(0)))
+        mono = SR(1)
+        for f, k in zip(flucts, key):
+            mono *= f ** k
+        for x in sp:
+            for t in x['terms']:
+                rest -= t
+            vtable.append({'weight': SR(x['coef'] / c_grp), 'n_phys': n_phys,
+                           'chain': x['chain'], 'mode': x['mode']})
+        unfolded += c_grp * mono
+    return vtable, rest, unfolded
+
+
 def _lower_operator_ir_action(s, ns, naming_convention):
     """Spatial v2: lower an operator-IR action (holding binding nodes
     ``Lap(·)``/``Dt(·)``/``Dx(·)``) to (fields + derived ring generators).
@@ -963,53 +1112,31 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     # operator chain is stashed on ``ns`` for the momentum-first form-factor
     # extraction (``bubble_loop_form_factor`` in compute_spatial_correlator_bubble).
     # The bilinear (propagator) generators lower to the v1 bare-symbol form.
-    # Build the per-vertex-type form-factor TABLE.  Each derivative-vertex
-    # generator g becomes one entry carrying its **coupling** c_t (the SR
-    # coefficient of g^p in the action, p the power g appears in), its
-    # **physical-leg count** n_phys = base-degree × p, its operator **chain**,
-    # and its **mode** ('perleg' if the base is field-degree 1 — KPZ (∂δφ)²;
-    # 'composite' if degree 2 — Model B ∇²(δφ²) / Burgers ∂ₓ(δφ²)).  Multiple
-    # distinct derivative vertices — even of the SAME field signature, e.g.
-    # Model B + KPZ both φ̃φ² — are kept as SEPARATE entries, each weighted by
-    # c_t / (Σ couplings of the same signature).  The downstream form factor
-    # then sums them per node: a φ̃φ² node contributes Σ_t w_t·𝔣_t, so a mixed
-    # diagram reconstructs every cross term (g², gκ, κ²) when combined with the
-    # prefactor's merged coupling (pipeline_bridge.diagram_form_factor).  A
-    # single derivative vertex gives w=1 ⇒ exactly the old behaviour.
-    from collections import defaultdict as _dd
+    # Build the per-vertex-SPECIES form-factor TABLE.  A species is one
+    # interaction term of the action: a derivative vertex (generator g with
+    # its operator **chain** and **mode** — 'perleg' if the base is
+    # field-degree 1, KPZ (∂δφ)²; 'composite' if degree 2, Model B ∇²(δφ²) /
+    # Burgers ∂ₓ(δφ²)) or a plain LOCAL vertex (empty chain, form factor 1).
+    # Species whose unfolded monomials coincide (e.g. ∇²(δφ²) and δφ², both
+    # φ̃φ²) form a GROUP: the topology sees one vertex, and each node of the
+    # group contributes Σ_t w_t·𝔣_t (pipeline_bridge.diagram_form_factor),
+    # with w_t = c_t / c_group and c_group the coefficient the unfolded action
+    # carries.  c_group is the Euclidean norm of the species couplings, NOT
+    # their sum: a sum lets a derivative and a local coupling cancel (the
+    # vertex vanished — "free model" — at c_lap = −c_loc, and a local species
+    # left out of the table put the derivative form factor on its coupling).
+    # A group with ONE species keeps its coupling in the action, weight 1 —
+    # the table and the action of such a model are unchanged.
     se = SR(s)
-    _fluct_set = {SR(f) for f in flucts}
-    _raw = []
-    for g in vertex:
-        base, chain = genmap[g]
-        bdeg = sum(int(SR(base).degree(SR(f))) for f in flucts)
-        if bdeg not in (1, 2):
-            raise NotImplementedError(
-                f"operator IR: derivative VERTEX of base field-degree {bdeg} "
-                f"({base}) is not yet validated through the form-factor "
-                "integrator (per-leg (∂φ)² and composite ∂(φ²)/∇²(φ²) bubble "
-                "vertices are wired through compute_cumulants).")
-        gv = SR(g)
-        p = int(se.degree(gv))                       # power g appears in (KPZ: 2)
-        c_t = se.coefficient(gv, p)                  # coupling × (shared) response leg
-        for rv in [v for v in c_t.variables() if v in _fluct_set]:
-            c_t = c_t / rv                           # divide out the response field
-        _raw.append({'coupling': SR(c_t), 'n_phys': bdeg * p, 'chain': chain,
-                     'mode': ('perleg' if bdeg == 1 else 'composite')})
-    _by_sig = _dd(list)
-    for t in _raw:
-        _by_sig[t['n_phys']].append(t)
-    vtable = []
-    for n_phys, ts in _by_sig.items():
-        c_merged = sum((t['coupling'] for t in ts), SR(0))   # = the prefactor's coupling
-        for t in ts:
-            w = SR(t['coupling'] / c_merged)         # response field + comb. cancel
-            try:
-                w = w.simplify_full()
-            except Exception:
-                pass
-            vtable.append({'weight': w, 'n_phys': n_phys,
-                           'chain': t['chain'], 'mode': t['mode']})
+    _bdeg_check(vertex, genmap, flucts)
+    tildes = list(getattr(ns, '_tilde_sr_vars', []))
+    groups = (_vertex_species(se, genmap, vertex, flucts, tildes)
+              if vertex else {})
+    if all(len(sp) == 1 for sp in groups.values()):
+        vtable = _single_species_table(se, genmap, vertex, flucts)
+        unfolded_extra = None
+    else:
+        vtable, se, unfolded_extra = _species_table(se, groups, flucts, tildes)
     ns._operator_ir_vertex_terms = vtable
     # Backward-compat single-stash (read by tests + the d≥2 gate): set only when
     # the model has exactly ONE derivative-vertex type (weight ≡ 1 then).
@@ -1048,7 +1175,9 @@ def _lower_operator_ir_action(s, ns, naming_convention):
         subs[g] = factor * SR(base)
     for g in vertex:                       # unfold: bare composite for topology
         subs[g] = SR(genmap[g][0])
-    return SR(s).subs(subs)
+    if unfolded_extra is None:
+        return SR(s).subs(subs)
+    return SR(se).subs(subs) + unfolded_extra
 
 
 def make_action_lambda(action_text: str, *, field_names, param_names,
