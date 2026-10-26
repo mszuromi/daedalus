@@ -69,6 +69,9 @@ The orchestration layer `dd` drives:
   nearly coincide are an ordinary case for it. Each propagator entry and each conductance kernel
   gets its own minimal realization; an entry that is not rational in the frequency, or a model with
   space, is refused by name and left to the pole engine.
+- `hartree.py` — research prototype, not wired into `compute_cumulants`: the self-consistent Gaussian (Hartree)
+  approximation of a temporal model (`hartree(model, parameters)`), read off the expanded action; results and the
+  comparison with the loop series in `docs/hartree_prototype.md`.
 - `colored_to_markovian.py` — rewrites a colored-noise model as a linear filter driven by white
   noise, so the temporal integrator can handle it.
 - `model.py` (+ `model_compiler.py`, `model_serialize.py`, `model_templates.py`) — the
