@@ -86,10 +86,18 @@ def test_fit_errors(tol):
     # the kernel string: one exact fraction with unit area, the sections' function
     N, D = f.fraction()
     assert N[0] == D[0] and D[-1] == 1 and isinstance(N[0], Fraction)
-    z = 1j * np.linspace(0.0, 8.0, 33)
-    num = np.polyval([float(c) for c in N[::-1]], z)
-    den = np.polyval([float(c) for c in D[::-1]], z)
-    assert np.max(np.abs(num / den - f.transfer(z))) < 1e-12
+    # (the exact fraction evaluated at 40 digits: its coefficients reach 6e15 at
+    # tol = 1e-9, so a double Horner evaluation carries ~1e-12 of rounding)
+    import mpmath
+    with mpmath.workdps(40):
+        zs = [mpmath.mpc(0, w) for w in np.linspace(0.0, 8.0, 33)]
+        ex = [mpmath.polyval([mpmath.mpf(c.numerator) / c.denominator for c in N[::-1]], q)
+              / mpmath.polyval([mpmath.mpf(c.numerator) / c.denominator for c in D[::-1]], q)
+              for q in zs]
+        ex = np.array([complex(v) for v in ex])
+    # f.transfer sums the sections in double: rounding ~ eps * sum |residues|
+    rnd = 1e-15 * sum(abs(r) for r in f.residues) + 1e-14
+    assert np.max(np.abs(ex - f.transfer(1j * np.linspace(0.0, 8.0, 33)))) < rnd
     assert 'omega' in Kernel.gaussian('sigma', tol=tol).freq_image
 
 
