@@ -86,6 +86,24 @@ stability do not depend on ``c`` and the action is untouched; ``SDE.notes``
 records the step.  Writing ``lhs='(Dt + c)*x'``, ``rhs='drift + c*x'`` by hand
 gives the same model.
 
+Higher-order equations and pure integrators
+-------------------------------------------
+An lhs of order ``N > 1`` in the time derivative, a polynomial acting on the
+field alone (``(m*Dt^2 + gamma*Dt + k)*x``, ``m*dt^2*x + ...``), is embedded as
+a first-order system, which is what the engine takes (the MSR action is first
+order in ``Dt``): the velocities ``xdot`` (``xddot``, ...; or
+``equation(..., velocity=...)``) are declared as fields, ``Dt*x = xdot``, and
+the top equation is ``m*Dt*xdot + gamma*xdot = rhs - k*x``.  A noise coupled
+into ``x`` is the force on the top equation.  It builds the model a
+hand-written first-order system builds (the same action, equations and dict).
+
+A pure integrator, ``drift('x', 'v')`` (an rhs without ``x``), is a dynamical
+equation whose mean-field equation ``0 = v`` constrains the other fields; the
+saddle of ``x`` is fixed by the system solved together (``Dt*x = v`` with
+``(m*Dt + gamma)*v = F - k*x`` gives ``x* = F/k``).  An rhs without any field
+(``drift('x', '0')``, a random walk) has no stationary mean field and is
+refused.
+
 Declared operators and SPDEs
 ----------------------------
 The operators an equation uses are named with :meth:`SDE.operator` and the
@@ -511,6 +529,8 @@ class SDE:
         self._series_order = 8
         self._marcus_route = 'auto'
         self._marcus_terms: 'OrderedDict[str, dict]' = OrderedDict()
+        # higher-order equations: field -> its velocity embedding (see equation())
+        self._embedded: 'OrderedDict[str, dict]' = OrderedDict()
         self._ito_drift: dict = {}
         # what the last derivation emitted, by origin (read by check() and
         # latex(); the action text itself is unchanged by it)
@@ -752,13 +772,20 @@ class SDE:
                     f'{n}(x) or {n}*x, not inside a function argument or a coefficient'))
 
     # ── dynamics ──────────────────────────────────────────────────────
-    def equation(self, field: str, lhs: str, rhs: str = '0'):
+    def equation(self, field: str, lhs: str, rhs: str = '0', *, velocity=None):
         """``lhs = rhs + noise`` for ``field``; ``lhs`` holds the linear
         differential operator (contains the time derivative, ``Dt`` unless it
         is renamed with :meth:`operator`), ``rhs`` no noise.  Declared operators
         are written in product style (``(tau*Dt + 1)*x``, ``D*lap*u``) or call
         style (``Dt(x)``, ``lap(u)``).  ``field`` may be its symbol, ``lhs`` and
-        ``rhs`` Sage expressions."""
+        ``rhs`` Sage expressions.
+
+        A higher-order lhs, a polynomial in the time derivative acting on the
+        field (``(m*Dt^2 + gamma*Dt + k)*x``), is embedded as a first-order
+        system: the velocities ``xdot`` (``xddot``, ...; or the names given in
+        ``velocity=``) are declared as fields, ``Dt*x = xdot``, and the top
+        equation ``m*Dt*xdot + gamma*xdot = rhs - k*x`` takes the noise coupled
+        into ``x`` (``noise(..., into={'x': c})`` is the force ``c*eta``)."""
         field = as_name(field)
         lhs, rhs = (v if isinstance(v, str) else str(as_text(v)) for v in (lhs, rhs))
         if field not in self._fields:
@@ -785,6 +812,14 @@ class SDE:
                      f'act on fields, e.g. {n}(x)' if in_call else
                      f'the time derivative belongs on the lhs: lhs={n}({field}) or '
                      f"lhs='{n}*{field}'")))
+        if (velocity is not None or re.search(r'\^|\*\*', lhs)
+                or sum(len(re.findall(rf'(?<!\w){re.escape(n)}(?!\w)', lhs)) for n in tnames) > 1):
+            order = self._lhs_orders(field, lhs)
+            if order is not None:
+                return self._embed(field, lhs, rhs, order, velocity)
+            if velocity is not None:
+                raise SDEError(f'equation({field!r}): velocity= names the embedded velocities of a '
+                               f'higher-order lhs; {lhs!r} is first order.')
         rhs = self._delayed_fields(rhs, field)
         rhs = self._compose_kernels(rhs, f'equation({field!r})')
         if re.search(r'\bt\b', rhs) or re.search(r'\bt\b', lhs):
@@ -796,6 +831,85 @@ class SDE:
         self._eqs[field] = {'lhs': self._translate(lhs, 'v1', where=f'equation({field!r}) lhs'),
                             'rhs': self._translate(rhs, 'v1', where=f'equation({field!r}) rhs'),
                             'lhs_raw': lhs, 'rhs_raw': rhs}
+        return self
+
+    def _lhs_orders(self, field: str, lhs: str):
+        """The coefficients ``[c_0, ..., c_N]`` of ``lhs = sum_n c_n Dt^n x``
+        when its order ``N`` in the time derivative is above 1 (``None`` for a
+        first-order lhs).  A higher-order lhs must be such a polynomial, with
+        coefficients free of the fields."""
+        L = self._parse(self._translate(lhs, 'v1', where=f'equation({field!r}) lhs'),
+                        f'lhs of {field}').expand()
+        try:
+            N = int(L.degree(_DT))
+        except (TypeError, ValueError):
+            N = 0
+        if N <= 1:
+            return None
+        x = self._sym(field)
+        cs, rest = [], L
+        for n in range(N + 1):
+            an = L.coefficient(_DT, n) if n else L.subs({_DT: 0})
+            c = an.coefficient(x, 1)
+            cs.append(c)
+            rest = rest - c * _DT ** n * x
+        if not rest.expand().is_zero() or any(self._field_dependent(c) for c in cs):
+            raise SDEError(f'equation({field!r}): the order-{N} lhs {lhs!r} must be a polynomial in '
+                           f'the time derivative acting on {field} alone, with coefficients free of '
+                           f'the fields (e.g. (m*Dt^2 + gamma*Dt + k)*{field}); move other terms to '
+                           f'the rhs.')
+        if cs[-1].is_zero():
+            raise SDEError(f'equation({field!r}): cannot read the leading coefficient of {lhs!r}.')
+        return cs
+
+    def _embed(self, field, lhs, rhs, cs, velocity):
+        """Declare the first-order system of a higher-order equation (see
+        :meth:`equation`)."""
+        N = len(cs) - 1
+        if velocity is None:
+            vel = [field + 'd' * j + 'ot' for j in range(1, N)]
+        else:
+            vel = [as_name(v) for v in ([velocity] if isinstance(velocity, (str, Symbol))
+                                        else list(velocity))]
+            if len(vel) != N - 1:
+                raise SDEError(f'equation({field!r}): an order-{N} lhs needs {N - 1} velocity '
+                               f'name(s); got velocity={velocity!r}.')
+        for v in vel:
+            if v in self._fields or self._name_owner(v):
+                raise SDEError(f'equation({field!r}): the velocity name {v!r} is taken '
+                               f'({self._name_owner(v) or "a field"}); give velocity=<free name>.')
+        names = [field] + vel
+        info = self._fields[field]
+        for k, v in enumerate(vel):
+            self.field(v, population=info['population'],
+                       description=f'd{"^" + str(k + 1) if k else ""}{field}/dt'
+                                   f'{"^" + str(k + 1) if k else ""} (embedded velocity)')
+            self._fields[v]['embedded_of'] = field
+        t0 = (self._time_names() or ['Dt'])[0]
+        self._embedded[field] = {'lhs_raw': lhs, 'rhs_raw': rhs, 'fields': vel, 'top': vel[-1],
+                                 'order': N}
+        for j in range(N - 1):
+            self.equation(names[j], f'{t0}*{names[j]}', names[j + 1])
+        top, cN, cdamp = vel[-1], cs[N], cs[N - 1]
+        lead = f'{t0}*{top}' if (cN - 1).is_zero() else f'{_wrap(expr_to_text(cN))}*{t0}*{top}'
+        if not cdamp.is_zero():
+            lead += ' + ' + (top if (cdamp - 1).is_zero() else f'{_wrap(expr_to_text(cdamp))}*{top}')
+        rest = sum((cs[n] * SR.var(names[n]) for n in range(N - 1)), SR(0))
+        if rest.is_zero():
+            rhs_top = rhs
+        elif str(rhs).strip() in ('', '0'):
+            rhs_top = expr_to_text(-rest)
+        else:
+            rt = expr_to_text(rest)
+            from sage.symbolic.operators import add_vararg
+            import operator as _op
+            summed = rest.operator() in (_op.add, add_vararg) or rt.startswith('-')
+            rhs_top = f'{rhs} - ({rt})' if summed else f'{rhs} - {rt}'
+        self.equation(top, lead, rhs_top)
+        # the noise coupled into the field forces its top derivative
+        for s in self._sources.values():
+            if field in s['couples']:
+                s['couples'] = {top if f == field else f: c for f, c in s['couples'].items()}
         return self
 
     def _delayed_fields(self, text: str, where: str) -> str:
@@ -867,8 +981,11 @@ class SDE:
         is the coupling.  A subscript names a process, and one name in several
         equations is one source.  A circle before the differential (``∘ dW``,
         ASCII ``o dW``) marks a Stratonovich term (Gaussian) or a Marcus term
-        (jump); a plain term is Ito.  Each line becomes the existing
-        declarations (:meth:`field` if new, :meth:`drift` or
+        (jump); a plain term is Ito.  The operator form puts a linear operator
+        on the left and the right side per unit time, with noise terms
+        ``c dW/dt``: ``(tau*Dt + 1)*v = E + s dW/dt``,
+        ``(m*Dt^2 + gamma*Dt + k)*x = sqrt(2*gamma*T) dW/dt``.  Each line
+        becomes the existing declarations (:meth:`field` if new, :meth:`drift` or
         :meth:`equation`, :meth:`noise` with ``into=`` and
         ``interpretation=``), so the model is the one those calls build; see
         :mod:`api.sde_paper`."""
@@ -880,8 +997,9 @@ class SDE:
         ``noises`` attribute holds the sources to pass as ``noises=``).
         ``SDE(name)`` with the same parameters, functions and kernels, then
         ``.sde(text, noises=text.noises)``, rebuilds the same model.  Refused
-        for equations whose left side is not ``a*Dt*x``, point processes and
-        exposed sources."""
+        for point processes and exposed sources, and for velocities named with
+        ``velocity=`` (a left side other than ``a*Dt*x`` is written in the
+        operator form)."""
         from api.sde_paper import paper_text
         text, noises = paper_text(self)
         out = _PaperText(text)
@@ -931,6 +1049,9 @@ class SDE:
         if name in self._sources:
             raise SDEError(f'noise({name!r}): a source with this name exists.')
         couples = {as_name(f): as_text(c) for f, c in dict(couples or {}).items()}
+        # (a field with a higher-order equation is forced through its top derivative)
+        couples = {self._embedded[f]['top'] if f in self._embedded else f: c
+                   for f, c in couples.items()}
         for f, c in couples.items():
             if isinstance(c, str):
                 self._syntax_check(c, f'noise({name!r}) coefficient for {f!r}')
@@ -1655,7 +1776,9 @@ class SDE:
     # ── derivation ────────────────────────────────────────────────────
     def _derive(self) -> dict:
         """Derive the action terms and the mean-field equations."""
-        self.notes = []
+        self.notes = [f'equation({f!r}): order-{e["order"]} lhs {e["lhs_raw"]!r} embedded as a '
+                      f'first-order system with {", ".join(e["fields"])}; noise into {f!r} forces '
+                      f'{e["top"]!r}.' for f, e in self._embedded.items()]
         self._action_log, self._drift_log, self._mf_only_log = [], [], []
         for f, info in self._fields.items():
             if info['exposed'] is None and f not in self._eqs:
@@ -2012,10 +2135,23 @@ class SDE:
                               f'{expr_to_text(c1 * x)} moved to the lhs.')
             return new_lhs, (new_rhs if new_rhs.strip() else '0')
         if str(x) not in set(map(str, R.variables())):
-            raise SDEError(
-                f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs does not '
-                f'depend on {f}, so the mean-field equation cannot define {f}*; '
-                f'{workaround}.')
+            if not self._field_dependent(R):
+                raise SDEError(
+                    f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs does not '
+                    f'depend on {f} or any other field, so the mean-field equation cannot '
+                    f'define {f}*; {workaround}.')
+            if not any(self._has_token(e['rhs'], f) or self._has_token(e['lhs'], f)
+                       for g, e in self._eqs.items() if g != f):
+                raise SDEError(
+                    f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs does not '
+                    f'depend on {f}, and no other equation holds {f}, so no mean-field '
+                    f'equation defines {f}* (a pure integrator needs another equation that '
+                    f'feeds {f} back); {workaround}.')
+            # a pure integrator (Dt*x = v): its mean-field equation 0 = rhs constrains the
+            # other fields, and the saddle of x comes from the system solved together
+            self.notes.append(f'mean-field equation of {f!r}: a pure integrator (its rhs holds no '
+                              f'{f}); 0 = rhs constrains the other fields and {f}* is fixed by '
+                              f'the system together.')
         # No syntactic field-independent linear term: add and subtract c*x.
         cx = expr_to_text(x)
         new_lhs = expr_to_text((L + x).expand())

@@ -205,7 +205,11 @@ term is Ito, so one model can mix them. Each line becomes the usual declarations
 Every declaration also returns its Sage symbol, so expressions may be Sage objects as well as strings
 (`x = m.field('x')`, `mu = m.parameter('mu', ...)`, then `m.drift(x, -mu*x)`); the chained style still works, and a
 noise source is exposed as a field with `as_field=` (`couples=` and `expose=` are the former names of `into=` and
-`as_field=`):
+`as_field=`). A line may also put a linear operator on the left, with the right side per unit time and noise as
+`c dW/dt`: `(tau*Dt + 1)*v = E + sum(w[i,j]*v[j] for j in pop) + s dW/dt`. A second- or higher-order left side, such as
+`(m*Dt^2 + gamma*Dt + k)*x` (in a line or in `.equation`), is embedded as a first-order system with the velocity
+`xdot` declared for you, and a pure integrator (`dx = v dt`, `.drift('x', 'v')`) takes its mean field from the whole
+system:
 
 ```python
 from api.sde import SDE
