@@ -235,9 +235,9 @@ def vertex_form_factor_signature(ns) -> str | None:
     cache of every pre-existing temporal / plain-vertex model keeps its
     ``None``-vs-``None`` match and continues to load unchanged.  For an
     operator-IR model it returns ``'operator_ir:' + <sha256[:16]>``
-    built from each vertex term's ``mode``, physical-leg count, operator
-    ``chain``, and (coupling-mixing) ``weight`` — the four pieces that
-    decide which momentum form factor every interaction node carries
+    built from each vertex term's ``mode``, physical-leg count, field
+    content, operator ``chain`` and (coupling-mixing) ``weight`` -- the
+    pieces that decide which momentum form factor every interaction node carries
     (see
     :func:`engine.integration.spatial.pipeline_bridge.diagram_form_factor`).
 
@@ -259,9 +259,11 @@ def vertex_form_factor_signature(ns) -> str | None:
     canon: list = []
     for t in (terms or []):
         n_phys = t.get('n_phys')
+        fields = t.get('fields')
         canon.append([
             str(t.get('mode')),
             int(n_phys) if n_phys is not None else None,
+            [int(i) for i in fields] if fields is not None else None,
             _canon_chain(t.get('chain')),
             str(t.get('weight')),
         ])
