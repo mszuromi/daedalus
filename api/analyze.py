@@ -2976,8 +2976,11 @@ def _g5_regime(ctx):
                     f'in the couplings is not rapidly convergent, so the '
                     f'one-loop correction can be comparable to the tree.',
                     'compare max_ell = 0, 1, 2 for convergence, reduce the '
-                    'nonlinearity or the noise amplitude, or treat the '
-                    'result as qualitative')
+                    'nonlinearity or the noise amplitude, treat the result '
+                    "as qualitative, or resum it: Config(resum='screened') "
+                    "re-expands the loop orders around a variational "
+                    "propagator (Config(resum='hartree'): the "
+                    'self-consistent Gaussian)')
     if ctx.t.get('polynomial') is False:
         K0 = K_eval(np.array([0.0, min(p.imag for p in ctx.t['poles']
                                        if p.imag > 0)]))

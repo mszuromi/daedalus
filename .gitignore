@@ -78,6 +78,8 @@ docs/*
 !docs/spatial_v2_architecture.md
 !docs/spatiotemporal_convolutions.md
 !docs/kpz_burgers_sim_validation.py
+!docs/resummation.md
+!docs/resummation_validation.py
 scratch/
 legacy/
 # ...except the pre-M1 Phase J fixture copies, which ARE tracked test data.

@@ -57,6 +57,12 @@ The orchestration layer `dd` drives:
   `Config(covariance=)`): `compute_cumulants` per pair inside `compute.stage_memo()`, which shares the
   expansion, propagator, mean field and poles of one parameter point; parameter derivatives by
   fourth-order differences, with an implicit-function check of the saddle.
+- `hartree.py` — the self-consistent Gaussian (Hartree) closure of a temporal model (`dd.hartree`,
+  `Config(resum='hartree')`), read off the expanded action: mean, covariance, dressed drift, `C(tau)`, spectra, the
+  multi-start census of solutions (bistability advisory).
+- `resum.py` — the screened loop series (`Config(resum='screened')`): a bilinear counterterm on a copy of the model,
+  the loop orders at a few trial propagators along the tree–Hartree line, minimal sensitivity in `kappa`, stencil
+  derivatives, the orders `C_N` and their spread.
 - `symbolic_out.py` — the tree-level covariance as symbolic expressions in the Fourier domain,
   with exports (sympy, LaTeX, a numpy callable, JSON) and its time-domain inverse.
 - `_pole_clusters.py` — near-degenerate and repeated propagator poles: replaces a nearly
