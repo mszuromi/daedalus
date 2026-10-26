@@ -889,6 +889,10 @@ def compute_correction_td(
             skipped.append(idx)
 
     if discarding:
+        # no callable is left to use the cached realizations' resolvent
+        # data: release it (charged to nobody once the diagrams are gone)
+        from engine.integration.time_domain import statespace as _ss
+        _ss.release_solve_data()
         # the same sums as below, from the kept values, in diagram order
         _at = {}
         for p_idx, pt in enumerate(discard_points):

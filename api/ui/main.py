@@ -244,6 +244,31 @@ _CSS_INJECTED = False  # module-level guard — inject the <style> once
                        # would otherwise repeat the stylesheet).
 
 
+def _legacy_mf_equation_rows(spec: dict) -> list[dict]:
+    """The ``{lhs, rhs, population}`` rows of the legacy ``set_mf_equation(saddle,
+    rhs)`` entries (``spec['mf_equations']``): ``lhs = '<natural>[i]'`` with the
+    saddle parameter's declared ``natural_name`` (an undeclared saddle falls
+    back on the ``<field>star`` spelling), the population looked up from the
+    physical field of that natural name."""
+    pop_by_natural = {
+        (f.get('natural_name') or f['name']): f.get('population')
+        for f in (spec.get('physical_fields') or [])
+    }
+    declared = {(p.get('name') or '').strip(): p.get('natural_name')
+                for p in (spec.get('parameters') or [])}
+    rows = []
+    for eq in spec.get('mf_equations', []) or []:
+        saddle = (eq.get('saddle') or '').strip()
+        natural = (declared.get(saddle)
+                   or (saddle[:-4] if saddle.endswith('star') else saddle))
+        rows.append({
+            'lhs':        f'{natural}[i]' if natural else '',
+            'rhs':        eq.get('rhs', ''),
+            'population': pop_by_natural.get(natural),
+        })
+    return rows
+
+
 def _normalize_cgf_rows(rows: list[dict]) -> list[dict]:
     """Convert raw UI CGF rows into spec-form CGF rows.
 
@@ -3061,20 +3086,7 @@ class ModelUI:
         if not equations:
             # Back-compat: convert legacy ``set_mf_equation(saddle, rhs)``
             # entries.
-            phys_pop_by_natural = {
-                (f.get('natural_name') or f['name']): f.get('population')
-                for f in (spec.get('physical_fields') or [])
-            }
-            for eq in spec.get('mf_equations', []) or []:
-                saddle = (eq.get('saddle') or '').strip()
-                natural = (saddle[:-4] if saddle.endswith('star')
-                           else saddle)
-                pop = phys_pop_by_natural.get(natural)
-                equations.append({
-                    'lhs':        f'{natural}[i]' if natural else '',
-                    'rhs':        eq.get('rhs', ''),
-                    'population': pop,
-                })
+            equations = _legacy_mf_equation_rows(spec)
         for eq in equations:
             pop = eq.get('population')
             self._tbl_mfeqs.add_row(values={
