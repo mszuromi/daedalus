@@ -107,7 +107,8 @@ refused.
 Coloured and vector Gaussian noise
 ----------------------------------
 ``Gaussian(var, kernel=h)`` (``h`` an :class:`api.delay.Kernel` with a
-rational image, e.g. ``Kernel.exponential('tau')``) is the white noise of
+rational image: ``from api.delay import Kernel``, then
+``Gaussian(var, kernel=Kernel.exponential('tau'))``) is the white noise of
 intensity ``var`` filtered by ``h``, ``eta = h * xi``.  It is Markov-embedded,
 exactly: with ``H(I*omega) = N/D`` the state field ``z`` (the source's name,
 or ``as_field=``) obeys ``D(Dt) z = xi`` (velocities for ``deg D > 1``),

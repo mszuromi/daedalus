@@ -607,8 +607,8 @@ class Gaussian(NoiseSource):
     supported yet.)
 
     ``kernel=`` makes it coloured: the white noise of intensity ``var``
-    filtered by a causal kernel ``h`` (an :class:`api.delay.Kernel`, e.g.
-    ``Kernel.exponential('tau')``, ``Kernel.alpha('tau')``,
+    filtered by a causal kernel ``h`` (an :class:`api.delay.Kernel`:
+    ``from api.delay import Kernel``, ``Gaussian(var, kernel=Kernel.exponential('tau'))``; ``Kernel.alpha('tau')``,
     ``Kernel.gamma(n, 'mean')`` or ``Kernel.image(text)`` with a rational
     image), ``eta = h * xi``, so ``<eta(t) eta(t')> = var (h * h~)(t - t')``
     and the integral of the covariance is ``var |H(0)|^2`` (``var`` for a
