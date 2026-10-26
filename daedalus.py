@@ -134,6 +134,9 @@ _PIPELINE_EXPORTS = {
     'master_equation':           'api.master_equation',
     'MasterEquation':            'api.master_equation',
     'TruncationWarning':         'api.master_equation',
+    # reaction / transition builder for jump processes
+    'JumpProcess':               'api.jump_process',
+    'JumpProcessError':          'api.jump_process',
     # exact S(omega), S(0), int_0^T C, tau_c of a k = 2 result
     'spectra':                   'api.spectra',
     'SpectraWarning':            'api.spectra',

@@ -245,6 +245,26 @@ cc = me.correlation([0.0, 1.0, 2.0]).C   # (lam/mu) exp(-mu tau)
 See `docs/master_equation.md` for the conventions, the diagnostics and what the loop expansion should and should not
 match.
 
+### Reaction / transition builder for jump processes
+
+`dd.JumpProcess` (`api/jump_process.py`) maps chemical-kinetics and shot-noise models straight to the jump-noise action.
+Declare species, parameters, a system size `Omega` and either mass-action reactions (`'A + B -> C'`, `'2A -> B'`,
+`'-> A'`, `'A <-> B'`, with a choice of combinatorial convention) or general `transition(rate, jump)` channels. It builds
+the SDE-front-end model (zero drift and one state-dependent `Poisson` source of size `1/Omega` per transition, the jump
+vector as couplings; the action text is that of the hand-written model), and hands the same transitions to the exact
+master equation: `to_master_equation()`, and `compare()` for a table of the loop-order cumulants against it.
+
+```python
+import daedalus as dd
+jp = (dd.JumpProcess('dimerisation').species('A', 'B')
+      .parameter('s', 2.0).parameter('k1', 1.0).parameter('k2', 0.5).system_size(50)
+      .reaction('-> A', rate='s').reaction('2A -> B', rate='k1').reaction('B ->', rate='k2'))
+cmp = jp.compare(ks=(1, 2), max_ell=1)             # loop orders vs the exact master equation
+rel_err = {r['cumulant']: r['rel_error'][1] for r in cmp.rows}      # one loop: O(1/Omega^2)
+```
+
+See `docs/jump_process.md` for the conventions and refusals.
+
 ### Covariance matrix over many fields, and parameter derivatives (k = 2)
 
 `dd.covariance_matrix` returns `Sigma[n, i, j] = <dx_i(0) dx_j(tau_n)>` for every pair of a list of fields in one call
