@@ -434,7 +434,7 @@ def paper_text(sde) -> str:
                                f'{f}dot, ... (rename them to write the text).')
             lhs, rhs, key = emb['lhs_raw'].strip(), emb['rhs_raw'].strip(), emb['top']
         else:
-            lhs, rhs = eq['lhs_raw'].strip(), eq['rhs_raw'].strip()
+            lhs, rhs = eq['lhs_raw'].strip(), sde._redelay(eq['rhs_raw'].strip())
             L = sde._parse(eq['lhs'], f'lhs of {f}').expand()
             a = L.coefficient(_DT, 1).coefficient(sde._sym(f), 1)
             if not a.is_zero() and (L - a * _DT * sde._sym(f)).expand() == 0:

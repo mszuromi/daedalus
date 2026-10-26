@@ -51,9 +51,27 @@ noise and the action are derived exactly as for a Python-built model)::
       marcus_route: auto              # or series (marcus: exact for affine couplings)
       stability_analysis: true
 
-A point-process model (``SDE.point_process``, kernels, delays) goes through a
-model file: ``model: path/to/my.model.py`` whose ``build()`` returns
-``SDE(...).build()`` (``dd.run`` also accepts the ``SDE`` object itself).
+The block also takes the rest of the builder (``api.sde_text``; ``SDE.to_text()``
+writes any model in this form and ``SDE.from_text()`` reads it)::
+
+      n_populations: 2                # SDE(name, n_populations=...); space: d for an SPDE
+      operators: {D_t: TimeDerivative, lap: Laplacian}
+      populations: {E: 2}             # or {E: {size: 2, description: ...}}
+      parameters: {w: {default: [[0, 0.4], [0.3, 0]], indexed_by: [E, E]}}   # indexed: true | matrix
+      functions: {phi: {args: [v], expression: "a*exp(v)", population: E}}
+      kernels: {g: {freq_image: "1/(1 + I*omega*tau)", delay: d}}            # or time_expr
+      fields: [n, {v: {population: E}}]   # in order; a point process or a noise's field declares that
+      point_processes: {n: {rate: "phi(v)", population: E}}
+      equations: {v: {lhs: "(Dt + 1)*v", rhs: "sum(w[i,j]*v[j](t - d) for j in E)"}, y: "-y"}
+                                      # an expression is a drift; velocity: [xdot] for a higher order
+      noise: {eta: {type: Gaussian, var: 1, kernel: "1/(1 + I*omega*tau)", into: {v: 1}, as_field: z}}
+      extra_action: ["..."]
+      boundary: {mode: periodic, length: 10}
+      observables: {rate: "phi(v)"}   # or {expr: ..., population: ..., description: ...}
+
+Declarations are made in this order: operators, populations, parameters,
+functions, kernels, ``fields`` in order, the equations, the remaining noise
+sources, the settings, the observables.
 
 Every error names the config line it comes from.  Relative paths (model file,
 outputs) resolve against the directory of the config file.  The YAML is
@@ -77,8 +95,17 @@ import numpy as np
 TOP_KEYS = ('model', 'sde', 'parameters', 'question', 'policy', 'output',
             'outputs')
 SDE_KEYS = ('name', 'parameters', 'fields', 'drift', 'equations', 'noise',
-            'interpretation', 'series_order', 'marcus_route', 'stability_analysis')
-SDE_PARAMETER_KEYS = ('default', 'domain', 'description')
+            'interpretation', 'series_order', 'marcus_route', 'stability_analysis',
+            'n_populations', 'space', 'operators', 'populations', 'functions', 'kernels',
+            'point_processes', 'extra_action', 'boundary', 'dyson', 'observables')
+SDE_PARAMETER_KEYS = ('default', 'domain', 'description', 'indexed', 'indexed_by')
+SDE_FIELD_KEYS = ('population', 'description', 'domain', 'latex')
+SDE_POPULATION_KEYS = ('size', 'description')
+SDE_FUNCTION_KEYS = ('args', 'expression', 'latex', 'description', 'population')
+SDE_KERNEL_KEYS = ('time_expr', 'freq_image', 'delay', 'latex_name', 'indexed', 'indexed_by')
+SDE_POINT_PROCESS_KEYS = ('rate', 'size', 'population', 'domain', 'description')
+SDE_OBSERVABLE_KEYS = ('expr', 'population', 'description')
+SDE_OPERATOR_TYPES = ('TimeDerivative', 'Laplacian')
 #: the ``type:`` of an inline noise source (classes of api.noise); a jump law
 #: inside one is any ``api.noise.JumpDistribution`` subclass
 from api.noise import SOURCE_TYPES as SDE_NOISE_TYPES  # noqa: E402
@@ -273,79 +300,169 @@ class _Parser:
         """The inline ``sde:`` block -> ``{'spec': plain dict, 'lines': {...}}``.
         Structure is checked here; the SDE builder checks the content when
         the model is built (its errors are reported at the line of the
-        entry they name)."""
+        entry they name).  ``api.sde.SDE.from_text`` reads the same block."""
+        Y = self.yaml
         items = self.mapping(node, SDE_KEYS, "'sde'")
         lines = {k: v[0].start_mark.line + 1 for k, v in items.items()}
-        for need in ('fields', 'noise'):
-            if need not in items:
-                self.fail(node, f"'sde' needs '{need}'")
-        if 'drift' not in items and 'equations' not in items:
+        if 'fields' not in items and 'point_processes' not in items:
+            self.fail(node, "'sde' needs 'fields'")
+        if 'noise' not in items and 'point_processes' not in items:
+            self.fail(node, "'sde' needs 'noise'")
+        if 'drift' not in items and 'equations' not in items and 'point_processes' not in items:
             self.fail(node, "'sde' needs 'drift' (or 'equations')")
         spec = {}
         if 'name' in items:
             spec['name'] = self.string(items['name'][1], 'sde.name')
-        fnode = items['fields'][1]
-        if not isinstance(fnode, self.yaml.SequenceNode) or not fnode.value:
-            self.fail(fnode, 'sde.fields must be a non-empty list of names, '
-                             'e.g. [x]')
-        spec['fields'] = [self.string(n, 'sde field name') for n in fnode.value]
+        for key in ('n_populations', 'space'):
+            if key in items:
+                spec[key] = self.integer(items[key][1], f'sde.{key}', 1)
+        if 'operators' in items:
+            spec['operators'] = {}
+            for name, (knode, vnode) in self._free_mapping(items['operators'][1],
+                                                           'sde.operators').items():
+                v = self.string(vnode, f'sde.operators.{name}')
+                if v not in SDE_OPERATOR_TYPES:
+                    self.fail(vnode, f'sde.operators.{name} must be one of '
+                                     f'{", ".join(SDE_OPERATOR_TYPES)}; got {v!r}')
+                spec['operators'][name] = (v, knode.start_mark.line + 1)
+        if 'populations' in items:
+            spec['populations'] = {}
+            for name, (knode, vnode) in self._free_mapping(items['populations'][1],
+                                                           'sde.populations').items():
+                if isinstance(vnode, Y.MappingNode):
+                    sub = self.mapping(vnode, SDE_POPULATION_KEYS, f'sde.populations.{name}')
+                    entry = {k: self.py(v[1]) for k, v in sub.items()}
+                    if 'size' in sub:
+                        entry['size'] = self.integer(sub['size'][1],
+                                                     f'sde.populations.{name}.size', 1)
+                else:
+                    entry = {'size': self.integer(vnode, f'sde.populations.{name}', 1)}
+                spec['populations'][name] = (entry, knode.start_mark.line + 1)
         if 'parameters' in items:
             spec['parameters'] = {}
             for name, (knode, vnode) in self._free_mapping(
                     items['parameters'][1], 'sde.parameters').items():
                 line = knode.start_mark.line + 1
-                if isinstance(vnode, self.yaml.MappingNode):
+                if isinstance(vnode, Y.MappingNode):
                     sub = self.mapping(vnode, SDE_PARAMETER_KEYS,
                                        f'sde.parameters.{name}')
                     entry = {k: self.py(v[1]) for k, v in sub.items()}
                     if 'default' in sub:
                         entry['default'] = self.numeric_tree(
                             sub['default'][1], f'parameter {name!r} default')
+                    if 'indexed' in sub and entry['indexed'] not in (True, False, 'matrix'):
+                        self.fail(sub['indexed'][1], f'sde.parameters.{name}.indexed must be '
+                                                     'true, false or matrix')
+                    if 'indexed_by' in sub:
+                        entry['indexed_by'] = self._names(sub['indexed_by'][1],
+                                                          f'sde.parameters.{name}.indexed_by')
                 else:
                     entry = {'default': self.numeric_tree(
                         vnode, f'parameter {name!r}')}
                 spec['parameters'][name] = (entry, line)
+        if 'functions' in items:
+            spec['functions'] = {}
+            for name, (knode, vnode) in self._free_mapping(items['functions'][1],
+                                                           'sde.functions').items():
+                sub = self.mapping(vnode, SDE_FUNCTION_KEYS, f'sde.functions.{name}')
+                for need in ('args', 'expression'):
+                    if need not in sub:
+                        self.fail(vnode, f'sde.functions.{name} needs {need}')
+                entry = {k: self.py(v[1]) for k, v in sub.items()}
+                entry['args'] = self._names(sub['args'][1], f'sde.functions.{name}.args')
+                entry['expression'] = self.expression(sub['expression'][1],
+                                                      f'sde.functions.{name}.expression')
+                spec['functions'][name] = (entry, knode.start_mark.line + 1)
+        if 'kernels' in items:
+            spec['kernels'] = {}
+            for name, (knode, vnode) in self._free_mapping(items['kernels'][1],
+                                                           'sde.kernels').items():
+                sub = self.mapping(vnode, SDE_KERNEL_KEYS, f'sde.kernels.{name}')
+                entry = {k: self.py(v[1]) for k, v in sub.items()}
+                for k in ('time_expr', 'freq_image', 'delay'):
+                    if k in sub:
+                        entry[k] = self.expression(sub[k][1], f'sde.kernels.{name}.{k}')
+                if 'indexed_by' in sub:
+                    entry['indexed_by'] = self._names(sub['indexed_by'][1],
+                                                      f'sde.kernels.{name}.indexed_by')
+                spec['kernels'][name] = (entry, knode.start_mark.line + 1)
+        if 'fields' in items:
+            fnode = items['fields'][1]
+            if not isinstance(fnode, Y.SequenceNode) or not fnode.value:
+                self.fail(fnode, 'sde.fields must be a non-empty list of names, '
+                                 'e.g. [x]')
+            spec['fields'] = []
+            for n in fnode.value:
+                if isinstance(n, Y.MappingNode):
+                    if len(n.value) != 1:
+                        self.fail(n, 'a sde.fields entry is a name or {name: {population: ..., '
+                                     'description: ...}}')
+                    knode, vnode = n.value[0]
+                    fname = self.string(knode, 'sde field name')
+                    sub = self.mapping(vnode, SDE_FIELD_KEYS, f'sde.fields.{fname}')
+                    spec['fields'].append((fname, {k: self.py(v[1]) for k, v in sub.items()}))
+                else:
+                    spec['fields'].append((self.string(n, 'sde field name'), {}))
+        if 'point_processes' in items:
+            spec['point_processes'] = {}
+            for name, (knode, vnode) in self._free_mapping(items['point_processes'][1],
+                                                           'sde.point_processes').items():
+                sub = self.mapping(vnode, SDE_POINT_PROCESS_KEYS, f'sde.point_processes.{name}')
+                if 'rate' not in sub:
+                    self.fail(vnode, f'sde.point_processes.{name} needs rate')
+                entry = {k: self.py(v[1]) for k, v in sub.items()}
+                for k in ('rate', 'size'):
+                    if k in sub:
+                        entry[k] = self.expression(sub[k][1], f'sde.point_processes.{name}.{k}')
+                spec['point_processes'][name] = (entry, knode.start_mark.line + 1)
         for key in ('drift', 'equations'):
             if key in items:
                 spec[key] = {}
                 for fname, (knode, vnode) in self._free_mapping(
                         items[key][1], f'sde.{key}').items():
                     line = knode.start_mark.line + 1
-                    if key == 'drift':
+                    if key == 'drift' or not isinstance(vnode, Y.MappingNode):
+                        # (an equations entry that is an expression is a drift)
                         spec[key][fname] = (self.expression(
-                            vnode, f'sde.drift.{fname}'), line)
+                            vnode, f'sde.{key}.{fname}'), line)
                     else:
-                        sub = self.mapping(vnode, ('lhs', 'rhs'),
+                        sub = self.mapping(vnode, ('lhs', 'rhs', 'velocity'),
                                            f'sde.equations.{fname}')
                         if 'lhs' not in sub:
                             self.fail(vnode, f'sde.equations.{fname} needs lhs')
-                        spec[key][fname] = ({
-                            k: self.expression(v[1], f'sde.equations.{fname}.{k}')
-                            for k, v in sub.items()}, line)
-        nnode = items['noise'][1]
+                        eq = {k: self.expression(v[1], f'sde.equations.{fname}.{k}')
+                              for k, v in sub.items() if k != 'velocity'}
+                        if 'velocity' in sub:
+                            vn = sub['velocity'][1]
+                            eq['velocity'] = (self._names(vn, f'sde.equations.{fname}.velocity')
+                                              if isinstance(vn, Y.SequenceNode) else
+                                              self.string(vn, f'sde.equations.{fname}.velocity'))
+                        spec[key][fname] = (eq, line)
         spec['noise'] = {}
-        for nname, (knode, vnode) in self._free_mapping(
-                nnode, 'sde.noise').items():
-            if not isinstance(vnode, self.yaml.MappingNode):
-                self.fail(vnode, f'sde.noise.{nname} must be a mapping with a '
-                                 "'type' and the source's arguments")
-            d = self.py(vnode)
-            if d.get('type') not in SDE_NOISE_TYPES:
-                self.fail(vnode, f"sde.noise.{nname}: 'type' must be one of "
-                                 f'{", ".join(SDE_NOISE_TYPES)}; got '
-                                 f'{d.get("type")!r}')
-            if 'into' in d and 'couples' in d:
-                self.fail(vnode, f"sde.noise.{nname}: give 'into' or 'couples' (the "
-                                 'same), not both')
-            key = 'into' if 'into' in d or 'couples' not in d else 'couples'
-            if not isinstance(d.get(key), dict) or not d[key]:
-                self.fail(vnode, f"sde.noise.{nname}: 'into' must be a "
-                                 'mapping {field: coefficient}')
-            if 'interpretation' in d and d['interpretation'] not in (
-                    'ito', 'stratonovich', 'marcus'):
-                self.fail(vnode, f'sde.noise.{nname}.interpretation must be ito, '
-                                 f"stratonovich or marcus; got {d['interpretation']!r}")
-            spec['noise'][nname] = (d, knode.start_mark.line + 1)
+        if 'noise' in items:
+            for nname, (knode, vnode) in self._free_mapping(
+                    items['noise'][1], 'sde.noise').items():
+                if not isinstance(vnode, Y.MappingNode):
+                    self.fail(vnode, f'sde.noise.{nname} must be a mapping with a '
+                                     "'type' and the source's arguments")
+                d = self.py(vnode)
+                if d.get('type') not in SDE_NOISE_TYPES:
+                    self.fail(vnode, f"sde.noise.{nname}: 'type' must be one of "
+                                     f'{", ".join(SDE_NOISE_TYPES)}; got '
+                                     f'{d.get("type")!r}')
+                if 'into' in d and 'couples' in d:
+                    self.fail(vnode, f"sde.noise.{nname}: give 'into' or 'couples' (the "
+                                     'same), not both')
+                key = 'into' if 'into' in d or 'couples' not in d else 'couples'
+                if not (isinstance(d.get(key), dict) and d[key]) and not (
+                        key not in d and d.get('as_field')):
+                    self.fail(vnode, f"sde.noise.{nname}: 'into' must be a "
+                                     'mapping {field: coefficient}')
+                if 'interpretation' in d and d['interpretation'] not in (
+                        'ito', 'stratonovich', 'marcus'):
+                    self.fail(vnode, f'sde.noise.{nname}.interpretation must be ito, '
+                                     f"stratonovich or marcus; got {d['interpretation']!r}")
+                spec['noise'][nname] = (d, knode.start_mark.line + 1)
         if 'interpretation' in items:
             v = self.string(items['interpretation'][1], 'sde.interpretation')
             if v not in ('ito', 'stratonovich', 'marcus'):
@@ -365,7 +482,37 @@ class _Parser:
         if 'stability_analysis' in items:
             spec['stability_analysis'] = self.boolean(
                 items['stability_analysis'][1], 'sde.stability_analysis')
+        if 'extra_action' in items:
+            en = items['extra_action'][1]
+            spec['extra_action'] = ([self.expression(n, 'sde.extra_action') for n in en.value]
+                                    if isinstance(en, Y.SequenceNode) else
+                                    [self.expression(en, 'sde.extra_action')])
+        for key in ('boundary', 'dyson'):
+            if key in items:
+                v = self.py(items[key][1])
+                if not isinstance(v, dict):
+                    self.fail(items[key][1], f'sde.{key} must be a mapping')
+                spec[key] = v
+        if 'observables' in items:
+            spec['observables'] = {}
+            for name, (knode, vnode) in self._free_mapping(items['observables'][1],
+                                                           'sde.observables').items():
+                if isinstance(vnode, Y.MappingNode):
+                    sub = self.mapping(vnode, SDE_OBSERVABLE_KEYS, f'sde.observables.{name}')
+                    if 'expr' not in sub:
+                        self.fail(vnode, f'sde.observables.{name} needs expr')
+                    entry = {k: self.py(v[1]) for k, v in sub.items()}
+                    entry['expr'] = self.expression(sub['expr'][1], f'sde.observables.{name}')
+                else:
+                    entry = {'expr': self.expression(vnode, f'sde.observables.{name}')}
+                spec['observables'][name] = (entry, knode.start_mark.line + 1)
         return {'spec': spec, 'lines': lines}
+
+    def _names(self, node, what):
+        """A list of names (``[E, E]``)."""
+        if not isinstance(node, self.yaml.SequenceNode):
+            self.fail(node, f'{what} must be a list of names')
+        return [self.string(n, what) for n in node.value]
 
     def _free_mapping(self, node, what):
         """Mapping with arbitrary (parameter) names; duplicates are errors."""
@@ -643,31 +790,34 @@ def _sde_plain(block):
     what the resolved config holds, and what ``_build_sde`` reads."""
     spec = block['spec']
     out = {}
-    if 'name' in spec:
-        out['name'] = spec['name']
-    if 'parameters' in spec:
-        out['parameters'] = {n: _plain(e) for n, (e, _) in
-                             spec['parameters'].items()}
-    out['fields'] = list(spec['fields'])
-    for key in ('drift', 'equations'):
-        if key in spec:
-            out[key] = {f: _plain(v) for f, (v, _) in spec[key].items()}
-    out['noise'] = {n: _plain(d) for n, (d, _) in spec['noise'].items()}
-    for key in ('interpretation', 'series_order', 'marcus_route', 'stability_analysis'):
-        if key in spec:
-            out[key] = spec[key]
+    for key, value in spec.items():
+        if key == 'fields':
+            out[key] = [f if not attrs else {f: _plain(attrs)} for f, attrs in value]
+        elif key == 'noise' and not value:
+            continue
+        elif isinstance(value, dict) and value and all(
+                isinstance(v, tuple) and len(v) == 2 and isinstance(v[1], int)
+                for v in value.values()):
+            out[key] = {n: _plain(e) for n, (e, _) in value.items()}
+        else:
+            out[key] = _plain(value)
     return out
 
 
 def _noise_object(desc):
     """``{type: Gaussian, var: ...}`` -> an ``api.noise`` object; mappings
-    with a ``type`` inside it are jump laws."""
+    with a ``type`` inside it are jump laws; ``kernel:`` of a Gaussian is
+    the image of an :class:`api.delay.Kernel`."""
     from api import noise as N
     args = {}
     for key, value in desc.items():
-        if key in ('type', 'couples', 'into', 'interpretation'):
+        if key in ('type', 'couples', 'into', 'interpretation', 'as_field', 'population',
+                   'domain'):
             continue
-        if isinstance(value, dict) and 'type' in value:
+        if key == 'kernel' and value is not None:
+            from api.delay import Kernel
+            value = Kernel(**value) if isinstance(value, dict) else Kernel(str(value))
+        elif isinstance(value, dict) and 'type' in value:
             law = getattr(N, str(value['type']), None)
             if not (isinstance(law, type)
                     and issubclass(law, N.JumpDistribution)):
@@ -683,14 +833,18 @@ def _noise_object(desc):
     return getattr(N, desc['type'])(**args)
 
 
-def _build_sde(raw):
-    """The model dict of an inline ``sde:`` block (``api.sde.SDE``).
+def sde_from_block(block, src='<text>'):
+    """The :class:`api.sde.SDE` of a parsed ``sde:`` block (unbuilt).
     Builder errors become ``ConfigError`` at the line of the entry they
-    name."""
+    name.  Declaration order: operators, populations, parameters,
+    functions, kernels; then ``fields`` in order (an entry that is a point
+    process or the field a noise source creates, ``as_field`` or the state
+    of a coloured source, declares that); then the equations, the other
+    noise sources, the model-wide settings and the observables."""
+    from api.operators import Laplacian, TimeDerivative
     from api.sde import SDE
-    src, block = raw['_source'], raw['sde']
     spec, lines = block['spec'], block['lines']
-    s = SDE(spec.get('name', 'config SDE'))
+    s = SDE(spec.get('name', 'config SDE'), spec.get('n_populations'), space=spec.get('space'))
 
     def at(line, fn):
         try:
@@ -700,19 +854,58 @@ def _build_sde(raw):
         except Exception as e:
             raise ConfigError(src, line, f'{type(e).__name__}: {e}') from None
 
+    ops = {'TimeDerivative': TimeDerivative, 'Laplacian': Laplacian}
+    for name, (kind, line) in (spec.get('operators') or {}).items():
+        at(line, lambda name=name, kind=kind: s.operator(name, ops[kind]()))
+    for name, (entry, line) in (spec.get('populations') or {}).items():
+        at(line, lambda name=name, entry=entry: s.population(name, **entry))
     for name, (entry, line) in (spec.get('parameters') or {}).items():
         at(line, lambda name=name, entry=entry: s.parameter(name, **entry))
-    for f in spec['fields']:
-        at(lines['fields'], lambda f=f: s.field(f))
-    for f, (expr, line) in (spec.get('drift') or {}).items():
-        at(line, lambda f=f, expr=expr: s.drift(f, expr))
-    for f, (eq, line) in (spec.get('equations') or {}).items():
-        at(line, lambda f=f, eq=eq: s.equation(f, **eq))
-    for name, (desc, line) in spec['noise'].items():
-        def add(name=name, desc=desc):
-            s.noise(name, _noise_object(desc), into=desc.get('into', desc.get('couples')),
-                    interpretation=desc.get('interpretation'))
+    for name, (entry, line) in (spec.get('functions') or {}).items():
+        at(line, lambda name=name, entry=entry: s.define_function(name, **entry))
+    for name, (entry, line) in (spec.get('kernels') or {}).items():
+        at(line, lambda name=name, entry=entry: s.define_kernel(name, **entry))
+    noise = dict(spec.get('noise') or {})
+    pps = dict(spec.get('point_processes') or {})
+
+    def add_noise(name):
+        desc, line = noise.pop(name)
+
+        def add():
+            kw = {k: desc[k] for k in ('as_field', 'population', 'domain', 'interpretation')
+                  if desc.get(k) is not None}
+            into = desc.get('into', desc.get('couples'))
+            s.noise(name, _noise_object(desc), into=into, **kw)
         at(line, add)
+
+    creates = {}
+    for n, (d, _) in noise.items():
+        if d.get('as_field'):
+            creates[d['as_field']] = n
+        elif d.get('kernel') is not None:
+            creates[n] = n
+    walk = spec.get('fields') or []
+    for n, (f, attrs) in enumerate(walk):
+        if f in pps:
+            entry, line = pps.pop(f)
+            at(line, lambda f=f, entry=entry: s.point_process(f, **entry))
+        elif f in creates and creates[f] in noise:
+            # (a source declared before a later field is declared here; one
+            # after the last field with the other sources, after the equations)
+            if any(g not in creates for g, _ in walk[n + 1:]):
+                add_noise(creates[f])
+        else:
+            at(lines['fields'], lambda f=f, attrs=attrs: s.field(f, **attrs))
+    for f, (entry, line) in pps.items():
+        at(line, lambda f=f, entry=entry: s.point_process(f, **entry))
+    for key in ('drift', 'equations'):
+        for f, (eq, line) in (spec.get(key) or {}).items():
+            if isinstance(eq, str):
+                at(line, lambda f=f, eq=eq: s.drift(f, eq))
+            else:
+                at(line, lambda f=f, eq=eq: s.equation(f, **eq))
+    for name in list(noise):
+        add_noise(name)
     if 'interpretation' in spec:
         s.interpretation(spec['interpretation'])
     if 'series_order' in spec:
@@ -721,7 +914,48 @@ def _build_sde(raw):
         s.marcus_route(spec['marcus_route'])
     if 'stability_analysis' in spec:
         s.stability_analysis(spec['stability_analysis'])
-    return at(lines.get('drift') or lines.get('equations'), s.build)
+    for text in spec.get('extra_action') or []:
+        at(lines['extra_action'], lambda text=text: s.extra_action(text))
+    if 'boundary' in spec:
+        b = dict(spec['boundary'])
+        at(lines['boundary'], lambda: s.boundary(b.pop('mode'), **b))
+    if 'dyson' in spec:
+        at(lines['dyson'], lambda: s.dyson(**spec['dyson']))
+    for name, (entry, line) in (spec.get('observables') or {}).items():
+        at(line, lambda name=name, entry=entry: s.observable(name, **entry))
+    return s
+
+
+def _build_sde(raw):
+    """The model dict of an inline ``sde:`` block (``api.sde.SDE``).
+    Builder errors become ``ConfigError`` at the line of the entry they
+    name."""
+    block = raw['sde']
+    s = sde_from_block(block, raw['_source'])
+    lines = block['lines']
+    line = lines.get('drift') or lines.get('equations') or lines.get('point_processes')
+    try:
+        return s.build()
+    except ConfigError:
+        raise
+    except Exception as e:
+        raise ConfigError(raw['_source'], line, f'{type(e).__name__}: {e}') from None
+
+
+def sde_block_from_text(text, source='<text>'):
+    """Parse the ``sde:`` block of ``text`` (a config holding ``sde:``, or the
+    block's mapping itself) -> the block ``sde_from_block`` reads."""
+    try:
+        import yaml                                         # noqa: F401
+    except ImportError:
+        raise RuntimeError('reading the sde: text needs PyYAML (import yaml)') from None
+    p = _Parser(text, source)
+    node = p.root
+    if isinstance(node, p.yaml.MappingNode):
+        top = {k.value: (k, v) for k, v in node.value if isinstance(k, p.yaml.ScalarNode)}
+        if 'sde' in top:
+            node = top['sde'][1]
+    return p.sde_block(node)
 
 
 def _load_model(raw):

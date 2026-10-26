@@ -222,6 +222,31 @@ fix = m.check(verbose=False)['corrections']                 # only W_b gets the 
 text = m.sde_text()                                         # the equations back as text; m.sde(text) rebuilds m
 ```
 
+A delayed field is written `x(t - d)` (or `v[j](t - d)` inside a population sum, or in a point-process rate) and
+becomes the hard-delay kernel. `m.connectivity('w', W)` declares a weight matrix from a numpy array (`w[i,j]` onto unit
+`i` from unit `j`; `between=(post, pre)` for two populations). `m.observable('rate', 'phi(v)')` names a function of
+the fields that `compute_cumulants` takes as an external leg (`('rate', u)` for one unit of a population): exact at
+every order when it is linear in the fields; for a nonlinear one, the mean to one loop and the k = 2 tree (higher
+orders are refused). `m.to_text()` writes the model as the YAML `sde:` block of a config, and `SDE.from_text(text)`
+(or `daedalus run`) reads it back into the same model:
+
+```python
+import numpy as np
+from api import compute_cumulants
+from api.noise import Gaussian
+from api.sde import SDE
+m = (SDE('Delayed network').population('E', size=2)
+     .connectivity('w', np.array([[0.0, 0.4], [0.3, 0.0]]))            # w[i,j]: onto unit i from unit j
+     .parameter('d', default=0.5, domain='positive').parameter('D', default=0.05, domain='positive')
+     .field('v', population='E')
+     .equation('v', '(Dt + 1)*v', 'sum(w[i,j]*v[j](t - d) for j in E)')  # v[j](t - d): a delayed field
+     .noise('xi', Gaussian(var='2*D'), into={'v': 1})
+     .observable('power', 'v^2'))
+r = compute_cumulants(m, k=1, max_ell=1, external_fields=[('power', 1)], tau_grid=[0.0], verbose=False)
+power = r['observable']['mean']        # <v_1^2> = f(v*) + the one-loop shift (here the exact variance)
+text = m.to_text()                     # the YAML sde: block; SDE.from_text(text) rebuilds m
+```
+
 ### Spectra and integrated correlators (k = 2)
 
 `spectra=` asks for exact spectral and integrated outputs, computed from the state-space triples of the run with no
@@ -415,6 +440,12 @@ sde:
     xi: {type: Gaussian, var: "2*D", couples: {x: 1}}
   stability_analysis: true
 ```
+
+The block also takes `n_populations`, `space`, `operators`, `populations`, `functions`, `kernels`,
+`point_processes`, field entries with attributes (`- v: {population: E}`), `equations` with `velocity`, noise
+`as_field` / `population` / `kernel` (a Gaussian's filter image), `extra_action`, `boundary`, `dyson` and
+`observables`. `SDE.to_text()` writes a Python-built model in this form (checked to read back into the same model),
+and `SDE.from_text()` reads it.
 
 `--dry-run` also prints the model analyzer's report table for the question (gates G0-G5: structure, mean
 field, poles, noise class, the loop-parameter estimate `g_eff` and the Taylor check; no diagram

@@ -382,7 +382,7 @@ def test_d_inline_sde_expressions_may_be_numbers_and_unsupported_keys_are_errors
     num = load_config(_write(tmp_path, eq.replace('"-eps*x^3 + 0"', '0'), 'n.yaml'))[0]
     assert num['sde']['equations']['x']['rhs'] == '0'
     _bad(tmp_path, SDE_CFG.replace('eps: {default: 0.02, domain: positive}',
-                                   'eps: {default: 0.02, indexed: true}'), 5, "unknown key 'indexed'")
+                                   'eps: {default: 0.02, indexd: true}'), 5, "unknown key 'indexd'")
 
 
 def test_d_inline_sde_dry_run_and_other_noise_types(tmp_path, capsys):
