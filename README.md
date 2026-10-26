@@ -212,6 +212,35 @@ fix = m.check(verbose=False)['corrections']                 # only W_b gets the 
 text = m.sde_text()                                         # the equations back as text; m.sde(text) rebuilds m
 ```
 
+### Gaussian-jittered exogenous inputs
+
+The exact time integrator needs rational, causal kernels, so a Gaussian density is refused as a kernel. On an
+EXOGENOUS input (a point process, or an exposed noise source, whose rate holds no field), `Kernel.gaussian(sigma,
+tol=1e-6)` (`api/delay.py`, `api/_gaussian_fit.py`) is allowed: shifting a stationary input in time changes no
+stationary statistic of the network it drives, so the density is shifted by `T` (5.25 sigma at `tol = 1e-6`), fitted
+by a rational kernel with L1 error at most `tol` (16 states at `1e-6`, 27 at `1e-9`), and the shift is dropped. The mean
+is exact. `result['input_jitter']` and the ledger entry `jitter:<input>` report the fit and a relative error bound per
+cumulant order (`2`: the spectral error of the fit, which second-order statistics see only through
+`|g(omega)|^2`; `k >= 3`: `(1 + l1)^k - 1`). Refused, by name: a source whose rate depends on a field (feedback
+breaks the shift), a jitter on a field that is not such a source, a use of the input without the jitter or with
+another jitter, the input itself as an external leg (its cross-cumulants would move by `T`), and switch-on runs:
+
+```python
+from api.sde import SDE
+from api.delay import Kernel
+from api import compute_cumulants
+m = (SDE('Jittered input')
+     .parameter('tau', default=1.0, domain='positive').parameter('tauX', default=0.5, domain='positive')
+     .parameter('lam', default=2.0, domain='positive').parameter('p', default=0.7)
+     .parameter('w', default=1.3).parameter('sigma', default=0.3, domain='positive')
+     .define_kernel('kX', kernel=Kernel.exponential('tauX'))
+     .define_kernel('g', kernel=Kernel.gaussian('sigma', tol=1e-6))     # acausal: exogenous inputs only
+     .point_process('n', 'lam', size='p')                               # the Poisson mother events
+     .field('v').equation('v', lhs='(tau*Dt + 1)*v', rhs='w*Conv(kX*g, n)'))
+res = compute_cumulants(m.build(), k=2, max_ell=0, external_fields=[('v', 1), ('v', 1)])
+bounds = res['input_jitter']['n']['fit']['bound_by_order']             # {1: 0.0, 2: 3.9e-07, 3: 2.2e-06, ...}
+```
+
 ### Spectra and integrated correlators (k = 2)
 
 `spectra=` asks for exact spectral and integrated outputs, computed from the state-space triples of the run with no

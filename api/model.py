@@ -399,6 +399,13 @@ class _TemporalMethods:
             if freq_image is not None or time_expr is not None or delay is not None:
                 raise ValueError(f"define_kernel({name!r}): give kernel= alone (it "
                                  f"carries the image and the delay)")
+            if getattr(kernel, 'jitter', None):
+                # its shift is free only on an exogenous input, which the SDE
+                # front end checks (the builder's action text cannot be)
+                raise ValueError(f"define_kernel({name!r}): Kernel.gaussian (a jitter of "
+                                 f"an exogenous input) is declared with the SDE front end "
+                                 f"(api.sde.SDE.define_kernel), which checks that the "
+                                 f"input is exogenous.")
             freq_image = kernel.freq_image
             delay = kernel.delay
         if time_expr is not None and delay is None:
