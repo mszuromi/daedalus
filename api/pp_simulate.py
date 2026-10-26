@@ -391,7 +391,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             raise PPSimulationError(f'source {name!r} ({type(src).__name__}): the simulator '
                                     f'handles point_process() trains and sources coupled '
                                     f'to fields (not exposed ones).')
-        if sde._interp == 'marcus':
+        if sde._src_interp(name) == 'marcus':
             coup = {f: sde._parse(str(c), f'coefficient of {name} in {f}')
                     for f, c in s['couples'].items()}
             units = sde._marcus_units(name, s, coup)
