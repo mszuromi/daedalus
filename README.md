@@ -209,7 +209,9 @@ noise source is exposed as a field with `as_field=` (`couples=` and `expose=` ar
 `c dW/dt`: `(tau*Dt + 1)*v = E + sum(w[i,j]*v[j] for j in pop) + s dW/dt`. A second- or higher-order left side, such as
 `(m*Dt^2 + gamma*Dt + k)*x` (in a line or in `.equation`), is embedded as a first-order system with the velocity
 `xdot` declared for you, and a pure integrator (`dx = v dt`, `.drift('x', 'v')`) takes its mean field from the whole
-system:
+system. Coloured noise is `Gaussian(var, kernel=Kernel.exponential('tau'))` (any rational `api.delay.Kernel`), embedded
+as extra fields, and `GaussianVector(cov=[[1, 'rho'], ['rho', 2]])` with `into={'x': [1, 0], 'y': [0, 1]}` is
+correlated white noise:
 
 ```python
 from api.sde import SDE

@@ -260,6 +260,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
     budget, ``default_mem_budget``; ``off`` there means no limit);
     a larger one raises ``MemoryError`` before anything is allocated."""
     from api.noise import expr_to_text
+    from sage.all import SR
     from api.sde import SDEError
     sde._derive()                                   # validates; declares composites
     # Sage-preparsed literals (a notebook's Integer / RealNumber) as Python
@@ -377,7 +378,8 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             raise PPSimulationError(f'equation({f!r}): lhs {eq["lhs"]!r} is not '
                                     f'a*Dt*{f} + b*{f} with constant a, b.')
         rhs = sde._index(eq['rhs'])
-        corrs = sde._ito_drift.get(f, [])         # Stratonovich / Marcus: Ito drift correction
+        # Stratonovich / Marcus: the Ito drift correction; coloured noise: its c*eta terms
+        corrs = sde._ito_drift.get(f, []) + getattr(sde, '_colored_drift', {}).get(f, [])
         if corrs:
             rhs = f'({rhs}) + ' + ' + '.join(f'({expr_to_text(c)})' for c in corrs)
         drift[f] = (compiled(expr_to_text(a), f'<a {f}>'), compiled(expr_to_text(b), f'<b {f}>'),
@@ -391,6 +393,23 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
             raise PPSimulationError(f'source {name!r} ({type(src).__name__}): the simulator '
                                     f'handles point_process() trains and sources coupled '
                                     f'to fields (not exposed ones).')
+        if type(src).__name__ == 'GaussianVector':
+            # correlated components: cov = L L^T (numeric, at the run's parameters), so the
+            # independent standard normals j enter field f with sum_k c_fk L_kj
+            cov = np.array([[float(np.real(eval(compiled(sde._index(expr_to_text(c)), '<cov>'),
+                                                dict(base, i=0)))) for c in r] for r in src.cov])
+            w, V = np.linalg.eigh(cov)
+            L = V * np.sqrt(np.maximum(w, 0.0))
+            zero, one = compiled('0', '<mean>'), compiled('1', '<var>')
+            for j in range(src.n):
+                for f, cs in s['couples'].items():
+                    txt = ' + '.join(f'({sde._index(str(c))})*({float(L[k, j])!r})' for k, c in enumerate(cs))
+                    drift[f][3].append((compiled(txt, f'<c {name}[{j}]>'), zero, one, f'{name}[{j}]'))
+                for k, m in enumerate(src.mean_vector):
+                    if not SR(m).is_zero():
+                        raise PPSimulationError(f'source {name!r}: a GaussianVector with a mean is '
+                                                f'not simulated; move the mean into the drift.')
+            continue
         if sde._src_interp(name) == 'marcus':
             coup = {f: sde._parse(str(c), f'coefficient of {name} in {f}')
                     for f, c in s['couples'].items()}
