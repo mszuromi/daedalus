@@ -88,7 +88,12 @@ Options (``compute_cumulants(..., delay={...})``):
 ``truncation`` ``'auto'`` (default: the first order at ``min(truncation_tol(),
              tol / 100)``, later orders adaptive, above), a fixed relative
              H-infinity tolerance for every order, or ``0`` (exact
-             realizations).
+             realizations);
+``order_cache`` ``True`` (default): the order an automatic search settled on is
+             replayed (one run at that order, with the truncation tolerance of the
+             search) for later calls at the same model, parameter point and
+             options, whatever the entry or lag grid; ``False`` searches every
+             call; ``clear_order_cache()`` forgets them all.
 
 The result carries ``result['delay']`` (orders tried, walls, the estimate,
 whether the target was met, the tree used and its comparison with the Pade
@@ -109,21 +114,23 @@ import math
 import os
 import re
 import time
+import threading
 import warnings
+from collections import OrderedDict
 from dataclasses import replace
 from fractions import Fraction
 from typing import Optional
 
 import numpy as np
 
-__all__ = ['Kernel', 'pade_coefficients', 'pade_image', 'delay_factors',
+__all__ = ['Kernel', 'clear_order_cache', 'pade_coefficients', 'pade_image', 'delay_factors',
            'pade_substitute', 'kernel_delays', 'pade_model',
            'split_shifted_time_expr', 'compute_delayed', 'DelayOrderWarning',
            'pade_mn_coefficients', 'bare_delay_kernels',
            'bare_delays_on_delta_lines', 'DEFAULTS']
 
 DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=900.0,
-                tree='exact', truncation='auto')
+                tree='exact', truncation='auto', order_cache=True)
 
 #: Cost model of the order controller: the wall of order ``m`` scales like
 #: ``S^COST_EXPONENT_STATES * (1 + nu)^COST_EXPONENT_STIFFNESS``, ``S`` the mean
@@ -141,6 +148,78 @@ COST_EXPONENT_STIFFNESS = 1.0
 
 class DelayOrderWarning(UserWarning):
     """The automatic Pade order missed its accuracy target (cap or n_max)."""
+
+
+# ── the order cache ──────────────────────────────────────────────────────
+#
+# The automatic order search runs the whole pipeline at n_start, 2 n_start, ...
+# until two orders agree, which costs several runs of the delayed model per
+# call.  Entries of one covariance matrix, lags of one slice and repeated
+# calls at one parameter point all share the model, the kernels and the
+# accuracy target, so the order the first search settled on is replayed for
+# the rest: ONE run at that order, with the balanced-truncation tolerance the
+# search used there.  That run is the run the search made at that order (bit
+# for bit for the same entry); a different entry takes the order, not its own
+# estimate.  The outcome of a wall-capped search is fixed by the first search
+# for the lifetime of the process, which also removes its dependence on the
+# machine's speed from every later call.
+
+_ORDER_CACHE: 'OrderedDict' = OrderedDict()
+_ORDER_CACHE_MAX = 64
+_ORDER_CACHE_LOCK = threading.Lock()
+
+
+def clear_order_cache() -> None:
+    """Forget every cached Pade order (see ``delay={'order_cache': ...}``)."""
+    with _ORDER_CACHE_LOCK:
+        _ORDER_CACHE.clear()
+
+
+def _order_cache_key(model, ctx, opts, call, k, max_ell, exact):
+    """The cache key of a search, or ``None`` when the model cannot be
+    fingerprinted (a hand-written dict model has no text signature).  The key
+    holds everything the search's outcome depends on EXCEPT the entry
+    (external fields, lag grid): the model text and index sets, the full
+    parameter point (delays and the saddle included), the question's
+    accuracy and Taylor order, the delay options, the truncation tolerance in
+    effect, and whether the exact tree covers the model."""
+    if not opts['order_cache'] or opts['order'] != 'auto' or ctx is None:
+        return None
+    if model.get('spec_signature') is None or getattr(ctx, 'num_params', None) is None:
+        return None
+    from api._propagator import model_cache_signature
+    from api._realization import truncation_tol
+    point = sorted((str(name), repr(val)) for name, val in ctx.num_params.items())
+    o = {key: val for key, val in opts.items() if key != 'order_cache'}
+    return repr((model_cache_signature(model), model.get('name'), point, int(k), int(max_ell),
+                 repr(call.get('accuracy')), call.get('taylor_order'),
+                 call.get('fixed_point_index', 0), sorted(o.items()),
+                 float(truncation_tol()), exact is None))
+
+
+def _order_cache_get(key):
+    if key is None:
+        return None
+    with _ORDER_CACHE_LOCK:
+        rec = _ORDER_CACHE.get(key)
+        if rec is not None:
+            _ORDER_CACHE.move_to_end(key)
+        return rec
+
+
+def _order_cache_put(key, rec):
+    if key is None:
+        return
+    with _ORDER_CACHE_LOCK:
+        _ORDER_CACHE[key] = rec
+        _ORDER_CACHE.move_to_end(key)
+        while len(_ORDER_CACHE) > _ORDER_CACHE_MAX:
+            _ORDER_CACHE.popitem(last=False)
+
+
+def _order_cache_drop(key):
+    with _ORDER_CACHE_LOCK:
+        _ORDER_CACHE.pop(key, None)
 
 
 # ── Pade approximants of exp(-z) ─────────────────────────────────────────
@@ -508,6 +587,7 @@ def resolve_options(opts) -> dict:
     o['n_max'] = max(o['n_start'], int(o['n_max']))
     o['tol'] = float(o['tol'])
     o['wall_max'] = float(o['wall_max'])
+    o['order_cache'] = bool(o['order_cache'])
     if o['truncation'] != 'auto':
         try:
             t = float(o['truncation'])
@@ -934,16 +1014,40 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     # them); every other model runs exactly as before
     bare = bare_delay_kernels(model, ns)
     w_first = []
-    if bare:
-        with warnings.catch_warnings(record=True) as w_first:
-            warnings.simplefilter('always')
+    cache_key = _order_cache_key(model, ctx, opts, call, k, max_ell, exact) \
+        if loops_need_n else None
+    out, replayed, approximant = None, None, 'pade'
+    rec = _order_cache_get(cache_key)
+    if rec is not None:
+        # the order of an earlier search at this model and parameter point:
+        # one run at it, with that search's truncation tolerance
+        try:
+            out = _run_orders(model, sub_call, [rec['n']], opts, k, exact, loops_need_n, ctx,
+                              runs, walls, skipped, failed, ests, verbose, call,
+                              proper=rec['approximant'] == 'pade_proper', t_first=rec['trunc'])
+        except Exception:
+            out = None
+        if out is None or out[2] is None or out[3] or failed or skipped:
+            out = None                      # not reproducible: search afresh
+            _order_cache_drop(cache_key)
+            for dct in (runs, walls, skipped, failed, ests):
+                dct.clear()
+        else:
+            replayed, approximant = rec, rec['approximant']
+            ests.update(rec['ests'])
+            out = (rec['est'], rec['cap'], out[2], out[3], dict(out[4], stop=rec['stop']))
+            if verbose:
+                print(f"[delay] Pade order n = {rec['n']} from the order cache")
+    if out is None:
+        if bare:
+            with warnings.catch_warnings(record=True) as w_first:
+                warnings.simplefilter('always')
+                out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+                                  runs, walls, skipped, failed, ests, verbose, call)
+        else:
             out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
                               runs, walls, skipped, failed, ests, verbose, call)
-    else:
-        out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
-                          runs, walls, skipped, failed, ests, verbose, call)
     est, cap, n_used, incomplete, ctrl = out
-    approximant = 'pade'
     # the delta part is read off the (rational) approximated model's analysis
     # (the true model's G3 does not see poles through a delay factor)
     _an_first = (runs.get(n_used) or {}).get('analysis') if n_used is not None else None
@@ -1021,6 +1125,11 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         cap = cap or 'a single order was run (no doubling estimate)'
         if ctrl['stop'].startswith('n_max'):
             ctrl['stop'] = cap
+    if replayed is None and cache_key is not None and not incomplete:
+        _order_cache_put(cache_key, dict(
+            n=n_used, approximant=approximant, trunc=ctrl['truncation_by_order'].get(n_used),
+            est=est, ests=dict(ests), cap=cap, stop=ctrl['stop']))
+    ctrl['order_from_cache'] = replayed is not None
     _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
             t_all, ctrl, approximant)
@@ -1028,8 +1137,10 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
 
 
 def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, walls,
-                skipped, failed, ests, verbose, call, proper=False):
-    """The order loop of ``compute_delayed``; returns ``(est, cap, n_used,
+                skipped, failed, ests, verbose, call, proper=False, t_first=None):
+    """The order loop of ``compute_delayed`` (``t_first``: the truncation
+    tolerance of the first order, instead of the base one, to replay an order
+    from the order cache); returns ``(est, cap, n_used,
     incomplete, ctrl)`` (``ctrl``: the controller's record: state counts,
     predictions, cost exponent, why it stopped)."""
     from api.compute import compute_cumulants
@@ -1045,8 +1156,10 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     sub_call = _with_sample_points(sub_call, k, t_scale)
     last = None                    # (result, order, its estimate, the order that measures)
     for i, n in enumerate(seq):
-        t_cur = t_base if last is None else _next_truncation(opts, t_base, *_lastargs(last, k, n),
-                                                              ctrl)
+        if last is not None:
+            t_cur = _next_truncation(opts, t_base, *_lastargs(last, k, n), ctrl)
+        else:
+            t_cur = t_base if t_first is None else t_first
         if verbose:
             print(f'[delay] Pade ({n - 1 if proper else n}, {n}) of exp(-i omega d): '
                   'running the pipeline'
@@ -1250,6 +1363,9 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'predicted_walls_s': ctrl['predicted_walls_s'],
         'cost_correction': ctrl['cost_correction'],
         'stop_reason': ctrl['stop'],
+        # True: the order was replayed from an earlier search (order_cache),
+        # est_rel_error / target_met are that search's
+        'order_from_cache': bool(ctrl.get('order_from_cache')),
         # k >= 3: the time unit of the controller's sample points of total_C
         'sample_time_scale': ctrl.get('sample_time_scale'),
     }

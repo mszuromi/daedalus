@@ -1930,7 +1930,10 @@ def compute_cumulants(
         observable, default ``1e-8``), ``n_start`` / ``n_max`` (doubling search,
         default 4 / 16), ``wall_max`` (cap in s on the predicted wall time of
         the next order, default 900), ``tree`` (``'exact'``, default: the
-        k = 2 tree from the exact delayed covariance; ``'pade'``).  Ignored
+        k = 2 tree from the exact delayed covariance; ``'pade'``),
+        ``order_cache`` (default ``True``: the order an automatic search chose
+        is replayed for later calls at the same model, parameter point and
+        options; ``False`` searches every call).  Ignored
         for models without delays.  The result then carries
         ``result['delay']``.
 
