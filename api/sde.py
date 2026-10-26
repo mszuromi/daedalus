@@ -135,6 +135,24 @@ loops, switch-on transients, ...) it refuses for these models as for the
 hand-written ones.  Conserved noise (``div`` of a white vector noise) is not
 supported yet.
 
+Paper-style equations and per-source interpretations
+----------------------------------------------------
+:meth:`SDE.sde` reads equations written as in a paper, one per line
+(``dx = (-mu*x) dt + sqrt(2*D) dW + c ∘ dN(lam)``; :mod:`api.sde_paper`), into
+the declarations above, so the model is the one those calls build.  Each
+noise term carries its interpretation: a plain ``dW`` / ``dN`` term is Ito, a
+term marked with a circle (``∘``, ASCII ``o``) is Stratonovich for a Gaussian
+source and Marcus for a jump source.  The same is available on any source as
+``noise(..., interpretation=)``, which overrides :meth:`SDE.interpretation`
+for that source.  The rules act per source (the Stratonovich drift of a
+source involves that source alone, the Marcus flow of a jump source its own
+coupling), so a model may mix them; it then builds as the explicit model
+whose sources carry the same interpretations, and is stamped Marcus when any
+source takes the Marcus rule.  Refused, as under the model-wide modes:
+Stratonovich on a jump source, Stratonovich or Marcus on an exposed source or
+an SPDE, and Marcus on a coupling that reads other units (a joint jump).
+:meth:`SDE.sde_text` writes the equations back in that form.
+
 Diagnostics: ``check``, ``latex`` and parse errors
 --------------------------------------------------
 Presentation only: none of these changes the action, the equations or the built
@@ -195,6 +213,11 @@ __all__ = ['SDE', 'SDEError', 'SDEReport']
 
 class SDEError(NoiseError):
     """Raised for an invalid SDE declaration."""
+
+
+class _PaperText(str):
+    """The text of :meth:`SDE.sde_text` (``noises``: the sources it names)."""
+    noises: dict = {}
 
 
 class SDEReport(dict):
@@ -807,14 +830,58 @@ class SDE:
         tnames = self._time_names()
         return self.equation(field, lhs=f'{tnames[0] if tnames else "Dt"}*{field}', rhs=f)
 
+    def sde(self, text: str, *, noises: Optional[dict] = None):
+        """Declare equations written as in a paper, one per line::
+
+            m.sde('''
+                dx = (-mu*x - eps*x^3) dt + sqrt(2*D) dW
+                tau*dv = (E - v) dt + sigma ∘ dW_a + J dN(r*exp(v))
+            ''')
+
+        The left side is ``d<field>`` (with an optional constant factor); each
+        term on the right ends in ``dt`` (the drift), ``dW`` (a standard Wiener
+        process), ``dN(rate)`` (a Poisson counting process) or ``d<X>_<name>``
+        for a source passed in ``noises={name: source}``; the factor in front
+        is the coupling.  A subscript names a process, and one name in several
+        equations is one source.  A circle before the differential (``∘ dW``,
+        ASCII ``o dW``) marks a Stratonovich term (Gaussian) or a Marcus term
+        (jump); a plain term is Ito.  Each line becomes the existing
+        declarations (:meth:`field` if new, :meth:`drift` or
+        :meth:`equation`, :meth:`noise` with ``into=`` and
+        ``interpretation=``), so the model is the one those calls build; see
+        :mod:`api.sde_paper`."""
+        from api.sde_paper import apply_paper
+        return apply_paper(self, text, noises)
+
+    def sde_text(self) -> str:
+        """The equations written as :meth:`sde` reads them (a ``str``; its
+        ``noises`` attribute holds the sources to pass as ``noises=``).
+        ``SDE(name)`` with the same parameters, functions and kernels, then
+        ``.sde(text, noises=text.noises)``, rebuilds the same model.  Refused
+        for equations whose left side is not ``a*Dt*x``, point processes and
+        exposed sources."""
+        from api.sde_paper import paper_text
+        text, noises = paper_text(self)
+        out = _PaperText(text)
+        out.noises = noises
+        return out
+
     def noise(self, name: str, source: NoiseSource, couples: Optional[dict] = None,
               *, expose: Optional[str] = None, domain: Optional[str] = None,
-              population: Optional[str] = None, into: Optional[dict] = None):
+              population: Optional[str] = None, into: Optional[dict] = None,
+              interpretation: Optional[str] = None):
         """Declare a noise source ``name`` feeding ``into={field: c}``
         (``dx_field += c * d eta``; ``couples=`` is the same keyword).
         ``expose='n'`` exposes it as the field ``n`` (use ``n`` in the
         equations' rhs).  An SPDE takes space-time white Gaussian noise,
-        ``Gaussian(var=..., space='white')``."""
+        ``Gaussian(var=..., space='white')``.  ``interpretation=`` (``'ito'``,
+        ``'stratonovich'`` or ``'marcus'``) sets the interpretation of this
+        source alone, in place of the model's :meth:`interpretation`."""
+        if interpretation is not None:
+            interpretation = str(interpretation).lower()
+            if interpretation not in ('ito', 'stratonovich', 'marcus'):
+                raise SDEError(f"noise({name!r}, interpretation={interpretation!r}): use "
+                               f"'ito', 'stratonovich' or 'marcus'.")
         if into is not None:
             if couples is not None:
                 raise SDEError(f'noise({name!r}): give into= or couples= (the same), not both.')
@@ -842,6 +909,8 @@ class SDE:
                                     'latex': '', 'exposed': name}
         self._sources[name] = {'source': source, 'couples': couples,
                                'expose': expose, 'population': population}
+        if interpretation is not None:
+            self._sources[name]['interp'] = interpretation
         return self
 
     def point_process(self, name: str, rate: str, *, population: Optional[str] = None,
@@ -886,13 +955,59 @@ class SDE:
 
     def interpretation(self, mode: str):
         """``'ito'`` (default), ``'stratonovich'`` (Gaussian sources) or
-        ``'marcus'`` (Gaussian and jump sources; see the module docstring)."""
+        ``'marcus'`` (Gaussian and jump sources; see the module docstring).
+        It applies to the sources that do not set their own
+        (``noise(..., interpretation=)``); the terms of :meth:`sde` carry
+        their own, so it is refused for a model with paper-style terms."""
         mode = str(mode).lower()
         if mode not in ('ito', 'stratonovich', 'marcus'):
             raise SDEError(f"interpretation({mode!r}): use 'ito', 'stratonovich' or "
                            f"'marcus'.")
+        paper = [n for n, s in self._sources.items() if s.get('paper')]
+        if paper and mode != 'ito':
+            raise SDEError(f"interpretation({mode!r}): the noise terms written with .sde() "
+                           f"({', '.join(paper)}) carry their own interpretation: a plain "
+                           f"dW / dN term is Ito, a term marked with a circle (∘dW, or 'o dW') "
+                           f"is Stratonovich (Gaussian) or Marcus (jump).")
         self._interp = mode
         return self
+
+    def _src_interp(self, name: str) -> str:
+        """The interpretation of source ``name``: its own
+        (``noise(..., interpretation=)``, a paper-style term) or the model's."""
+        return self._sources[name].get('interp') or self._interp
+
+    def _interp_mode(self) -> str:
+        """The model's interpretation as one word: the model's own when no
+        source sets one; else the model-wide mode the sources' interpretations
+        amount to (Gaussian sources Stratonovich and jump sources Ito is
+        ``'stratonovich'`` only without jumps), or ``'mixed'``."""
+        own = [n for n, s in self._sources.items() if s.get('interp')]
+        if not own:
+            return self._interp
+        for mode in ('ito', 'stratonovich', 'marcus'):
+            if all(self._effective(n, mode) == self._effective(n, self._src_interp(n))
+                   for n, s in self._sources.items()):
+                return mode
+        return 'mixed'
+
+    def _effective(self, name: str, mode: str) -> str:
+        """What ``mode`` does to source ``name`` (the rule its terms get):
+        ``'ito'``, ``'stratonovich'`` (a Gaussian source, the Stratonovich
+        conversion) or ``'marcus'`` (a jump source, the Marcus flow); a mode
+        the source cannot take is returned as is (refused at derivation)."""
+        s = self._sources[name]
+        if mode == 'ito':
+            return 'ito'
+        src = s.get('source')
+        gaussian = src is not None and src.is_gaussian
+        if mode == 'marcus':
+            return 'stratonovich' if gaussian else 'marcus'
+        return 'stratonovich' if gaussian else 'stratonovich-jump'
+
+    def _marcus_sources(self) -> list:
+        """The sources the Marcus rule applies to (their own or the model's)."""
+        return [n for n in self._sources if self._src_interp(n) == 'marcus']
 
     def extra_action(self, text: str):
         """Append ``text`` to the derived action (written with its own
@@ -1531,7 +1646,7 @@ class SDE:
             self._check_spatial_scope()
         else:
             self._check_temporal_scope(info)
-        if self._interp == 'marcus':
+        if self._marcus_sources():
             self._check_marcus_joint()
         allowed_src = (set(self._fields) | set(self._param_names)
                        | set(self._function_names) | {'i', 'j'})
@@ -1556,19 +1671,24 @@ class SDE:
         for f, eq in self._eqs.items():
             self._check_text(eq['lhs'], f'equation({f!r}) lhs', eq['lhs_raw'])
             self._check_text(eq['rhs'], f'equation({f!r}) rhs', eq['rhs_raw'])
-        if self._interp == 'stratonovich':
-            for name, s in self._sources.items():
-                if s.get('pp') or not s['source'].is_gaussian:
-                    raise SDEError(
-                        f"interpretation('stratonovich'): source {name!r} is a jump/"
-                        f"non-Gaussian source; the Stratonovich rule is defined here "
-                        f"for Gaussian noise only; jump SDEs take the Marcus rule, "
-                        f"interpretation('marcus').")
-                if s['expose']:
-                    raise SDEError(
-                        f"interpretation('stratonovich'): exposed source {name!r} is "
-                        f"not supported; couple it with couples= instead.")
-        if self._interp == 'marcus':
+        for name, s in self._sources.items():
+            if self._src_interp(name) != 'stratonovich':
+                continue
+            own = 'interp' in s
+            where = (f"noise({name!r}, interpretation='stratonovich')" if own
+                     else "interpretation('stratonovich')")
+            if s.get('pp') or not s['source'].is_gaussian:
+                raise SDEError(
+                    f"{where}: source {name!r} is a jump/"
+                    f"non-Gaussian source; the Stratonovich rule is defined here "
+                    f"for Gaussian noise only; jump SDEs take the Marcus rule, "
+                    + (f"noise({name!r}, ..., interpretation='marcus')." if own
+                       else "interpretation('marcus')."))
+            if s['expose']:
+                raise SDEError(
+                    f"{where}: exposed source {name!r} is "
+                    f"not supported; couple it with couples= instead.")
+        if self._marcus_sources():
             self._check_marcus()
 
         extra_rhs = {f: [] for f in self._eqs}       # deterministic additions (action + MF)
@@ -1595,7 +1715,7 @@ class SDE:
                 if self._fields[f]['exposed'] is not None:
                     raise SDEError(f'noise({name!r}): cannot couple to the exposed '
                                    f'source field {f!r}.')
-            if self._interp == 'marcus' and not s['expose']:
+            if self._src_interp(name) == 'marcus' and not s['expose']:
                 units = self._marcus_units(name, s, coup)
             else:
                 units = [(name, src, False)]
@@ -1617,7 +1737,7 @@ class SDE:
                     continue
                 if src.is_gaussian:
                     gm = src.params['mean']
-                    gauss_units.append((uname, src, s['couples']))
+                    gauss_units.append((uname, src, s['couples'], self._src_interp(name)))
                     if not SR(gm).is_zero():
                         gm_i = parse_expr(self._index(expr_to_text(gm)))
                         for f, c in coup.items():
@@ -1640,9 +1760,12 @@ class SDE:
 
         # Stratonovich -> Ito drift correction (Gaussian sources; under Marcus
         # the Gaussian sources and Gaussian parts, whose Marcus rule it is).
-        if self._interp == 'stratonovich' or (self._interp == 'marcus' and gauss_units):
+        gauss_units = [u for u in gauss_units if u[3] in ('stratonovich', 'marcus')]
+        if gauss_units:
+            mode = self._interp_mode()
             dtcoef = self._dt_coefficients()
-            for name, src, couples in gauss_units:
+            for name, src, couples, rule in gauss_units:
+                rule = mode if mode != 'mixed' else rule
                 V = self._parse(expr_to_text(src.params['var']), f'{name}.var')
                 b = {f: self._parse(str(c), 'coefficient') / dtcoef[f]
                      for f, c in couples.items()}
@@ -1657,7 +1780,7 @@ class SDE:
                         extra_rhs[fi].append(dtcoef[fi] * corr)
                         self._ito_drift.setdefault(fi, []).append(dtcoef[fi] * corr)
                         self._drift_log.append({'field': fi, 'source': name,
-                                                'rule': self._interp,
+                                                'rule': rule,
                                                 'text': expr_to_text(dtcoef[fi] * corr)})
                         self.notes.append(
                             f'Stratonovich -> Ito: drift of {fi!r} += '
@@ -1769,6 +1892,11 @@ class SDE:
         if self._interp != 'ito':
             raise SDEError(f"{who}: interpretation({self._interp!r}) is a {temporal_only}; "
                            f"spatial noise is Ito.")
+        for name in self._sources:
+            if self._src_interp(name) != 'ito':
+                raise SDEError(f"{who}: noise({name!r}) is {self._src_interp(name)}; the "
+                               f"Stratonovich and Marcus rules are a {temporal_only}; spatial "
+                               f"noise is Ito.")
         for name, s in self._sources.items():
             if s.get('pp'):
                 raise SDEError(f'{who}: point_process({name!r}) is a {temporal_only}.')
@@ -1873,7 +2001,7 @@ class SDE:
             # the Dt-coefficient x + x^3, whose x-part alone (1) would be taken for a
             if (a.is_zero() or set(map(str, a.variables())) & {g + '__i' for g in self._fields}
                     or (dt_terms - a * self._sym(f)).expand().has(self._sym(f))):
-                raise SDEError(f"{self._interp}: cannot read a constant Dt "
+                raise SDEError(f"{self._interp_mode()}: cannot read a constant Dt "
                                f"coefficient off lhs={eq['lhs']!r}.")
             dtcoef[f] = a
         return dtcoef
@@ -1888,7 +2016,8 @@ class SDE:
         sources, and point processes whose spikes enter an equation with a
         state-dependent coefficient (a constant one is the same jump in every
         interpretation)."""
-        for name, s in self._sources.items():
+        for name in self._marcus_sources():
+            s = self._sources[name]
             if s.get('pp'):
                 self._check_marcus_pp(name, s['pp'])
             elif s['expose']:
@@ -1904,7 +2033,8 @@ class SDE:
         coupling is parsed (the parser refuses it under every interpretation,
         with a message about parsing)."""
         names = '|'.join(re.escape(f) for f in sorted(self._fields, key=len, reverse=True))
-        for name, s in self._sources.items():
+        for name in self._marcus_sources():
+            s = self._sources[name]
             for f, c in s['couples'].items():
                 c = str(c)
                 if ((names and re.search(rf'\b({names})\s*\[\s*(?!i\s*\])', c))
@@ -2322,7 +2452,7 @@ class SDE:
             # the exact Marcus terms are kept to SDE.series_order response
             # legs; compute_cumulants refuses k + max_ell above it
             m['marcus_exact_order'] = {'order': self._series_order, 'sources': exact}
-        if self._interp == 'marcus':
+        if self._interp == 'marcus' or self._marcus_sources():
             m['interpretation'] = 'marcus'
         if self._marcus_terms:
             # the Marcus series of each jump source with a state-dependent
@@ -2391,13 +2521,15 @@ class SDE:
         d = self._derive()
         notes = list(self.notes)
         rep = SDEReport(
-            name=self.name, interpretation=self._interp, space=self._space,
+            name=self.name, interpretation=self._interp_mode(), space=self._space,
             declarations=self._declarations_report(),
             action=self._action_report(d),
             mean_field=[{k_: e[k_] for k_ in ('field', 'lhs', 'rhs', 'population')}
                         for e in d['equations']],
             corrections=self._corrections_report(),
             notes=notes, k=int(k), max_ell=int(max_ell))
+        if rep['interpretation'] == 'mixed':
+            rep['interpretations'] = {n: self._src_interp(n) for n in self._sources}
         warnings_ = self._truncation_warnings()
         rep['vertices'], rep['propagator'], rep['analysis_error'] = None, None, None
         try:
@@ -2547,7 +2679,8 @@ class SDE:
         # the SDE has declared its convention and derived a Taylor-truncated
         # action itself: the run-time consents are not what check() reports
         # (the derived action is Ito-ordered under Stratonovich as well)
-        pol = Policy(interpretation='marcus' if self._interp == 'marcus' else 'ito',
+        pol = Policy(interpretation='marcus' if self._interp == 'marcus' or self._marcus_sources()
+                     else 'ito',
                      allow_taylor_truncation=True)
         report, ctx = analyze_with_context(model, q, pol, use_cache=False)
         tr = report.traits
@@ -2612,7 +2745,7 @@ class SDE:
             for e in d['equations']:
                 lines.append(f".equation(lhs={e['lhs']!r}, rhs={e['rhs']!r})")
         else:
-            lines = [f"# SDE {self.name!r} ({self._interp})",
+            lines = [f"# SDE {self.name!r} ({self._interp_mode()})",
                      ".set_action_text('''", d['action'], "''')"]
             for e in d['equations']:
                 lines.append(f".equation(lhs={e['lhs']!r}, rhs={e['rhs']!r}, "

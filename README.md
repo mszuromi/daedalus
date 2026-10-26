@@ -196,6 +196,22 @@ equation('x') rhs: undeclared symbol 'epsilon'
     hint: did you mean 'eps'? (otherwise declare 'epsilon')
 ```
 
+Equations can also be written as in a paper, one per line (`m.sde(...)`, `api/sde_paper.py`). Each term ends in
+`dt` (the drift), `dW` (a standard Wiener process), `dN(rate)` (a Poisson process) or `d<X>_<name>` for a source passed
+in `noises=`; the factor in front is the coupling, and a subscript names a process shared by several equations. A
+circle before the differential (`∘ dW`, ASCII `o dW`) makes that term Stratonovich (Gaussian) or Marcus (jump); a plain
+term is Ito, so one model can mix them. Each line becomes the usual declarations (`.field`, `.drift` / `.equation`,
+`.noise(..., into=, interpretation=)`), so the model is byte-identical to the one those calls build:
+
+```python
+from api.sde import SDE
+m = (SDE('Mixed noise').parameter('mu', default=1.0, domain='positive')
+     .parameter('s', default=0.5, domain='positive').parameter('g', default=0.3, domain='positive')
+     .sde('dx = (-mu*x) dt + s dW_a + g*x ∘ dW_b'))          # dW_a is Ito, dW_b Stratonovich
+fix = m.check(verbose=False)['corrections']                 # only W_b gets the drift g^2 x / 2
+text = m.sde_text()                                         # the equations back as text; m.sde(text) rebuilds m
+```
+
 ### Spectra and integrated correlators (k = 2)
 
 `spectra=` asks for exact spectral and integrated outputs, computed from the state-space triples of the run with no

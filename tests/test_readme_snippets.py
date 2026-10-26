@@ -35,7 +35,7 @@ def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
                "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(',
-               'dd.covariance_matrix(']
+               'dd.covariance_matrix(', "SDE('Mixed noise')"]
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -117,3 +117,9 @@ def test_readme_covariance_example_is_ok():
     assert cm['status'] == 'ok' and cm['Sigma'].shape == (3, 2, 2)
     assert cm['shared_stages']['misses'] == 1
     assert d['status'] == 'ok' and float(d['error'].max()) < 1e-5
+
+
+def test_readme_paper_style_example():
+    ns = _exec(_block("SDE('Mixed noise')"), 'paper-style example')
+    assert [(c['source'], c['rule'], c['text']) for c in ns['fix']] == [('b', 'stratonovich', '(1/2)*g^2*x[i]')]
+    assert ns['text'] == 'dx = (-mu*x) dt + s dW_a + g*x ∘ dW_b'
