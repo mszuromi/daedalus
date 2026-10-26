@@ -35,7 +35,7 @@ def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
                "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(', 'dd.JumpProcess(',
-               'dd.covariance_matrix(', "SDE('Mixed noise')"]
+               'dd.covariance_matrix(', "SDE('Mixed noise')", 'dd.hartree(']
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -124,6 +124,20 @@ def test_readme_covariance_example_is_ok():
     assert cm['status'] == 'ok' and cm['Sigma'].shape == (3, 2, 2)
     assert cm['shared_stages']['misses'] == 1
     assert d['status'] == 'ok' and float(d['error'].max()) < 1e-5
+
+
+def test_readme_resummation_example():
+    """g = 1: Hartree within 8 % of the exact variance 0.46792, screened order 2 within 2.5 %."""
+    ns = _exec(_block('dd.hartree('), 'resummation example')
+    h, r = ns['h'], ns['r']
+    import math
+    from scipy.integrate import quad
+    w = lambda x: math.exp(-(x * x / 2 + x ** 4 / 4))
+    exact = quad(lambda x: x * x * w(x), -12, 12)[0] / quad(w, -12, 12)[0]      # 0.46792
+    assert abs(h.cov[0, 0] / exact - 1) < 0.08
+    assert abs(float(r['C_tau'][0].real) / exact - 1) < 0.025
+    assert r['resummation']['kappa_source'].startswith('pms order 1')
+    assert set(r['C_tau_by_order']) == {0, 1, 2}
 
 
 def test_readme_paper_style_example():

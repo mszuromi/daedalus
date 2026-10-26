@@ -144,6 +144,16 @@ _PIPELINE_EXPORTS = {
     'covariance_matrix':         'api.covariance',
     'CovarianceDerivativeError': 'api.covariance',
     'CovarianceWarning':         'api.covariance',
+    # opt-in resummations: the self-consistent Gaussian (Hartree) and the
+    # screened (optimized-perturbation) loop series, Config(resum=...)
+    'hartree':                   'api.hartree',
+    'HartreeResult':             'api.hartree',
+    'HartreeError':              'api.hartree',
+    'HartreeUnsupported':        'api.hartree',
+    'HartreeBistabilityWarning': 'api.hartree',
+    'HartreeAdvisoryWarning':    'api.hartree',
+    'screened':                  'api.resum',
+    'ResumWarning':              'api.resum',
     # symbolic tree-level outputs (C1 Fourier domain, C2 time domain)
     'tree_covariance':           'api.symbolic_out',
     'tree_covariance_from_result': 'api.symbolic_out',
@@ -572,6 +582,17 @@ class Config:
     # loop order in Sigma_by_ell, derivatives in 'derivatives').
     covariance: Any = None
 
+    # ── opt-in resummation (api.hartree, api.resum) ──
+    # None (off: the loop series, unchanged), 'hartree' (the self-consistent
+    # Gaussian on its own; max_ell unset or 0, k = 1 or 2) or 'screened' / a
+    # dict {'method': 'screened', 'mass': 'pms' | 'hartree' | kappa,
+    # 'observable': 'trace_cov' | 'C0' | [fields], 'step': 5e-3,
+    # 'kappa_range': (0.25, 6.0), 'n_scan': 17}: the loop orders re-expanded
+    # around a variational trial propagator (k = 2, max_ell = the screened
+    # order N >= 1) -> result['C_tau'] (order N), ['C_tau_by_order'],
+    # ['C_tau_spread'], ['C_tau_loops_by_ell'], ['resummation'].
+    resum: Any = None
+
     # ── numerical knobs shared with compute_cumulants (None = its default) ──
     taylor_order: Optional[int] = None      # vertex Taylor order (None: max(k + 2 max_ell, 2))
     use_cache: Optional[bool] = None        # on-disk caches (None: on)
@@ -711,6 +732,14 @@ class Config:
                         raise ValueError(
                             f'Config.covariance with {_why} is not '
                             f'supported.')
+        if self.resum is not None:
+            from api.resum import resolve_resum_options, check_config
+            from api.covariance import resolve_covariance_options
+            check_config(resolve_resum_options(self.resum, 'Config.resum'),
+                         k=self.k, max_ell=self.max_ell, output=self.output,
+                         t_min=self.t_min, spatial_points=self.spatial_points,
+                         covariance=resolve_covariance_options(
+                             self.covariance, 'Config.covariance'))
         if self.tau_step is not None and not float(self.tau_step) > 0:
             raise ValueError(
                 f"Config.tau_step must be > 0; got {self.tau_step!r}.")
@@ -876,6 +905,9 @@ def config_options(spatial=None):
         ]),
         ('covariance matrix (k=2; api.covariance)', [
             ('covariance', "None | True | {'fields': [...], 'pairs': 'upper'|'all', 'derivatives': [param, ...] or {'parameters': [...], 'step': 1e-3}, 'keep_entries': bool} → run() returns Sigma[n,i,j]=<dx_i(0) dx_j(τ_n)> over every pair (one shared MF/propagator/pole pass) and dSigma/dθ"),
+        ]),
+        ('resummation (api.hartree, api.resum)', [
+            ('resum', "None | 'hartree' (self-consistent Gaussian; max_ell 0) | 'screened' or {'method': 'screened', 'mass': 'pms'|'hartree'|kappa, 'observable': 'trace_cov'|'C0'|[fields], 'step', 'kappa_range', 'n_scan'} (k=2: loop orders re-expanded around a variational propagator, order N = max_ell) → C_tau, C_tau_by_order, C_tau_spread, resummation"),
         ]),
         ('delay kernels (api.delay)', [
             ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
@@ -1813,6 +1845,14 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     from api.covariance import resolve_covariance_options
     _cov = resolve_covariance_options(getattr(cfg, 'covariance', None),
                                       'Config.covariance')
+    from api.resum import resolve_resum_options
+    _resum = resolve_resum_options(getattr(cfg, 'resum', None),
+                                   'Config.resum')
+    if _resum is not None:
+        # opt-in resummation (api.hartree / api.resum); the loop path below
+        # is untouched when resum is None
+        return _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental,
+                             _resum, _cov)
     if _cov is not None:
         # every pair of the fields in one shared pass (api.covariance)
         from api.covariance import covariance_matrix
@@ -2109,6 +2149,51 @@ def run(model: dict, cfg: Config, module=None) -> dict:
 
 _ORDER_COLORS = ['#3F00FF', '#1F9FCC', '#16A085', '#E67E22', '#E74C3C',
                  '#8E44AD', '#7F8C8D']
+
+
+def _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental, opts, cov):
+    """``dd.run`` with ``Config.resum``: the Hartree closure or the screened
+    series, on the τ grid :func:`run` resolved."""
+    from api.hartree import refusal_reason, HartreeUnsupported
+    why = refusal_reason(model)
+    if why is not None:
+        raise HartreeUnsupported(f'Config.resum: {why}.')
+    from api.resum import check_config
+    check_config(opts, k=k, max_ell=max_ell, output=cfg.output,
+                 t_min=cfg.t_min, spatial_points=cfg.spatial_points,
+                 covariance=cov)
+    tau = kw.get('tau_grid')
+    if tau is None:
+        tau = np.arange(-kw['tau_max'], kw['tau_max'] + kw['tau_step'] * 0.5,
+                        kw['tau_step'])
+    tau = np.asarray(tau, dtype=float)
+    mf_kw = {key: kw[key] for key in ('fixed_point_index', 'mf_dae_n_starts',
+                                      'mf_dae_seed_box') if key in kw}
+    spec = kw.get('spectra')
+    if spec is not None:
+        from api.spectra import resolve_spectra_options
+        spec = resolve_spectra_options(spec, 'Config.spectra')
+    if opts['method'] == 'hartree':
+        from api.hartree import hartree, run_result
+        h = hartree(model, fundamental, taylor_order=opts.get('taylor_order'),
+                    **mf_kw)
+        res = run_result(h, ext, k, tau, spectra=spec, covariance=cov)
+    else:
+        from api.resum import screened
+        run_kw = {key: kw[key] for key in (
+            'use_cache', 'parallel', 'n_workers', 'policy', 'preflight',
+            'backend', 'accuracy', 'taylor_order') if key in kw}
+        res = screened(model, max_ell, fundamental, external_fields=ext,
+                       options={key: v for key, v in opts.items()
+                                if key != 'method'},
+                       tau_grid=tau, spectra=spec, covariance=cov,
+                       verbose=cfg.verbose, **mf_kw, **run_kw)
+    res['_cfg'] = cfg
+    res['_model'] = model
+    res['_resolved'] = dict(k=k, max_ell=max_ell, external_fields=ext,
+                            parameters=fundamental, fundamental=fundamental,
+                            resum=opts['method'])
+    return res
 
 
 def _order_label(ell: int) -> str:
