@@ -811,6 +811,11 @@ def _observable(r, k, t_scale=1.0):
     sample points of ``total_C`` (k >= 3), at times in units of ``t_scale``
     (``_delay_time_scale``: the points, the error estimate and the order the
     controller picks do not depend on the time unit)."""
+    if r.get('C_times') is not None:
+        # a switch-on run: the cumulant at the requested absolute times
+        tot = np.asarray(r['C_times'], dtype=complex)
+        t0 = (r.get('C_times_by_ell') or {}).get(0)
+        return tot, tot - (np.asarray(t0, dtype=complex) if t0 is not None else 0 * tot)
     by = r.get('C_tau_by_ell') or {}
     if k <= 2 and r.get('C_tau') is not None:
         tot = np.asarray(r['C_tau'], dtype=complex)
@@ -1016,7 +1021,14 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     # 2. the exact tree (k = 2 only), from the linear delayed system
     exact = None
     exact_note = None
-    if opts['tree'] == 'exact' and k == 2:
+    if call.get('t_min') is not None:
+        # a switch-on transient: the exact tree is the STATIONARY covariance of the
+        # delayed system (a boundary-value problem), so the tree is the Pade one too;
+        # the fluctuations and the history of every delayed field are zero before t_min
+        exact_note = ('switch-on transient (t_min): the exact tree is the stationary '
+                      'covariance; the tree uses the same Pade approximant as the loops '
+                      '(slower convergence in the first delay after t_min)')
+    elif opts['tree'] == 'exact' and k == 2:
         tg = call.get('tau_grid')
         tmax = (float(np.max(np.abs(np.asarray(tg, dtype=float)))) if tg is not None
                 and np.size(tg) else float(call.get('tau_max') or 0.0))
