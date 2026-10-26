@@ -156,3 +156,25 @@ def test_strictly_proper_approximant_is_replayed(monkeypatch):
     assert hit['delay']['order_source'] == 'replay' and hit['delay']['approximant'] == 'pade_proper'
     assert hit['delay']['orders_run'] == [first['delay']['n']]
     _same(first, hit)
+
+
+def test_discard_run_is_its_own_entry_with_the_same_order_and_estimate():
+    """A k >= 3 discard run reads the controller's estimate at the same sample points but is
+    called with ``points``, not a lag grid: another entry.  Started from the cache it takes
+    two orders (the cached one and the one before), reports the estimate of the pair it ran
+    (est_by_order holds the orders that HAVE an estimate), and agrees with the search."""
+    m = (SDE('delay order cache k3').parameter('a', default=1.0).parameter('c', default=-2.0)
+         .parameter('d', default=0.5, domain='positive').parameter('b', default=0.3)
+         .parameter('D', default=0.1).field('x').drift('x', '-a*x + c*x(t - d) - b*x^2')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    kw = dict(k=3, max_ell=0, external_fields=[('x', 1)] * 3, parallel=False, verbose=False,
+              use_cache=False, delay={'tol': 5e-5})
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        a = compute_cumulants(m, tau_grid=np.array([0.0]), **kw)
+        b = compute_cumulants(m, points=[(0.0, 0.0, 0.0)], discard=True, **kw)
+    assert a['delay']['order_source'] == 'search' and b['delay']['order_source'] == 'verified'
+    assert b['delay']['n'] == a['delay']['n']
+    n = a['delay']['n']
+    assert b['delay']['est_by_order'][n] == pytest.approx(a['delay']['est_by_order'][n], rel=1e-3)
+    assert b['delay']['est_rel_error'] == pytest.approx(a['delay']['est_rel_error'], rel=1e-3)
