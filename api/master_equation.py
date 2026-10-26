@@ -1059,6 +1059,10 @@ class MasterEquation:
             model = model.build()
         pars = dict(self.params)
         pars['h'] = self.h
+        if 'h' not in (parameters or {}):
+            from api.naming import free_parameter_names
+            if 'h' not in set(free_parameter_names(model)):
+                pars.pop('h')               # a model written in the system size has no 'h'
         pars.update(parameters or {})
         cr = self.cumulants(max(ks))
         notes = [
