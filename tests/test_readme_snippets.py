@@ -34,7 +34,7 @@ def _exec(code, name):
 def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
-               "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(',
+               "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(', 'dd.JumpProcess(',
                'dd.covariance_matrix(', "SDE('Mixed noise')", "SDE('Jittered input')"]
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
@@ -87,6 +87,13 @@ def test_readme_master_equation_example_is_the_poisson_law():
     import numpy as np
     np.testing.assert_allclose(ns['k4'].ravel(), 20.0, rtol=1e-9)             # lam / mu
     np.testing.assert_allclose(ns['cc'][:, 0, 0], 20.0 * np.exp(-np.array([0.0, 1.0, 2.0])), rtol=1e-9)
+
+
+def test_readme_jump_process_example_converges_at_one_loop():
+    ns = _exec(_block('dd.JumpProcess('), 'jump-process example')
+    err = ns['rel_err']
+    assert set(err) == {'kappa_1(A)', 'kappa_1(B)', 'kappa_2(A,A)', 'kappa_2(A,B)', 'kappa_2(B,B)'}
+    assert max(err.values()) < 1e-3
 
 
 def test_readme_check_and_latex_example(capsys):

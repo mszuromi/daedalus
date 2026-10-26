@@ -1026,7 +1026,7 @@ class MasterEquation:
                 s.drift(f, '0')
             for t, r in zip(self.transitions, rates):
                 s.noise(t.name, Poisson(rate=r, size='h'),
-                        couples={f: j for f, j in zip(self.fields, t.jump) if j})
+                        into={f: j for f, j in zip(self.fields, t.jump) if j})
         else:
             for i, f in enumerate(self.fields):
                 terms = [f'({t.jump[i]})*({r})' for t, r in zip(self.transitions, rates)
@@ -1034,7 +1034,7 @@ class MasterEquation:
                 s.drift(f, '0' if not terms else 'h*(' + ' + '.join(terms) + ')')
             for t, r in zip(self.transitions, rates):
                 s.noise(t.name, Gaussian(var=f'h^2*({r})'),
-                        couples={f: j for f, j in zip(self.fields, t.jump) if j})
+                        into={f: j for f, j in zip(self.fields, t.jump) if j})
         return s
 
     def compare_with_daedalus(self, model=None, *, ks=(1, 2), max_ell=1, parameters=None,
@@ -1059,6 +1059,10 @@ class MasterEquation:
             model = model.build()
         pars = dict(self.params)
         pars['h'] = self.h
+        if 'h' not in (parameters or {}):
+            from api.naming import free_parameter_names
+            if 'h' not in set(free_parameter_names(model)):
+                pars.pop('h')               # a model written in the system size has no 'h'
         pars.update(parameters or {})
         cr = self.cumulants(max(ks))
         notes = [
