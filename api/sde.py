@@ -193,6 +193,24 @@ Stratonovich on a jump source, Stratonovich or Marcus on an exposed source or
 an SPDE, and Marcus on a coupling that reads other units (a joint jump).
 :meth:`SDE.sde_text` writes the equations back in that form.
 
+Gaussian-jittered exogenous inputs
+----------------------------------
+``define_kernel('g', kernel=Kernel.gaussian('sigma', tol=1e-6))``
+(:meth:`api.delay.Kernel.gaussian`) declares the Gaussian density, which is
+acausal, for the jitter of an EXOGENOUS input: ``Conv(kX*g, n)`` with ``n`` a
+point process (or a source declared with ``as_field=``) whose rate holds no
+field.  Shifting a stationary exogenous input in time changes no stationary
+statistic of the network, so the density is shifted by ``T`` and replaced by a
+rational fit (``api._gaussian_fit``), and the shift is dropped.  The build
+(:meth:`_check_jitter`) refuses a jitter on anything else, a source whose rate
+depends on a field (feedback into the source), a use of the input without the
+jitter (``Conv(kX, n)`` next to ``Conv(kX*g, n)``: the shift must be common to
+every use) or with a different one, and an indexed jitter or sigma; the model
+dict carries ``exogenous_jitter``, from which ``compute_cumulants`` refuses the
+input as an external leg and switch-on runs, and records the fit
+(``result['input_jitter']``, the ledger's ``jitter:<input>``).  The simulator
+runs the fitted kernel: the recorded input leads the network by ``T``.
+
 Kernels of nonlinear functions of the fields
 --------------------------------------------
 ``Conv(K, X)`` with ``X`` nonlinear in the fields (``Conv(k, v^2/a)``,
@@ -314,6 +332,15 @@ def _report_text(r) -> str:
     for fn in decl['functions']:
         L.append(f"  function:   {fn['name']}({', '.join(fn['args'])}) = {fn['expression']}")
     for kn in decl['kernels']:
+        if 'gaussian_jitter' in kn:
+            # the fit's exact fraction runs to thousands of characters
+            j = kn['gaussian_jitter']
+            L.append(f"  kernel:     {kn['name']} "
+                     + (f"= {' * '.join(j['factors'])}, " if j.get('factors') else '')
+                     + f"Gaussian jitter (sigma={j['sigma']}, tol={j['tol']:g}): "
+                     f"rational fit of {j['states']} states, shift {j['shift']} dropped"
+                     + (f", delay={kn['delay']}" if 'delay' in kn else ''))
+            continue
         L.append('  kernel:     ' + kn['name'] + ' ' + ', '.join(
             f'{q}={kn[q]}' for q in ('time_expr', 'freq_image', 'delay') if q in kn))
     L.append('  operators:  ' + ', '.join(f'{n}: {t}' for n, t in decl['operators'].items()))
@@ -560,6 +587,10 @@ class SDE:
         self._functions: list[tuple[tuple, dict]] = []
         self._function_names: list[str] = []
         self._kernels: 'OrderedDict[str, dict]' = OrderedDict()
+        # kernels carrying a Gaussian jitter (Kernel.gaussian), name -> its
+        # jitter record; composite kernels inherit it (_compose_kernels)
+        self._jitter: dict[str, dict] = {}
+        self._jitter_uses: dict[str, dict] = {}
         self._eqs: dict[str, dict] = {}
         self._sources: 'OrderedDict[str, dict]' = OrderedDict()
         self._interp = 'ito'
@@ -655,6 +686,19 @@ class SDE:
             if time_expr is not None or freq_image is not None or delay is not None:
                 raise SDEError(f'define_kernel({name!r}): give kernel= alone.')
             freq_image, delay = kernel.freq_image, kernel.delay
+            if getattr(kernel, 'jitter', None):
+                if indexed or indexed_by:
+                    raise SDEError(f'define_kernel({name!r}): a Gaussian jitter kernel is '
+                                   f'not indexed (one common time shift of the input); '
+                                   f'index the synaptic kernel it multiplies in Conv '
+                                   f'instead (Conv(kX[i]*{name}, n)).')
+                if '[' in kernel.jitter['sigma']:
+                    raise SDEError(f"define_kernel({name!r}): Kernel.gaussian sigma="
+                                   f"{kernel.jitter['sigma']!r} is indexed; the jitter of "
+                                   f"an input takes one sigma (one common time shift).")
+                self._jitter[name] = dict(kernel.jitter)
+        elif name in self._jitter:
+            del self._jitter[name]
         if time_expr is not None and delay is None:
             from api.delay import split_shifted_time_expr
             sh = split_shifted_time_expr(str(time_expr))
@@ -1886,7 +1930,8 @@ class SDE:
                 continue
             kref, X = args[0].strip(), args[1].strip()
             m = re.fullmatch(r'([A-Za-z_]\w*)\s*(?:\[([^\]]*)\])?', kref)
-            if not m or m.group(1) not in self._kernels:
+            if not m or m.group(1) not in self._kernels or m.group(1) in self._jitter:
+                # (a Gaussian jitter is never embedded: _check_jitter decides it)
                 continue
             X = self._embed_text(X, pop, where)
             if self._affine_conv_arg(X, where):
@@ -2130,6 +2175,11 @@ class SDE:
                 if k['delay']:
                     delays.append(f'({remap(k["delay"])})')
             cname = '_'.join(r[0] for r in refs)
+            jit = [r[0] for r in refs if r[0] in self._jitter]
+            if len(jit) > 1:
+                raise SDEError(f'{where}: {args[0].strip()!r} holds two Gaussian jitter '
+                               f'kernels {jit}; declare one Kernel.gaussian with sigma = '
+                               f'sqrt(sigma1^2 + sigma2^2).')
             spec = dict(time_expr=None, freq_image='*'.join(images) or '1', latex_name='',
                         indexed=False, indexed_by=pops if sites else None,
                         delay=' + '.join(delays) if delays else None)
@@ -2142,6 +2192,8 @@ class SDE:
                 raise SDEError(f'{where}: kernel {cname!r} exists and is not the convolution '
                                f'{args[0].strip()!r} (index the factors the same way at '
                                f'every use, or declare the product with define_kernel).')
+            if jit:
+                self._jitter[cname] = dict(self._jitter[jit[0]], factors=[r[0] for r in refs])
             ref = cname + (f'[{",".join(sites)}]' if sites else '')
             out += text[pos:a] + f'Conv({ref}, {args[1].strip()})'
             pos = c
@@ -2235,6 +2287,7 @@ class SDE:
                     f"not supported; couple it with into= instead.")
         if self._marcus_sources():
             self._check_marcus()
+        self._jitter_uses = {} if spatial else self._check_jitter(extras)
 
         extra_rhs = {f: [] for f in self._eqs}       # deterministic additions (action + MF)
         mf_rhs = {f: [] for f in self._eqs}          # MF-only additions (non-Gaussian means)
@@ -2449,6 +2502,119 @@ class SDE:
             action += f'\n+ ({self._rename_pop(" ".join(e.split()))})'
             self._action_log.append({'kind': 'extra', 'text': self._rename_pop(" ".join(e.split()))})
         return {'action': action, 'equations': mf_eqs}
+
+    def _check_jitter(self, extras) -> dict:
+        """The uses of the Gaussian jitter kernels (``Kernel.gaussian``).  The
+        Gaussian density is acausal; its fit is the density shifted by ``T``
+        with the shift dropped, which changes no stationary statistic only when
+        the WHOLE input is shifted: the kernel must read an exogenous source (a
+        point process, or an exposed noise source, whose rate / parameters hold
+        no field: nothing feeds back into it), and every use of that source
+        must carry the same jitter (one common shift).  Returns ``{source
+        field: {'sigma', 'tol', 'fit', 'kernels'}}``."""
+        if not self._jitter:
+            return {}
+        texts = []
+        for f, eq in self._eqs.items():
+            texts += [(f'equation({f!r})', eq['lhs']), (f'equation({f!r})', eq['rhs'])]
+        for name, s in self._sources.items():
+            if s.get('pp'):
+                texts.append((f'point_process({name!r}) rate',
+                              self._compose_kernels(s['pp']['rate'], f'point_process({name!r})')))
+                texts.append((f'point_process({name!r}) size', s['pp']['size']))
+                continue
+            texts += [(f'noise({name!r}) coefficient for {f!r}', str(c))
+                      for f, c in s['couples'].items()]
+            texts += [(f'noise({name!r}) {k}=', str(v)) for k, v in s['source'].params.items()]
+        texts += [(f'define_function({fn!r})', expr) for (fn, _a, expr), _kw in self._functions]
+        texts += [('extra_action', e) for e in extras]
+        fields = set(self._fields)
+
+        def depends(text):
+            return sorted(set(re.findall(r'\b([A-Za-z_]\w*)\b', str(text))) & fields)
+
+        def jittered(kern):
+            # every jitter kernel named in a Conv's kernel argument, however
+            # written: a composite (kX_g), a product not composed (kX*g, in a
+            # noise coefficient), parentheses ((g))
+            return [n for n in re.findall(r'\b([A-Za-z_]\w*)\b', kern) if n in self._jitter]
+
+        uses = {}
+        for where, text in texts:
+            for a, b, c in self._conv_spans(text):
+                args = _split_top_level(text[b:c - 1])
+                kern = args[0].strip() if args else ''
+                jk = jittered(kern)
+                if len(args) != 2 or not jk:
+                    continue
+                if len(set(jk)) > 1:
+                    raise SDEError(f'{where}: Conv({kern}, ...) holds two Gaussian jitter '
+                                   f'kernels {sorted(set(jk))}.')
+                kname, arg = jk[0], args[1].strip()
+                dep_sigma = depends(self._jitter[kname]['sigma'])
+                if dep_sigma:
+                    raise SDEError(f'{where}: the Gaussian jitter {kname!r} has sigma = '
+                                   f'{self._jitter[kname]["sigma"]}, which holds the field(s) '
+                                   f'{dep_sigma}; sigma is a parameter expression.')
+                mm = re.fullmatch(r'([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?', arg)
+                src = mm.group(1) if mm else None
+                exposed = self._fields.get(src, {}).get('exposed') if src else None
+                what = (f'{where}: Conv({kern}, {arg}): the Gaussian jitter kernel '
+                        f'{kname!r} is acausal; its time shift is free only on an '
+                        f'exogenous input (a point_process, or a noise source with as_field=, '
+                        f'whose rate holds no field)')
+                if exposed is None:
+                    raise SDEError(f'{what}, and {arg!r} is not such a source.')
+                s = self._sources[exposed]
+                if s['couples']:
+                    raise SDEError(
+                        f'{where}: the jittered input {src!r} also drives '
+                        f'{sorted(s["couples"])} directly (into=); the jitter is a common '
+                        f'time shift of the input, so every use of {src!r} must be '
+                        f'Conv(K*g, {src}) with the same Kernel.gaussian g.')
+                if s.get('pp'):
+                    dep = depends(self._compose_kernels(s['pp']['rate'], where)) + depends(
+                        s['pp']['size'])
+                else:
+                    dep = [d for v in s['source'].params.values() for d in depends(v)]
+                if dep:
+                    raise SDEError(f'{what}; the rate of {src!r} depends on the field(s) '
+                                   f'{sorted(set(dep))} (feedback into the source), so '
+                                   f'shifting it changes the statistics.')
+                key = (self._jitter[kname]['sigma'], self._jitter[kname]['tol'])
+                u = uses.setdefault(src, {'key': key, 'kernels': set()})
+                if u['key'] != key:
+                    raise SDEError(f'{where}: the input {src!r} is jittered with sigma, tol = '
+                                   f'{u["key"]} and {key}; its uses must share one Gaussian '
+                                   f'jitter (one common time shift of the input).')
+                u['kernels'].add(kname)
+        for src, u in uses.items():
+            for where, text in texts:
+                out, pos = '', 0
+                for a, b, c in self._conv_spans(text):
+                    args = _split_top_level(text[b:c - 1])
+                    rd = re.match(r'([A-Za-z_]\w*)', args[1].strip()) if len(args) == 2 else None
+                    if rd and rd.group(1) == src and jittered(args[0]):
+                        out += text[pos:a] + ' 0 '
+                        pos = c
+                out += text[pos:]
+                if re.search(rf'\b{re.escape(src)}\b', out):
+                    raise SDEError(
+                        f'{where}: the jittered input {src!r} is used without its Gaussian '
+                        f'jitter; the jitter is a common time shift of the input, so every '
+                        f'use of {src!r} must be Conv(K*g, {src}) with the same '
+                        f'Kernel.gaussian g.')
+        out = {}
+        for src, u in uses.items():
+            j = self._jitter[sorted(u['kernels'])[0]]
+            fit = j['fit']
+            out[src] = {'sigma': j['sigma'], 'tol': j['tol'], 'fit': fit,
+                        'kernels': sorted(u['kernels'])}
+            self.notes.append(
+                f'input {src!r}: Gaussian jitter (sigma = {j["sigma"]}) as a rational fit of '
+                f'{fit.order} states of the density shifted by {fit.shift:g}*sigma (shift '
+                f'dropped: exogenous stationary input); L1 error {fit.l1:.2g}.')
+        return out
 
     def _check_spatial_scope(self):
         """An SPDE (``space=d`` or a Laplacian) builds the spatial pipeline's
@@ -3070,6 +3236,14 @@ class SDE:
             # the action holds these CGFs as Taylor polynomials of this order;
             # compute_cumulants refuses (k, max_ell) that would need more
             m['noise_series_order'] = {'order': self._series_order, 'sources': trunc}
+        if self._jitter_uses:
+            # the jittered exogenous inputs: compute_cumulants refuses them as
+            # external legs and switch-on runs (the dropped shift is free only for
+            # stationary statistics of the rest of the network) and records the fit
+            m['exogenous_jitter'] = {
+                src: {'sigma': u['sigma'], 'tol': u['tol'], 'kernels': list(u['kernels']),
+                      'shift': f'{u["fit"].shift!r}*{u["sigma"]}', 'fit': u['fit'].record()}
+                for src, u in self._jitter_uses.items()}
         declared = {n: s['source'].declared_order for n, s in self._sources.items()
                     if s.get('source') is not None and hasattr(s['source'], 'declared_order')}
         if declared:
@@ -3180,7 +3354,13 @@ class SDE:
                           for (n, a, e), _kw in self._functions],
             'kernels': [{'name': n, **{q: v for q, v in kn.items()
                                        if q in ('time_expr', 'freq_image', 'delay')
-                                       and v is not None}}
+                                       and v is not None},
+                         **({'gaussian_jitter': {
+                             'sigma': self._jitter[n]['sigma'], 'tol': self._jitter[n]['tol'],
+                             'states': self._jitter[n]['fit'].order,
+                             'shift': f"{self._jitter[n]['fit'].shift!r}*{self._jitter[n]['sigma']}",
+                             'factors': self._jitter[n].get('factors')}}
+                            if n in self._jitter else {})}
                         for n, kn in self._kernels.items()],
             'operators': {n: type(o).__name__ for n, o in self._operators.items()},
         }
