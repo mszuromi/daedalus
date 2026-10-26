@@ -58,7 +58,11 @@ input legs (a tree k-point cumulant of a linear network has ``m = k``) moves
 by at most ``(1 + l1)^m - 1`` relative to the same contribution with every
 kernel image replaced by its modulus (for ``k = 2`` and a linear network,
 ``spectral`` relative to the variance driven by the unjittered input); the
-mean (``k = 1``) is exact.
+mean (``k = 1``) is exact.  The bounds are relative to that unjittered scale:
+when sigma is small against the network's time constants the jitter's own
+effect on a statistic is small too, and a loose fit reproduces that effect only
+roughly (measured: ~13 % of it at ``tol = 1e-2``, 5e-3 at ``1e-3``, 1.5e-5 at
+``1e-6``); take ``tol <= 1e-4`` when the jitter correction itself is wanted.
 
 Cost (``tol``: states, shift ``T/sigma``, ``l1``): 1e-2: 6, 3.25, 9e-3;
 1e-4: 12, 4.5, 3e-5; 1e-6: 16, 5.25, 7e-7; 1e-8: 22, 6.0, 8e-9; 1e-9: 27,

@@ -1977,25 +1977,45 @@ class SDE:
         def depends(text):
             return sorted(set(re.findall(r'\b([A-Za-z_]\w*)\b', str(text))) & fields)
 
+        def jittered(kern):
+            # every jitter kernel named in a Conv's kernel argument, however
+            # written: a composite (kX_g), a product not composed (kX*g, in a
+            # noise coefficient), parentheses ((g))
+            return [n for n in re.findall(r'\b([A-Za-z_]\w*)\b', kern) if n in self._jitter]
+
         uses = {}
         for where, text in texts:
             for a, b, c in self._conv_spans(text):
                 args = _split_top_level(text[b:c - 1])
                 kern = args[0].strip() if args else ''
-                m = re.match(r'[A-Za-z_]\w*', kern)
-                if len(args) != 2 or not m or m.group(0) not in self._jitter:
+                jk = jittered(kern)
+                if len(args) != 2 or not jk:
                     continue
-                kname, arg = m.group(0), args[1].strip()
+                if len(set(jk)) > 1:
+                    raise SDEError(f'{where}: Conv({kern}, ...) holds two Gaussian jitter '
+                                   f'kernels {sorted(set(jk))}.')
+                kname, arg = jk[0], args[1].strip()
+                dep_sigma = depends(self._jitter[kname]['sigma'])
+                if dep_sigma:
+                    raise SDEError(f'{where}: the Gaussian jitter {kname!r} has sigma = '
+                                   f'{self._jitter[kname]["sigma"]}, which holds the field(s) '
+                                   f'{dep_sigma}; sigma is a parameter expression.')
                 mm = re.fullmatch(r'([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?', arg)
                 src = mm.group(1) if mm else None
                 exposed = self._fields.get(src, {}).get('exposed') if src else None
                 what = (f'{where}: Conv({kern}, {arg}): the Gaussian jitter kernel '
                         f'{kname!r} is acausal; its time shift is free only on an '
-                        f'exogenous input (a point_process, or a noise source with expose=, '
+                        f'exogenous input (a point_process, or a noise source with as_field=, '
                         f'whose rate holds no field)')
                 if exposed is None:
                     raise SDEError(f'{what}, and {arg!r} is not such a source.')
                 s = self._sources[exposed]
+                if s['couples']:
+                    raise SDEError(
+                        f'{where}: the jittered input {src!r} also drives '
+                        f'{sorted(s["couples"])} directly (into=); the jitter is a common '
+                        f'time shift of the input, so every use of {src!r} must be '
+                        f'Conv(K*g, {src}) with the same Kernel.gaussian g.')
                 if s.get('pp'):
                     dep = depends(self._compose_kernels(s['pp']['rate'], where)) + depends(
                         s['pp']['size'])
@@ -2017,9 +2037,8 @@ class SDE:
                 out, pos = '', 0
                 for a, b, c in self._conv_spans(text):
                     args = _split_top_level(text[b:c - 1])
-                    m = re.match(r'[A-Za-z_]\w*', args[0].strip()) if len(args) == 2 else None
                     rd = re.match(r'([A-Za-z_]\w*)', args[1].strip()) if len(args) == 2 else None
-                    if m and rd and m.group(0) in self._jitter and rd.group(1) == src:
+                    if rd and rd.group(1) == src and jittered(args[0]):
                         out += text[pos:a] + ' 0 '
                         pos = c
                 out += text[pos:]

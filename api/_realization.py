@@ -1248,7 +1248,9 @@ def _controllable_part_modular(A, B):
     Fp = S.GF(_KRYLOV_PRIME)
     try:
         Ap, blk = A.change_ring(Fp), B.change_ring(Fp)
-    except ZeroDivisionError:
+    except (ZeroDivisionError, TypeError, ArithmeticError):
+        # a denominator divisible by p (Sage raises TypeError: "matrix
+        # denominator not coprime to modulus")
         return None
     E, picked, power = S.matrix(Fp, n, 0), [], 0
     while True:

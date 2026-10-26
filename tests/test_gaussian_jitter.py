@@ -38,7 +38,7 @@ from scipy.special import log_ndtr, roots_legendre                  # noqa: E402
 from api import compute_cumulants                                   # noqa: E402
 from api._gaussian_fit import gaussian_fit                          # noqa: E402
 from api.delay import Kernel                                        # noqa: E402
-from api.noise import Poisson                                       # noqa: E402
+from api.noise import Gaussian, Poisson                             # noqa: E402
 from api.sde import SDE, SDEError                                   # noqa: E402
 
 TAU, TAUX, LAM, P, W = 1.0, 0.5, 2.0, 0.7, 1.3
@@ -297,7 +297,7 @@ def test_declaration_scope():
     with pytest.raises(ValueError, match='outside'):
         Kernel.gaussian('sigma', tol=1e-12)
     # an exposed noise source with a field-free rate is an exogenous input too
-    m = (_base('jitter exposed').noise('X', Poisson('lam'), expose='n').field('v')
+    m = (_base('jitter exposed').noise('X', Poisson('lam'), as_field='n').field('v')
          .equation('v', lhs='Dt*v', rhs='-v + w*Conv(kX*g, n)')).build()
     assert set(m['exogenous_jitter']) == {'n'}
     assert m['exogenous_jitter']['n']['fit']['order'] == 16
@@ -312,3 +312,37 @@ def test_a_gaussian_time_kernel_is_refused_with_a_pointer():
     with pytest.raises(AnalyzerError, match='Kernel.gaussian'):
         compute_cumulants(s.build(), k=2, max_ell=0, external_fields=[('v', 1), ('v', 1)],
                           tau_grid=np.array([0.0]), **KW)
+
+
+def test_refuses_the_bypasses_of_the_exogeneity_check():
+    # an exposed input that also drives a field directly (into=): the direct
+    # path would not be shifted with the jittered one
+    with pytest.raises(SDEError, match='also drives'):
+        (_base('jitter direct').noise('X', Poisson('lam'), into={'v': 'w'}, as_field='n')
+         .field('v').equation('v', lhs='Dt*v', rhs='-v + w*Conv(kX*g, n)')).build()
+    # a parenthesised kernel argument is still a jitter use (on a field: refused)
+    for kern in ('(g)', '(kX*g)'):
+        s = (_base(f'jitter paren {kern}').field('u').field('v')
+             .drift('u', '-u + 0.8*v').equation('v', lhs='Dt*v', rhs=f'-v - w*Conv({kern}, u)'))
+        with pytest.raises(SDEError, match='is not such a source'):
+            s.build()
+    # a jitter inside a noise coefficient is seen too
+    s = (_base('jitter coefficient').field('u').field('v').drift('u', '-u').drift('v', '-v')
+         .noise('W', Gaussian(var='0.1'), into={'v': '1 + 0.1*Conv(kX*g, u)'}))
+    with pytest.raises(SDEError, match='is not such a source'):
+        s.build()
+    # sigma must not hold a field
+    s = (SDE('jitter sigma field').parameter('lam', default=1.0, domain='positive')
+         .field('v').define_kernel('g', kernel=Kernel.gaussian('v')).point_process('n', 'lam')
+         .equation('v', lhs='Dt*v', rhs='-v + Conv(g, n)'))
+    with pytest.raises(SDEError, match='sigma is a parameter expression'):
+        s.build()
+
+
+def test_modular_kalman_falls_back_on_a_denominator_divisible_by_its_prime():
+    from sage.all import QQ, matrix
+    from api import _realization as R
+    A = matrix(QQ, [[1, QQ(1) / R._KRYLOV_PRIME], [0, 2]])
+    B = matrix(QQ, [[1], [1]])
+    assert R._controllable_part_modular(A, B) is None
+    assert R._controllable_part(A, B, QQ)[2] is None            # exact ranks: controllable

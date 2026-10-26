@@ -30,3 +30,7 @@
   narrow 0.01; k = 3 tree against a time-domain quadrature with exponentially modified Gaussians, within the bound,
   and a loose fit whose error shows; the exact mean; a logistic rate model, tree + one loop, against a simulation
   with the true Gaussian bumps; every refusal), and a README example in `tests/test_readme_snippets.py`.
+- Review fixes: the exogeneity check now also refuses an exposed input that drives a field directly (`into=`) next
+  to its jittered use, sees a jitter kernel however the `Conv` writes it (`Conv((g), u)`, an uncomposed
+  `Conv(kX*g, u)` in a noise coefficient), and refuses a sigma holding a field; the modular Kalman reduction falls
+  back to the exact ranks when a denominator is divisible by its prime (Sage raises `TypeError` there).
