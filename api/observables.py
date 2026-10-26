@@ -37,10 +37,12 @@ from __future__ import annotations
 
 import numpy as np
 
+from engine.errors import DaedalusError
+
 __all__ = ['ObservableError', 'is_observable_call', 'observable_cumulants']
 
 
-class ObservableError(ValueError):
+class ObservableError(DaedalusError, ValueError):
     """An observable question the composite-operator expansion cannot answer."""
 
 

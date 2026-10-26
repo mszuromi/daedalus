@@ -25,6 +25,7 @@ _KEPT = {
     'api.sde.SDEError': ValueError,
     'api.pp_simulate.PPSimulationError': ValueError,
     'api.noise.NoiseError': ValueError,
+    'api.observables.ObservableError': ValueError,
     'api.me_output.MEUnavailable': ValueError,
     'api.symbolic_loop.SymbolicLoopRefused': ValueError,
     'api.routing.NoBackendError': Exception,

@@ -16,7 +16,7 @@
   order for an observable linear in the fields; for a nonlinear one the mean to one loop
   (`f_a <dx_a> + f_ab C_ab(0)/2`; `result['observable']['mean']` = `f*` + the shift) and the `k = 2` tree. Higher
   orders need coincident-time cumulants of the composite operator, which the engine does not compute: refused with
-  that reason, as are spectra / switch-on / file outputs with observable legs, SPDE observables, and a spike train or
+  that reason (an `ObservableError`, a `DaedalusError` and a `ValueError`), as are spectra / switch-on / file outputs with observable legs, SPDE observables, and a spike train or
   exposed source entering nonlinearly. The built model gains an `observables` entry only when one is declared
   (every other model is unchanged).
 - **`m.to_text()` / `SDE.from_text(text)`** (new `api/sde_text.py`): the model as the YAML `sde:` block of a
