@@ -267,8 +267,7 @@ def test_sde_text_is_readable():
 
 
 def test_sde_text_refuses_what_it_cannot_write():
-    with pytest.raises(SDEError, match='not a\\*Dt\\*x'):
-        cat.ou_quartic(drift_form=False).sde_text()
+    assert cat.ou_quartic(drift_form=False).sde_text().startswith('(Dt+mu)*x[i] = ')   # the operator form
     with pytest.raises(SDEError, match='point process or exposed'):
         cat.linear_hawkes().sde_text()
 
@@ -296,7 +295,9 @@ def test_catalogue_models_that_paper_text_writes_round_trip():
             again.field(f_, **{k: info[k] for k in ('population', 'description', 'domain', 'latex')})
         again.series_order(m._series_order).marcus_route(m._marcus_route)
         again.sde(text, noises=text.noises)
-        assert again.action_text() == m.action_text(), name
+        # (the text declares sources in order of first appearance, so a source shared by two
+        # equations may move: the same action terms, possibly in another order)
+        assert sorted(again.action_text().splitlines()) == sorted(m.action_text().splitlines()), name
         assert again.equations() == m.equations(), name
         done += 1
     assert done >= 3
