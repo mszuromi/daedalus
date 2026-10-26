@@ -16,7 +16,7 @@ expressions can be written as Sage objects::
 A :class:`Symbol` is also the builder: any method of the builder called on
 it is the builder's (``m.field('x').drift('x', ...)`` chains as before), and
 it returns what the builder returns.  Arithmetic gives plain Sage
-expressions; a call (``dt(x)``, ``phi(v)``, ``x(t - d)``) is the call of
+expressions; a call (``lap(u)``, ``phi(v)``, ``x(t - d)``) is the call of
 that name, ``x[i]`` / ``w[i, j]`` its indexed form.  Every method that takes
 an expression accepts a string or a Sage expression; a Sage expression is
 written as text with :func:`api.noise.expr_to_text` (Sage's order of terms)

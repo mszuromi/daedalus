@@ -25,6 +25,14 @@ Each side is read into the existing declarations, nothing else:
   interpretation is per source (``noise(..., interpretation=)``), so a model
   may mix them; one source takes one interpretation.
 
+* the operator form puts a linear operator on the left and writes the
+  right side per unit time, a noise term as ``c dW/dt`` (``c dN(rate)/dt``,
+  ``c dX_name/dt``): ``(tau*Dt + 1)*v = E + sum(w[i,j]*v[j] for j in pop) +
+  s dW/dt`` or ``(m*Dt^2 + gamma*Dt + k)*x = sqrt(2*gamma*T) dW/dt`` (a
+  higher-order lhs is embedded, see :meth:`api.sde.SDE.equation`).  The
+  left side acts on one field; the deterministic terms are the rhs of
+  :meth:`~api.sde.SDE.equation` (a population sum is fine here).
+
 So ``m.sde('dx = (-mu*x) dt + sqrt(2*D) dW')`` is
 ``m.field('x').drift('x', '-mu*x').noise('W_x', Gaussian(var=1),
 into={'x': 'sqrt(2*D)'}, interpretation='ito')``, byte for byte.  A malformed
@@ -44,6 +52,8 @@ __all__ = ['parse_paper', 'apply_paper', 'paper_text']
 
 # the circle marks (a Stratonovich / Marcus term); 'o' only as a token of its own
 _MARKS = ('∘', '◦', '○', '◇', '⋄', '◊')
+_FUNCS = {'exp', 'log', 'sqrt', 'sin', 'cos', 'tan', 'tanh', 'sinh', 'cosh', 'arctan', 'abs',
+          'heaviside', 'erf', 'sum', 'for', 'in', 'pi', 'e', 'I', 'Conv', 'i', 'j'}
 _DIFF = re.compile(r'd(?:t|[A-Z](?:_\{?\w+\}?)?)$')
 
 
@@ -145,7 +155,25 @@ def _split_differential(term: str):
     return coef, mark, re.sub(r'_\{(\w+)\}$', r'_\1', diff), arg, m.start(1)
 
 
-def parse_paper(text: str, fields, SDEError):
+def _operator_field(lhs: str, fields, context):
+    """The field an operator-form left side acts on (``(tau*Dt + 1)*v`` ->
+    ``v``), or ``None`` when ``lhs`` holds no time derivative.  Raises
+    ``ValueError`` (with the candidates) unless exactly one name is a field
+    or undeclared."""
+    tnames = context.get('tnames') or ['Dt']
+    if not any(re.search(rf'(?<!\w){re.escape(n)}(?!\w)', lhs) for n in tnames):
+        return None
+    known = set(context.get('known', ())) | set(tnames) | _FUNCS
+    cands = []
+    for n in re.findall(r'(?<![\w.])[^\W\d]\w*', lhs):
+        if n not in known and n not in cands:
+            cands.append(n)
+    if len(cands) != 1:
+        raise ValueError(cands)
+    return cands[0]
+
+
+def parse_paper(text: str, fields, SDEError, context: Optional[dict] = None):
     """The equations of ``text``: ``[{'field', 'lhs_factor', 'drift',
     'terms': [{'name', 'kind', 'coef', 'mark', 'arg', 'diff'}], 'line'}]``."""
     eqs = []
@@ -164,11 +192,26 @@ def parse_paper(text: str, fields, SDEError):
                        'write dx = (drift) dt + (coupling) dW')
         lhs = line[:eq_at].strip()
         m = re.fullmatch(r'(?:(.*?)\s*\*?\s*)?(?<![\w.])d([A-Za-z]\w*)', lhs)
+        op_lhs = None
         if not m or m.group(2) == 't':
-            raise _err(SDEError, line, 0, f'the left side {lhs!r} is not d<field>',
-                       'write dx = ... (or tau*dx = ... with a constant factor)')
-        factor = (m.group(1) or '').strip() or None
-        field = m.group(2)
+            try:
+                field = _operator_field(lhs, fields, context or {})
+            except ValueError as exc:
+                raise _err(SDEError, line, 0,
+                           f'the operator left side {lhs!r} must act on one field (found '
+                           f'{", ".join(exc.args[0]) or "none"})',
+                           'write the operator on the field alone, e.g. (tau*Dt + 1)*v') from None
+            if field is None:
+                raise _err(SDEError, line, 0, f'the left side {lhs!r} is not d<field>',
+                           'write dx = ... (or tau*dx = ... with a constant factor, or an operator '
+                           'form such as (m*Dt^2 + gamma*Dt + k)*x = ... + c dW/dt)')
+            prob = expression_syntax_problem(lhs)
+            if prob:
+                raise _err(SDEError, line, prob[0], f'cannot read the left side {lhs!r}: {prob[1]}',
+                           prob[2])
+            op_lhs, m = lhs, None
+        factor = (m.group(1) or '').strip() or None if m else None
+        field = m.group(2) if m else field
         if factor is not None:
             prob = expression_syntax_problem(factor)
             if prob:
@@ -177,7 +220,24 @@ def parse_paper(text: str, fields, SDEError):
         rhs_at = eq_at + 1 + (len(line[eq_at + 1:]) - len(line[eq_at + 1:].lstrip()))
         drift, terms, seen = [], [], {}
         for sign, body, at in _split_terms(line[eq_at + 1:].strip(), rhs_at):
-            sp = _split_differential(body)
+            if op_lhs is not None:
+                # operator form: a noise term is c dW/dt, every other term is deterministic
+                per = re.search(r'\s*/\s*dt\s*$', body)
+                sp = _split_differential(body[:per.start()]) if per else _split_differential(body)
+                if per is None:
+                    if sp is not None:
+                        raise _err(SDEError, line, at + sp[4],
+                                   f'in the operator form the term {body!r} is per unit time',
+                                   'write the drift without dt and a noise term as c dW/dt')
+                    drift.append((sign, body))
+                    continue
+                if sp is None or sp[2] == 'dt':
+                    raise _err(SDEError, line, at, f'the term {body!r} is not c dW/dt',
+                               'a noise term of the operator form is c dW/dt, c dN(rate)/dt or '
+                               'c dX_name/dt')
+                body = body[:per.start()]
+            else:
+                sp = _split_differential(body)
             if sp is None:
                 raise _err(SDEError, line, at + len(body) - 1 if body else at,
                            f'the term {body!r} of d{field} has no differential',
@@ -222,8 +282,10 @@ def parse_paper(text: str, fields, SDEError):
                           'mark': mark, 'arg': arg, 'diff': diff, 'at': at + dpos})
         if not drift and not terms:
             raise _err(SDEError, line, rhs_at, f'd{field} has no terms')
+        if op_lhs is not None and len(drift) == 1:
+            drift = [(drift[0][0], _strip_parens(drift[0][1]))]
         eqs.append({'field': field, 'factor': factor, 'drift': _join_drift(drift),
-                    'terms': terms, 'line': line})
+                    'terms': terms, 'line': line, 'op_lhs': op_lhs})
     if not eqs:
         raise SDEError('sde(): no equation in the text (write dx = (drift) dt + ... dW).')
     names = [e['field'] for e in eqs]
@@ -276,7 +338,10 @@ def apply_paper(sde, text: str, noises: Optional[dict] = None):
         if not isinstance(v, NoiseSource):
             raise SDEError(f'sde(noises={{{k!r}: ...}}): give a noise source from api.noise '
                            f'(Gaussian, Poisson, CompoundPoisson, ...); got {type(v).__name__}.')
-    eqs = parse_paper(text, sde._fields, SDEError)
+    known = (set(sde._param_names) | set(sde._function_names) | set(sde._kernels)
+             | set(sde._operators) | {p['name'] for p in sde._pops})
+    eqs = parse_paper(text, sde._fields, SDEError,
+                      {'tnames': sde._time_names(), 'known': known})
     # the sources, in order of first appearance: name -> (source, couplings, mark)
     srcs: 'OrderedDict[str, dict]' = OrderedDict()
     for e in eqs:
@@ -326,7 +391,9 @@ def apply_paper(sde, text: str, noises: Optional[dict] = None):
             sde.field(e['field'])
     for e in eqs:
         f, drift = e['field'], e['drift']
-        if e['factor'] is None:
+        if e['op_lhs'] is not None:
+            sde.equation(f, lhs=e['op_lhs'], rhs=drift)
+        elif e['factor'] is None:
             sde.drift(f, drift)
         else:
             t = sde._time_names()
@@ -342,9 +409,10 @@ def apply_paper(sde, text: str, noises: Optional[dict] = None):
 
 
 def paper_text(sde) -> str:
-    """The equations of ``sde`` written as :meth:`api.sde.SDE.sde` reads them,
-    for models it can write (each equation ``a*Dt*x = rhs``, sources coupled
-    by ``into=``, Gaussian sources of variance 1, Poisson sources of size 1, or
+    """The equations of ``sde`` written as :meth:`api.sde.SDE.sde` reads them
+    (``a*Dt*x = rhs`` as ``a*dx = (rhs) dt + ...``, any other lhs, a
+    higher-order one included, in the operator form; sources coupled by
+    ``into=``, Gaussian sources of variance 1, Poisson sources of size 1, or
     sources named in the returned text's ``noises``): ``(text, noises)``."""
     from api.sde import SDEError, _DT
     lines, noises = [], {}
@@ -354,25 +422,32 @@ def paper_text(sde) -> str:
             raise SDEError(f'paper_text(): source {name!r} is a point process or exposed; '
                            f'it has no paper-style term.')
     for f, eq in sde._eqs.items():
-        L = sde._parse(eq['lhs'], f'lhs of {f}').expand()
-        a = L.coefficient(_DT, 1).coefficient(sde._sym(f), 1)
-        if a.is_zero() or (L - a * _DT * sde._sym(f)).expand() != 0:
-            raise SDEError(f'paper_text(): the left side {eq["lhs_raw"]!r} of {f!r} is not '
-                           f'a*{dt}*{f}.')
-        lhs = eq['lhs_raw'].strip()
-        if lhs in (f'{dt}*{f}', f'{dt}({f})'):
-            head = f'd{f}'
+        if sde._fields[f].get('embedded_of'):
+            continue                          # (written with its higher-order equation)
+        emb, key, head = sde._embedded.get(f), f, None
+        if emb is not None:
+            if emb['fields'] != [f + 'd' * j + 'ot' for j in range(1, emb['order'])]:
+                raise SDEError(f'paper_text(): the velocities {", ".join(emb["fields"])} of {f!r} '
+                               f'were named with velocity=; the paper-style line names them '
+                               f'{f}dot, ... (rename them to write the text).')
+            lhs, rhs, key = emb['lhs_raw'].strip(), emb['rhs_raw'].strip(), emb['top']
         else:
-            m = re.fullmatch(rf'(.+?)\*{re.escape(dt)}\*{re.escape(f)}', lhs)
-            if not m:
-                raise SDEError(f'paper_text(): write the left side of {f!r} as a*{dt}*{f}.')
-            head = f'{_strip_parens(m.group(1))}*d{f}'
-        rhs = eq['rhs_raw'].strip()
-        parts = [] if rhs == '0' else [f'({rhs}) dt']
+            lhs, rhs = eq['lhs_raw'].strip(), eq['rhs_raw'].strip()
+            L = sde._parse(eq['lhs'], f'lhs of {f}').expand()
+            a = L.coefficient(_DT, 1).coefficient(sde._sym(f), 1)
+            if not a.is_zero() and (L - a * _DT * sde._sym(f)).expand() == 0:
+                if lhs in (f'{dt}*{f}', f'{dt}({f})'):
+                    head = f'd{f}'
+                else:
+                    m = re.fullmatch(rf'(.+?)\*{re.escape(dt)}\*{re.escape(f)}', lhs)
+                    if m:
+                        head = f'{_strip_parens(m.group(1))}*d{f}'
+        per = '' if head is not None else '/dt'      # the operator form: noise per unit time
+        parts = ([] if rhs == '0' else [f'({rhs}) dt' if head is not None else f'({rhs})'])
         for name, s in sde._sources.items():
-            if f not in s['couples']:
+            if key not in s['couples']:
                 continue
-            src, c = s['source'], str(s['couples'][f])
+            src, c = s['source'], str(s['couples'][key])
             interp = sde._src_interp(name)
             mark = '∘ ' if interp != 'ito' else ''
             # an unnamed process (W_x / N_x of its own equation) is written bare
@@ -388,6 +463,10 @@ def paper_text(sde) -> str:
                 diff = f'd{letter}_{name}'
                 noises[name] = src
             c = c.strip()
-            parts.append(('' if c == '1' else f'({c}) ' if _is_sum(c) else f'{c} ') + mark + diff)
-        lines.append(f'{head} = ' + (' + '.join(parts) if parts else '0 dt'))
+            parts.append(('' if c == '1' else f'({c}) ' if _is_sum(c) else f'{c} ') + mark + diff
+                         + per)
+        if head is None:
+            lines.append(f'{lhs} = ' + (' + '.join(parts) if parts else '0'))
+        else:
+            lines.append(f'{head} = ' + (' + '.join(parts) if parts else '0 dt'))
     return '\n'.join(lines), noises

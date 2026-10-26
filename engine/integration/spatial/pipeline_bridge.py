@@ -1022,11 +1022,24 @@ def diagram_form_factor(td, vertex_terms, mode=None, d=1):
             f *= _f_chain(term['chain'], p)
         return f
 
+    pidx = td.propagator_indices or {}
+
+    def _node_fields(n):
+        # the node's physical-leg field content: the propagator-matrix column
+        # of each incoming edge (the table's ``fields``); None when the
+        # diagram carries no indices (then the leg count alone decides)
+        cols = [pidx[(u, v, l)][1] for (u, v, l) in rr.edge_momenta
+                if v == n and (u, v, l) in pidx]
+        return tuple(sorted(cols)) if len(cols) == len(in_mom.get(n, [])) else None
+
     Rcal = _sp.Integer(1)
     for n in iverts:
         n_phys = len(in_mom.get(n, []))
+        node_fields = _node_fields(n)
         matched = [t for t in vertex_terms
-                   if t.get('n_phys') is None or t['n_phys'] == n_phys]
+                   if (t.get('n_phys') is None or t['n_phys'] == n_phys)
+                   and (t.get('fields') is None or node_fields is None
+                        or tuple(t['fields']) == node_fields)]
         if not matched:
             continue                              # plain (non-derivative) vertex → 1
         node = _sp.Integer(0)
@@ -1923,7 +1936,8 @@ def compute_spatial_correlator_generic(
                 f'derivative-vertex weight {w} does not evaluate at the '
                 f'parameters and saddle (free symbols left).') from None
     vterms = [{'weight': _num_weight(t['weight']),
-               'n_phys': t['n_phys'], 'chain': t['chain'], 'mode': t['mode']}
+               'n_phys': t['n_phys'], 'fields': t.get('fields'),
+               'chain': t['chain'], 'mode': t['mode']}
               for t in vterms_sym]
 
     # (a constant drift was removed above by the exact Galilean boost; a
@@ -2444,7 +2458,8 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
                 f'derivative-vertex weight {w} does not evaluate at the '
                 f'parameters and saddle (free symbols left).') from None
     _vterms = [{'weight': _num_w(t['weight']), 'n_phys': t['n_phys'],
-                'chain': t['chain'], 'mode': t['mode']} for t in _vt_sym]
+                'fields': t.get('fields'), 'chain': t['chain'], 'mode': t['mode']}
+               for t in _vt_sym]
     from engine.integration.spatial.full_integrator import (
         eqtime_ledger_reset, eqtime_ledger_collect)
     eqtime_ledger_reset()

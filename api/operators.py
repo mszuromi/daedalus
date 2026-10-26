@@ -91,7 +91,7 @@ class Operator:
 
 class TimeDerivative(Operator):
     """The time derivative ``d/dt`` (default name ``Dt``).  It acts linearly
-    on fields: ``dt(x)``, ``(tau*dt + 1)*x``."""
+    on fields: ``Dt(x)``, ``(tau*Dt + 1)*x``."""
 
     kind = 'time_derivative'
     v1_symbol = 'Dt'

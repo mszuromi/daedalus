@@ -213,7 +213,11 @@ term is Ito, so one model can mix them. Each line becomes the usual declarations
 Every declaration also returns its Sage symbol, so expressions may be Sage objects as well as strings
 (`x = m.field('x')`, `mu = m.parameter('mu', ...)`, then `m.drift(x, -mu*x)`); the chained style still works, and a
 noise source is exposed as a field with `as_field=` (`couples=` and `expose=` are the former names of `into=` and
-`as_field=`):
+`as_field=`). A line may also put a linear operator on the left, with the right side per unit time and noise as
+`c dW/dt`: `(tau*Dt + 1)*v = E + sum(w[i,j]*v[j] for j in pop) + s dW/dt`. A second- or higher-order left side, such as
+`(m*Dt^2 + gamma*Dt + k)*x` (in a line or in `.equation`), is embedded as a first-order system with the velocity
+`xdot` declared for you, and a pure integrator (`dx = v dt`, `.drift('x', 'v')`) takes its mean field from the whole
+system:
 
 ```python
 from api.sde import SDE
@@ -321,6 +325,38 @@ d['dmf']                       # dx*/dJ1 of the saddle (implicit differentiation
   base point's branch is refused with `CovarianceDerivativeError`.
 - **Options.** The other `compute_cumulants` options are passed to every run, and each run keeps its own memory
   guard. Spatial models, `t_min` and `spectra` are refused.
+
+### Resummation at strong coupling (opt-in, k = 2)
+
+The loop series is asymptotic: for OU quartic it is already 15-20 % off at `g = eps D / mu^2 = 0.1` and diverges
+beyond. Two opt-in resummations stay accurate there (`api/hartree.py`, `api/resum.py`). Without `resum=` nothing
+changes.
+
+```python
+import numpy as np
+import daedalus as dd
+model, mod = dd.load_model('ou_quartic')
+p = {'mu': 1.0, 'eps': 1.0, 'D': 1.0}         # g = 1: the plain two-loop variance is 46x too large
+h = dd.hartree(model, p)                       # the self-consistent Gaussian (all cactus diagrams)
+h.cov, h.rates, h.C([0.0, 0.5])                # Sigma, decay rates, C(tau) = Sigma exp(A^T tau)
+cfg = dd.Config(k=2, max_ell=2, resum='screened', parameters=p, tau_grid=np.array([0.0, 0.5]))
+r = dd.run(model, cfg, mod)
+r['C_tau'], r['C_tau_by_order']                # screened order N = max_ell, and orders 0..N
+r['resummation']['kappa'], r['resummation']['spread_last_two']
+```
+
+- **Hartree** (`dd.hartree`, `Config(resum='hartree')`). It solves `<f> = 0`, `A Sigma + Sigma A^T + <Q> = 0`,
+  `A = <df/dx>` in the Gaussian itself: the Gaussian moment closure. For OU quartic the equal-time error is at most
+  14 % at any coupling. It has no `kappa_3`/`kappa_4`, a single exponential in `tau` and no hopping between wells.
+  Several stable solutions give a `HartreeBistabilityWarning`. It also returns `.spectra()` (the `dd.spectra` keys) and
+  `Config(covariance=True)` gives the covariance-matrix layout.
+- **Screened series** (`Config(resum='screened')`). The existing loop orders are re-expanded around a trial
+  propagator on the line from the tree (`kappa = 0`) through Hartree (`kappa = 1`). `kappa` is fixed by minimal
+  sensitivity, and an even order takes the odd order's mass. At three loops the OU quartic equal-time error is 8.6e-4
+  at `g = 1` and 4.5e-3 at `g = 1000`. `C_tau_spread` (`C_N - C_{N-1}`) is the error estimate, and
+  `C_tau_loops_by_ell` keeps the plain series.
+- **Scope.** Temporal, white or Markov-embedded noise, no kernels, delays or derivative vertices. Spectra and
+  `covariance=` are supported. See `docs/resummation.md`.
 
 ## Running from a config file
 
