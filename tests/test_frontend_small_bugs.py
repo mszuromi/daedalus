@@ -213,11 +213,20 @@ def test_scalar_model_conv_on_bare_field_equals_one_element_population_twin():
 
 
 def test_scalar_conv_of_an_expression_in_the_field_equals_the_population_twin():
-    """Adversarial: a wrapped field inside arithmetic (``Conv(g, 2*n + 0.1*n*n)``), tree level."""
-    arg = '2*n + 0.1*n*n'
+    """Adversarial: a wrapped field inside arithmetic (``Conv(g, 2*n + 0.1)``),
+    tree level.  A NONLINEAR argument (``2*n + 0.1*n*n``) is refused by name in
+    a hand-written action, scalar and population form alike: the kernel route
+    cannot integrate a kernel of a product of legs (the SDE front end embeds it)."""
+    from engine.core.convolution import NonlinearConvError
+    arg = '2*n + 0.1'
     ra = _compare(lambda: _scalar_hawkes(False, arg), lambda: _scalar_hawkes(True, arg),
                   [('dn', 1), ('dn', 1)], ell=0)
     assert any(np.abs(np.asarray(ra['C_tau'])) > 0)
+    for population in (False, True):
+        with pytest.raises(NonlinearConvError, match='nonlinear function of the fields'):
+            AC.compute_cumulants(_scalar_hawkes(population, '2*n + 0.1*n*n'), k=2, max_ell=0,
+                              external_fields=[('dn', 1), ('dn', 1)], tau_grid=np.array([0.0, 1.0]),
+                              parallel=False, verbose=False, use_cache=False)
 
 
 def test_scalar_conv_still_validates_arity():
