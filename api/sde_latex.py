@@ -334,16 +334,17 @@ def render_latex(sde) -> dict:
     d = sde._derive()
     ts = _Typesetter(sde, d)
     idx = (lambda t: t) if ts.trivial else sde._index
-    sub = {n: _name_latex(n) for n in sde._sources}
+    # (a source named ``W_x`` for its letter W prints as W_{x}, not W_{W_{x}})
+    sub = {n: _name_latex(n[2:] if n[:2] == _letter(s) + '_' and len(n) > 2 else n)
+           for n, s in sde._sources.items()}
 
     def paren(text, ln, neg=False):
         return r'\left(' + ln + r'\right)' if ts.is_sum(idx(text)) or (neg and ln.startswith('-')) else ln
 
     # the interpretation of the stochastic integral: Stratonovich (and the Gaussian
     # part of a Marcus model) is dW with a circle, a Marcus jump dN with a diamond
-    interp = sde._interp
-
-    def mark(src):
+    def mark(name, src):
+        interp = sde._src_interp(name)
         if interp == 'ito':
             return ''
         if src.is_gaussian:
@@ -372,8 +373,8 @@ def render_latex(sde) -> dict:
                 if not SR(src.params['mean']).is_zero():
                     m = expr_to_text(src.params['mean'])
                     diff_terms.append(ts.expr(idx(f'({c})*({m})')) + r'\,\mathrm{d}t')
-            diff_terms.append(lead + mark(src) + rf'\mathrm{{d}}{ltr}_{{{sub[name]}}}')
-            dot_terms.append(lead + mark(src) + rf'\dot{{{ltr}}}_{{{sub[name]}}}')
+            diff_terms.append(lead + mark(name, src) + rf'\mathrm{{d}}{ltr}_{{{sub[name]}}}')
+            dot_terms.append(lead + mark(name, src) + rf'\dot{{{ltr}}}_{{{sub[name]}}}')
         f_ln = ts.field_latex[f] + ('' if ts.trivial else '_{i}')
         try:
             dt_form = (sde._parse(lhs_txt, f'lhs of {f}') - _DT * sde._sym(f)).expand().is_zero()
