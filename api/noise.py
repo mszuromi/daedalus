@@ -76,7 +76,6 @@ for _n in ('sin', 'cos', 'tan', 'tanh', 'sinh', 'cosh', 'arctan',
            'heaviside', 'erf'):
     _MATH_FUNCS[_n] = getattr(_sa, _n)
 _MATH_FUNCS['abs'] = _sa.abs_symbolic
-_RESERVED = {'sum', 'for', 'in', 'pi', 'I', 'e', 'Dt', 'theta'} | set(_MATH_FUNCS)
 # Sage's own functions for names it prints itself (gamma(1 - Y) prints as factorial(-Y), e.g. in a
 # CGMY mean), used only where the name is called, so a parameter may still be named gamma.  A formal
 # function of the same name breaks Sage 10.9's Maxima conversion ("operator mismatch").
