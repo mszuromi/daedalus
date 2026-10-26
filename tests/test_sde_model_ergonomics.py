@@ -7,6 +7,7 @@ nonlinear observable is checked against the exact stationary density of a 1-d SD
 by O(D^2) (the tree by O(D)).
 """
 import os
+import textwrap
 import warnings
 
 import numpy as np
@@ -24,6 +25,8 @@ from tests import _sde_model_catalogue as cat
 from tests._sde_model_catalogue import digest
 
 TAUS = [0.0, 0.5, 1.0]
+#: two_field_cross away from its marginal point (all its defaults are 0.5: mu1 mu2 = J1 J2)
+STABLE = {'mu1': 1.0, 'mu2': 1.5}
 
 
 def _pop(**kw):
@@ -137,7 +140,7 @@ def test_nonlinear_observable_tree_covariance_and_mixed_legs():
     xs = r['mf_values']['xstar'][0]
     assert g == pytest.approx(0.5 * np.exp(xs / 2) + 2 * xs, rel=1e-12)
     np.testing.assert_allclose(r['C_tau'], g * rx['C_tau'], rtol=1e-13)
-    assert r['total_C'](0.5) == pytest.approx(g * rx['total_C'](0.5), rel=1e-13)
+    assert r['total_C'](0.0, 0.5) == pytest.approx(g * rx['total_C'](0.0, 0.5), rel=1e-13)
     import daedalus as dd
     rd = dd.run(m, dd.Config(k=2, max_ell=0, external_fields=['O', 'x'], tau_grid=np.array(TAUS), verbose=False))
     np.testing.assert_array_equal(rd['C_tau'], r['C_tau'])
@@ -145,9 +148,10 @@ def test_nonlinear_observable_tree_covariance_and_mixed_legs():
 
 def test_linear_observable_is_exact_at_one_loop():
     m = cat.two_field_cross().observable('S', 'x + 2*y')
-    r = compute_cumulants(m, k=2, max_ell=1, external_fields=['S', ('x', 1)], tau_grid=TAUS, verbose=False)
-    xx = compute_cumulants(m, k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)], tau_grid=TAUS, verbose=False)
-    yx = compute_cumulants(m, k=2, max_ell=1, external_fields=[('y', 1), ('x', 1)], tau_grid=TAUS, verbose=False)
+    kw = dict(k=2, max_ell=1, tau_grid=TAUS, parameters=STABLE, verbose=False)
+    r = compute_cumulants(m, external_fields=['S', ('x', 1)], **kw)
+    xx = compute_cumulants(m, external_fields=[('x', 1), ('x', 1)], **kw)
+    yx = compute_cumulants(m, external_fields=[('y', 1), ('x', 1)], **kw)
     np.testing.assert_allclose(r['C_tau'], xx['C_tau'] + 2 * yx['C_tau'], rtol=1e-12, atol=1e-15)
     for e in (0, 1):
         np.testing.assert_allclose(r['C_tau_by_ell'][e], xx['C_tau_by_ell'][e] + 2 * yx['C_tau_by_ell'][e],
@@ -244,7 +248,7 @@ def test_round_trips(label):
     m = ROUND_TRIP[label]()
     text = m.to_text()
     assert digest(SDE.from_text(text)) == digest(m)
-    assert digest(SDE.from_text(text.split('\n', 1)[1].replace('\n  ', '\n'))) == digest(m)   # the block alone
+    assert digest(SDE.from_text(textwrap.dedent(text.split('\n', 1)[1]))) == digest(m)   # the block alone
 
 
 def test_text_is_readable():
@@ -268,8 +272,8 @@ def test_from_text_errors_name_the_line():
         SDE.from_text('sde:\n  name: a\n  fields: [x]\n  drift: {x: "-x"}\n  noise:\n    xi: {type: Gausian}\n')
     assert e.value.line == 6 and "'type' must be one of" in str(e.value)
     with pytest.raises(ConfigError) as e:
-        SDE.from_text('fields: [x]\ndrift: {x: "-y"}\nnoise:\n  xi: {type: Gaussian, var: 1, into: {x: 1}}\n')
-    assert e.value.line == 2 and "'y'" in str(e.value)
+        SDE.from_text('fields: [x]\ndrift: {z: "-z"}\nnoise:\n  xi: {type: Gaussian, var: 1, into: {x: 1}}\n')
+    assert e.value.line == 2 and 'declare the field first' in str(e.value)
 
 
 def test_the_text_is_a_daedalus_run_config(tmp_path):
@@ -277,10 +281,11 @@ def test_the_text_is_a_daedalus_run_config(tmp_path):
     m = cat.two_field_cross()
     path = os.path.join(tmp_path, 'c.yaml')
     with open(path, 'w') as fh:
-        fh.write(m.to_text() + 'question:\n  k: 2\n  max_ell: 0\n  external_fields: [[y, 1], [x, 1]]\n'
-                 '  tau_grid: [0.0, 0.5, 1.0]\npolicy: {verbose: false, parallel: false}\n')
+        fh.write(m.to_text() + 'parameters: {mu1: 1.0, mu2: 1.5}\nquestion:\n  k: 2\n  max_ell: 0\n'
+                 '  external_fields: [[y, 1], [x, 1]]\n  tau_grid: [0.0, 0.5, 1.0]\n'
+                 'policy: {verbose: false, parallel: false}\n')
     result, resolved = run_config(path)
     direct = compute_cumulants(m, k=2, max_ell=0, external_fields=[('y', 1), ('x', 1)], tau_grid=TAUS,
-                               verbose=False, parallel=False)
+                               parameters=STABLE, verbose=False, parallel=False)
     np.testing.assert_array_equal(result['C_tau'], direct['C_tau'])
     assert resolved['sde']['noise']['common'] == {'type': 'Gaussian', 'var': '2*r', 'into': {'x': 1, 'y': 1}}
