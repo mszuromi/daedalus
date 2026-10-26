@@ -129,8 +129,8 @@ def _unequal_model(order=None, periodic_L=None):
               '+ bt*((Dt+mub-Db*Laplacian)*b - g*a) '
               '- Ta*at^2 - Tb*bt^2')
     b = (b.set_action_text(action)
-         .equation(lhs='(Dt+mua-Da*Laplacian)*a + g*b', rhs='0')
-         .equation(lhs='(Dt+mub-Db*Laplacian)*b - g*a', rhs='0'))
+         .mf_residual(lhs='(Dt+mua-Da*Laplacian)*a + g*b', rhs='0')
+         .mf_residual(lhs='(Dt+mub-Db*Laplacian)*b - g*a', rhs='0'))
     if periodic_L is not None:
         b = b.boundary('periodic', length=float(periodic_L))
     else:
@@ -249,9 +249,9 @@ def _ladder_coupled_model(order):
               '+ bt*((Dt+mub-Db*Laplacian)*b - eps*a) '
               '- Ta*at^2 - Tb*bt^2')
     return (b.set_action_text(action)
-            .equation(lhs='(Dt+mua-Da*Laplacian)*a + eps*b + gq*a^2 + ga*a^3',
+            .mf_residual(lhs='(Dt+mua-Da*Laplacian)*a + eps*b + gq*a^2 + ga*a^3',
                       rhs='0')
-            .equation(lhs='(Dt+mub-Db*Laplacian)*b - eps*a', rhs='0')
+            .mf_residual(lhs='(Dt+mub-Db*Laplacian)*b - eps*a', rhs='0')
             .boundary('infinite').initial('stationary')
             .dyson_order(order).build())
 
@@ -301,7 +301,7 @@ def test_unequal_D_loop_dressing_ladder():
               .parameter('T', default=_T1, domain='positive')
               .set_action_text('phit*((Dt+mu-D*Laplacian)*phi + gq*phi^2 '
                                '+ ga*phi^3) - T*phit^2')
-              .equation(lhs='(Dt+mu-D*Laplacian)*phi + gq*phi^2 + ga*phi^3',
+              .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi + gq*phi^2 + ga*phi^3',
                         rhs='0')
               .boundary('infinite').initial('stationary').build())
     th_s = compute_cumulants(model=scalar,

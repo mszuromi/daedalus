@@ -42,7 +42,7 @@ def build():
         .parameter('T',   default=1.0,  domain='positive')
         # MF saddle: the ∇²/∂ₓ forcings vanish at the homogeneous φ*, so the
         # saddle is the Allen-Cahn one (−μφ*−λφ*³=0 ⇒ φ*=0).
-        .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
         .set_action_text(
             'phit*(Dt(phi) + mu*phi - D*Lap(phi) + lam*phi^3 '
             '- g*Lap(phi^2) - (kpz/2)*Dx(phi, 0)^2) - T*phit^2')

@@ -73,7 +73,7 @@ def _ou(name, action, eqs=(('(Dt+mu)*x', '0'),), params=(('mu', 1.0), ('D', 1.0)
         b.parameter(p, default=d, domain='positive')
     b.set_action_text(action)
     for lhs, rhs in eqs:
-        b.equation(lhs=lhs, rhs=rhs)
+        b.mf_residual(lhs=lhs, rhs=rhs)
     if stab:
         b.stability_analysis(True)
     return b.build()
@@ -118,7 +118,7 @@ def _spatial(name, action, mu=1.0, Dd=1.0, stab=True):
          .parameter('mu', default=mu, domain='real').parameter('D', default=Dd, domain='real')
          .parameter('T', default=1.0, domain='positive')
          .set_action_text(action)
-         .equation(lhs='(Dt + mu)*phi', rhs='0'))
+         .mf_residual(lhs='(Dt + mu)*phi', rhs='0'))
     if stab:
         b.stability_analysis(True)
     return b.build()
@@ -177,7 +177,7 @@ def _acausal():
             .parameter('D', default=1.0, domain='positive').parameter('tg', default=2.0, domain='positive')
             .define_kernel('g', freq_image='1/(1 - I*omega*tg)', latex_name='g')
             .set_action_text('xt*((Dt + mu)*x - J*g*x) - D*xt^2')
-            .equation(lhs='(Dt + mu)*x', rhs='0')
+            .mf_residual(lhs='(Dt + mu)*x', rhs='0')
             .stability_analysis(True)
             .build())
 
@@ -640,7 +640,7 @@ def _colored(name, kernel):
          .parameter('mu', default=1.0, domain='positive').parameter('D', default=1.0, domain='positive')
          .parameter('tc', default=0.5, domain='positive')
          .set_action_text('xt*((Dt+mu)*x) - D*xt^2')
-         .equation(lhs='(Dt+mu)*x', rhs='0').stability_analysis(True))
+         .mf_residual(lhs='(Dt+mu)*x', rhs='0').stability_analysis(True))
     b.correlated_noise('eta', response_legs={2: ['xt', 'xt']}, cumulants={2: kernel})
     return b.build()
 
@@ -909,7 +909,7 @@ def test_spatial_accuracy_findings():
     kpz = (SpatialModelBuilder('kpz g6', n_populations=0).physical_field('p', spatial_dim=1)
            .parameter('mu', default=1.0, domain='positive').parameter('D', default=0.7, domain='positive')
            .parameter('c', default=0.3, domain='real').parameter('T', default=1.0, domain='positive')
-           .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='0')
+           .mf_residual(lhs='(Dt + mu - D*Laplacian)*p', rhs='0')
            .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)-(c/2)*Dx(p,0)^2)-T*pt^2')
            .operator_ir().boundary('infinite').initial('stationary').build())
     crd, _mod = _load('coupled_rd_2species_1d')

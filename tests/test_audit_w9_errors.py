@@ -111,11 +111,11 @@ def test_population_sum_message_no_longer_blames_a_noise_parameter():
     assert 'inside a noise parameter' not in msg
 
 
-def test_pairing_kernel_rename_keeps_the_old_name():
+def test_kernel_is_the_shape_builder_and_pairing_kernel_has_its_own_name():
     import api.delay as D
     import api.symbolic_out as so
-    assert so.Kernel is so.PairingKernel and dd.Kernel is dd.PairingKernel
-    assert so.PairingKernel is not D.Kernel
+    assert dd.Kernel is D.Kernel and dd.PairingKernel is so.PairingKernel
+    assert dd.Kernel is not so.PairingKernel and not hasattr(so, 'Kernel')   # the old alias is gone
     L = so.PairingKernel.two_sided_exponential(1.0, 0.7, -0.5, 1.3)
-    assert isinstance(L, so.Kernel) and type(L).__name__ == 'PairingKernel'
+    assert isinstance(L, so.PairingKernel) and type(L).__name__ == 'PairingKernel'
     assert isinstance(L + L, so.PairingKernel)

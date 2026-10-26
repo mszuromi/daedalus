@@ -2059,7 +2059,7 @@ class ModelUI:
                     _add(9, 'warn',
                          f"field '{nm}' is not the subject of any "
                          f"mean-field equation — coupled models usually "
-                         f"need one .equation(lhs=…) per field (a linear "
+                         f"need one .mf_residual(lhs=…) per field (a linear "
                          f"field with saddle 0 can ignore this)")
 
         return out
@@ -2580,8 +2580,8 @@ class ModelUI:
             'action_text':     self._w_action.get_value(),
             # New DAE form: list of {lhs, rhs, population} records,
             # consumed by ``render_model_file`` to emit
-            # ``.equation(...)`` calls.  Legacy specs that came in via
-            # ``set_mf_equation`` get re-rendered as ``.equation(...)``
+            # ``.mf_residual(...)`` calls.  Legacy specs that came in via
+            # ``set_mf_equation`` get re-rendered as ``.mf_residual(...)``
             # calls too, with population back-inferred from the saddle
             # name (see ``load_spec_from_file``).
             'equations':       normalize_equation_rows([

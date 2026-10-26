@@ -455,12 +455,12 @@ def test_refuses_joint_jumps_across_units(coupling):
 def test_refuses_state_dependent_point_process_coupling():
     def pp(rhs, size='1'):
         return (SDE('pp').parameter('w', default=0.2).parameter('Es', default=1.0).parameter('a', default=1.0)
-                .field('v').point_process('n', 'a', size=size).drift('v', rhs).interpretation('marcus'))
+                .field('v').point_process('n', 'a', jump_size=size).drift('v', rhs).interpretation('marcus'))
     with pytest.raises(SDEError, match='state-dependent coefficient'):
         pp('-v + w*(Es - v)*n').action_text()
     with pytest.raises(SDEError, match='state-dependent size'):
         (SDE('pp').parameter('w', default=0.2).parameter('a', default=1.0).field('v').field('u')
-         .drift('u', '-u').point_process('n', 'a', size='1 + u^2').drift('v', '-v + w*n')
+         .drift('u', '-u').point_process('n', 'a', jump_size='1 + u^2').drift('v', '-v + w*n')
          .interpretation('marcus').action_text())
     pp('-v + w*n').action_text()            # a constant coupling: accepted (it is the Ito model, test 2)
 
@@ -483,7 +483,7 @@ def test_marcus_policy_and_config():
     sp = (SpatialModelBuilder('spatial').physical_field('phi', spatial_dim=1)
           .parameter('mu', default=1.0).parameter('D', default=1.0).parameter('T', default=1.0, domain='positive')
           .set_action_text('phit*(Dt*phi + mu*phi - D*Lap(phi)) - T*phit^2')
-          .equation(lhs='(Dt + mu)*phi', rhs='0').build())
+          .mf_residual(lhs='(Dt + mu)*phi', rhs='0').build())
     rep = analyze(sp, None, Policy(interpretation='marcus'), use_cache=False)
     assert rep.has('G0_POLICY_INVALID')
     with pytest.raises(SDEError, match="'ito', 'stratonovich' or 'marcus'"):

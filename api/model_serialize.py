@@ -23,7 +23,7 @@ Output file shape::
             .define_kernel(...)
             .declare_cgf_term(...)
             .set_action_text(\"\"\"...\"\"\")
-            .equation(lhs=\"...\", rhs=\"...\", population=\"E\")
+            .mf_residual(lhs=\"...\", rhs=\"...\", population=\"E\")
             .build()
         )
 
@@ -323,14 +323,14 @@ def _emit_mf_equation(saddle: str, rhs: str) -> str:
 
 
 def _emit_equation(lhs: str, rhs: str, population) -> str:
-    """Emit a ``.equation(lhs=..., rhs=..., population=...)`` call for
+    """Emit a ``.mf_residual(lhs=..., rhs=..., population=...)`` call for
     the DAE-style MF spec.  Used by the new (Tab 9) UI MF form."""
     lhs_repr = _py_repr(lhs)
     rhs_repr = _py_repr(rhs)
     parts = [f'lhs={lhs_repr}', f'rhs={rhs_repr}']
     if population:
         parts.append(f'population={_py_repr(population)}')
-    return f'.equation({", ".join(parts)})'
+    return f'.mf_residual({", ".join(parts)})'
 
 
 # ── Main entry points ─────────────────────────────────────────────────
@@ -381,7 +381,7 @@ def render_model_file(spec: dict) -> str:
     action_text     = spec.get('action_text', '')
     mf_equations    = spec.get('mf_equations', [])    or []
     # New DAE-form list: {lhs, rhs, population} records.  When
-    # populated, the file emits .equation(...) calls; when empty,
+    # populated, the file emits .mf_residual(...) calls; when empty,
     # falls back to the legacy .set_mf_equation(...) emission from
     # ``mf_equations`` for backward compat.
     equations       = spec.get('equations', [])       or []
@@ -457,7 +457,7 @@ def render_model_file(spec: dict) -> str:
             prefix = '        ' if i == 0 else '        '
             out.append(prefix + line)
 
-    # Prefer the new DAE-form .equation(...) emission when available.
+    # Prefer the new DAE-form .mf_residual(...) emission when available.
     # Otherwise fall back to legacy .set_mf_equation(...) for old specs.
     if equations:
         for eq in equations:
@@ -650,7 +650,7 @@ def load_spec_from_file(path: str) -> dict:
         'action_text':     '',
         'mf_equations':    [],
         # New DAE form: list of {lhs, rhs, population} records.
-        # Populated below when the source uses ``.equation(...)``
+        # Populated below when the source uses ``.mf_residual(...)``
         # calls.  Old files using ``.set_mf_equation(...)`` populate
         # ``mf_equations`` instead and the UI auto-converts on load.
         'equations':       [],
@@ -806,8 +806,8 @@ def load_spec_from_file(path: str) -> dict:
                     'saddle': args[0], 'rhs': args[1],
                 })
 
-        elif method == 'equation':
-            # New DAE form: ``.equation(lhs=..., rhs=...,
+        elif method in ('mf_residual', 'equation'):     # 'equation': the deprecated name
+            # New DAE form: ``.mf_residual(lhs=..., rhs=...,
             # population=...)``.  All three are kwargs in the canonical
             # emission, but allow positional-only too.
             lhs = kw.get('lhs') if 'lhs' in kw else (args[0] if len(args) >= 1 else '')
@@ -936,7 +936,8 @@ _CARRIED_KWARGS = {
                          'kernel'},
     'declare_cgf_term': {'name', 'response_field', 'response_legs', 'order',
                          'coefficient', 'kernel', 'markovianize'},
-    'equation':         {'lhs', 'rhs', 'population'},
+    'mf_residual':      {'lhs', 'rhs', 'population'},
+    'equation':         {'lhs', 'rhs', 'population'},      # the deprecated name
 }
 
 

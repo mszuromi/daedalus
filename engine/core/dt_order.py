@@ -62,8 +62,8 @@ higher time derivative to its OWN field.  For
 declare a second physical field ``v`` (with its own response field)
 and split the equation in two:
 
-    .equation(lhs='Dt*x',           rhs='v')       # v := dx/dt
-    .equation(lhs='Dt*v + a*v',     rhs='-b*x')    # original eq. in v
+    .mf_residual(lhs='Dt*x',           rhs='v')       # v := dx/dt
+    .mf_residual(lhs='Dt*v + a*v',     rhs='-b*x')    # original eq. in v
 
 mirroring the same split in ``.set_action_text(...)``, e.g.
 

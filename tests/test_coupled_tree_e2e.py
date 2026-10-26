@@ -57,8 +57,8 @@ def _two_species(g, h, *, cross_noise=0.0, dim=1):
               '+ bt*((Dt+mub-D*Laplacian)*b - h*a) '
               '- Ta*at^2 - Tb*bt^2 - Tab*at*bt')
     return (b.set_action_text(action)
-            .equation(lhs='(Dt+mua-D*Laplacian)*a + g*b', rhs='0')
-            .equation(lhs='(Dt+mub-D*Laplacian)*b - h*a', rhs='0')
+            .mf_residual(lhs='(Dt+mua-D*Laplacian)*a + g*b', rhs='0')
+            .mf_residual(lhs='(Dt+mub-D*Laplacian)*b - h*a', rhs='0')
             .boundary('infinite').initial('stationary').build())
 
 
@@ -186,8 +186,8 @@ def _equal_mass_cross(dim, rho):
             .set_action_text(
                 'at*((Dt+mu-D*Laplacian)*a) + bt*((Dt+mu-D*Laplacian)*b) '
                 '- Ta*at^2 - Tb*bt^2 - 2*rho*sqrt(Ta*Tb)*at*bt')
-            .equation(lhs='(Dt+mu-D*Laplacian)*a', rhs='0')
-            .equation(lhs='(Dt+mu-D*Laplacian)*b', rhs='0')
+            .mf_residual(lhs='(Dt+mu-D*Laplacian)*a', rhs='0')
+            .mf_residual(lhs='(Dt+mu-D*Laplacian)*b', rhs='0')
             .boundary('infinite').initial('stationary').build())
 
 
@@ -231,8 +231,8 @@ def test_dyson_dge2_vs_exact_lyapunov():
     model = (b.set_action_text(
                 'at*((Dt+mua-Da*Laplacian)*a + g*b) '
                 '+ bt*((Dt+mub-Db*Laplacian)*b - h*a) - Ta*at^2 - Tb*bt^2')
-             .equation(lhs='(Dt+mua-Da*Laplacian)*a + g*b', rhs='0')
-             .equation(lhs='(Dt+mub-Db*Laplacian)*b - h*a', rhs='0')
+             .mf_residual(lhs='(Dt+mua-Da*Laplacian)*a + g*b', rhs='0')
+             .mf_residual(lhs='(Dt+mub-Db*Laplacian)*b - h*a', rhs='0')
              .boundary('infinite').initial('stationary')
              .dyson_order(2).reference_diffusion(0.825).build())
     ft, prop = _setup(model)

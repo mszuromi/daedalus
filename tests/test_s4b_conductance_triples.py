@@ -36,7 +36,7 @@ from api import compute_cumulants                                    # noqa: E40
 from api import me_output as ME                                      # noqa: E402
 from api.noise import Gaussian                                       # noqa: E402
 from api.sde import SDE                                              # noqa: E402
-from api.symbolic_out import Kernel                                  # noqa: E402
+from api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
 import engine.integration.time_domain.statespace as SS               # noqa: E402
 
 TAUS = np.linspace(-5.0, 5.0, 201)

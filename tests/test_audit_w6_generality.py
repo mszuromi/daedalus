@@ -177,7 +177,7 @@ def _named_saddle(sname):
     return (b.parameter('mu', default=1.0, domain='positive')
             .parameter('h', default=0.4).parameter('D', default=0.1, domain='positive')
             .set_action_text('xt*((Dt + mu)*x + 0.2*x^3 - h) - D*xt^2')
-            .equation(lhs='(Dt + mu)*x', rhs='h - 0.2*x^3')
+            .mf_residual(lhs='(Dt + mu)*x', rhs='h - 0.2*x^3')
             .build())
 
 
@@ -336,7 +336,7 @@ def test_analyzer_extracts_spatial_drift_at_nonzero_saddle():
          .parameter('D', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive')
          .parameter('h', default=0.5).parameter('v', default=0.7, domain='real')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='h')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='h')
          .set_action_text('phit*(Dt(phi) + mu*phi - D*Lap(phi) + v*Dx(phi, 0)'
                           ' - h) - T*phit^2').operator_ir()
          .boundary('infinite').initial('stationary').build())
@@ -364,7 +364,7 @@ def test_two_population_spatial_nonlinear_solves_both_populations():
          .parameter('g', default=0.3)
          .set_action_text('sum(pt[i]*((Dt+mu[i]-DD*Laplacian)*p[i] + g*p[i]^3)'
                           ' - T*pt[i]^2 for i in pop)')
-         .equation(lhs='(Dt + mu[i] - DD*Laplacian)*p[i]', rhs='-g*p[i]^3')
+         .mf_residual(lhs='(Dt + mu[i] - DD*Laplacian)*p[i]', rhs='-g*p[i]^3')
          .boundary('infinite').initial('stationary').build())
     taus, xs = [0.0, 0.5], [0.0, 0.7]
     for pop, mu in ((1, 1.0), (2, 4.0)):
@@ -415,7 +415,7 @@ def test_asymmetric_cross_field_cgf_row_matches_quadrature():
          .parameter('a', default=a).parameter('b', default=b).parameter('c', default=c)
          .parameter('m0', default=m0).parameter('s2', default=s2)
          .set_action_text('xt*((Dt + a)*x) + yt*((Dt + b)*y)')
-         .equation(lhs='(Dt + a)*x', rhs='0').equation(lhs='(Dt + b)*y', rhs='0')
+         .mf_residual(lhs='(Dt + a)*x', rhs='0').mf_residual(lhs='(Dt + b)*y', rhs='0')
          .declare_cgf_term('Nx', response_legs=['xt', 'xt'], order=2, coefficient='1')
          .declare_cgf_term('Ny', response_legs=['yt', 'yt'], order=2, coefficient='0.8')
          .declare_cgf_term('Nxy', response_legs=['xt', 'yt'], order=2, coefficient='c',
@@ -510,7 +510,7 @@ def build():
         .parameter('h', default=0.4)
         .parameter('D', default=0.1, domain='positive')
         .set_action_text('xt*((Dt + mu)*x + 0.2*x^3 - h) - D*xt^2')
-        .equation(lhs='(Dt + mu)*x', rhs='h - 0.2*x^3')
+        .mf_residual(lhs='(Dt + mu)*x', rhs='h - 0.2*x^3')
         .build())
 '''
     f = tmp_path / 'w6_rt.model.py'

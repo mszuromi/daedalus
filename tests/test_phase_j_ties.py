@@ -217,7 +217,7 @@ def _asym_model():
             .parameter('a', default=0.05)
             .parameter('b', default=0.05)
             .set_action_text('xt*((Dt+mu)*x + a*x^2 + b*x^3) - T*xt^2')
-            .equation(lhs='(Dt+mu)*x + a*x^2 + b*x^3', rhs='0')
+            .mf_residual(lhs='(Dt+mu)*x + a*x^2 + b*x^3', rhs='0')
             .build())
 
 

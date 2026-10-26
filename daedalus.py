@@ -161,7 +161,7 @@ _PIPELINE_EXPORTS = {
     'tree_modes':                'api.symbolic_out',
     'ModeSum':                   'api.symbolic_out',
     'PairingKernel':             'api.symbolic_out',
-    'Kernel':                    'api.symbolic_out',   # deprecated alias of PairingKernel
+    'Kernel':                    'api.delay',          # the kernel-shape builder (the pairing kernel is PairingKernel)
     'KernelIntegral':            'api.symbolic_out',
     'integrate_against':         'api.symbolic_out',
     'inverse_transform':         'api.symbolic_out',
@@ -1650,8 +1650,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     ext = cfg.external_fields
     ext_is_explicit = ext is not None
 
-    # Resolve the correlator order k.  Explicit ``cfg.k`` wins; otherwise infer
-    # it from an explicit ``external_fields`` (a k-point correlator has exactly
+    # Resolve the cumulant order k.  Explicit ``cfg.k`` wins; otherwise infer
+    # it from an explicit ``external_fields`` (a k-point cumulant has exactly
     # k legs); otherwise fall back to the model's ``k_default``.  If BOTH are
     # given they must agree — a mismatch is a contradiction, not something to
     # silently paper over.
@@ -1660,7 +1660,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
         if ext_is_explicit and len(ext) != k:
             raise ValueError(
                 f"Config mismatch: k={k} but external_fields lists "
-                f"{len(ext)} leg(s) {ext}.  A k-point correlator needs exactly "
+                f"{len(ext)} leg(s) {ext}.  A k-point cumulant needs exactly "
                 f"k legs.  Drop k (it is inferred from external_fields), set "
                 f"k={len(ext)}, or pass {k} legs.")
     elif ext_is_explicit:

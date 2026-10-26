@@ -2,7 +2,7 @@
 DAE-based mean-field solver — multi-root + linear-stability ready.
 
 Consumes ``model['equations']`` (declared via
-``ModelBuilder.equation(lhs=..., rhs=..., population=...)``) and finds
+``ModelBuilder.mf_residual(lhs=..., rhs=..., population=...)``) and finds
 ALL fixed points of the algebraic system obtained by setting ``Dt → 0``
 on every equation's LHS.  Uses multi-start Newton (scipy ``optimize.root``
 with the ``hybr`` Powell hybrid method), deduplicates clusters, filters
@@ -15,7 +15,7 @@ using the same equation parsing infrastructure here.
 
 This module is INTENTIONALLY decoupled from
 ``api/_mean_field.py`` — the legacy iteration solver still runs
-for models without ``.equation(...)`` declarations.  Routing happens
+for models without ``.mf_residual(...)`` declarations.  Routing happens
 in ``compute_cumulants`` (step d).
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ _PENALTY = 1e100
 
 
 # Math functions that may appear in user equation text (LHS / RHS of
-# .equation(...), or inside .define_function(...) expressions).
+# .mf_residual(...), or inside .define_function(...) expressions).
 # Drawn from numpy so they work on both scalars and numpy arrays.
 def _factorial(x):
     """``x! = Gamma(x + 1)`` for real ``x`` (Sage prints ``gamma(1 - y)`` of
@@ -1313,7 +1313,7 @@ def _saddle_system(model, fundamental, ns, reduced=False):
     if not unknown:
         raise ValueError(
             'mean-field solve: the model declares no mean-field equation '
-            '(no .equation(...) rows and no .set_mf_equation(...) for a '
+            '(no .mf_residual(...) rows and no .set_mf_equation(...) for a '
             'saddle parameter).')
     compound = {}
     if reduced:
@@ -1429,7 +1429,7 @@ def solve_mean_field_dae(
         _reduced: Optional[bool] = None,
 ) -> dict:
     """Solve the mean-field system of a model: the ``Dt -> 0`` limit of its
-    ``ModelBuilder.equation(...)`` rows, or, for a model declared with
+    ``ModelBuilder.mf_residual(...)`` rows, or, for a model declared with
     ``.set_mf_equation(saddle, rhs)`` instead, the saddle equations
     ``saddle - rhs = 0`` (read from ``model['mf_bg_conditions'](ns)``; needs
     the FieldTheory namespace ``ns``).  Every model gets the same multi-root
@@ -1503,7 +1503,7 @@ def solve_mean_field_dae(
         if ns is None:
             raise ValueError(
                 "solve_mean_field_dae: the model declares no "
-                ".equation(...) rows; its .set_mf_equation(...) saddle "
+                ".mf_residual(...) rows; its .set_mf_equation(...) saddle "
                 "equations need the FieldTheory namespace (ns=).")
         # The iteration (closure) saddles are the unknowns when the others
         # can be substituted -- the former iteration solver's system: a
@@ -1671,9 +1671,9 @@ def solve_mean_field_dae(
     if stab_on and not model.get('equations'):
         raise ValueError(
             "solve_mean_field_dae: stability_analysis(True) classifies the "
-            "roots of the model's .equation(...) rows (their Dt terms); this "
+            "roots of the model's .mf_residual(...) rows (their Dt terms); this "
             "model declares its saddles with .set_mf_equation(...) only.  "
-            "Declare the dynamics with .equation(lhs=..., rhs=...), or turn "
+            "Declare the dynamics with .mf_residual(lhs=..., rhs=...), or turn "
             "stability_analysis off.")
 
     all_root_records = []
@@ -1973,7 +1973,7 @@ def _check_equation_first_order_in_dt(resid, Dt_sym, model, eq, eq_no,
     if not dt_degree_exceeds_one(resid, Dt_sym):
         return
 
-    where = (f"ModelBuilder.equation(lhs={eq['lhs_text']!r}, "
+    where = (f"ModelBuilder.mf_residual(lhs={eq['lhs_text']!r}, "
              f"rhs={eq['rhs_text']!r}"
              + (f", population={pop!r}" if pop is not None else '') + ')')
     fields = _dt_offending_fields(resid, Dt_sym, sym_per_var)
@@ -2103,7 +2103,7 @@ def linear_stability(
     if not model.get('equations'):
         raise ValueError(
             "linear_stability: model has no equations declared via "
-            "ModelBuilder.equation(...)."
+            "ModelBuilder.mf_residual(...)."
         )
 
     state_vars = _state_variables(model)

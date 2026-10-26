@@ -36,7 +36,7 @@ def build():
         # is 0), so the saddle is fixed by the linear part: −μh*=0 ⇒ h*=0.
         # (The MF-equation parser handles Dt/Laplacian but not the Dx node,
         # and the term is identically 0 here, so we write the reduced RHS.)
-        .equation(lhs='(Dt + mu - D*Laplacian)*h', rhs='0')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*h', rhs='0')
         # Operator-IR action: Dx(h, 0)^2 is a per-leg first-derivative vertex
         # — ∂_x acts on EACH physical leg (mode='perleg'), not on a composite.
         # The response field for ``h`` is ``ht``; the ``0`` is the axis (d=1).

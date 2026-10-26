@@ -74,8 +74,8 @@ def _action_model():
     for p in _NAMES:
         b = b.parameter(p, default=1.0, domain='positive')
     return (b.set_action_text(f'sum(ut[i]*Dt*u[i] + wt[i]*Dt*w[i] - ({jumps})/s for i in pop)')
-            .equation(lhs='(Dt+1)*u[i]', rhs=f'u[i] + k11*{H1} + k12*{H2}', population='pop')
-            .equation(lhs='(Dt+1)*w[i]', rhs=f'w[i] + k12*{H1} + k11*{H2}', population='pop')
+            .mf_residual(lhs='(Dt+1)*u[i]', rhs=f'u[i] + k11*{H1} + k12*{H2}', population='pop')
+            .mf_residual(lhs='(Dt+1)*w[i]', rhs=f'w[i] + k12*{H1} + k11*{H2}', population='pop')
             .build())
 
 

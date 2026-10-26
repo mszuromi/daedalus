@@ -175,7 +175,7 @@ def test_errors_are_named():
 
 def test_marked_size():
     s = SDE('pp marks').parameter('a', default=0.5).parameter('c', default=2.0) \
-        .point_process('n', 'a', size='c')
+        .point_process('n', 'a', jump_size='c')
     assert '(exp(c*nt[i]) - 1)*a' in s.action_text()
     assert s.equations()[0]['rhs'].replace(' ', '') in ('c*a', 'a*c')
 
@@ -353,6 +353,6 @@ def test_simulator_shared_gaussian_noise_and_refusals():
            .point_process('n', 'exp(-1 + Conv(K, 2*v))'))
     with pytest.raises(PPSimulationError, match='field element'):
         bad.simulate(T=1, dt=0.01, n_paths=2)
-    marks = SDE('pp marks sim').parameter('a', default=2.0).point_process('n', 'a', size='0.5')
+    marks = SDE('pp marks sim').parameter('a', default=2.0).point_process('n', 'a', jump_size='0.5')
     rec = marks.simulate(T=50, dt=0.01, n_paths=50, burn_in=1, bin=0.1, seed=2)
     assert abs(rec['counts']['n'].sum() / (0.5 * 2.0 * rec['T'] * 50) - 1) < 0.05

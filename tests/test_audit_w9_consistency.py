@@ -309,7 +309,7 @@ def _driven_rd(h):
             .parameter('T', default=1.0, domain='positive')
             .set_action_text(
                 'phit*((Dt + mu - D*Laplacian)*phi + g*phi^2 - h) - T*phit^2')
-            .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2 + h')
+            .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2 + h')
             .boundary('infinite').initial('stationary').build())
 
 

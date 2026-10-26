@@ -251,7 +251,7 @@ def _undriven():
             .physical_field('x').physical_field('y')
             .parameter('mu', default=1.0, domain='positive').parameter('D', default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu)*x) - D*xt^2 + yt*((Dt+mu)*y)')
-            .equation(lhs='(Dt+mu)*x', rhs='0').equation(lhs='(Dt+mu)*y', rhs='0')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='0').mf_residual(lhs='(Dt+mu)*y', rhs='0')
             .build()), None
 
 
@@ -260,7 +260,7 @@ def _unstable():
             .physical_field('x')
             .parameter('a', default=0.5, domain='positive').parameter('D', default=1.0, domain='positive')
             .set_action_text('xt*((Dt - a)*x) - D*xt^2')
-            .equation(lhs='(Dt - a)*x', rhs='0')
+            .mf_residual(lhs='(Dt - a)*x', rhs='0')
             .build()), None
 
 
@@ -434,7 +434,7 @@ def _erlang2_feedback(J):
             .parameter('D', default=0.1, domain='positive').parameter('tg', default=1.0, domain='positive')
             .define_kernel('g', freq_image='1/(1 + I*omega*tg)^2')
             .set_action_text('xt*((Dt + mu)*x + J*g*x) - D*xt^2')
-            .equation(lhs='(Dt + mu)*x', rhs='0').build())
+            .mf_residual(lhs='(Dt + mu)*x', rhs='0').build())
 
 
 def test_g2k_kernel_instability_of_a_rational_kernel_model():
@@ -454,7 +454,7 @@ def test_g2k_neutral_delay_is_refused_by_name():
          .parameter('d', default=1.0, domain='positive').parameter('D', default=0.1, domain='positive')
          .define_kernel('g', freq_image='I*omega*exp(-I*omega*d)')
          .set_action_text('xt*((Dt + 1)*x - 0.5*g*x) - D*xt^2')
-         .equation(lhs='(Dt + 1)*x', rhs='0').build())
+         .mf_residual(lhs='(Dt + 1)*x', rhs='0').build())
     r = analyze(m, question={'k': 2, 'external_fields': [('x', 1), ('x', 1)], 'max_ell': 0})
     hit = [f for f in r.findings if f.code == 'G2_NEUTRAL_DELAY']
     assert hit and hit[0].level == 'error' and r.traits.kernel_stability == 'neutral'

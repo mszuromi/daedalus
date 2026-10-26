@@ -149,7 +149,7 @@ def test_markovianize_opt_out_keeps_colored_row():
                           coefficient='2*D/tauc',
                           kernel='exp(-abs(tau)/tauc)')
         .set_action_text('xt*((Dt+mu)*x)')
-        .equation(lhs='(Dt+mu)*x', rhs='0')
+        .mf_residual(lhs='(Dt+mu)*x', rhs='0')
     )
     model = builder.build()
     cn = model.get('correlated_noises', {})

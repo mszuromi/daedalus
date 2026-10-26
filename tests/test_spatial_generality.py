@@ -83,7 +83,7 @@ def _two_pop():
             .parameter('T', default=1.0, domain='positive')
             .set_action_text('sum(pt[i]*((Dt+mu[i]-DD*Laplacian)*p[i])'
                              ' - T*pt[i]^2 for i in pop)')
-            .equation(lhs='(Dt + mu[i] - DD*Laplacian)*p[i]', rhs='0')
+            .mf_residual(lhs='(Dt + mu[i] - DD*Laplacian)*p[i]', rhs='0')
             .boundary('infinite').initial('stationary').build())
 
 
@@ -121,7 +121,7 @@ def _op_model(term):
             .parameter('lam', default=0.3, domain='real')
             .parameter('h', default=1.0, domain='real')
             .parameter('T', default=1.0, domain='positive')
-            .equation(lhs='(Dt+mu-DD*Laplacian)*p', rhs='h')
+            .mf_residual(lhs='(Dt+mu-DD*Laplacian)*p', rhs='h')
             .set_action_text(f'pt*(Dt(p)+mu*p-DD*Lap(p)+{term}-h) - T*pt^2')
             .operator_ir().boundary('infinite').initial('stationary').build())
 
@@ -169,7 +169,7 @@ def _advected(v=None, lam=None, L=None):
     if v is not None:
         b = b.parameter('v', default=v, domain='real')
         adv = ' + v*Dx(phi, 0)'
-    b = (b.equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs=rhs)
+    b = (b.mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs=rhs)
          .set_action_text(f'phit*(Dt(phi) + mu*phi - D*Lap(phi){adv}{nl})'
                           ' - T*phit^2').operator_ir())
     b = b.boundary('periodic', length=L) if L else b.boundary('infinite')
@@ -227,8 +227,8 @@ def _coupled(va, vb):
             .parameter('c', default=0.4, domain='real')
             .parameter('g', default=0.25, domain='real')
             .parameter('T', default=1.0, domain='positive')
-            .equation(lhs='(Dt+ma-DD*Laplacian)*a + c*b', rhs='0')
-            .equation(lhs='(Dt+mb-DD*Laplacian)*b - c*a', rhs='0')
+            .mf_residual(lhs='(Dt+ma-DD*Laplacian)*a + c*b', rhs='0')
+            .mf_residual(lhs='(Dt+mb-DD*Laplacian)*b - c*a', rhs='0')
             .set_action_text(
                 f'at*(Dt(a)+ma*a-DD*Lap(a){da}+c*b+g*a^2) - T*at^2'
                 f' + bt*(Dt(b)+mb*b-DD*Lap(b){db}-c*a) - T*bt^2')
@@ -297,7 +297,7 @@ def _records(action, d, ell, rhs='0'):
          .parameter('D', default=1.0, domain='positive')
          .parameter('c', default=0.3, domain='real')
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs=rhs)
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*p', rhs=rhs)
          .set_action_text(action).operator_ir().boundary('infinite')
          .initial('stationary').build())
     ft = FieldTheory(m, taylor_order=4)
@@ -381,7 +381,7 @@ def test_kpoint_and_gh_paths_are_guarded(monkeypatch):
          .parameter('D', default=1.0, domain='positive')
          .parameter('c', default=0.3, domain='real')
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='-c*p^2')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*p', rhs='-c*p^2')
          .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)+c*p^2)-T*pt^2')
          .operator_ir().boundary('infinite').initial('stationary').build())
     pts = np.array([[[0.0, 0.0], [0.5, 0.4]], [[1.0, 0.0], [-0.5, 0.4]]])
@@ -481,7 +481,7 @@ def _k3_model(term, rhs):
             .parameter('D', default=1.0, domain='positive')
             .parameter('c', default=0.3, domain='real')
             .parameter('T', default=1.0, domain='positive')
-            .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs=rhs)
+            .mf_residual(lhs='(Dt + mu - D*Laplacian)*p', rhs=rhs)
             .set_action_text(f'pt*(Dt(p)+mu*p-D*Lap(p)+{term})-T*pt^2')
             .operator_ir().boundary('infinite').initial('stationary').build())
 

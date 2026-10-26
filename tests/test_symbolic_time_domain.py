@@ -449,7 +449,7 @@ def test_kernel_ou_two_sided_closed_form_equals_fourier():
     w, mu, D = var('omega'), var('mu'), var('D')
     Ap, tp, Am, tm = var('A_p'), var('tau_p'), var('A_m'), var('tau_m')
     C0 = 2 * D / (w ** 2 + mu ** 2)
-    L = so.Kernel.two_sided_exponential(Ap, tp, -Am, tm)
+    L = so.PairingKernel.two_sided_exponential(Ap, tp, -Am, tm)
     ki = so.integrate_against(C0, L, w)
     expect = D / mu * (Ap * tp / (1 + mu * tp) - Am * tm / (1 + mu * tm))
     assert _zero(ki.smooth - expect) and ki.contact == 0
@@ -471,7 +471,7 @@ def test_kernel_cubic_two_sided_time_equals_fourier(chain_ref, domains):
         cov = so.tree_covariance(m, use_cache=False, mean_field={
             'xstar1': 0, 'ystar1': 0, 'zstar1': 0})
         Ap, tp, Am, tm = var('A_p'), var('tau_p'), var('A_m'), var('tau_m')
-        L = so.Kernel.two_sided_exponential(Ap, tp, -Am, tm)
+        L = so.PairingKernel.two_sided_exponential(Ap, tp, -Am, tm)
         w = cov.omega
         for a, b in (('dz1', 'dz1'), ('dx1', 'dz1')):
             ms = cov.modes(a, b, reference=par)
@@ -512,8 +512,8 @@ def test_kernel_poly_exp_on_double_pole_vs_fourier_and_quadrature(
     w = cov.omega
     c, T = var('c'), var('T')
     # L(s) = c s e^{-s/T} (s > 0)  +  e^{s/T}/T (s < 0)
-    L = so.Kernel.exponential(c, -1 / T, 'positive', power=1) + \
-        so.Kernel.exponential(1 / T, 1 / T, 'negative')
+    L = so.PairingKernel.exponential(c, -1 / T, 'positive', power=1) + \
+        so.PairingKernel.exponential(1 / T, 1 / T, 'negative')
     ms = cov.modes('dx1', 'dy1', reference=par)
     ki = ms.integrate_against(L)
     pf = so.pair_with_kernel(cov.entry('dx1', 'dy1'),
@@ -536,7 +536,7 @@ def test_kernel_contact_rules_hawkes(hawkes1_ref):
                              parameters=par)
     ms = cov.modes('dn1', 'dn1', reference=par)
     Ap, tp, Am, tm = var('A_p'), var('tau_p'), var('A_m'), var('tau_m')
-    L = so.Kernel.two_sided_exponential(Ap, tp, -Am, tm)
+    L = so.PairingKernel.two_sided_exponential(Ap, tp, -Am, tm)
     with pytest.raises(so.SymbolicOutError, match='jumps'):
         ms.integrate_against(L)
     p3 = {k: par[k] for k in ('tau', 'a', 'w')}     # Em left with vstar1
@@ -559,14 +559,14 @@ def test_kernel_contact_rules_hawkes(hawkes1_ref):
                              values=vals, any_degree=True)
     assert pf.exact and abs(pf.value - ex.value) < 1e-12
     # a kernel continuous at 0 includes the contact without asking
-    sym = so.Kernel.exponential(1, -1, 'positive') + \
-        so.Kernel.exponential(1, 1, 'negative')
+    sym = so.PairingKernel.exponential(1, -1, 'positive') + \
+        so.PairingKernel.exponential(1, 1, 'negative')
     k2 = ms.integrate_against(sym, values=p3)
     k2x = ms.integrate_against(sym, values=p3, contact='exclude')
     assert abs(k2.value - k2x.value - lam) < 1e-12
     # a growing kernel is refused
     with pytest.raises(so.SymbolicOutError, match='grows'):
-        ms.integrate_against(so.Kernel.exponential(1, 1, 'positive'),
+        ms.integrate_against(so.PairingKernel.exponential(1, 1, 'positive'),
                              values=p3)
 
 
@@ -756,8 +756,8 @@ def test_split_cubic_and_repeated_cubic_vs_quadrature():
         q = so.numeric_inverse_transform(lambda x: cal(x, b=2.0), t)
         assert abs(q.value - complex(ms.evaluate(np.array([t]), ref)[0])) \
             < 1e-12
-    L = so.Kernel.exponential(1, -1, 'positive') + \
-        so.Kernel.exponential(-0.5, 2, 'negative')
+    L = so.PairingKernel.exponential(1, -1, 'positive') + \
+        so.PairingKernel.exponential(-0.5, 2, 'negative')
     ki = ms.integrate_against(L, values=ref)
     assert ki.roots and all(r.symbol in SR(ki.smooth).variables()
                             for r in ki.roots)
@@ -867,7 +867,7 @@ def test_review_kernel_rate_equal_to_a_root_on_the_other_side():
     C0 = 1 / ((s ** 2 + b * s - c) * (s ** 2 - b * s - c))
     ref = {'b': 1.0, 'c': 2.0}
     ms = so.tree_modes(C0, w, reference=ref)
-    L = so.Kernel.exponential(1, -r, 'positive')
+    L = so.PairingKernel.exponential(1, -r, 'positive')
     for rv in (2.0, 2.0 + 1e-9, 0.7):
         v = dict(ref, r=rv)
         ki = ms.integrate_against(L, values=v)
@@ -893,7 +893,7 @@ def test_review_user_names_only_and_root_names_do_not_collide():
 def test_review_integrate_against_refuses_outside_the_region():
     w, mu, D = var('omega'), var('mu'), var('D')
     ms = so.tree_modes(2 * D / (w ** 2 + mu ** 2), w, reference={'mu': 1.0})
-    L = so.Kernel.exponential(1, -1, 'positive')
+    L = so.PairingKernel.exponential(1, -1, 'positive')
     with pytest.raises(so.AssumptionViolation, match='mu > 0'):
         ms.integrate_against(L, values={'mu': -1.0, 'D': 1.0})
     ok = ms.integrate_against(L, values={'mu': 2.0, 'D': 1.0})

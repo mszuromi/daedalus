@@ -57,7 +57,7 @@ def _built(P, rhs, action):
         b = b.parameter(k, default=v,
                         domain='positive' if k in ('mu', 'D', 'T') else 'real')
     # rhs: the homogeneous saddle (Lap / Dx terms vanish on it)
-    return (b.equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs=rhs)
+    return (b.mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs=rhs)
             .set_action_text(action)
             .operator_ir().boundary('infinite').initial('stationary').build())
 
@@ -269,7 +269,7 @@ def _hand(term):
             .parameter('D', default=1.0, domain='positive')
             .parameter('c', default=0.3, domain='real')
             .parameter('T', default=1.0, domain='positive')
-            .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+            .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
             .set_action_text(f'phit*(Dt(phi) + mu*phi - D*Lap(phi) {term}) - T*phit^2')
             .operator_ir().boundary('infinite').initial('stationary').build())
 

@@ -1373,7 +1373,7 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
             "This model's mean-field saddle does not satisfy its own "
             "equations — the MF action sector is non-zero at the saddle.",
             "Likely causes:",
-            "  - a .set_mf_equation(...) / .equation(...) that doesn't match "
+            "  - a .set_mf_equation(...) / .mf_residual(...) that doesn't match "
             "the action's deterministic drift; or",
             "  - parameters with no default= (only DEFAULT_FUNDAMENTAL), so "
             "the saddle can't be checked numerically — the 'numerical "

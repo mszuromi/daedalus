@@ -39,7 +39,7 @@ def _model(rows, name='Cache Fingerprint Model'):
          .parameter('f', default=0.5).parameter('r', default=0.3).parameter('d', default=0.1)
          .set_action_text(ACTION))
     for r in rows:
-        b = b.equation(lhs=r['lhs'], rhs=r['rhs'])
+        b = b.mf_residual(lhs=r['lhs'], rhs=r['rhs'])
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         return b.build()

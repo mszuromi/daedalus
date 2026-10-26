@@ -59,7 +59,7 @@ def _model(expr, mu, name):
                               coefficient='2*D', kernel=expr,
                               markovianize=False)
             .set_action_text('xt*((Dt+mu)*x)')
-            .equation(lhs='(Dt+mu)*x', rhs='0')).build()
+            .mf_residual(lhs='(Dt+mu)*x', rhs='0')).build()
 
 
 def _exact(kf, mu, taus):

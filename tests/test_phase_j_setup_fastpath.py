@@ -162,8 +162,8 @@ def _two_field_ou():
             .parameter('D2', default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu1)*x + eps1*x^3 - J1*y) - D1*xt^2 '
                              '+ yt*((Dt+mu2)*y + eps2*y^3 - J2*x) - D2*yt^2')
-            .equation(lhs='(Dt+mu1)*x', rhs='-eps1*x^3 + J1*y')
-            .equation(lhs='(Dt+mu2)*y', rhs='-eps2*y^3 + J2*x')
+            .mf_residual(lhs='(Dt+mu1)*x', rhs='-eps1*x^3 + J1*y')
+            .mf_residual(lhs='(Dt+mu2)*y', rhs='-eps2*y^3 + J2*x')
             .stability_analysis(True)
             .build())
 

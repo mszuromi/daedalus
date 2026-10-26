@@ -1562,7 +1562,7 @@ def _g2_ready(ctx):
 
 
 def _g2_dae_gate(ctx):
-    """Every saddle of the ``.equation(...)`` rows and its stability."""
+    """Every saddle of the ``.mf_residual(...)`` rows and its stability."""
     if not _g2_ready(ctx) or not ctx.model.get('equations'):
         return
     fpi = ctx.q.fixed_point_index
@@ -1607,12 +1607,12 @@ def _g2_iteration_record(ctx, mf, fpi):
     ctx.t['saddle'] = _saddle_tuple(mf.get('saddle_values') or {})
     ctx.add('G2_SINGLE_SADDLE_SOLVER',
             f'the model declares saddle equations (.set_mf_equation, no '
-            f'.equation(...)): {len(roots) or 1} root(s) found'
+            f'.mf_residual(...)): {len(roots) or 1} root(s) found'
             + (': ' + '; '.join(_fmt_root(r) for r in roots[:4])
                if len(roots) > 1 else '')
             + '. Their stability is not classified here (no Dt terms); it '
             'is read from the propagator poles (G3).',
-            'declare .equation(lhs=..., rhs=...) rows for a linear '
+            'declare .mf_residual(lhs=..., rhs=...) rows for a linear '
             'stability analysis of every saddle')
     if fpi is not None and not (0 <= fpi < max(len(roots), 1)):
         ctx.add('G2_FIXED_POINT_INDEX',
@@ -1707,7 +1707,7 @@ def _g2_dae_classify(ctx, recs, any_dynamic, stab_on, fpi, fpi_eff,
                 'equations, or the stability evaluation failed'
                 + (f': {recs[0]["error"]}' if recs and recs[0].get('error') else '')
                 + '); stability is read from the propagator poles (G3).',
-                'add the Dt terms to the .equation(...) rows (lhs) for a '
+                'add the Dt terms to the .mf_residual(...) rows (lhs) for a '
                 'linear stability analysis of every saddle')
         if selectable is None:
             selectable = list(range(len(recs)))

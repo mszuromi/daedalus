@@ -70,7 +70,7 @@ def _ou_cgf(kernel, mu=0.8, D=0.3):
             .declare_cgf_term('C', response_legs=['xt', 'xt'], order=2,
                               coefficient='2*D', kernel=kernel)
             .set_action_text('xt*((Dt+mu)*x)')
-            .equation(lhs='(Dt+mu)*x', rhs='0')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='0')
             .build())
 
 
@@ -181,7 +181,7 @@ def _colored(action, mu=0.6, D=0.5, tauc=0.8, s=2.5, markov=True):
          .parameter('s', default=s, domain='positive')
          .declare_cgf_term('CXX', response_legs=['xt', 'xt'], order=2,
                            coefficient='2*D/tauc', kernel='exp(-abs(tau)/tauc)')
-         .set_action_text(action).equation(lhs='(Dt+mu)*x', rhs='0'))
+         .set_action_text(action).mf_residual(lhs='(Dt+mu)*x', rhs='0'))
     if not markov:
         b = b.markovianize(False)
     return b.build(), b
@@ -249,8 +249,8 @@ def test_markovianize_single_unit_populations_cross_correlated():
                                kernel='exp(-abs(tau)/tauc)')
     b = (b.set_action_text('sum(xt[i]*((Dt+mu)*x[i]) for i in pop_A) + '
                            'sum(yt[i]*((Dt+mu)*y[i]) for i in pop_B)')
-         .equation(lhs='(Dt+mu)*x', rhs='0', population='A')
-         .equation(lhs='(Dt+mu)*y', rhs='0', population='B'))
+         .mf_residual(lhs='(Dt+mu)*x', rhs='0', population='A')
+         .mf_residual(lhs='(Dt+mu)*y', rhs='0', population='B'))
     m = b.build()
     assert b._markovianize_applied['matched_rows'] == ['Cxx', 'Cyy', 'Cxy']
     c = D / tc
@@ -285,7 +285,7 @@ def test_redeclared_kernel_replaces_the_old_spec():
             b = b.define_kernel('g', freq_image='1/(1 + I*omega*tg)')
         assert any('re-declared' in str(x.message) for x in w) == redeclare
         return (b.set_action_text('xt*((Dt+mu)*x - J*Conv(g, x)) - D*xt^2')
-                .equation(lhs='(Dt+mu)*x', rhs='J*x').build()), b
+                .mf_residual(lhs='(Dt+mu)*x', rhs='J*x').build()), b
 
     # the symbol keeps its place and a custom registration
     b2 = (TemporalModelBuilder('kernel symbols').kernel('h').kernel('g', sage_name='z_custom')

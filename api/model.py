@@ -24,7 +24,7 @@ Typical use::
              .parameter("eps", default=0.05, domain="positive")
              .parameter("D",   default=1.0,  domain="positive")
              .set_action_text("xt*((Dt+mu)*x + eps*x^3) - D*xt^2")
-             .equation(lhs="(Dt+mu)*x", rhs="-eps*x^3")  # or .set_mf_equation("xstar", ...)
+             .mf_residual(lhs="(Dt+mu)*x", rhs="-eps*x^3")  # or .set_mf_equation("xstar", ...)
              .build())
 
 Response fields (``xt`` above) are introduced automatically from the
@@ -784,7 +784,7 @@ class _BaseModelBuilder:
         #   {'lhs_text': str, 'rhs_text': str,
         #    'population': str | None, 'kind': 'differential' | 'algebraic'}
         # ``kind`` is inferred from whether ``Dt`` appears as a word in
-        # ``lhs_text``.  Populated via ``.equation(...)``.  Consumed by
+        # ``lhs_text``.  Populated via ``.mf_residual(...)``.  Consumed by
         # the DAE-based ``solve_mean_field`` (multi-start Newton + sort
         # + linear-stability).  If empty, the legacy iteration solver
         # runs from ``_mf_eqs_text`` instead.
@@ -983,11 +983,13 @@ class _BaseModelBuilder:
             ``['E', 'I']`` → matrix of shape
             ``(size(E), size(I))`` (row-first).  Overrides the
             legacy ``indexed=`` keyword when both are present.
-        indexed : bool / 'vector' / 'matrix' (legacy)
-            Pre-heterogeneous-population indexing flag.  ``True`` /
-            ``'vector'`` → vector of length ``n_populations``;
-            ``'matrix'`` → N×N matrix.  Ignored when ``indexed_by``
-            is given.
+        indexed : bool / 'vector' / 'matrix' (shorthand)
+            ``indexed_by=`` is the one way to name the indexing.  ``True`` /
+            ``'vector'`` is its shorthand for the model's single population
+            (a vector of its size), ``'matrix'`` for the square matrix over
+            it; with several populations declared it is ambiguous and
+            ``build()`` warns (``DeprecationWarning``: it will be refused).
+            Ignored when ``indexed_by`` is given.
         domain : str, optional
             ``'positive'`` etc.  Used by the FieldTheory builder.
         mean_field : bool, default False
@@ -1140,6 +1142,17 @@ class _BaseModelBuilder:
 
     def equation(self, *, lhs: str, rhs: str,
                  population: Optional[str] = None):
+        """Deprecated name of :meth:`mf_residual` (``SDE.equation`` is a
+        different method: one field's dynamics)."""
+        import warnings
+        warnings.warn('ModelBuilder.equation(lhs=, rhs=) is renamed '
+                      'mf_residual(lhs=, rhs=): it declares one residual of the '
+                      'mean-field system (SDE.equation, the dynamics of a field, is '
+                      'unchanged)', DeprecationWarning, stacklevel=2)
+        return self.mf_residual(lhs=lhs, rhs=rhs, population=population)
+
+    def mf_residual(self, *, lhs: str, rhs: str,
+                    population: Optional[str] = None):
         """Declare one residual of the DAE system used by the multi-root
         MF solver and linear-stability check.
 
@@ -1198,11 +1211,11 @@ class _BaseModelBuilder:
 
         if not isinstance(lhs, str) or not lhs.strip():
             raise ValueError(
-                'ModelBuilder.equation(): lhs must be a non-empty string.'
+                'ModelBuilder.mf_residual(): lhs must be a non-empty string.'
             )
         if not isinstance(rhs, str) or not rhs.strip():
             raise ValueError(
-                'ModelBuilder.equation(): rhs must be a non-empty string.'
+                'ModelBuilder.mf_residual(): rhs must be a non-empty string.'
             )
 
         # Reject Conv(...) — stationary assumption requires the user
@@ -1211,7 +1224,7 @@ class _BaseModelBuilder:
         for side_name, side_text in (('lhs', lhs), ('rhs', rhs)):
             if re.search(r'\bConv\s*\(', side_text, re.IGNORECASE):
                 raise ValueError(
-                    f"ModelBuilder.equation(): Conv(...) found in "
+                    f"ModelBuilder.mf_residual(): Conv(...) found in "
                     f"{side_name}; the DAE assumes stationary MF, so "
                     f"all kernel convolutions of constants must be "
                     f"pre-collapsed: replace ``Conv(g, x)`` with "
@@ -1222,7 +1235,7 @@ class _BaseModelBuilder:
         # Reject Dt in rhs — derivatives belong on the LHS.
         if re.search(r'\bDt\b', rhs):
             raise ValueError(
-                "ModelBuilder.equation(): Dt found in rhs; time "
+                "ModelBuilder.mf_residual(): Dt found in rhs; time "
                 "derivatives must appear on the LHS only."
             )
 
@@ -1330,7 +1343,7 @@ class _BaseModelBuilder:
 
     # ── Text → lambda compilation ─────────────────────────────────
     def _auto_populate_mf_eqs_from_equations(self) -> None:
-        """When ``.equation(lhs=..., rhs=...)`` calls have been made but
+        """When ``.mf_residual(lhs=..., rhs=...)`` calls have been made but
         no legacy ``set_mf_equation(...)`` has been registered, synthesize
         the latter from the former so the FieldTheory sanity check and
         action-substitution chain keep working unchanged.
@@ -1443,7 +1456,7 @@ class _BaseModelBuilder:
                     f'At Dt=0 the LHS must reduce to either a bare '
                     f'state-variable reference (``x`` for scalar '
                     f'models) or an indexed one (``v[i]``).  Either '
-                    f'simplify the LHS, or skip ``.equation(...)`` and '
+                    f'simplify the LHS, or skip ``.mf_residual(...)`` and '
                     f'use ``set_mf_equation(...)`` directly.'
                 )
 
@@ -1654,7 +1667,7 @@ class _BaseModelBuilder:
         """Walk the text-based declarations and compile each into the
         corresponding lambda hook.  No-op if no text declarations
         were made (template-only builders go through unchanged)."""
-        # Step 0: if the user used the new ``.equation(...)`` API but
+        # Step 0: if the user used the new ``.mf_residual(...)`` API but
         # didn't separately call ``set_mf_equation(...)``, derive the
         # legacy mf-eq text dict from the equations so the rest of the
         # compilation chain (sanity check, action substitution) works
@@ -2032,6 +2045,17 @@ class _BaseModelBuilder:
         hooks.  Validates that all required hooks ended up populated.
         Raises ValueError with a clear message if anything is missing.
         """
+        # indexed= (without indexed_by=) names no population: the shorthand for
+        # the model's single population; with several named populations it is
+        # ambiguous and will be refused
+        if len(self.populations) > 1:
+            import warnings
+            for ps in self.parameters:
+                if ps.indexed and ps.indexed_by is None:
+                    warnings.warn(
+                        f'parameter {ps.name!r}: indexed= with {len(self.populations)} '
+                        f'populations declared is ambiguous and will be refused; name the '
+                        f'populations with indexed_by=[...]', DeprecationWarning, stacklevel=2)
         # ── Scalar-mode autopop ────────────────────────────────────
         # When no ``.population(...)`` has been declared but physical
         # fields exist, auto-inject a single-position population
@@ -2345,7 +2369,7 @@ class _BaseModelBuilder:
             import warnings
             warnings.warn(
                 'ModelBuilder.build(): no mean-field equations were declared '
-                '(no .equation(...) / .set_mf_equation(...) calls, or the MF '
+                '(no .mf_residual(...) / .set_mf_equation(...) calls, or the MF '
                 'rows were empty).  The saddle then defaults to 0 and the '
                 'tadpole sanity check will fail for any field with a drive.  '
                 'In the model-builder UI every MF row needs a left-hand side; '

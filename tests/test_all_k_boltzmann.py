@@ -66,7 +66,7 @@ def _run_pipeline(action, eq, params, k, max_ell, name):
          .parameter('T', default=1.0, domain='positive'))
     for p, v in params.items():
         b = b.parameter(p, default=v)
-    model = b.set_action_text(action).equation(lhs=eq, rhs='0').build()
+    model = b.set_action_text(action).mf_residual(lhs=eq, rhs='0').build()
 
     ft = FieldTheory(model, taylor_order=max(k + 2 * max_ell, 4))
     ft.expand()
