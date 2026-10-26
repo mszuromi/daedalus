@@ -1,0 +1,90 @@
+name: docs
+
+# Builds the user manual (docs/user_manual, Sphinx) under the same SageMath 10.9 conda environment as the test
+# suite: autodoc imports the package and the doctests run it, so the build needs Sage. Warnings fail the build.
+# The HTML (and, on a v* tag or on demand, the PDF) is uploaded as a build artifact; nothing is deployed.
+# Same cached conda environment as tests.yml (the cache key is environment.yml, which this workflow does not change).
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    paths:
+      - 'docs/user_manual/**'
+      - 'daedalus.py'
+      - 'api/**'
+      - 'engine/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+    inputs:
+      pdf:
+        description: 'Also build the PDF'
+        type: boolean
+        default: false
+
+jobs:
+  html:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90                  # a cold conda environment takes 20-40 min; a cached one, seconds
+    defaults:
+      run:
+        shell: bash -el {0}              # login shell so the conda env is active
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SageMath 10.9 + extras (conda)
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      - name: Install the manual's build tools into the running environment
+        # The versions SageMath 10.9 ships (docs/user_manual/requirements.txt); environment.yml stays unchanged.
+        run: python -m pip install -r docs/user_manual/requirements.txt
+
+      - name: Build the HTML (warnings are errors)
+        run: python -m sphinx -W --keep-going -b html docs/user_manual docs/user_manual/_build/html
+
+      - name: Run the manual's doctests
+        run: python -m sphinx -W --keep-going -b doctest docs/user_manual docs/user_manual/_build/doctest
+
+      - name: Upload the HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-manual-html
+          path: docs/user_manual/_build/html
+          retention-days: 14
+
+  pdf:
+    # Release tags and manual runs only: TeX Live is too slow to install on every pull request.
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.pdf)
+    needs: html
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up SageMath 10.9 + extras (conda)
+        uses: mamba-org/setup-micromamba@v1
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+
+      - name: Install the manual's build tools and TeX
+        run: |
+          python -m pip install -r docs/user_manual/requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends latexmk texlive-xetex texlive-latex-extra \
+            texlive-fonts-recommended fonts-freefont-otf
+
+      - name: Build the PDF (xelatex)
+        run: python -m sphinx -M latexpdf docs/user_manual docs/user_manual/_build -W --keep-going
+
+      - name: Upload the PDF
+        uses: actions/upload-artifact@v4
+        with:
+          name: user-manual-pdf
+          path: docs/user_manual/_build/latex/daedalus_manual.pdf
