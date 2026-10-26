@@ -58,6 +58,13 @@ from __future__ import annotations
 
 from sage.all import function as _sr_function
 
+from engine.errors import DaedalusError
+
+
+class NonlinearConvError(DaedalusError, ValueError):
+    """``Conv(g, X)`` with ``X`` nonlinear in the fluctuations and ``g`` a
+    kernel with memory: not integrable by the kernel route (embed it)."""
+
 
 # Two-argument formal Sage function.  By convention: ``Conv(kernel, field)``
 # — kernel first, field second.  The function never auto-evaluates; it stays
@@ -236,6 +243,19 @@ class KernelDCGains:
         subs = {v: self.symbol_gain(v) for v in ks}
         g = kexpr.subs(subs)
         return _SR(1) if g.is_trivially_equal(_SR(1)) else g
+
+    def is_nonlocal(self, kexpr):
+        """True when ``kexpr`` holds a kernel whose image depends on omega
+        (not a ``c delta`` weight); False for none, or one without an image."""
+        from sage.all import SR as _SR
+        if not self._mentions_kernel(kexpr):
+            return False
+        self._load()
+        try:
+            ks = [v for v in _SR(kexpr).variables() if v in self._images]
+        except Exception:
+            return False
+        return any(_SR(self._images[v]).has(self._omega) for v in ks)
 
     def subs_dict(self, expr):
         """``{kernel symbol: ĝ(0)}`` for the kernel symbols with an image
@@ -465,6 +485,23 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
             attached_flucts = set(_SR(n_arg).variables()) & fluct_set
         except (AttributeError, TypeError):
             attached_flucts = set()
+        if dc_gains is not None and attached_flucts:
+            # a product of fluctuation legs under one kernel: every leg of
+            # the product sits at the same earlier time s, bridged to t by
+            # g(t - s) once; the kernel slots of the integrator delay ONE
+            # copy (x (g * x)), so such a term would come out wrong
+            try:
+                deg = sum(int(_SR(n_arg).degree(v)) for v in attached_flucts)
+            except (TypeError, ValueError, AttributeError):
+                deg = 2
+            if deg > 1 and dc_gains.is_nonlocal(g):
+                raise NonlinearConvError(
+                    f'Conv({g}, ...) convolves a nonlinear function of the fields (its '
+                    f'term {n_arg} at the saddle): the kernel route cannot integrate it '
+                    f'(every leg of the product sits at the same earlier time).  The SDE '
+                    f'front end (api.sde.SDE) embeds such a Conv automatically as auxiliary '
+                    f'linear fields; in a hand-written action, write the filter as '
+                    f'auxiliary linear fields (Markov embedding).')
         if attachments_out is not None and attached_flucts:
             # Same kernel can pair with several fields across the
             # action — set-union accumulates them.
@@ -548,6 +585,6 @@ def kernel_attachments_in_coefficient(coeff, attachments, kernel_symbols=None):
     return out
 
 
-__all__ = ['KernelDCGains', 'Conv', 'is_convolution', 'kernel_of', 'field_of',
+__all__ = ['KernelDCGains', 'NonlinearConvError', 'Conv', 'is_convolution', 'kernel_of', 'field_of',
            'reduce_conv_in_action', 'kernel_alias_symbol',
            'kernel_attachments_in_coefficient']
