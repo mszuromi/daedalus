@@ -8,7 +8,7 @@ on your platform. **The numbers do not depend on it:** every parallel path retur
 
 | stage | threads | spawned workers | fork |
 |---|---|---|---|
-| Phase J τ batch (`total_C_batch`, `eval_per_diagram_batch`) | every platform, notebooks included | macOS / Windows scripts (automatic); notebooks opt-in | Linux only |
+| Phase J τ batch (`total_C_batch`, `eval_per_diagram_batch`) | every platform, notebooks included | every platform, scripts (automatic); notebooks opt-in | Linux, only with `start_method='fork'` |
 | type assignment (cache miss) | no | no | Linux only |
 | streamed prediagram enumeration (cache miss, `n_workers` given) | no | no | Linux only |
 | spatial loop integration (loop order >= 2) | every platform | no | never |
@@ -26,7 +26,9 @@ on your platform. **The numbers do not depend on it:** every parallel path retur
     switch-on. So does any diagram a worker refuses or loses.
   - In automatic mode they start only when a timing sample predicts at least 3 s of work
     (`pipeline.SPAWN_MIN_SECONDS`). Default: 4 workers.
-- **Fork** is used on Linux only. **macOS never forks**: a fork after Cocoa/BLAS/ECL initialisation has hard-crashed
+- **Fork** of a Phase J batch is Linux only and only on request (`start_method='fork'`); the automatic method never
+  forks, so a Linux run no longer triggers CPython's fork-in-a-multithreaded-process warning there. Type assignment
+  and the streamed enumeration still fork on Linux (their workers need Sage). **macOS never forks**: a fork after Cocoa/BLAS/ECL initialisation has hard-crashed
   a Jupyter kernel and the OS, and a Sage process is multithreaded after its first symbolic step. Windows has no
   fork.
 
@@ -35,8 +37,8 @@ on your platform. **The numbers do not depend on it:** every parallel path retur
 - `parallel` (`compute_cumulants`, `dd.Config`, YAML `policy.parallel`): on/off.
 - `n_workers`: the pool size of every stage above, including the streamed enumeration.
   `DAEDALUS_PREDIAGRAM_PROCS` still overrides the enumeration's count.
-- `total_C_batch(..., start_method=)`: `None` (automatic), `'threads'`, `'spawn'` or `'fork'` (Linux; elsewhere
-  it falls back with one warning).
+- `total_C_batch(..., start_method=)`: `None` (automatic: threads or spawned workers), `'threads'`, `'spawn'` or
+  `'fork'` (Linux; elsewhere it falls back with one warning).
 - `DAEDALUS_PARALLEL=0`: every pool off, threads included. Read at call time.
 - `DAEDALUS_SPAWN_IN_KERNEL=1`: allow automatic spawned workers inside a Jupyter kernel. An explicit
   `start_method='spawn'` is the other opt-in.

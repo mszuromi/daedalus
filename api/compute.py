@@ -1861,9 +1861,9 @@ def compute_cumulants(
         Phase J's τ grid (step [7]) fans its diagrams out: diagrams with
         large state blocks go to threads on every platform (notebooks
         included); a batch predicted to take seconds goes to spawned,
-        Sage-free worker processes in a macOS / Windows script (in a
-        notebook only on request: ``DAEDALUS_SPAWN_IN_KERNEL=1``); on
-        Linux a fork pool takes batches with many diagrams.  Type
+        Sage-free worker processes in a script on any platform (in a
+        notebook only on request: ``DAEDALUS_SPAWN_IN_KERNEL=1``); a Linux
+        fork pool only on request (``start_method='fork'``).  Type
         assignment (step [5]) forks on Linux only.  macOS never forks.
         Every pool fits the memory budget (fewer workers, then serial).
         ``DAEDALUS_PARALLEL=0`` turns every worker pool off, spatial

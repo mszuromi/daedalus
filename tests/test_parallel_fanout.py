@@ -191,6 +191,39 @@ def test_fork_bit_identical_and_counters_returned(td, n_workers, monkeypatch):
     assert FI._RUNTIME_COUNTERS.get('ss_evals', 0) - snap == n_serial
 
 
+# ── Linux: the automatic method never forks ────────────────────────────────
+
+def test_automatic_method_spawns_where_fork_is_allowed(td, monkeypatch):
+    """With fork allowed (Linux; simulated by ``_fork_unsafe -> False``) the
+    automatic method does not fork: it takes spawned workers when the batch
+    predicts enough work, and the values are those of the serial batch."""
+    monkeypatch.delenv('DAEDALUS_PARALLEL', raising=False)
+    monkeypatch.delenv(P.SPAWN_KERNEL_ENV, raising=False)
+    monkeypatch.setattr(P, '_fork_unsafe', lambda start_method: False)
+    monkeypatch.setattr(P, 'SPAWN_MIN_SECONDS', 0.0)
+
+    def boom(*a, **k):
+        raise AssertionError('forked by the automatic method')
+    monkeypatch.setattr(P, '_fork_fan_out', boom)
+    pts = [(0.0, t) for t in (-0.9, 0.31, 1.7)]
+    serial = td['total_C_batch'](pts, parallel=False)
+    before = FI._RUNTIME_COUNTERS.get('parallel_spawn_batches', 0)
+    got = td['total_C_batch'](pts, parallel=True, n_workers=2)
+    assert _bytes(got) == _bytes(serial)
+    assert FI._RUNTIME_COUNTERS.get('parallel_spawn_batches', 0) == before + 1
+
+
+def test_explicit_fork_is_still_forked_where_allowed(td, monkeypatch):
+    monkeypatch.delenv('DAEDALUS_PARALLEL', raising=False)
+    monkeypatch.setattr(P, '_fork_unsafe', lambda start_method: False)
+    called = []
+    monkeypatch.setattr(P, '_fork_fan_out',
+                        lambda fns, tl, n_w: called.append(n_w))   # None: serial
+    fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
+    assert P._fan_out(fns, POINTS, True, 2, 'fork') is None
+    assert called == [2]
+
+
 # ── S2: spawned Sage-free workers (engine.spawn_pool) ──────────────────────
 
 def test_payload_values_in_process_equal_the_contribution(td):
@@ -288,7 +321,8 @@ def test_spawn_is_opt_in_inside_a_kernel(monkeypatch):
     monkeypatch.setitem(sys.modules, 'IPython', types.SimpleNamespace(
         get_ipython=lambda: None))
     assert P._spawn_allowed(None, fork_ok=False) is True       # a script
-    assert P._spawn_allowed(None, fork_ok=True) is False       # Linux: fork
+    assert P._spawn_allowed(None, fork_ok=False) is True       # Linux too: no automatic fork
+    assert P._spawn_allowed(None, fork_ok=True) is False       # an explicit, allowed fork
     monkeypatch.setitem(sys.modules, 'ipykernel', types.ModuleType('ipykernel'))
     assert P._spawn_allowed(None, fork_ok=False) is False      # a kernel
     assert P._spawn_allowed('spawn', fork_ok=False) is True    # explicit
