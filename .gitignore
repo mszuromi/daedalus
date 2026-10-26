@@ -78,6 +78,9 @@ docs/*
 !docs/spatial_v2_architecture.md
 !docs/spatiotemporal_convolutions.md
 !docs/kpz_burgers_sim_validation.py
+# The user manual (Sphinx source); its build output stays local.
+!docs/user_manual/
+docs/user_manual/_build/
 scratch/
 legacy/
 # ...except the pre-M1 Phase J fixture copies, which ARE tracked test data.
