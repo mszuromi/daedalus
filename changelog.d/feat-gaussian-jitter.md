@@ -34,3 +34,4 @@
   to its jittered use, sees a jitter kernel however the `Conv` writes it (`Conv((g), u)`, an uncomposed
   `Conv(kX*g, u)` in a noise coefficient), and refuses a sigma holding a field; the modular Kalman reduction falls
   back to the exact ranks when a denominator is divisible by its prime (Sage raises `TypeError` there).
+- Merged with the nonlinear-Conv embedding (#113): a Gaussian jitter is never embedded; a jitter on a nonlinear argument of a field is refused by the exogeneity check.
