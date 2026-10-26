@@ -16,7 +16,7 @@ authors:
     given-names: Gabriel K.
     affiliation: "Boston University"
 license: BSD-3-Clause
-version: "0.3.2"
+version: "0.3.3"
 repository-code: "https://github.com/mszuromi/daedalus"
 date-released: "2026-10-26"
 keywords:

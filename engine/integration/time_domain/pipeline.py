@@ -624,8 +624,8 @@ def compute_correction_td(
     diagram of a group with the group's summed prefactor and
     now raises ``TypeError``.
 
-    For each tree-level diagram, calls ``integrate_tree_diagram``
-    directly.  Loop diagrams are marked as skipped.
+    Every diagram, at any loop order, goes through ``integrate_diagram``; one
+    that cannot be integrated is recorded as skipped (``skipped_kernel_ids``).
 
     Parameters
     ----------

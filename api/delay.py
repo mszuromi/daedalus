@@ -519,13 +519,19 @@ class Kernel:
     ``Kernel.gamma(n, mean)``: the Erlang density of order ``n`` and mean
     ``mean`` (image ``(1 + I omega mean/n)^-n``; rational: an exact gamma
     delay, no approximation);
-    ``Kernel.image(text)``: any frequency image.
+    ``Kernel.image(text)``: any frequency image;
+    ``Kernel.gaussian(sigma, tol=1e-6)``: the Gaussian jitter density
+    ``exp(-t^2/(2 sigma^2))/sqrt(2 pi sigma^2)`` of an EXOGENOUS input, by a
+    rational fit of the time-shifted density (``api._gaussian_fit``; the SDE
+    front end refuses it on anything but an exogenous source).
     Products compose (convolution): ``Kernel.delay('d') * Kernel.exponential('tau')``.
     Arguments are parameter names or expressions (text)."""
 
-    def __init__(self, freq_image: str = '1', delay: Optional[str] = None):
+    def __init__(self, freq_image: str = '1', delay: Optional[str] = None,
+                 jitter: Optional[dict] = None):
         self.freq_image = str(freq_image)
         self.delay = None if delay is None else str(delay)
+        self.jitter = jitter
 
     @classmethod
     def delay(cls, d):
@@ -553,20 +559,55 @@ class Kernel:
     def image(cls, text):
         return cls(str(text))
 
+    @classmethod
+    def gaussian(cls, sigma, tol=1e-6):
+        """The Gaussian density ``exp(-t^2/(2 sigma^2))/sqrt(2 pi sigma^2)``
+        (image ``exp(-sigma^2 omega^2/2)``), for the jitter of an EXOGENOUS
+        input only: ``Conv(kX*g, n)`` with ``n`` a source whose rate no field
+        feeds back into.  The density is acausal; it is shifted by
+        ``T = shift*sigma`` (``Phi(-T/sigma) <= tol/10``) and replaced by a
+        rational fit of the shifted density with L1 error ``<= tol``
+        (``api._gaussian_fit``: Laguerre expansion, balanced truncation,
+        least-squares numerators; 16 states at ``tol = 1e-6``).  The shift
+        is dropped: shifting a stationary exogenous input in time changes no
+        stationary statistic of the network.  ``sigma`` is a parameter name or
+        an expression of unindexed parameters; ``tol`` in ``[1e-9, 1e-2]``.
+        ``.jitter['fit']`` holds the fit and its errors (``bound(k)``: the
+        relative error bound of a k-th order statistic)."""
+        from api._gaussian_fit import gaussian_fit, TOL_RANGE
+        tol = float(tol)
+        if not TOL_RANGE[0] <= tol <= TOL_RANGE[1]:
+            raise ValueError(f'Kernel.gaussian: tol={tol:g} outside [{TOL_RANGE[0]:g}, '
+                             f'{TOL_RANGE[1]:g}]')
+        sg = str(sigma).strip()
+        if not sg:
+            raise ValueError('Kernel.gaussian: empty sigma')
+        sg = sg if re.fullmatch(r'\w+', sg) else f'({sg})'
+        fit = gaussian_fit(tol)
+        return cls(fit.image(f'I*omega*{sg}'),
+                   jitter={'kind': 'gaussian', 'sigma': sg, 'tol': tol, 'fit': fit})
+
     def __mul__(self, other):
         if not isinstance(other, Kernel):
             return NotImplemented
+        if self.jitter and other.jitter:
+            raise ValueError('Kernel product: two Gaussian jitters; declare one '
+                             'Kernel.gaussian with sigma = sqrt(sigma1^2 + sigma2^2).')
         if self.delay and other.delay:
             d = f'({self.delay}) + ({other.delay})'
         else:
             d = self.delay or other.delay
         facs = [x for x in (self.freq_image, other.freq_image) if x != '1']
         fi = facs[0] if len(facs) == 1 else ('*'.join(f'({x})' for x in facs) or '1')
-        return Kernel(fi, delay=d)
+        return Kernel(fi, delay=d, jitter=self.jitter or other.jitter)
 
     __rmul__ = __mul__
 
     def __repr__(self):
+        if self.jitter:
+            j = self.jitter
+            return (f"Kernel(gaussian jitter sigma={j['sigma']!r}, tol={j['tol']:g}, "
+                    f"{j['fit'].order} states, delay={self.delay!r})")
         return f'Kernel(freq_image={self.freq_image!r}, delay={self.delay!r})'
 
 
