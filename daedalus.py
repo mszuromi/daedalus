@@ -617,10 +617,10 @@ class Config:
     parallel: bool = False
     # Worker count for the parallel backend (forwarded to compute_cumulants).
     # None → the backend's own default (spatial threads: min(8, cores);
-    # temporal batch: up to 8 threads, or os.cpu_count() fork workers on
-    # Linux).  The spatial backend and the temporal batch's thread fan-out
+    # temporal batch: up to 8 threads, or 4 spawned workers for a batch of
+    # seconds).  The spatial backend and the temporal batch's thread fan-out
     # (diagrams with large state blocks) are safe in a Jupyter kernel; fork
-    # (temporal batch, type assignment) is Linux-only: macOS never forks
+    # (type assignment; the temporal batch only on request) is Linux-only: macOS never forks
     # (engine.fork_safety).  The numbers do not depend on it.
     # DAEDALUS_PARALLEL=0 turns every pool off.
     n_workers: Optional[int] = None
