@@ -620,6 +620,18 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
         'C_total':        _curve_or_empty(result.get('C_tau')),
     }
 
+    # A resummed result (dd.Config(resum=...)): C_total is the resummed
+    # value; the method, the screened orders and the plain series are kept
+    rs = result.get('resummation')
+    if isinstance(rs, dict):
+        payload['resum_method'] = np.asarray(str(rs.get('method')))
+        if rs.get('kappa') is not None:
+            payload['resum_kappa'] = np.array([float(rs['kappa'])])
+        for N, c in sorted((result.get('C_tau_by_order') or {}).items()):
+            payload[f'C_screened_order_{int(N)}'] = _curve_or_empty(c)
+        if result.get('C_tau_loops') is not None:
+            payload['C_loops_total'] = _curve_or_empty(result['C_tau_loops'])
+
     # Per-loop-order curves: C_tree, C_1_loop, C_2_loop, ...
     C_tau_by_ell = result.get('C_tau_by_ell', {}) or {}
     for ell in sorted(C_tau_by_ell.keys()):

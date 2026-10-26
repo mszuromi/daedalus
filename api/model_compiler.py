@@ -984,28 +984,47 @@ def _vertex_species(se, genmap, vertex, flucts, tildes):
     return groups
 
 
-def _single_species_table(se, genmap, vertex, flucts):
+def _phys_content(exps, is_resp):
+    """The physical-leg field content of an unfolded monomial with exponent
+    vector ``exps`` over the fluctuation fields: the sorted tuple of
+    physical-field indices (position among the non-response fields, the
+    column of the propagator matrix) with multiplicity.  Response legs do not
+    count.  ``phit_a*a^2`` -> ``(0, 0)``, ``phit_b*a*b`` -> ``(0, 1)``."""
+    out, i = [], 0
+    for k, r in zip(exps, is_resp):
+        if r:
+            continue
+        out.extend([i] * int(k))
+        i += 1
+    return tuple(out)
+
+
+def _single_species_table(se, genmap, vertex, flucts, tildes):
     """The form-factor table of a model whose every vertex group holds ONE
     species: weight ``c_t / Σ c`` over the derivative vertices of the same
-    physical-leg count (1 for a lone derivative vertex)."""
+    physical-leg FIELD content (1 for a lone derivative vertex; vertices on
+    different fields stay apart even at the same leg count)."""
     from collections import defaultdict as _dd
     _fluct_set = {SR(f) for f in flucts}
+    is_resp = [str(f) in {str(t) for t in tildes} for f in flucts]
     _raw = []
     for g in vertex:
         base, chain = genmap[g]
-        bdeg = sum(int(SR(base).degree(SR(f))) for f in flucts)
+        bx = [int(SR(base).degree(SR(f))) for f in flucts]
+        bdeg = sum(bx)
         gv = SR(g)
         p = int(se.degree(gv))                       # power g appears in (KPZ: 2)
         c_t = se.coefficient(gv, p)                  # coupling × (shared) response leg
         for rv in [v for v in c_t.variables() if v in _fluct_set]:
             c_t = c_t / rv                           # divide out the response field
         _raw.append({'coupling': SR(c_t), 'n_phys': bdeg * p, 'chain': chain,
+                     'fields': _phys_content([p * b for b in bx], is_resp),
                      'mode': ('perleg' if bdeg == 1 else 'composite')})
     _by_sig = _dd(list)
     for t in _raw:
-        _by_sig[t['n_phys']].append(t)
+        _by_sig[t['fields']].append(t)
     vtable = []
-    for n_phys, ts in _by_sig.items():
+    for fields, ts in _by_sig.items():
         c_merged = sum((t['coupling'] for t in ts), SR(0))   # = the prefactor's coupling
         for t in ts:
             w = SR(t['coupling'] / c_merged)         # response field + comb. cancel
@@ -1013,7 +1032,7 @@ def _single_species_table(se, genmap, vertex, flucts):
                 w = w.simplify_full()
             except Exception:
                 pass
-            vtable.append({'weight': w, 'n_phys': n_phys,
+            vtable.append({'weight': w, 'n_phys': t['n_phys'], 'fields': fields,
                            'chain': t['chain'], 'mode': t['mode']})
     return vtable
 
@@ -1031,17 +1050,12 @@ def _species_table(se, groups, flucts, tildes):
     flucts = [SR(f) for f in flucts]
     is_resp = [str(f) in {str(t) for t in tildes} for f in flucts]
     rest = SR(se).expand()
-    vtable, unfolded, seen = [], SR(0), {}
+    vtable, unfolded = [], SR(0)
     for key, sp in groups.items():
         n_phys = sum(k for k, r in zip(key, is_resp) if not r)
-        if n_phys in seen and seen[n_phys] != key:
-            raise NotImplementedError(
-                "operator IR: two vertex groups with the same physical-leg "
-                f"count ({n_phys}) but different fields; the form-factor "
-                "table matches nodes by leg count only.")
-        seen[n_phys] = key
+        fields = _phys_content(key, is_resp)
         if len(sp) == 1:
-            vtable.append({'weight': SR(1), 'n_phys': n_phys,
+            vtable.append({'weight': SR(1), 'n_phys': n_phys, 'fields': fields,
                            'chain': sp[0]['chain'], 'mode': sp[0]['mode']})
             continue
         c_grp = sqrt(sum((x['coef'] ** 2 for x in sp), SR(0)))
@@ -1052,7 +1066,7 @@ def _species_table(se, groups, flucts, tildes):
             for t in x['terms']:
                 rest -= t
             vtable.append({'weight': SR(x['coef'] / c_grp), 'n_phys': n_phys,
-                           'chain': x['chain'], 'mode': x['mode']})
+                           'fields': fields, 'chain': x['chain'], 'mode': x['mode']})
         unfolded += c_grp * mono
     return vtable, rest, unfolded
 
@@ -1133,7 +1147,7 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     groups = (_vertex_species(se, genmap, vertex, flucts, tildes)
               if vertex else {})
     if all(len(sp) == 1 for sp in groups.values()):
-        vtable = _single_species_table(se, genmap, vertex, flucts)
+        vtable = _single_species_table(se, genmap, vertex, flucts, tildes)
         unfolded_extra = None
     else:
         vtable, se, unfolded_extra = _species_table(se, groups, flucts, tildes)
