@@ -2054,7 +2054,10 @@ def _g3_rational(ctx):
                 f'factor(s) {", ".join(bad[:4])}. The pole/residue machinery '
                 '(and Phase J) needs a rational propagator.',
                 'replace the kernel by a rational (Pade or sum-of-exponentials) '
-                'approximation, or embed it with auxiliary fields')
+                'approximation, or embed it with auxiliary fields'
+                + ('; a Gaussian jitter of an exogenous input (a source no field '
+                   'feeds back into) is Kernel.gaussian(sigma) in api.sde.SDE'
+                   if any('omega^2' in b for b in bad) else ''))
         return False
     ctx.t['propagator_class'] = 'rational'
     return True

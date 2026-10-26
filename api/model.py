@@ -145,9 +145,8 @@ class _SpatialMethods:
         mode = str(mode)
         if mode not in ('infinite', 'periodic'):
             raise ValueError(
-                f"boundary(mode={mode!r}): v1 supports only 'infinite' "
-                f"and 'periodic'.  Dirichlet/Neumann/Robin are v2 "
-                f"(see the internal design notes (not distributed) §scope).")
+                f"boundary(mode={mode!r}): only 'infinite' and 'periodic' are "
+                f"supported (Dirichlet, Neumann and Robin boundaries are not).")
         if mode == 'periodic' and 'length' not in params:
             raise ValueError(
                 "boundary('periodic', ...): a 'length' is required "
@@ -163,8 +162,8 @@ class _SpatialMethods:
         mode : {'stationary'}
             ``'stationary'`` — the system sits at its mean-field
             stationary state; no extra action term needed.  The only
-            mode supported in v1 (transient ICs are v1.5 — see
-            Lefèvre-Biroli §2.5's ``S_I`` term).
+            mode supported (transient initial conditions would add the
+            ``S_I`` term of Lefèvre-Biroli §2.5).
 
         Stored as ``model['initial']``.  ``compute_cumulants`` (Phase 4)
         validates that requested observables are compatible with the
@@ -173,9 +172,8 @@ class _SpatialMethods:
         mode = str(mode)
         if mode != 'stationary':
             raise ValueError(
-                f"initial(mode={mode!r}): v1 supports only 'stationary'.  "
-                f"Transient ICs are v1.5 (see "
-                f"the internal design notes (not distributed) §scope).")
+                f"initial(mode={mode!r}): only 'stationary' is supported "
+                f"(transient initial conditions are not).")
         self._initial = {'mode': mode, **params}
         return self
 
@@ -197,7 +195,7 @@ class _SpatialMethods:
             Truncation order ``N`` — each retarded edge sums Dyson
             insertions ``n = 0…N``.
         tol : float, optional
-            Reserved for the v2+ tolerance policies; unused in v1.
+            Reserved for tolerance policies; unused.
 
         The same order ``N`` also bounds the Dyson loop-correction
         insertions on every retarded segment — and there is NO upper
@@ -214,15 +212,15 @@ class _SpatialMethods:
         mode = str(mode)
         if mode in ('auto', 'adaptive', 'resum'):
             raise NotImplementedError(
-                f"dyson(mode={mode!r}): {mode!r} is a v2+ policy "
+                f"dyson(mode={mode!r}): {mode!r} is not implemented "
                 f"('auto' = auto-tol, 'adaptive' = per-edge adaptive, "
                 f"'resum' = resummed/exact — see the policy table in "
-                f"docs/dyson_duhamel_integration_plan.md).  v1 supports "
-                f"only 'off' and 'fixed'.")
+                f"docs/dyson_duhamel_integration_plan.md).  Only 'off' and "
+                f"'fixed' are supported.")
         if mode not in ('off', 'fixed'):
             raise ValueError(
-                f"dyson(mode={mode!r}): unrecognized policy; v1 "
-                f"supports 'off' and 'fixed' (see "
+                f"dyson(mode={mode!r}): unrecognized policy; the supported "
+                f"policies are 'off' and 'fixed' (see "
                 f"docs/dyson_duhamel_integration_plan.md).")
         if mode == 'fixed':
             # accept any integral type (e.g. a Sage Integer from the notebook
@@ -399,6 +397,13 @@ class _TemporalMethods:
             if freq_image is not None or time_expr is not None or delay is not None:
                 raise ValueError(f"define_kernel({name!r}): give kernel= alone (it "
                                  f"carries the image and the delay)")
+            if getattr(kernel, 'jitter', None):
+                # its shift is free only on an exogenous input, which the SDE
+                # front end checks (the builder's action text cannot be)
+                raise ValueError(f"define_kernel({name!r}): Kernel.gaussian (a jitter of "
+                                 f"an exogenous input) is declared with the SDE front end "
+                                 f"(api.sde.SDE.define_kernel), which checks that the "
+                                 f"input is exogenous.")
             freq_image = kernel.freq_image
             delay = kernel.delay
         if time_expr is not None and delay is None:

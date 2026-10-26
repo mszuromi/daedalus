@@ -1227,12 +1227,72 @@ def _index1_reduce(E, Ap, Bp, Cp, F):
     return A, B, C, D, True, f'index-1 descriptor: {n - r} algebraic variable(s) eliminated'
 
 
+#: Prime of the modular Krylov pivots (``_controllable_part_modular``).
+_KRYLOV_PRIME = 8388593
+
+
+def _controllable_part_modular(A, B):
+    """``_controllable_part`` over ``QQ`` with the Krylov ranks taken modulo
+    a prime, certified exactly: the Krylov columns independent mod p (a
+    nonzero minor mod p is nonzero over ``QQ``) span a subspace ``W`` of the
+    controllable one; ``W`` is A-invariant and contains ``B`` iff the exact
+    solves ``V X = A V``, ``V Y = B`` are consistent, and then ``W`` IS the
+    controllable subspace.  ``V`` is the echelon basis of ``W`` (unique for
+    the subspace), so the result is the one of the exact Krylov ranks, bit
+    for bit; their cost grows with the height of the Krylov vectors (80 s
+    for 46 states holding a 16-state rational fit, against ~1 s here).
+    Returns None (the caller runs the exact ranks) when the certificate
+    fails or a denominator is divisible by p."""
+    S = _sage()
+    n = A.nrows()
+    Fp = S.GF(_KRYLOV_PRIME)
+    try:
+        Ap, blk = A.change_ring(Fp), B.change_ring(Fp)
+    except (ZeroDivisionError, TypeError, ArithmeticError):
+        # a denominator divisible by p (Sage raises TypeError: "matrix
+        # denominator not coprime to modulus")
+        return None
+    E, picked, power = S.matrix(Fp, n, 0), [], 0
+    while True:
+        grew = False
+        for j in range(blk.ncols()):
+            E2 = E.augment(blk.matrix_from_columns([j]))
+            if E2.rank() > E.ncols():
+                E, grew = E2, True
+                picked.append((power, j))
+        if not grew or E.ncols() == n:
+            break
+        blk, power = Ap * blk, power + 1
+    if E.ncols() == n:
+        return A, B, None
+    if not picked:
+        if B.is_zero():
+            return S.matrix(S.QQ, 0, 0), S.matrix(S.QQ, 0, B.ncols()), S.matrix(S.QQ, n, 0)
+        return None
+    cols, blk_q = [], B
+    for k in range(max(p for p, _ in picked) + 1):
+        cols += [blk_q.column(j) for p, j in picked if p == k]
+        blk_q = A * blk_q
+    V = S.matrix(S.QQ, cols).transpose().column_space().basis_matrix().transpose()
+    try:
+        Ar = V.solve_right(A * V)
+        Br = V.solve_right(B)
+    except ValueError:                     # W not A-invariant / B outside W
+        return None
+    return Ar, Br, V
+
+
 def _controllable_part(A, B, F):
-    """Exact restriction to the controllable subspace (Krylov ranks over F)."""
+    """Exact restriction to the controllable subspace (Krylov ranks over F;
+    over ``QQ`` modulo a prime, certified exactly: ``_controllable_part_modular``)."""
     S = _sage()
     n = A.nrows()
     if n == 0 or B.ncols() == 0:
         return A, B, None
+    if F is S.QQ:
+        out = _controllable_part_modular(A, B)
+        if out is not None:
+            return out
     K = B
     blk = B
     rank = K.rank()

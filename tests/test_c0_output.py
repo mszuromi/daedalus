@@ -386,6 +386,22 @@ def test_k3_slices_equal_dd_run(ext):
                        if (lo, hi) in md)
 
 
+def test_k3_slice_at_the_nominal_lags_equals_dd_run():
+    """``slice_me`` called at the nominal lag grid (the swept leg at 0 meets
+    a pinned leg at 0) agrees with ``dd.run``'s slice: both take the exact tie
+    (they differed by 3e-7 when the pinned legs were nudged by 1e-6)."""
+    model = SSM.oscillator_red_noise()
+    cfg = dd.Config(k=3, max_ell=1, tau_grid=(-3, 3, 21),
+                    external_fields=[('p', 1), ('q', 1), ('z', 1)])
+    res = dd.run(model, cfg)
+    tg = np.asarray(res['tau_grid'], float)
+    assert 0.0 in tg
+    for j in (1, 2):
+        sm = ME.slice_me(res, j)
+        for ell, ref in res['C_tau_slices_by_ell'][j].items():
+            assert _rel(sm(tg, ell=ell), ref) <= 1e-13
+
+
 def test_pole_engine_is_never_silent(monkeypatch):
     monkeypatch.setenv(SS.ENGINE_ENV, 'poles')
     res = _cc(dd.load_model('ou_quartic')[0], [('dx', 1)] * 2, 1,
