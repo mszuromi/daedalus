@@ -86,6 +86,24 @@ stability do not depend on ``c`` and the action is untouched; ``SDE.notes``
 records the step.  Writing ``lhs='(Dt + c)*x'``, ``rhs='drift + c*x'`` by hand
 gives the same model.
 
+Higher-order equations and pure integrators
+-------------------------------------------
+An lhs of order ``N > 1`` in the time derivative, a polynomial acting on the
+field alone (``(m*Dt^2 + gamma*Dt + k)*x``, ``m*dt^2*x + ...``), is embedded as
+a first-order system, which is what the engine takes (the MSR action is first
+order in ``Dt``): the velocities ``xdot`` (``xddot``, ...; or
+``equation(..., velocity=...)``) are declared as fields, ``Dt*x = xdot``, and
+the top equation is ``m*Dt*xdot + gamma*xdot = rhs - k*x``.  A noise coupled
+into ``x`` is the force on the top equation.  It builds the model a
+hand-written first-order system builds (the same action, equations and dict).
+
+A pure integrator, ``drift('x', 'v')`` (an rhs without ``x``), is a dynamical
+equation whose mean-field equation ``0 = v`` constrains the other fields; the
+saddle of ``x`` is fixed by the system solved together (``Dt*x = v`` with
+``(m*Dt + gamma)*v = F - k*x`` gives ``x* = F/k``).  An rhs without any field
+(``drift('x', '0')``, a random walk) has no stationary mean field and is
+refused.
+
 Declared operators and SPDEs
 ----------------------------
 The operators an equation uses are named with :meth:`SDE.operator` and the
@@ -158,7 +176,7 @@ Gaussian-jittered exogenous inputs
 ``define_kernel('g', kernel=Kernel.gaussian('sigma', tol=1e-6))``
 (:meth:`api.delay.Kernel.gaussian`) declares the Gaussian density, which is
 acausal, for the jitter of an EXOGENOUS input: ``Conv(kX*g, n)`` with ``n`` a
-point process (or a source declared with ``expose=``) whose rate holds no
+point process (or a source declared with ``as_field=``) whose rate holds no
 field.  Shifting a stationary exogenous input in time changes no stationary
 statistic of the network, so the density is shifted by ``T`` and replaced by a
 rational fit (``api._gaussian_fit``), and the shift is dropped.  The build
@@ -170,6 +188,22 @@ dict carries ``exogenous_jitter``, from which ``compute_cumulants`` refuses the
 input as an external leg and switch-on runs, and records the fit
 (``result['input_jitter']``, the ledger's ``jitter:<input>``).  The simulator
 runs the fitted kernel: the recorded input leads the network by ``T``.
+
+Kernels of nonlinear functions of the fields
+--------------------------------------------
+``Conv(K, X)`` with ``X`` nonlinear in the fields (``Conv(k, v^2/a)``,
+``Conv(k, phi(v))``, in an equation or a point-process rate) is embedded as
+auxiliary linear fields (:meth:`_embed_nonlinear_convs`): one first-order stage
+``(b*Dt + a)*u = prev`` per linear factor ``a + b*(I*omega)`` of the kernel
+image's denominator, a companion block per irreducible factor of higher degree,
+fed by ``X``, the numerator read off the stages; ``Conv(K, X)`` becomes the
+output.  The fields are named ``<kernel>_emb<n>_<stage>`` and listed in
+``notes``.  This is exact (the kernel route cannot take such a term: it delays
+one copy of a fluctuation leg of ``X`` where every leg of the product sits at
+the same earlier time).  Refused by name: a delayed kernel, a kernel given only
+by ``time_expr``, a non-rational image, and a kernel indexed by both the unit
+and the summed population (one filter per pair).  An affine argument keeps the
+kernel route.
 
 Diagnostics: ``check``, ``latex`` and parse errors
 --------------------------------------------------
@@ -542,6 +576,8 @@ class SDE:
         self._series_order = 8
         self._marcus_route = 'auto'
         self._marcus_terms: 'OrderedDict[str, dict]' = OrderedDict()
+        # higher-order equations: field -> its velocity embedding (see equation())
+        self._embedded: 'OrderedDict[str, dict]' = OrderedDict()
         self._ito_drift: dict = {}
         # what the last derivation emitted, by origin (read by check() and
         # latex(); the action text itself is unchanged by it)
@@ -796,13 +832,20 @@ class SDE:
                     f'{n}(x) or {n}*x, not inside a function argument or a coefficient'))
 
     # ── dynamics ──────────────────────────────────────────────────────
-    def equation(self, field: str, lhs: str, rhs: str = '0'):
+    def equation(self, field: str, lhs: str, rhs: str = '0', *, velocity=None):
         """``lhs = rhs + noise`` for ``field``; ``lhs`` holds the linear
         differential operator (contains the time derivative, ``Dt`` unless it
         is renamed with :meth:`operator`), ``rhs`` no noise.  Declared operators
         are written in product style (``(tau*Dt + 1)*x``, ``D*lap*u``) or call
         style (``Dt(x)``, ``lap(u)``).  ``field`` may be its symbol, ``lhs`` and
-        ``rhs`` Sage expressions."""
+        ``rhs`` Sage expressions.
+
+        A higher-order lhs, a polynomial in the time derivative acting on the
+        field (``(m*Dt^2 + gamma*Dt + k)*x``), is embedded as a first-order
+        system: the velocities ``xdot`` (``xddot``, ...; or the names given in
+        ``velocity=``) are declared as fields, ``Dt*x = xdot``, and the top
+        equation ``m*Dt*xdot + gamma*xdot = rhs - k*x`` takes the noise coupled
+        into ``x`` (``noise(..., into={'x': c})`` is the force ``c*eta``)."""
         field = as_name(field)
         lhs, rhs = (v if isinstance(v, str) else str(as_text(v)) for v in (lhs, rhs))
         if field not in self._fields:
@@ -829,6 +872,14 @@ class SDE:
                      f'act on fields, e.g. {n}(x)' if in_call else
                      f'the time derivative belongs on the lhs: lhs={n}({field}) or '
                      f"lhs='{n}*{field}'")))
+        if (velocity is not None or re.search(r'\^|\*\*', lhs)
+                or sum(len(re.findall(rf'(?<!\w){re.escape(n)}(?!\w)', lhs)) for n in tnames) > 1):
+            order = self._lhs_orders(field, lhs)
+            if order is not None:
+                return self._embed(field, lhs, rhs, order, velocity)
+            if velocity is not None:
+                raise SDEError(f'equation({field!r}): velocity= names the embedded velocities of a '
+                               f'higher-order lhs; {lhs!r} is first order.')
         rhs = self._delayed_fields(rhs, field)
         rhs = self._compose_kernels(rhs, f'equation({field!r})')
         if re.search(r'\bt\b', rhs) or re.search(r'\bt\b', lhs):
@@ -840,6 +891,85 @@ class SDE:
         self._eqs[field] = {'lhs': self._translate(lhs, 'v1', where=f'equation({field!r}) lhs'),
                             'rhs': self._translate(rhs, 'v1', where=f'equation({field!r}) rhs'),
                             'lhs_raw': lhs, 'rhs_raw': rhs}
+        return self
+
+    def _lhs_orders(self, field: str, lhs: str):
+        """The coefficients ``[c_0, ..., c_N]`` of ``lhs = sum_n c_n Dt^n x``
+        when its order ``N`` in the time derivative is above 1 (``None`` for a
+        first-order lhs).  A higher-order lhs must be such a polynomial, with
+        coefficients free of the fields."""
+        L = self._parse(self._translate(lhs, 'v1', where=f'equation({field!r}) lhs'),
+                        f'lhs of {field}').expand()
+        try:
+            N = int(L.degree(_DT))
+        except (TypeError, ValueError):
+            N = 0
+        if N <= 1:
+            return None
+        x = self._sym(field)
+        cs, rest = [], L
+        for n in range(N + 1):
+            an = L.coefficient(_DT, n) if n else L.subs({_DT: 0})
+            c = an.coefficient(x, 1)
+            cs.append(c)
+            rest = rest - c * _DT ** n * x
+        if not rest.expand().is_zero() or any(self._field_dependent(c) for c in cs):
+            raise SDEError(f'equation({field!r}): the order-{N} lhs {lhs!r} must be a polynomial in '
+                           f'the time derivative acting on {field} alone, with coefficients free of '
+                           f'the fields (e.g. (m*Dt^2 + gamma*Dt + k)*{field}); move other terms to '
+                           f'the rhs.')
+        if cs[-1].is_zero():
+            raise SDEError(f'equation({field!r}): cannot read the leading coefficient of {lhs!r}.')
+        return cs
+
+    def _embed(self, field, lhs, rhs, cs, velocity):
+        """Declare the first-order system of a higher-order equation (see
+        :meth:`equation`)."""
+        N = len(cs) - 1
+        if velocity is None:
+            vel = [field + 'd' * j + 'ot' for j in range(1, N)]
+        else:
+            vel = [as_name(v) for v in ([velocity] if isinstance(velocity, (str, Symbol))
+                                        else list(velocity))]
+            if len(vel) != N - 1:
+                raise SDEError(f'equation({field!r}): an order-{N} lhs needs {N - 1} velocity '
+                               f'name(s); got velocity={velocity!r}.')
+        for v in vel:
+            if v in self._fields or self._name_owner(v):
+                raise SDEError(f'equation({field!r}): the velocity name {v!r} is taken '
+                               f'({self._name_owner(v) or "a field"}); give velocity=<free name>.')
+        names = [field] + vel
+        info = self._fields[field]
+        for k, v in enumerate(vel):
+            self.field(v, population=info['population'],
+                       description=f'd{"^" + str(k + 1) if k else ""}{field}/dt'
+                                   f'{"^" + str(k + 1) if k else ""} (embedded velocity)')
+            self._fields[v]['embedded_of'] = field
+        t0 = (self._time_names() or ['Dt'])[0]
+        self._embedded[field] = {'lhs_raw': lhs, 'rhs_raw': rhs, 'fields': vel, 'top': vel[-1],
+                                 'order': N}
+        for j in range(N - 1):
+            self.equation(names[j], f'{t0}*{names[j]}', names[j + 1])
+        top, cN, cdamp = vel[-1], cs[N], cs[N - 1]
+        lead = f'{t0}*{top}' if (cN - 1).is_zero() else f'{_wrap(expr_to_text(cN))}*{t0}*{top}'
+        if not cdamp.is_zero():
+            lead += ' + ' + (top if (cdamp - 1).is_zero() else f'{_wrap(expr_to_text(cdamp))}*{top}')
+        rest = sum((cs[n] * SR.var(names[n]) for n in range(N - 1)), SR(0))
+        if rest.is_zero():
+            rhs_top = rhs
+        elif str(rhs).strip() in ('', '0'):
+            rhs_top = expr_to_text(-rest)
+        else:
+            rt = expr_to_text(rest)
+            from sage.symbolic.operators import add_vararg
+            import operator as _op
+            summed = rest.operator() in (_op.add, add_vararg) or rt.startswith('-')
+            rhs_top = f'{rhs} - ({rt})' if summed else f'{rhs} - {rt}'
+        self.equation(top, lead, rhs_top)
+        # the noise coupled into the field forces its top derivative
+        for s in self._sources.values():
+            if field in s['couples']:
+                s['couples'] = {top if f == field else f: c for f, c in s['couples'].items()}
         return self
 
     def _delayed_fields(self, text: str, where: str) -> str:
@@ -911,8 +1041,11 @@ class SDE:
         is the coupling.  A subscript names a process, and one name in several
         equations is one source.  A circle before the differential (``∘ dW``,
         ASCII ``o dW``) marks a Stratonovich term (Gaussian) or a Marcus term
-        (jump); a plain term is Ito.  Each line becomes the existing
-        declarations (:meth:`field` if new, :meth:`drift` or
+        (jump); a plain term is Ito.  The operator form puts a linear operator
+        on the left and the right side per unit time, with noise terms
+        ``c dW/dt``: ``(tau*Dt + 1)*v = E + s dW/dt``,
+        ``(m*Dt^2 + gamma*Dt + k)*x = sqrt(2*gamma*T) dW/dt``.  Each line
+        becomes the existing declarations (:meth:`field` if new, :meth:`drift` or
         :meth:`equation`, :meth:`noise` with ``into=`` and
         ``interpretation=``), so the model is the one those calls build; see
         :mod:`api.sde_paper`."""
@@ -924,8 +1057,9 @@ class SDE:
         ``noises`` attribute holds the sources to pass as ``noises=``).
         ``SDE(name)`` with the same parameters, functions and kernels, then
         ``.sde(text, noises=text.noises)``, rebuilds the same model.  Refused
-        for equations whose left side is not ``a*Dt*x``, point processes and
-        exposed sources."""
+        for point processes and exposed sources, and for velocities named with
+        ``velocity=`` (a left side other than ``a*Dt*x`` is written in the
+        operator form)."""
         from api.sde_paper import paper_text
         text, noises = paper_text(self)
         out = _PaperText(text)
@@ -975,6 +1109,9 @@ class SDE:
         if name in self._sources:
             raise SDEError(f'noise({name!r}): a source with this name exists.')
         couples = {as_name(f): as_text(c) for f, c in dict(couples or {}).items()}
+        # (a field with a higher-order equation is forced through its top derivative)
+        couples = {self._embedded[f]['top'] if f in self._embedded else f: c
+                   for f, c in couples.items()}
         for f, c in couples.items():
             if isinstance(c, str):
                 self._syntax_check(c, f'noise({name!r}) coefficient for {f!r}')
@@ -1611,6 +1748,243 @@ class SDE:
             out.append((m.start(), m.end(), k))
             pos = k
 
+    # ── Conv of a nonlinear function of the fields: Markov embedding ──
+    def _embed_nonlinear_convs(self):
+        """``Conv(K, X)`` with ``X`` a NONLINEAR function of the fields
+        (``Conv(k, v^2/a)``, ``Conv(k, phi(v))``) is realized as auxiliary
+        linear fields (the Markov embedding): a chain of first-order stages
+        ``(b*Dt + a)*u = prev`` per linear factor ``a + b z`` of the kernel's
+        denominator (``z = i omega``), a companion block per irreducible factor
+        of higher degree, fed by ``X``; ``Conv(K, X)`` becomes the chain's
+        output.  The engine's kernel route cannot take such a term: it
+        convolves ONE copy of a fluctuation leg of ``X`` (``x (g * x)``) where
+        every leg of ``X`` sits at the same earlier time.  Idempotent: the
+        previous embedding is undone first (fields and texts restored), so
+        declarations made after a derivation are seen."""
+        prev = getattr(self, '_conv_embedding', None)
+        if prev:
+            for f in prev['fields']:
+                self._fields.pop(f, None)
+                self._eqs.pop(f, None)
+            for f, txt in prev['eq_rhs'].items():
+                if f in self._eqs:
+                    self._eqs[f]['rhs_raw'] = txt
+            for n, txt in prev['pp_rate'].items():
+                if n in self._sources:
+                    self._sources[n]['pp']['rate'] = txt
+        emb = {'fields': [], 'eq_rhs': {}, 'pp_rate': {}, 'cache': {}, 'records': []}
+        self._conv_embedding = emb
+        if (self._space is not None or not self._kernels
+                or any(op.spatial for op in self._operators.values())):
+            return
+        for f in [f for f in self._eqs if f not in emb['fields']]:
+            eq = self._eqs[f]
+            new = self._embed_text(eq['rhs_raw'], self._pop_of_field(f), f'equation({f!r})')
+            if new != eq['rhs_raw']:
+                emb['eq_rhs'][f] = eq['rhs_raw']
+                eq['rhs_raw'] = new
+        for name, src in list(self._sources.items()):
+            if not src.get('pp'):
+                continue
+            where = f'point_process({name!r})'
+            rate = self._compose_kernels(src['pp']['rate'], where)
+            new = self._embed_text(rate, self._pop_of_field(src['expose']), where)
+            if new != rate:
+                emb['pp_rate'][name] = src['pp']['rate']
+                src['pp']['rate'] = new
+        for r in emb['records']:
+            self.notes.append(
+                f"Conv({r['kernel']}, {r['arg']}): a kernel of a nonlinear function of the "
+                f"fields, embedded as the auxiliary linear field(s) {', '.join(r['fields'])} "
+                f"(Markov embedding of the kernel image {r['image']}).")
+
+    def _embed_text(self, text, pop, where):
+        """``text`` with every ``Conv(K, X)`` of a nonlinear ``X`` replaced by
+        the output of its embedding (``_embed_nonlinear_convs``)."""
+        out, pos = '', 0
+        for a, b, c in self._conv_spans(text):
+            args = _split_top_level(text[b:c - 1])
+            if len(args) != 2:
+                continue
+            kref, X = args[0].strip(), args[1].strip()
+            m = re.fullmatch(r'([A-Za-z_]\w*)\s*(?:\[([^\]]*)\])?', kref)
+            if not m or m.group(1) not in self._kernels or m.group(1) in self._jitter:
+                # (a Gaussian jitter is never embedded: _check_jitter decides it)
+                continue
+            X = self._embed_text(X, pop, where)
+            if self._affine_conv_arg(X, where):
+                if X != args[1].strip():
+                    out += text[pos:a] + f'Conv({kref}, {X})'
+                    pos = c
+                continue
+            idx = [q.strip() for q in m.group(2).split(',')] if m.group(2) else []
+            # the units X reads (a declared function's own index, phi[i](...), is
+            # not one: the function is the same for every unit)
+            reads = re.sub(r'\b[A-Za-z_]\w*\s*\[[^\]]*\]\s*\(', '(', self._index(X))
+            letters = set(idx) | {q.strip() for grp in re.findall(r'\[([^\]]*)\]', reads)
+                                  for q in grp.split(',')}
+            sub_pop, rename = pop, False
+            if letters <= {'i'}:
+                pass
+            elif letters == {'j'}:
+                mj = re.search(r'\bfor\s+j\s+in\s+([A-Za-z_]\w*)', text[c:])
+                if not mj:
+                    raise SDEError(f'{where}: Conv({kref}, {X}) reads the index j outside a '
+                                   f'population sum.')
+                sub_pop, rename = mj.group(1), True
+            else:
+                raise SDEError(
+                    f'{where}: Conv({kref}, {X}) convolves a nonlinear function of the fields '
+                    f'with a kernel indexed by {sorted(letters)}: the kernel route cannot take a '
+                    f'nonlinear argument and the automatic Markov embedding takes kernels '
+                    f'indexed by one population only; write it as an auxiliary linear field '
+                    f'per pair (declare the filter states with .field / .equation).')
+            ij = (lambda t: re.sub(r'\[([^\]]*)\]', lambda q: '[' + re.sub(
+                r'\bj\b', 'i', q.group(1)) + ']', t)) if rename else (lambda t: t)
+            out_txt = self._embed_one(m.group(1), [('i' if q == 'j' else q) for q in idx]
+                                      if rename else idx, ij(self._index(X)), sub_pop,
+                                      f'{where}: Conv({kref}, {X})')
+            if rename:
+                out_txt = re.sub(r'\[([^\]]*)\]', lambda q: '[' + re.sub(
+                    r'\bi\b', 'j', q.group(1)) + ']', out_txt)
+            out += text[pos:a] + f'({out_txt})'
+            pos = c
+        return out + text[pos:]
+
+    def _affine_conv_arg(self, X, where) -> bool:
+        """True when ``X`` is affine in the fields (an inner ``Conv`` counts as
+        a field); True too when ``X`` cannot be read here (a population sum):
+        the engine refuses it by name if it is nonlinear."""
+        inner, pos, txt = 0, 0, ''
+        for a, _b, c in self._conv_spans(X):
+            txt += X[pos:a] + f' _convleaf{inner}_ '
+            inner += 1
+            pos = c
+        txt += X[pos:]
+        try:
+            E = parse_expr(self._index(txt), what=where)
+        except NoiseError:
+            return True
+        fields = set(self._fields)
+        xs = [v for v in E.variables()
+              if str(v).split('__')[0] in fields or str(v).startswith('_convleaf')]
+        if not xs:
+            return True
+        lam = SR.var('_conv_affine_scale')
+        Es = E.subs({x: lam * x for x in xs})
+        try:
+            return bool(SR(Es.diff(lam, 2)).simplify_full().is_zero())
+        except Exception:
+            return False
+
+    def _embed_one(self, kname, idx, X, pop, where):
+        """The auxiliary fields of ``Conv(kname[idx], X)`` (``X`` indexed,
+        letters ``i`` only) in population ``pop``; returns the text of the
+        output (``i`` letters).  Cached per (kernel, indices, X, population)."""
+        emb = self._conv_embedding
+        key = (kname, tuple(idx), X, pop)
+        if key in emb['cache']:
+            return emb['cache'][key]
+        k = self._kernels[kname]
+        if k.get('delay'):
+            raise SDEError(f'{where}: a delayed kernel of a nonlinear function of the fields '
+                           f'is not embedded automatically; declare the filter as auxiliary '
+                           f'fields and delay their output (Conv(Kernel.delay(d), u)).')
+        if k.get('freq_image') is None:
+            raise SDEError(f'{where}: a kernel of a nonlinear function of the fields is '
+                           f'embedded as auxiliary linear fields from its rational frequency '
+                           f'image; kernel {kname!r} has only a time_expr (give freq_image= or '
+                           f'kernel=).')
+        own = ['i', 'j'][:len(k.get('indexed_by') or [])]
+        mp = dict(zip(own, idx))
+        img = re.sub(r'\[([^\]]*)\]', lambda q: '[' + re.sub(
+            r'\b([ij])\b', lambda r: '\0' + mp.get(r.group(1), r.group(1)), q.group(1))
+            .replace('\0', '') + ']', k['freq_image'])
+        omega, z = SR.var('omega'), SR.var('_conv_z')
+        try:
+            E = parse_expr(img, what=f'kernel {kname}').subs({omega: -SR.I() * z})
+            E = SR(E).rational_simplify()
+            N, D = SR(E.numerator()).expand(), SR(E.denominator()).expand()
+            ok = (N.is_polynomial(z) and D.is_polynomial(z) and not N.has(omega)
+                  and not D.has(omega) and D.degree(z) >= 1 and N.degree(z) <= D.degree(z))
+        except Exception:
+            ok = False
+        if not ok:
+            raise SDEError(f'{where}: the kernel {kname!r} (image {k["freq_image"]}) is not a '
+                           f'proper rational function of omega; a kernel of a nonlinear '
+                           f'function of the fields is embedded as auxiliary linear fields only '
+                           f'then.')
+        base = f'{kname}_emb{len(emb["records"]) + 1}'
+        names = []
+
+        def new_field(lhs, rhs):
+            nm = f'{base}_{len(names) + 1}'
+            if nm in self._allowed_names():
+                raise SDEError(f'{where}: the auxiliary field name {nm!r} is taken.')
+            self._fields[nm] = {'population': pop if len(self._populations()) > 1 or
+                                self._pops else None,
+                                'description': f'Markov embedding of Conv({kname}, ...)',
+                                'domain': None, 'latex': '', 'exposed': None}
+            lhs = lhs.replace('@', nm)
+            self._eqs[nm] = {'lhs': self._translate(lhs, 'v1', where=f'{where} (embedding)'),
+                             'rhs': self._translate(rhs, 'v1', where=f'{where} (embedding)'),
+                             'lhs_raw': lhs, 'rhs_raw': rhs}
+            names.append(nm)
+            emb['fields'].append(nm)
+            return nm
+
+        def tx(e):
+            return expr_to_text(SR(e))
+        # a chain of stages, one per factor of D (with multiplicity): a linear
+        # factor a + b z is (b*Dt + a)*u = prev; an irreducible factor of degree
+        # d >= 2 a companion block whose states carry a restoring term on the lhs
+        # ((Dt + 1)*p = p' + p) so each mean-field equation defines its field.
+        # ``deriv`` holds Dt of every state as a linear form in the states and X,
+        # from which the numerator N(Dt) is read off the last output.
+        Xs = SR.var('_conv_X')
+        deriv, cur, gain = {}, Xs, SR(1)
+        for fac, mult in SR(D).factor_list():
+            fac = SR(fac)
+            deg = int(fac.degree(z)) if fac.has(z) else 0
+            if deg == 0:
+                gain = gain / fac ** mult
+                continue
+            cs = [SR(fac.coefficient(z, q)) for q in range(deg + 1)]
+            for _ in range(int(mult)):
+                prev = tx(cur).replace('_conv_X', f'({X})')
+                if deg == 1:
+                    nm = new_field(f'(({tx(cs[1])})*Dt + ({tx(cs[0])}))*@', prev)
+                    u = SR.var(nm)
+                    deriv[u] = (cur - cs[0] * u) / cs[1]
+                    cur = u
+                    continue
+                ps = [SR.var(f'{base}_{len(names) + q + 1}') for q in range(deg)]
+                for q in range(deg - 1):
+                    new_field('(Dt + 1)*@', f'{ps[q + 1]} + {ps[q]}')
+                    deriv[ps[q]] = ps[q + 1]
+                last = cur - sum(cs[q] * ps[q] for q in range(deg))
+                new_field(f'(({tx(cs[deg])})*Dt + 1)*@',
+                          f'{tx(last).replace("_conv_X", f"({X})")} + {ps[deg - 1]}')
+                deriv[ps[deg - 1]] = last / cs[deg]
+                cur = ps[0]
+        nd = int(N.degree(z))
+        out_e, term = SR(0), cur
+        for q in range(nd + 1):
+            out_e += SR(N.coefficient(z, q)) * term
+            if q < nd:
+                term = SR(term).expand()
+                if term.has(Xs):
+                    raise SDEError(f'{where}: the kernel {kname!r} is not proper.')
+                term = sum(term.coefficient(v_, 1) * d_ for v_, d_ in deriv.items())
+        out = tx((gain * out_e).expand()).replace('_conv_X', f'({X})')
+        # the output in the indexed spelling of the use site
+        for nm in names:
+            out = re.sub(rf'\b{re.escape(nm)}\b(?!\s*\[)', f'{nm}[i]', out)
+        emb['records'].append({'kernel': kname, 'arg': X, 'fields': names,
+                               'image': k['freq_image']})
+        emb['cache'][key] = out
+        return out
+
     def _strip_conv(self, text):
         out, pos = '', 0
         for a, _, c in self._conv_spans(text):
@@ -1706,8 +2080,11 @@ class SDE:
     # ── derivation ────────────────────────────────────────────────────
     def _derive(self) -> dict:
         """Derive the action terms and the mean-field equations."""
-        self.notes = []
+        self.notes = [f'equation({f!r}): order-{e["order"]} lhs {e["lhs_raw"]!r} embedded as a '
+                      f'first-order system with {", ".join(e["fields"])}; noise into {f!r} forces '
+                      f'{e["top"]!r}.' for f, e in self._embedded.items()]
         self._action_log, self._drift_log, self._mf_only_log = [], [], []
+        self._embed_nonlinear_convs()
         for f, info in self._fields.items():
             if info['exposed'] is None and f not in self._eqs:
                 raise SDEError(f'field {f!r} has no equation; call .equation() or .drift().')
@@ -2177,10 +2554,23 @@ class SDE:
                               f'{expr_to_text(c1 * x)} moved to the lhs.')
             return new_lhs, (new_rhs if new_rhs.strip() else '0')
         if str(x) not in set(map(str, R.variables())):
-            raise SDEError(
-                f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs does not '
-                f'depend on {f}, so the mean-field equation cannot define {f}*; '
-                f'{workaround}.')
+            if not self._field_dependent(R):
+                raise SDEError(
+                    f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs does not '
+                    f'depend on {f} or any other field, so the mean-field equation cannot '
+                    f'define {f}*; {workaround}.')
+            if not any(self._has_token(e['rhs'], f) or self._has_token(e['lhs'], f)
+                       for g, e in self._eqs.items() if g != f):
+                raise SDEError(
+                    f'equation({f!r}): lhs={lhs!r} vanishes at Dt=0 and rhs does not '
+                    f'depend on {f}, and no other equation holds {f}, so no mean-field '
+                    f'equation defines {f}* (a pure integrator needs another equation that '
+                    f'feeds {f} back); {workaround}.')
+            # a pure integrator (Dt*x = v): its mean-field equation 0 = rhs constrains the
+            # other fields, and the saddle of x comes from the system solved together
+            self.notes.append(f'mean-field equation of {f!r}: a pure integrator (its rhs holds no '
+                              f'{f}); 0 = rhs constrains the other fields and {f}* is fixed by '
+                              f'the system together.')
         # No syntactic field-independent linear term: add and subtract c*x.
         cx = expr_to_text(x)
         new_lhs = expr_to_text((L + x).expand())

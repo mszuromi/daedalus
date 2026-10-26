@@ -1660,7 +1660,10 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
         field=st.field, reference=st.reference, pipeline=pipeline, k=st.k,
         stats=st.stats_dict(per_ell), notes=st.notes)
     res.abs_scale = abs_scales if kernel is None else {}
-    res._ctx = {'propagator': st.sp, 'result': st.result, 'subs': st.subs}
+    # the propagator and the substitutions only: the pipeline result of the
+    # reference run (every diagram's callables) must not live as long as the
+    # symbolic result does
+    res._ctx = {'propagator': st.sp, 'subs': st.subs}
     res.saddle_moves = st.saddle_moves if st.saddle == 'numeric' else False
     res.saddle_symbols = list(st.sad) if st.saddle == 'symbol' else []
     res.numeric_params = list(st.numeric_params)

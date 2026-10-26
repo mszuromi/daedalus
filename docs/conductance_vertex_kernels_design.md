@@ -165,6 +165,19 @@ For the equivalent frequency-domain integrator
 the `ĝ(ω_leg)` factor at the vertex like the existing
 `NoiseSourceType` path does at lines 364-366.
 
+## Nonlinear arguments: Markov embedding
+
+A kernel of a product of fluctuation legs, ``Conv(g, dv^2)`` (from
+``Conv(g, v^2)`` or ``Conv(g, phi(v))`` expanded at the saddle), is NOT a
+conductance vertex: every leg of the product sits at the same earlier time
+``s``, bridged to ``t`` by ``g(t - s)`` once.  The slot machinery above puts the
+kernel on ONE copy of the leg (``x (g * x)``), which gave one-loop terms 10-25 %
+off with status 'ok'.  ``reduce_conv_in_action`` therefore refuses such a term
+for a kernel with memory (``NonlinearConvError``; a ``c delta`` kernel is a
+weight and stays), and the SDE front end embeds it: the kernel's rational image
+becomes a chain of linear auxiliary fields fed by the nonlinear argument
+(``SDE._embed_nonlinear_convs``), exactly the hand-written Markov embedding.
+
 ## Compatibility
 
 - Theories with no `Conv` in the action: untouched. The `attachments`

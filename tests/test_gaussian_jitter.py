@@ -354,3 +354,11 @@ def test_modular_kalman_falls_back_on_a_denominator_divisible_by_its_prime():
     B = matrix(QQ, [[1], [1]])
     assert R._controllable_part_modular(A, B) is None
     assert R._controllable_part(A, B, QQ)[2] is None            # exact ranks: controllable
+
+
+def test_a_jitter_of_a_nonlinear_argument_is_not_embedded():
+    """The Markov embedding of kernels of nonlinear arguments leaves a Gaussian
+    jitter to the exogeneity check (here: on a field, refused)."""
+    s = _base('jitter nonlinear').field('v').equation('v', lhs='Dt*v', rhs='-v + w*Conv(kX*g, v^2)')
+    with pytest.raises(SDEError, match='is not such a source'):
+        s.build()
