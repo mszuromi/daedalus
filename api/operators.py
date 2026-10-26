@@ -3,23 +3,23 @@
 An :class:`api.sde.SDE` model names the operators its equations use::
 
     m = SDE('Allen-Cahn', space=1)
-    m.operator('dt', TimeDerivative())
     m.operator('lap', Laplacian())
-    m.equation('u', lhs='dt(u)', rhs='D*lap(u) + u - u^3')
+    m.equation('u', lhs='Dt(u)', rhs='D*lap(u) + u - u^3')
 
 Each name may be written in two equivalent styles:
 
 * product style, the operator as a factor in front of what it acts on:
-  ``(tau*dt + 1)*x``, ``D*lap*u`` (the repository's long-standing ``Dt*x``);
-* call style, the operator applied to its argument: ``dt(x)``, ``lap(u)``,
+  ``(tau*Dt + 1)*x``, ``D*lap*u`` (the repository's long-standing ``Dt*x``);
+* call style, the operator applied to its argument: ``Dt(x)``, ``lap(u)``,
   ``lap(u^2)``.
 
 ``Dt`` is declared by default (a ``TimeDerivative``), so every model written
 before declared operators existed is unchanged.  Declaring another name for the
-time derivative renames it (``Dt`` is then no longer accepted).  A name is a
-Python identifier (``dt``, ``lap``, ``Δ``; ``∂t`` and ``∇²`` are not
-identifiers) that none of the model's fields, parameters, functions, kernels
-or populations takes.
+time derivative renames it (``Dt`` is then no longer accepted); ``∂t`` in an
+equation is the time derivative too.  A name is a Python identifier (``D_t``,
+``lap``, ``Δ``; ``∇²`` is not an identifier) that none of the model's fields,
+parameters, functions, kernels or populations takes, and not an increment of
+the paper-style syntax (``dt``, ``dW``, ``dN``, ``dW_<name>``).
 
 An operator object says how each engine path writes it and which paths support
 it.  The front end translates the user's names into the engine's own symbols:
@@ -91,7 +91,7 @@ class Operator:
 
 class TimeDerivative(Operator):
     """The time derivative ``d/dt`` (default name ``Dt``).  It acts linearly
-    on fields: ``dt(x)``, ``(tau*dt + 1)*x``."""
+    on fields: ``Dt(x)``, ``(tau*Dt + 1)*x``."""
 
     kind = 'time_derivative'
     v1_symbol = 'Dt'

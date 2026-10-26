@@ -531,8 +531,8 @@ def covariance_matrix(model, fields=None, max_ell=0, *, parameters=None,
     model : dict, SDE or builder
         A temporal model (spatial models are refused).
     fields : list or None
-        The legs: field names (population 1) or ``(field, population)``
-        pairs, e.g. ``[('x', 1), ('y', 1)]``.  ``None``: every physical
+        The legs: field names (``'x'``, for a field with one unit) or
+        ``(field, unit)`` pairs, e.g. ``['x', 'y']`` or ``[('v', 1), ('v', 2)]``.  ``None``: every physical
         field leg (:func:`default_fields`).
     max_ell : int
         Maximum loop order.
@@ -603,7 +603,9 @@ def covariance_matrix(model, fields=None, max_ell=0, *, parameters=None,
         raise ValueError(f"pairs must be 'upper' or 'all'; got {pairs!r}")
     if parameters is None:
         parameters = fundamental
-    legs = _legs(default_fields(model) if fields is None else fields)
+    from api.access import resolve_external_fields
+    legs = _legs(default_fields(model) if fields is None
+                 else resolve_external_fields(model, list(fields)))
     grid = resolve_grid(tau_grid, 'tau_grid')
     if grid is None:
         if not (tau_step > 0 and tau_max >= 0 and np.isfinite(tau_step)

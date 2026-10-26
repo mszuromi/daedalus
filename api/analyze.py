@@ -1006,14 +1006,16 @@ def _g0_declarations(ctx):
         return
 
     if ext is not None:
-        from api.access import normalize_external_fields
+        from api.access import normalize_external_fields, resolve_external_fields
         from engine.diagrams.type_assignment import build_field_index_map
         try:
             ext_int = normalize_external_fields(
-                list(ext), naming_convention=model.get('naming_convention'))
+                resolve_external_fields(model, list(ext)),
+                naming_convention=model.get('naming_convention'))
         except Exception as exc:
             ctx.add('G0_EXTERNAL_FIELD', str(exc),
-                    "give (field, population) pairs, e.g. [('x', 1), ('x', 1)]")
+                    "give field names or (field, unit) pairs, e.g. ['x', 'x'] or "
+                    "[('v', 1), ('v', 2)]")
             return
         _, phys_idx = build_field_index_map(ctx.ring_names, n_tilde)
         # spatial models: the second entry labels the leg (a slot), not a
@@ -1026,8 +1028,9 @@ def _g0_declarations(ctx):
             ctx.add('G0_EXTERNAL_FIELD',
                     f'external field {f} not in phys_idx '
                     f'{sorted(phys_idx.keys())}',
-                    'use a physical field of the model (fluctuation name '
-                    'or declared natural name) and a 1-based population')
+                    'use a physical field of the model (its plain name x, or the '
+                    'fluctuation name dx) and a 1-based unit: e.g. [\'x\', \'x\'] or '
+                    '[(\'v\', 1), (\'v\', 2)]')
 
 
 # ── G1: structure ─────────────────────────────────────────────────────

@@ -63,40 +63,40 @@ def _ou(lhs=None, drift=None, rename=None, explicit_dt=False):
 
 @pytest.mark.parametrize('variant', [
     dict(drift='-mu*x - eps*x^3', explicit_dt=True),                    # Dt redeclared explicitly
-    dict(drift='-mu*x - eps*x^3', rename='dt'),                         # Dt renamed: drift() uses dt
+    dict(drift='-mu*x - eps*x^3', rename='D_t'),                         # Dt renamed: drift() uses D_t
     dict(drift='-mu*x - eps*x^3', rename='Δ'),                          # a Unicode identifier
 ])
 def test_renamed_time_derivative_gives_the_same_bytes_drift_form(variant):
     assert _json(digest(_ou(**variant))) == GOLDEN['ou_quartic_drift']
 
 
-@pytest.mark.parametrize('lhs,rename', [('(dt+mu)*x[i]', 'dt'), ('(d_t+mu)*x[i]', 'd_t'),
+@pytest.mark.parametrize('lhs,rename', [('(D_t+mu)*x[i]', 'D_t'), ('(d_t+mu)*x[i]', 'd_t'),
                                         ('(Dt+mu)*x[i]', None)])
 def test_renamed_time_derivative_gives_the_same_bytes_equation_form(lhs, rename):
     assert _json(digest(_ou(lhs=lhs, rename=rename))) == GOLDEN['ou_quartic_equation']
 
 
 def test_call_style_gives_the_same_bytes_as_product_style():
-    """``dt(x)`` is ``Dt*x``: the call-style equation equals drift() (lhs 'Dt*x') byte for byte."""
-    call = (SDE('OU Quartic (white noise)').operator('dt', TimeDerivative())
+    """``D_t(x)`` is ``Dt*x``: the call-style equation equals drift() (lhs 'Dt*x') byte for byte."""
+    call = (SDE('OU Quartic (white noise)').operator('D_t', TimeDerivative())
             .population('pop', size=1).field('x', population='pop', description='variable'))
     for p, d in (('mu', 1.0), ('eps', 0.02), ('D', 1.0)):
         call.parameter(p, default=d, domain='positive')
-    call.equation('x', lhs='dt(x)', rhs='-mu*x - eps*x^3').noise('xi', Gaussian(var='2*D'), couples={'x': 1})
+    call.equation('x', lhs='D_t(x)', rhs='-mu*x - eps*x^3').noise('xi', Gaussian(var='2*D'), couples={'x': 1})
     assert _json(digest(call)) == GOLDEN['ou_quartic_drift']
 
 
 def test_call_and_product_style_are_the_same_model():
-    """``tau*dt(v) + v`` and ``(tau*dt + 1)*v``: the same action and equations as expressions, the same model."""
+    """``tau*D_t(v) + v`` and ``(tau*D_t + 1)*v``: the same action and equations as expressions, the same model."""
     def hawkes(lhs):
-        return (SDE('exp Hawkes 1-pop (SDE)').operator('dt', TimeDerivative())
+        return (SDE('exp Hawkes 1-pop (SDE)').operator('D_t', TimeDerivative())
                 .parameter('Em', default=-1.5).parameter('tau', default=2.0, domain='positive')
                 .parameter('taug', default=1.0, domain='positive').parameter('a', default=1.0, domain='positive')
                 .parameter('w', default=0.4)
                 .define_kernel('g', time_expr='exp(-t/taug)/taug*heaviside(t)')
                 .noise('spikes', Poisson(rate='a*exp(v)'), expose='n')
                 .field('v').equation('v', lhs=lhs, rhs='Em + w*g*n').stability_analysis(True))
-    prod, call = hawkes('(tau*dt + 1)*v'), hawkes('tau*dt(v) + v')
+    prod, call = hawkes('(tau*D_t + 1)*v'), hawkes('tau*D_t(v) + v')
     assert _json(digest(prod)) == GOLDEN['exp_hawkes']
     assert _same_text(prod.action_text(), call.action_text())
     for a, b in zip(prod.equations(), call.equations()):
@@ -116,21 +116,21 @@ def test_into_is_couples():
 
 
 def test_renamed_dt_is_no_longer_accepted():
-    s = SDE('m').operator('dt', TimeDerivative()).parameter('mu').field('x')
-    with pytest.raises(SDEError, match="Dt is not declared in this model; its time derivative is named dt"):
+    s = SDE('m').operator('D_t', TimeDerivative()).parameter('mu').field('x')
+    with pytest.raises(SDEError, match="Dt is not declared in this model; its time derivative is named D_t"):
         s.equation('x', lhs='Dt*x', rhs='-mu*x')
-    with pytest.raises(SDEError, match='must contain the time derivative dt'):
+    with pytest.raises(SDEError, match='must contain the time derivative D_t'):
         s.equation('x', lhs='x', rhs='-mu*x')
-    with pytest.raises(SDEError, match='dt found in rhs'):
-        s.equation('x', lhs='dt(x)', rhs='-mu*dt(x)')
+    with pytest.raises(SDEError, match='D_t found in rhs'):
+        s.equation('x', lhs='D_t(x)', rhs='-mu*D_t(x)')
 
 
 def test_time_derivative_of_an_expression_is_refused():
-    s = SDE('m').operator('dt', TimeDerivative()).parameter('mu').field('x')
-    with pytest.raises(SDEError, match=r'dt\(x\^2\) acts on a nonlinear expression'):
-        s.equation('x', lhs='dt(x^2)', rhs='-mu*x')
+    s = SDE('m').operator('D_t', TimeDerivative()).parameter('mu').field('x')
+    with pytest.raises(SDEError, match=r'D_t\(x\^2\) acts on a nonlinear expression'):
+        s.equation('x', lhs='D_t(x^2)', rhs='-mu*x')
     with pytest.raises(SDEError, match='takes one argument'):
-        s.equation('x', lhs='dt(x, x)', rhs='-mu*x')
+        s.equation('x', lhs='D_t(x, x)', rhs='-mu*x')
 
 
 # ── collisions and reserved names ────────────────────────────────────────────────────────────
@@ -181,7 +181,7 @@ def test_field_whose_derived_name_is_an_operator_is_refused():
     ('sum', Laplacian(), 'reserved'),
     ('gamma', Laplacian(), 'reserved'),
     ('for', Laplacian(), 'Python identifier'),
-    ('∂t', TimeDerivative(), 'Python identifier'),
+    ('∂t', Laplacian(), 'Python identifier'),            # (∂t names the time derivative only)
     ('a__b', Laplacian(), 'double underscore'),
 ])
 def test_reserved_operator_names_are_refused(name, op, match):
@@ -225,7 +225,7 @@ def _white(var):
 def sde_allen_cahn(boundary=None, style='operator'):
     name = ('1D stochastic Allen-Cahn (subcritical, periodic domain)' if boundary
             else '1D stochastic Allen-Cahn (subcritical, infinite domain)')
-    s = (SDE(name, space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+    s = (SDE(name, space=1).operator('D_t', TimeDerivative()).operator('lap', Laplacian())
          .field('phi', description='order parameter')
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
@@ -234,9 +234,9 @@ def sde_allen_cahn(boundary=None, style='operator'):
     if boundary:
         s.parameter('L', default=20.0, domain='positive').boundary('periodic', length='L')
     if style == 'operator':
-        s.equation('phi', lhs='(dt + mu - D*lap)*phi', rhs='-lam*phi^3')
+        s.equation('phi', lhs='(D_t + mu - D*lap)*phi', rhs='-lam*phi^3')
     else:                                               # the call style of a drift
-        s.equation('phi', lhs='dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
+        s.equation('phi', lhs='D_t(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
     return s.noise('eta', _white('2*T'), into={'phi': 1}).stability_analysis(True)
 
 
@@ -373,7 +373,7 @@ def test_bridge_equations_and_ir_flag():
 
 
 def test_call_style_drift_is_the_tracked_field_theory():
-    """``dt(phi) = D*lap(phi) - mu*phi - lam*phi^3`` (the drift written in call style) expands to the same field
+    """``D_t(phi) = D*lap(phi) - mu*phi - lam*phi^3`` (the drift written in call style) expands to the same field
     theory as the tracked operator-form model; its mean-field equation is the residual of the same system."""
     got, ref = sde_allen_cahn(style='call').build(), _tracked('allen_cahn_1d_subcritical_infinite').build()
     assert _expanded(got) == _expanded(ref)
@@ -602,8 +602,8 @@ def test_conserved_noise_and_nonlinear_product_style_are_refused():
 
 @pytest.mark.parametrize('make', [
     lambda: _spde().equation('u', lhs='Dt*u', rhs='D*lap(u) + lap(mu) - mu*u'),
-    lambda: SDE('m').operator('dt', TimeDerivative()).parameter('mu').field('x')
-    .equation('x', lhs='dt(x) + dt(mu)', rhs='-mu*x'),
+    lambda: SDE('m').operator('D_t', TimeDerivative()).parameter('mu').field('x')
+    .equation('x', lhs='D_t(x) + D_t(mu)', rhs='-mu*x'),
 ])
 def test_operator_acting_on_no_field_is_refused(make):
     with pytest.raises(SDEError, match=r'acts on no field'):
@@ -613,21 +613,21 @@ def test_operator_acting_on_no_field_is_refused(make):
 @pytest.mark.parametrize('make', [
     lambda: _spde().define_function('g', ['v'], 'lap(v)').equation('u', lhs='Dt*u', rhs='D*lap(u) + g(u) - mu*u')
     .noise('eta', _white(1), into={'u': 1}),
-    lambda: SDE('m').operator('dt', TimeDerivative()).parameter('mu', default=1.0)
-    .define_function('g', ['v'], 'dt*v').field('x').equation('x', lhs='dt(x)', rhs='g(x) - mu*x')
+    lambda: SDE('m').operator('D_t', TimeDerivative()).parameter('mu', default=1.0)
+    .define_function('g', ['v'], 'D_t*v').field('x').equation('x', lhs='D_t(x)', rhs='g(x) - mu*x')
     .noise('xi', Gaussian(var=1), into={'x': 1}),
 ])
 def test_operator_inside_a_function_body_is_refused(make):
     """A function body is passed to the engine as written: an operator name there would be an undeclared symbol
-    (``dt*v`` was silently accepted), so it is refused."""
-    with pytest.raises(SDEError, match=r"its expression uses the operator '(lap|dt)'"):
+    (``D_t*v`` was silently accepted), so it is refused."""
+    with pytest.raises(SDEError, match=r"its expression uses the operator '(lap|D_t)'"):
         make().build()
 
 
 def test_field_whose_response_field_is_the_engine_dt_is_refused_after_a_rename():
     """Field ``D`` has the response field ``Dt``: refused whether the time derivative is renamed before or after."""
     with pytest.raises(SDEError, match="derived name 'Dt' is the engine's operator symbol"):
-        SDE('m').operator('dt', TimeDerivative()).field('D')
+        SDE('m').operator('D_t', TimeDerivative()).field('D')
     with pytest.raises(SDEError, match="derived name 'Dt' is a declared operator"):
         SDE('m').field('D')
 
@@ -638,9 +638,9 @@ def test_field_whose_response_field_is_the_engine_dt_is_refused_after_a_rename()
     ('Dt*v', 'Dt is not declared in this model'),
 ])
 def test_engine_operator_spellings_inside_a_function_body_are_refused(body, match):
-    s = (SDE('m', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+    s = (SDE('m', space=1).operator('D_t', TimeDerivative()).operator('lap', Laplacian())
          .parameter('mu', default=1.0).parameter('D', default=1.0).define_function('f', ['v'], body)
-         .field('u').equation('u', lhs='dt(u)', rhs='D*lap(u) - mu*u + f(u)')
+         .field('u').equation('u', lhs='D_t(u)', rhs='D*lap(u) - mu*u + f(u)')
          .noise('eta', _white(1), into={'u': 1}))
     with pytest.raises(SDEError, match=match):
         s.build()
@@ -653,9 +653,9 @@ def test_engine_operator_spellings_inside_a_function_body_are_refused(body, matc
     (dict(into={'u': 1}, var='T*lap(u)'), "var= uses the operator 'lap'"),
 ])
 def test_operators_in_noise_expressions_are_refused(kw, match):
-    s = (SDE('m', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+    s = (SDE('m', space=1).operator('D_t', TimeDerivative()).operator('lap', Laplacian())
          .parameter('mu', default=1.0).parameter('D', default=1.0).parameter('T', default=1.0)
-         .field('u').equation('u', lhs='dt(u)', rhs='D*lap(u) - mu*u')
+         .field('u').equation('u', lhs='D_t(u)', rhs='D*lap(u) - mu*u')
          .noise('eta', _white(kw.pop('var', '2*T')), **kw))
     with pytest.raises(SDEError, match=match):
         s.build()

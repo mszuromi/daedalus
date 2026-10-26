@@ -1,7 +1,7 @@
 #### SDE front end: second- and higher-order equations, pure integrators, operator-form paper lines
 
 - **Higher-order equations.** An lhs that is a polynomial of order `N > 1` in the time derivative acting on the field
-  (`equation('x', '(m*Dt^2 + gamma*Dt + k)*x', rhs)`, or `m*dt^2*x + ...` with a declared `dt`) is embedded as a
+  (`equation('x', '(m*Dt^2 + gamma*Dt + k)*x', rhs)`, or `m*D_t^2*x + ...` with a declared `D_t`) is embedded as a
   first-order system: the velocities `xdot` (`xddot`, ...; or `velocity='v'` / a list) are declared as fields,
   `Dt*x = xdot`, and the top equation is `m*Dt*xdot + gamma*xdot = rhs - k*x`. Noise coupled into `x` (declared
   before or after the equation) forces the top equation. The model is the one the hand-written first-order system

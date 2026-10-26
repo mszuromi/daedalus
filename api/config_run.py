@@ -15,7 +15,7 @@ Schema (all sections but ``model`` are optional; unknown keys are errors)::
     question:
       k: 2
       max_ell: 1
-      external_fields: [[x, 1], [x, 1]]          # [field, population index]
+      external_fields: [x, x]                    # field names, or [field, unit] pairs
       tau_grid: {start: -4, stop: 4, num: 17}    # or an explicit list
       points: [...]                              # spatial k >= 3 only
       taylor_order: 4
@@ -479,13 +479,19 @@ class _Parser:
     def external_fields(self, node):
         if (not isinstance(node, self.yaml.SequenceNode) or not node.value):
             self.fail(node, 'question.external_fields must be a non-empty '
-                            'list of [field, index] pairs, e.g. [[x, 1], [x, 1]]')
+                            'list of field names or [field, index] pairs, e.g. [x, x] '
+                            'or [[v, 1], [v, 2]]')
         out = []
         for entry in node.value:
+            if isinstance(entry, self.yaml.ScalarNode):
+                # a bare name: the one unit of a field with one unit
+                out.append((self.string(entry, 'external field name'), None,
+                            entry.start_mark.line + 1))
+                continue
             if (not isinstance(entry, self.yaml.SequenceNode)
                     or len(entry.value) != 2):
-                self.fail(entry, 'each external field must be a '
-                                 '[field, index] pair, e.g. [x, 1]')
+                self.fail(entry, 'each external field must be a field name or a '
+                                 '[field, index] pair, e.g. x or [v, 2]')
             name = self.string(entry.value[0], 'external field name')
             idx = self.integer(entry.value[1], 'external field index', 1)
             out.append((name, idx, entry.start_mark.line + 1))
@@ -905,6 +911,12 @@ def resolve(raw, model, mod):
                                f'{dd.field_names(model)}')
             npop = dd._field_pop_size(model, f.get('natural_name')
                                       or f.get('name'))
+            if idx is None:
+                if npop > 1 and not spatial:
+                    raise ConfigError(
+                        src, line, f'external field {name!r} has {npop} units (a population); '
+                                   f'give the unit, [{name}, i] with 1 <= i <= {npop}')
+                idx = 1
             # spatial callers label the legs (phi, 1), (phi, 2): the second
             # entry is a slot, not a population (as in api.analyze G0)
             if idx > npop and not spatial:

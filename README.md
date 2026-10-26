@@ -116,6 +116,13 @@ res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49)), mod)
 
 For lower-level access the API layer is importable directly, e.g. `from api import compute_cumulants`.
 
+External fields (`external_fields`, the `k` legs) are written with the plain field names: `['x', 'x']` for a field
+with one unit, `[('v', 1), ('v', 2)]` for two units of a population (`'dx'`, the fluctuation name, is an accepted
+alias; the results are identical). At `k = 1` the result is the loop shift of the mean, `<x> - x*`, which is 0 at
+tree level: the mean is `res['mf_values']['xstar']` plus the sum of the shifts, and `dd.Config(output='moment')`
+gives the loop-corrected mean directly (`res['moment']`). In `noise(..., into={'x': c})` the value `c` is the
+coupling coefficient of the noise in the equation of `x` (`dx = ... + c dW`), not a population index.
+
 Models can also be declared line by line, without writing the action (`api/sde.py`): each line
 contributes its own action term (`.drift` / `.equation`, `.noise`, `.point_process`). A spike-only
 exponential Hawkes network whose rates filter the spike trains themselves:
@@ -136,23 +143,24 @@ rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25)      # a simulator of th
 ```
 
 Equations name their operators (`api/operators.py`). The time derivative is `Dt` by default, so the models above
-need no declaration; `.operator('dt', TimeDerivative())` renames it. An operator is written in product style
-(`(tau*dt + 1)*v`, `D*lap*u`) or call style (`dt(v)`, `lap(u)`). An operator name may not collide with a field,
-parameter or function. A `Laplacian()` together with `SDE(name, space=d)` makes the model an SPDE in `d` dimensions,
+need no declaration (`∂t` in an equation is the same operator); `.operator('D_t', TimeDerivative())` renames it.
+An operator is written in product style (`(tau*Dt + 1)*v`, `D*lap*u`) or call style (`Dt(v)`, `lap(u)`). An operator
+name may not collide with a field, parameter or function, nor with an increment of the paper-style syntax below
+(`dt`, `dW`, `dN`). A `Laplacian()` together with `SDE(name, space=d)` makes the model an SPDE in `d` dimensions,
 with space-time white noise `Gaussian(var=..., space='white')`. It builds the same model as a hand-written
 `SpatialModelBuilder` action. One-loop stochastic Allen-Cahn, $\partial_t\phi = D\nabla^2\phi - \mu\phi - \lambda\phi^3 + \eta$:
 
 ```python
 from api.sde import SDE
-from api.operators import TimeDerivative, Laplacian
+from api.operators import Laplacian
 from api.noise import Gaussian
 from api import compute_cumulants
 m = (SDE('Allen-Cahn', space=1)                      # space=d: an SPDE in d dimensions
-     .operator('dt', TimeDerivative()).operator('lap', Laplacian())
+     .operator('lap', Laplacian())
      .parameter('mu', default=1.0, domain='positive').parameter('D', default=1.0, domain='positive')
      .parameter('lam', default=0.1, domain='positive').parameter('T', default=1.0, domain='positive')
      .field('phi')
-     .equation('phi', lhs='dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
+     .equation('phi', lhs='Dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
      .noise('eta', Gaussian(var='2*T', space='white'), into={'phi': 1}))
 res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('phi', 1), ('phi', 2)],
                         tau_max=1.0, tau_step=0.5, spatial_grid=(0.0, 4.0, 9))
@@ -232,7 +240,7 @@ import numpy as np
 import daedalus as dd
 from api import compute_cumulants
 model = dd.load_model('ou_quartic')[0]
-res = compute_cumulants(model, k=2, max_ell=1, external_fields=[('dx', 1)] * 2,
+res = compute_cumulants(model, k=2, max_ell=1, external_fields=['x', 'x'],
                         tau_grid=np.array([0.0]),             # the equal-time point is enough
                         spectra={'omega': (0.0, 10.0, 201), 'T': [1.0, 10.0]})
 sp = res['spectra']       # also dd.Config(spectra=...), dd.spectra(res, omega, T), YAML question.spectra
@@ -373,7 +381,7 @@ parameters:                        # numbers, or lists of numbers for indexed pa
 question:
   k: 2
   max_ell: 1
-  external_fields: [[x, 1], [x, 1]]          # [field, population index], k of them
+  external_fields: [x, x]                    # k field names, or [field, unit] pairs
   tau_grid: {start: -6, stop: 6, num: 25}    # or an explicit increasing list
   taylor_order: 4                            # optional; default is chosen from k and max_ell
 policy:
