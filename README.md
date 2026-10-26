@@ -177,7 +177,7 @@ from api.sde import SDE
 from api.noise import Gaussian
 m = (SDE('OU quartic').parameter('mu', default=1.0, domain='positive')
      .parameter('eps', default=0.02, domain='positive').parameter('D', default=1.0, domain='positive')
-     .field('x').drift('x', '-mu*x - eps*x^3').noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+     .field('x').drift('x', '-mu*x - eps*x^3').noise('xi', Gaussian(var='2*D'), into={'x': 1}))
 report = m.check()                  # prints the report below; report['vertices']['rows'] is the vertex table
 tex = m.latex()                     # tex['sde'] is dx = (-eps x^3 - mu x) dt + sqrt(2 D) dW_xi, as LaTeX
 ```
@@ -201,7 +201,11 @@ Equations can also be written as in a paper, one per line (`m.sde(...)`, `api/sd
 in `noises=`; the factor in front is the coupling, and a subscript names a process shared by several equations. A
 circle before the differential (`∘ dW`, ASCII `o dW`) makes that term Stratonovich (Gaussian) or Marcus (jump); a plain
 term is Ito, so one model can mix them. Each line becomes the usual declarations (`.field`, `.drift` / `.equation`,
-`.noise(..., into=, interpretation=)`), so the model is byte-identical to the one those calls build:
+`.noise(..., into=, interpretation=)`), so the model is byte-identical to the one those calls build.
+Every declaration also returns its Sage symbol, so expressions may be Sage objects as well as strings
+(`x = m.field('x')`, `mu = m.parameter('mu', ...)`, then `m.drift(x, -mu*x)`); the chained style still works, and a
+noise source is exposed as a field with `as_field=` (`couples=` and `expose=` are the former names of `into=` and
+`as_field=`):
 
 ```python
 from api.sde import SDE

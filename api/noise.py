@@ -1515,5 +1515,5 @@ def levy_driven_ou(source, rate='mu', *, field='x', name='Levy-driven OU',
     s.parameter(rate, default=rate_default, domain='positive')
     s.field(field)
     s.drift(field, f'-{rate}*{field}')
-    s.noise('L', source, couples={field: 1})
+    s.noise('L', source, into={field: 1})
     return s

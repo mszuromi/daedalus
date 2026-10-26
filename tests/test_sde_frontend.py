@@ -506,7 +506,7 @@ def _base():
     (lambda: _base().equation('x', lhs='Dt*x', rhs='Dt*mu'), 'Dt found in rhs'),
     (lambda: _base().drift('x', '-mu*x + sin(t)'), 'explicit time'),
     (lambda: _base().drift('x', '-mu*x').noise('W', Dirac(1), couples={'x': 1}), 'not processes'),
-    (lambda: _base().drift('x', '-mu*x').noise('W', Gaussian(var=1)), 'couples='),
+    (lambda: _base().drift('x', '-mu*x').noise('W', Gaussian(var=1)), 'into='),
     (lambda: _base().parameter('theta'), 'reserved'),
     (lambda: SDE('two pops').population('A', size=1).population('B', size=1)
      .parameter('mu').field('x', population='A').field('y', population='B')

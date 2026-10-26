@@ -1026,7 +1026,7 @@ class MasterEquation:
                 s.drift(f, '0')
             for t, r in zip(self.transitions, rates):
                 s.noise(t.name, Poisson(rate=r, size='h'),
-                        couples={f: j for f, j in zip(self.fields, t.jump) if j})
+                        into={f: j for f, j in zip(self.fields, t.jump) if j})
         else:
             for i, f in enumerate(self.fields):
                 terms = [f'({t.jump[i]})*({r})' for t, r in zip(self.transitions, rates)
@@ -1034,7 +1034,7 @@ class MasterEquation:
                 s.drift(f, '0' if not terms else 'h*(' + ' + '.join(terms) + ')')
             for t, r in zip(self.transitions, rates):
                 s.noise(t.name, Gaussian(var=f'h^2*({r})'),
-                        couples={f: j for f, j in zip(self.fields, t.jump) if j})
+                        into={f: j for f, j in zip(self.fields, t.jump) if j})
         return s
 
     def compare_with_daedalus(self, model=None, *, ks=(1, 2), max_ell=1, parameters=None,

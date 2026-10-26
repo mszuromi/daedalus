@@ -402,7 +402,7 @@ def test_d_inline_sde_dry_run_and_other_noise_types(tmp_path, capsys):
     ('no noise', SDE_CFG.replace('  noise:\n    xi: {type: Gaussian, var: "2*D", couples: {x: 1}}\n', ''), 2,
      "'sde' needs 'noise'"),
     ('bad noise type', SDE_CFG.replace('type: Gaussian', 'type: Gausian'), 10, "'type' must be one of"),
-    ('no couples', SDE_CFG.replace(', couples: {x: 1}', ''), 10, "'couples' must be a mapping"),
+    ('no couples', SDE_CFG.replace(', couples: {x: 1}', ''), 10, "'into' must be a mapping"),
     ('undeclared field in drift', SDE_CFG.replace('drift: {x: "-mu*x - eps*x^3"}', 'drift: {x: "-mu*x - eps*y^3"}'), 8,
      'y'),
     ('drift for an undeclared field', SDE_CFG.replace('drift: {x: ', 'drift: {z: '), 8, "declare the field first"),

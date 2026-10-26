@@ -482,7 +482,7 @@ class Config:
     ``DEFAULT_FUNDAMENTAL`` default.
     """
     # ── what to compute ──
-    k: Optional[int] = None                 # correlator order; inferred from
+    k: Optional[int] = None                 # cumulant order; inferred from
                                             # external_fields if left None
     max_ell: Optional[int] = None           # loop order (0=tree, 1, 2, …)
     external_fields: Optional[list] = None  # e.g. [('x', 1), ('x', 1)]
@@ -834,7 +834,7 @@ def config_options(spatial=None):
 
     common_grid = [
         ('what to compute', [
-            ('k',               'correlator order: 1=mean ⟨φ⟩, 2=correlation, ≥3=cumulant'),
+            ('k',               'cumulant order: 1=mean ⟨φ⟩, 2=covariance, ≥3=higher cumulant'),
             ('max_ell',         'loop order: 0=tree, 1=+1-loop, 2=+2-loop, …'),
             ('external_fields', "the k legs, e.g. [('x',1),('x',1)]; sets k if k is None"),
             ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → model defaults  [alias: fundamental]"),

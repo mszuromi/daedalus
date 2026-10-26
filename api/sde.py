@@ -12,7 +12,7 @@ where ``lhs_x`` is the linear differential operator on ``x`` (contains
 ``Dt``: ``'Dt*x'``, ``'(tau*Dt + 1)*v'``), ``rhs_x`` is everything
 deterministic (fields, parameters, defined functions, kernels), and the
 noise sources ``eta_a`` (:mod:`api.noise`) couple in through
-``couples={field: coefficient}`` (or ``into=``, the same keyword).  The
+``into={field: coefficient}`` (``couples=`` is its former name).  The
 derived action is
 
     S = sum_x xt*(lhs_x - rhs_x) - sum_a K_a( sum_x c_xa*xt )
@@ -20,7 +20,7 @@ derived action is
 summed over each population's index (``sum(... for i in pop)``), and the
 mean-field equations are ``lhs_x|_{Dt=0} = rhs_x + sum_a c_xa*K_a'(0)``.
 
-A source may be *exposed* as a field (``expose='n'``): the field ``n``
+A source may be *exposed* as a field (``as_field='n'``): the field ``n``
 (e.g. a spike train) and its response ``nt`` are declared, the pairing
 ``nt*n - K(nt)`` enters the action, the equations use ``n`` like any
 field, and the mean-field system gains ``n = K'(0)``.
@@ -33,7 +33,7 @@ Example (OU quartic)::
          .parameter('D', default=1.0, domain='positive')
          .field('x')
          .drift('x', '-mu*x - eps*x^3')
-         .noise('xi', Gaussian(var='2*D'), couples={'x': 1})
+         .noise('xi', Gaussian(var='2*D'), into={'x': 1})
          .build())
 
 Expressions may use bare field names (``x``) or indexed ones
@@ -198,6 +198,7 @@ from __future__ import annotations
 
 import keyword
 import re
+import warnings
 from collections import OrderedDict
 from typing import Optional
 
@@ -207,6 +208,7 @@ from api.noise import (NoiseError, NoiseSource, THETA, parse_expr,
                        expr_to_text, expr_names, _MATH_FUNCS, _SAGE_PRINTED_CALLS,
                        expression_syntax_problem, format_caret_error, parse_failure_message)
 from api.operators import Laplacian, Operator, TimeDerivative
+from api.sde_symbols import Symbol, as_name, as_text
 
 __all__ = ['SDE', 'SDEError', 'SDEReport']
 
@@ -519,25 +521,31 @@ class SDE:
 
     # ── declarations (passed through to TemporalModelBuilder) ─────────
     def population(self, name: str, *, size: int = 1, description: str = ''):
+        """Declare a population (an index set of ``size`` units); returns its
+        :class:`~api.sde_symbols.Symbol`."""
         _check_declarable(name, 'population')
         self._check_not_operator(name, 'population')
         self._pops.append({'name': name, 'size': max(int(size), 1),
                            'description': description})
-        return self
+        return Symbol(self, name, 'population')
 
     def field(self, name: str, *, population: Optional[str] = None,
               description: str = '', domain: Optional[str] = None,
               latex: str = ''):
-        """Declare a physical field (its response field is ``<name>t``)."""
+        """Declare a physical field (its response field is ``<name>t``);
+        returns its :class:`~api.sde_symbols.Symbol`."""
         self._check_new_name(name)
         _check_declarable(name, 'field')
-        self._fields[name] = {'population': population, 'description': description,
+        self._fields[name] = {'population': as_name(population), 'description': description,
                               'domain': domain, 'latex': latex, 'exposed': None}
-        return self
+        return Symbol(self, name, 'field')
 
     def parameter(self, name: str, default=None, indexed=False,
                   domain: Optional[str] = None, description: str = '',
                   indexed_by: Optional[list] = None):
+        """Declare a parameter; returns its :class:`~api.sde_symbols.Symbol`."""
+        if indexed_by is not None:
+            indexed_by = [as_name(p) for p in indexed_by]
         _check_declarable(name, 'parameter')
         self._check_not_operator(name, 'parameter')
         if name in self._param_names:
@@ -546,11 +554,15 @@ class SDE:
                                            domain=domain, description=description,
                                            indexed_by=indexed_by)))
         self._param_names.append(name)
-        return self
+        return Symbol(self, name, 'parameter')
 
     def define_function(self, name: str, args: list, expression: str,
                         latex: Optional[str] = None, description: str = '',
                         population: Optional[str] = None):
+        """Declare the function ``name(args) = expression``; returns its
+        :class:`~api.sde_symbols.Symbol` (``phi(v)`` is its call)."""
+        args, expression, population = [as_name(a) for a in args], as_text(expression), \
+            as_name(population)
         _check_declarable(name, 'function')
         self._check_not_operator(name, 'function')
         self._syntax_check(expression, f'define_function({name!r}) expression')
@@ -562,7 +574,7 @@ class SDE:
                                 dict(latex=latex, description=description,
                                      population=population)))
         self._function_names.append(name)
-        return self
+        return Symbol(self, name, 'function')
 
     def define_kernel(self, name: str, *, time_expr: Optional[str] = None,
                       freq_image: Optional[str] = None, latex_name: str = '',
@@ -572,7 +584,9 @@ class SDE:
         :meth:`api.model.TemporalModelBuilder.define_kernel`): ``time_expr`` or
         ``freq_image``, optionally delayed by ``delay`` (``g(t - d)``; the hard
         delay ``delta(t - d)`` alone), or ``kernel=Kernel.delay('d') *
-        Kernel.exponential('tau')`` (:class:`api.delay.Kernel`)."""
+        Kernel.exponential('tau')`` (:class:`api.delay.Kernel`).  Returns its
+        :class:`~api.sde_symbols.Symbol`."""
+        time_expr, freq_image, delay = as_text(time_expr), as_text(freq_image), as_text(delay)
         _check_declarable(name, 'kernel')
         self._check_not_operator(name, 'kernel')
         for what, expr in (('time_expr', time_expr), ('freq_image', freq_image), ('delay', delay)):
@@ -596,7 +610,7 @@ class SDE:
                                    latex_name=latex_name, indexed=indexed,
                                    indexed_by=indexed_by,
                                    delay=None if delay is None else str(delay))
-        return self
+        return Symbol(self, name, 'kernel')
 
     def stability_analysis(self, enabled: bool):
         self._stability = bool(enabled)
@@ -638,7 +652,9 @@ class SDE:
         equations that use it.  Its name must be a Python identifier that no
         field, response field, parameter, function, kernel or population of the
         model takes; ``Dt`` is reserved for the time derivative, ``Laplacian``
-        and ``Lap`` for the Laplacian."""
+        and ``Lap`` for the Laplacian.  Returns its
+        :class:`~api.sde_symbols.Symbol` (``dt(x)`` and ``(tau*dt + 1)*x``
+        are then Sage expressions)."""
         if isinstance(op, type) and issubclass(op, Operator):
             op = op()
         if not isinstance(op, Operator):
@@ -655,7 +671,7 @@ class SDE:
         if name in self._operators:
             if name == 'Dt' and self._dt_implicit and isinstance(op, TimeDerivative):
                 self._dt_implicit = False          # the default Dt, now explicit
-                return self
+                return Symbol(self, name, 'operator')
             raise SDEError(f'operator({name!r}): an operator with this name is declared.')
         if name in _NO_OPERATOR:
             raise SDEError(f'operator({name!r}): {name!r} is reserved (built-in constant, '
@@ -668,7 +684,7 @@ class SDE:
             del self._operators['Dt']              # the time derivative is renamed
         self._dt_implicit = False if isinstance(op, TimeDerivative) else self._dt_implicit
         self._operators[name] = op
-        return self
+        return Symbol(self, name, 'operator')
 
     def boundary(self, mode: str, **params):
         """The spatial boundary condition of an SPDE (``'infinite'``, the
@@ -741,7 +757,10 @@ class SDE:
         differential operator (contains the time derivative, ``Dt`` unless it
         is renamed with :meth:`operator`), ``rhs`` no noise.  Declared operators
         are written in product style (``(tau*Dt + 1)*x``, ``D*lap*u``) or call
-        style (``Dt(x)``, ``lap(u)``)."""
+        style (``Dt(x)``, ``lap(u)``).  ``field`` may be its symbol, ``lhs`` and
+        ``rhs`` Sage expressions."""
+        field = as_name(field)
+        lhs, rhs = (v if isinstance(v, str) else str(as_text(v)) for v in (lhs, rhs))
         if field not in self._fields:
             raise SDEError(f'equation({field!r}): declare the field first with .field().')
         if field in self._eqs:
@@ -791,6 +810,8 @@ class SDE:
             raise SDEError(f'equation({where!r}): an indexed delayed field '
                            f'{text[ind.start():ind.end()]}...) is not supported; write '
                            f"Conv(K, {ind.group(1)}[...]) with define_kernel('K', delay='d').")
+        # Sage prints x(t - d) as x(-d + t) (the call of a field symbol)
+        text = re.sub(rf'\b({names})\s*\(\s*-\s*([^()]*?)\s*\+\s*t\s*\)', r'\1(t - \2)', text)
         pat = re.compile(rf'\b({names})\s*\(\s*t\s*-\s*')
         out, pos = '', 0
         while True:
@@ -827,6 +848,7 @@ class SDE:
     def drift(self, field: str, f: str):
         """Shorthand for ``equation(field, lhs='Dt*field', rhs=f)`` (with the
         declared name of the time derivative)."""
+        field = as_name(field)
         tnames = self._time_names()
         return self.equation(field, lhs=f'{tnames[0] if tnames else "Dt"}*{field}', rhs=f)
 
@@ -869,14 +891,28 @@ class SDE:
     def noise(self, name: str, source: NoiseSource, couples: Optional[dict] = None,
               *, expose: Optional[str] = None, domain: Optional[str] = None,
               population: Optional[str] = None, into: Optional[dict] = None,
-              interpretation: Optional[str] = None):
+              interpretation: Optional[str] = None, as_field: Optional[str] = None):
         """Declare a noise source ``name`` feeding ``into={field: c}``
-        (``dx_field += c * d eta``; ``couples=`` is the same keyword).
-        ``expose='n'`` exposes it as the field ``n`` (use ``n`` in the
-        equations' rhs).  An SPDE takes space-time white Gaussian noise,
-        ``Gaussian(var=..., space='white')``.  ``interpretation=`` (``'ito'``,
-        ``'stratonovich'`` or ``'marcus'``) sets the interpretation of this
-        source alone, in place of the model's :meth:`interpretation`."""
+        (``dx_field += c * d eta``; fields and coefficients may be symbols and
+        Sage expressions).  ``as_field='n'`` exposes it as the field ``n``
+        (use ``n`` in the equations' rhs) and returns the symbol of ``n``;
+        otherwise the builder is returned.  An SPDE takes space-time white
+        Gaussian noise, ``Gaussian(var=..., space='white')``.
+        ``interpretation=`` (``'ito'``, ``'stratonovich'`` or ``'marcus'``)
+        sets the interpretation of this source alone, in place of the model's
+        :meth:`interpretation`.  ``couples=`` and ``expose=`` are the former
+        names of ``into=`` and ``as_field=`` (deprecated, same meaning)."""
+        if couples is not None:
+            warnings.warn("noise(couples=...) is deprecated: use into=... (the same "
+                          "meaning).", DeprecationWarning, stacklevel=2)
+        if expose is not None:
+            warnings.warn("noise(expose=...) is deprecated: use as_field=... (the same "
+                          "meaning).", DeprecationWarning, stacklevel=2)
+            if as_field is not None:
+                raise SDEError(f'noise({name!r}): give as_field= or expose= (the same), not both.')
+        if as_field is not None:
+            expose = as_field
+        expose, population = as_name(expose), as_name(population)
         if interpretation is not None:
             interpretation = str(interpretation).lower()
             if interpretation not in ('ito', 'stratonovich', 'marcus'):
@@ -894,13 +930,13 @@ class SDE:
                 f'Per-step distributions are not processes.')
         if name in self._sources:
             raise SDEError(f'noise({name!r}): a source with this name exists.')
-        couples = dict(couples or {})
+        couples = {as_name(f): as_text(c) for f, c in dict(couples or {}).items()}
         for f, c in couples.items():
             if isinstance(c, str):
                 self._syntax_check(c, f'noise({name!r}) coefficient for {f!r}')
         if not couples and expose is None:
-            raise SDEError(f'noise({name!r}): give couples={{field: coefficient}} '
-                           f'or expose=<field name>.')
+            raise SDEError(f'noise({name!r}): give into={{field: coefficient}} '
+                           f'or as_field=<field name>.')
         if expose is not None:
             self._check_new_name(expose)
             _check_declarable(expose, 'exposed field')
@@ -911,7 +947,7 @@ class SDE:
                                'expose': expose, 'population': population}
         if interpretation is not None:
             self._sources[name]['interp'] = interpretation
-        return self
+        return self if expose is None else Symbol(self, expose, 'field')
 
     def point_process(self, name: str, rate: str, *, population: Optional[str] = None,
                       size='1', domain: Optional[str] = None, description: str = ''):
@@ -927,7 +963,9 @@ class SDE:
         product of declared kernels inside ``Conv`` (``Conv(h[i]*g[i,j],
         n[j])``) is their convolution.  ``size`` is the jump of ``name`` at a
         spike (a deterministic mark, default 1).  A spike train enters a rate
-        only through ``Conv`` (its instantaneous value is a delta)."""
+        only through ``Conv`` (its instantaneous value is a delta).  Returns
+        the symbol of the spike train ``name``."""
+        rate, size, population = as_text(rate), as_text(size), as_name(population)
         self._check_new_name(name)
         _check_declarable(name, 'point process')
         if name in self._sources:
@@ -951,7 +989,7 @@ class SDE:
         self._sources[name] = {'source': None, 'couples': {}, 'expose': name,
                                'population': population,
                                'pp': {'rate': rate, 'size': str(size).strip() or '1'}}
-        return self
+        return Symbol(self, name, 'field')
 
     def interpretation(self, mode: str):
         """``'ito'`` (default), ``'stratonovich'`` (Gaussian sources) or
@@ -1012,6 +1050,7 @@ class SDE:
     def extra_action(self, text: str):
         """Append ``text`` to the derived action (written with its own
         ``sum(... for i in pop)`` wrapper if it is indexed)."""
+        text = as_text(text)
         self._syntax_check(text, 'extra_action')
         self._extra.append(text)
         return self
@@ -1687,7 +1726,7 @@ class SDE:
             if s['expose']:
                 raise SDEError(
                     f"{where}: exposed source {name!r} is "
-                    f"not supported; couple it with couples= instead.")
+                    f"not supported; couple it with into= instead.")
         if self._marcus_sources():
             self._check_marcus()
 
@@ -1901,7 +1940,7 @@ class SDE:
             if s.get('pp'):
                 raise SDEError(f'{who}: point_process({name!r}) is a {temporal_only}.')
             if s['expose']:
-                raise SDEError(f'{who}: an exposed noise source ({name!r}, expose=) is a '
+                raise SDEError(f'{who}: an exposed noise source ({name!r}, as_field=) is a '
                                f'{temporal_only}.')
             src = s['source']
             if not src.is_gaussian:
@@ -2024,7 +2063,7 @@ class SDE:
                 raise SDEError(
                     f"interpretation('marcus'): exposed source {name!r} is not "
                     f"supported (it enters the equations as a field, so no jump "
-                    f"flow is defined); couple it with couples= instead.")
+                    f"flow is defined); couple it with into= instead.")
 
     def _check_marcus_joint(self):
         """A coupling that reads other units of the population (``x[j]``, a
@@ -2045,13 +2084,13 @@ class SDE:
                         f"one jump would move several units jointly; joint "
                         f"(multivariate) jumps need mixed moments and are not "
                         f"supported. One scalar source coupled to several fields of "
-                        f"the same unit (couples={{'x': ..., 'y': ...}}) is a jump "
+                        f"the same unit (into={{'x': ..., 'y': ...}}) is a jump "
                         f"along a vector field and is supported; independent sources "
                         f"per unit are too.")
 
     def _check_marcus_pp(self, n, pp):
         fix = (f"declare the jump as noise(..., Poisson(...) or CompoundPoisson(...), "
-               f"couples={{field: coefficient}}), whose state-dependent coupling "
+               f"into={{field: coefficient}}), whose state-dependent coupling "
                f"takes the Marcus flow, or use interpretation('ito')")
         bare_in = []
         for f, eq in self._eqs.items():
