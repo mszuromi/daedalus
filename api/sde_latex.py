@@ -362,7 +362,26 @@ def render_latex(sde) -> dict:
         zero_rhs = rhs_txt.strip() in ('', '0')
         diff_terms, dot_terms = [], []
         for name, s in sde._sources.items():
+            col = s.get('colored')
+            if col and f in col['into']:
+                # coloured noise enters as c*eta (eta the filter's output)
+                c = str(col['into'][f])
+                eta = ts.expr(idx(col['output']))
+                lead = '' if c.strip() == '1' else paren(c, ts.expr(idx(c))) + r'\,'
+                diff_terms.append(lead + paren(col['output'], eta) + r'\,\mathrm{d}t')
+                dot_terms.append(lead + paren(col['output'], eta))
             if f not in s['couples'] or s.get('pp'):
+                continue
+            if type(s['source']).__name__ == 'GaussianVector':
+                for k, ck in enumerate(s['couples'][f]):
+                    ck = str(ck)
+                    if ck.strip() == '0':
+                        continue
+                    lead = '' if ck.strip() == '1' else paren(ck, ts.expr(idx(ck))) + r'\,'
+                    diff_terms.append(lead + mark(name, s['source'])
+                                      + rf'\mathrm{{d}}W_{{{sub[name]},{k + 1}}}')
+                    dot_terms.append(lead + mark(name, s['source'])
+                                     + rf'\dot{{W}}_{{{sub[name]},{k + 1}}}')
                 continue
             c, src, ltr = str(s['couples'][f]), s['source'], _letter(s)
             lead = '' if c.strip() == '1' else paren(c, ts.expr(idx(c))) + r'\,'
@@ -407,6 +426,11 @@ def render_latex(sde) -> dict:
                         rf'\mathbb{{E}}[\mathrm{{d}}{nm} \mid \text{{past}}] = '
                         + ('' if size == '1' else ts.expr(size) + r'\,')
                         + ts.expr(idx(s['pp']['rate'])) + r'\,\mathrm{d}t')
+        elif type(src).__name__ == 'GaussianVector':
+            mat = r'\begin{pmatrix}' + r' \\ '.join(
+                ' & '.join(ts.expr(expr_to_text(c)) for c in r) for r in src.cov) + r'\end{pmatrix}'
+            rows.append(rf'\langle {dot}(t)\,{dot}(t^{{\prime}})^{{T}} \rangle &= {mat}\,'
+                        rf'\delta(t - t^{{\prime}})')
         elif src.is_gaussian:
             space = r'\,\delta(x - x^{\prime})' if getattr(src, 'space', None) == 'white' else ''
             rows.append(rf'\langle {dot}(t)\,{dot}(t^{{\prime}}) \rangle &= '

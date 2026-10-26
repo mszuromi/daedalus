@@ -420,6 +420,9 @@ def paper_text(sde) -> str:
         if s.get('pp') or s['expose']:
             raise SDEError(f'paper_text(): source {name!r} is a point process or exposed; '
                            f'it has no paper-style term.')
+        if s.get('colored') or type(s['source']).__name__ == 'GaussianVector':
+            raise SDEError(f'paper_text(): source {name!r} is coloured or a GaussianVector; it has '
+                           f'no paper-style term.')
     for f, eq in sde._eqs.items():
         if sde._fields[f].get('embedded_of'):
             continue                          # (written with its higher-order equation)

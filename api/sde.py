@@ -104,6 +104,25 @@ saddle of ``x`` is fixed by the system solved together (``Dt*x = v`` with
 (``drift('x', '0')``, a random walk) has no stationary mean field and is
 refused.
 
+Coloured and vector Gaussian noise
+----------------------------------
+``Gaussian(var, kernel=h)`` (``h`` an :class:`api.delay.Kernel` with a
+rational image: ``from api.delay import Kernel``, then
+``Gaussian(var, kernel=Kernel.exponential('tau'))``) is the white noise of
+intensity ``var`` filtered by ``h``, ``eta = h * xi``.  It is Markov-embedded,
+exactly: with ``H(I*omega) = N/D`` the state field ``z`` (the source's name,
+or ``as_field=``) obeys ``D(Dt) z = xi`` (velocities for ``deg D > 1``),
+``eta = N(Dt) z``, and ``c*eta`` enters the rhs of each field in ``into=``
+(``c`` may depend on the fields).  ``Kernel.exponential(tau)`` gives the
+Ornstein-Uhlenbeck noise ``<eta eta>(s) = var/(2 tau) exp(-|s|/tau)``; a
+proper image adds its direct part to the fields as white noise.
+
+``GaussianVector(cov=[[...]])`` is correlated white noise of ``n``
+components, coupled with ``into={field: [c_1, ..., c_n]}``; its action term
+is ``-(1/2) theta^T cov theta``, and under the Stratonovich rule the drift
+gains ``1/2 sum_kl cov_kl sum_j b_jl d_j b_ik``.  The simulator draws it
+through ``cov = L L^T`` at the run's parameters.
+
 Declared operators and SPDEs
 ----------------------------
 The operators an equation uses are named with :meth:`SDE.operator` and the
@@ -238,7 +257,7 @@ from typing import Optional
 
 from sage.all import SR, integrate, oo, assume, assumptions, forget, function
 
-from api.noise import (NoiseError, NoiseSource, THETA, parse_expr,
+from api.noise import (NoiseError, NoiseSource, THETA, parse_expr, Gaussian, GaussianVector,
                        expr_to_text, expr_names, _MATH_FUNCS, _SAGE_PRINTED_CALLS,
                        expression_syntax_problem, format_caret_error, parse_failure_message)
 from api.operators import Laplacian, Operator, TimeDerivative
@@ -1064,7 +1083,8 @@ class SDE:
                 f'Per-step distributions are not processes.')
         if name in self._sources:
             raise SDEError(f'noise({name!r}): a source with this name exists.')
-        couples = {as_name(f): as_text(c) for f, c in dict(couples or {}).items()}
+        couples = {as_name(f): ([as_text(e) for e in c] if isinstance(c, (list, tuple))
+                                else as_text(c)) for f, c in dict(couples or {}).items()}
         # (a field with a higher-order equation is forced through its top derivative)
         couples = {self._embedded[f]['top'] if f in self._embedded else f: c
                    for f, c in couples.items()}
@@ -1074,6 +1094,24 @@ class SDE:
         if not couples and expose is None:
             raise SDEError(f'noise({name!r}): give into={{field: coefficient}} '
                            f'or as_field=<field name>.')
+        if getattr(source, 'kernel', None) is not None:
+            return self._colored_noise(name, source, couples, expose, population, interpretation)
+        if isinstance(source, GaussianVector):
+            if expose is not None:
+                raise SDEError(f'noise({name!r}): a GaussianVector is coupled with into=, not exposed.')
+            for f, c in couples.items():
+                if not isinstance(c, (list, tuple)) or len(c) != source.n:
+                    raise SDEError(f'noise({name!r}): GaussianVector has {source.n} components; '
+                                   f'give into={{{f!r}: [c_1, ..., c_{source.n}]}} (one coefficient '
+                                   f'per component); got {c!r}.')
+                for k, e in enumerate(c):
+                    if isinstance(e, str):
+                        self._syntax_check(e, f'noise({name!r}) coefficient {k + 1} for {f!r}')
+        else:
+            for f, c in couples.items():
+                if isinstance(c, (list, tuple)):
+                    raise SDEError(f'noise({name!r}): a list of coefficients for {f!r} needs a '
+                                   f'GaussianVector source (one coefficient per component).')
         if expose is not None:
             self._check_new_name(expose)
             _check_declarable(expose, 'exposed field')
@@ -1085,6 +1123,68 @@ class SDE:
         if interpretation is not None:
             self._sources[name]['interp'] = interpretation
         return self if expose is None else Symbol(self, expose, 'field')
+
+    def _colored_noise(self, name, source, couples, as_field, population, interpretation):
+        """Coloured Gaussian noise ``eta = h * xi`` (``Gaussian(var, kernel=h)``):
+        the Markov embedding of the filter.  With ``H(s) = N(s)/D(s)``
+        (``s = I*omega``), the field ``z`` (``as_field=``, default the source
+        name) obeys ``D(Dt) z = xi`` (a higher-order ``D`` is embedded with
+        velocities), ``eta = N(Dt) z`` is a combination of ``z`` and its
+        velocities, and ``c*eta`` is added to the rhs of every field in
+        ``into=``.  The white source ``xi`` keeps the name ``name``; a proper
+        (not strictly proper) image adds its direct part ``N_n/D_n * xi`` to
+        the fields as an ordinary white coupling."""
+        from sage.all import I as _I
+        kern = source.kernel
+        z = as_field or name
+        where = f'noise({name!r}, Gaussian(kernel=...))'
+        if self._field_dependent_text(expr_to_text(source.params['var'])):
+            raise SDEError(f'{where}: var must be free of the fields (the variance of the white '
+                           f'noise the kernel filters); put a state-dependent coupling in into=.')
+        H = parse_expr(kern.freq_image, what=f'{where} image')
+        sv = SR.var('s__k')
+        Hs = H.subs({SR.var('omega'): -_I * sv}).rational_simplify()
+        Np, Dp = Hs.numerator().expand(), Hs.denominator().expand()
+        if not (Np.is_polynomial(sv) and Dp.is_polynomial(sv)) or \
+                set(map(str, Hs.variables())) & {'omega', 't'}:
+            raise SDEError(f'{where}: the image {kern.freq_image!r} is not rational in I*omega; only '
+                           f'rational kernels have a finite Markov embedding.')
+        n, m = int(Dp.degree(sv)), int(Np.degree(sv))
+        if m > n:
+            raise SDEError(f'{where}: the image {kern.freq_image!r} grows with omega (an improper '
+                           f'kernel, a derivative of white noise); the numerator degree must not '
+                           f'exceed the denominator degree.')
+        if n < 1:
+            raise SDEError(f'{where}: the image {kern.freq_image!r} is a constant, which is white '
+                           f'noise; drop kernel=.')
+        dn = Dp.coefficient(sv, n)
+        direct = (Np.coefficient(sv, n) / dn).simplify_full() if m == n else SR(0)
+        Nr = (Np - direct * Dp).expand()
+        t0 = (self._time_names() or ['Dt'])[0]
+        Dop = expr_to_text(Dp.subs({sv: SR.var(t0)}))
+        pop = population
+        if pop is None:
+            pops = {self._fields[f]['population'] for f in couples if f in self._fields}
+            pop = pops.pop() if len(pops) == 1 else None
+        self.field(z, population=pop, description=f'coloured noise state of {name}')
+        self._fields[z]['colored_of'] = name
+        self.equation(z, f'({Dop})*{z}', '0')
+        states = [z] + (self._embedded[z]['fields'] if z in self._embedded else [])
+        out = sum((Nr.coefficient(sv, k) * SR.var(states[k]) for k in range(n)
+                   if not Nr.coefficient(sv, k).is_zero()), SR(0))
+        white = Gaussian(var=source.params['var'], mean=source.params['mean'])
+        self.noise(name, white, into={z: 1}, population=pop, interpretation=interpretation)
+        s = self._sources[name]
+        if not direct.is_zero():
+            for f, c in couples.items():
+                s['couples'][f] = expr_to_text(parse_expr(c) * direct)
+        s['colored'] = {'into': dict(couples), 'field': z, 'output': expr_to_text(out),
+                        'kernel': kern, 'states': states}
+        return Symbol(self, z, 'field')
+
+    def _field_dependent_text(self, text) -> bool:
+        names = expr_names(parse_expr(str(text)))
+        return bool(names & set(self._fields))
 
     def point_process(self, name: str, rate: str, *, population: Optional[str] = None,
                       size='1', domain: Optional[str] = None, description: str = ''):
@@ -2077,12 +2177,20 @@ class SDE:
                                    f'fields (Conv) is declared with point_process({s["expose"]!r}, '
                                    f'rate=...).') from exc
                 raise self._source_error(name, s['source'], allowed_src, exc) from exc
-            for f, c in s['couples'].items():
+            colored = s.get('colored', {}).get('into', {})
+            for f, c in list(s['couples'].items()) + list(colored.items()):
                 if f not in self._fields:
                     raise SDEError(f'noise({name!r}): couples to undeclared field {f!r}.')
-                self._check_text(str(c), f'noise({name!r}) coefficient for {f!r}')
-                if 't' in expr_names(parse_expr(self._index(str(c)))):
-                    raise SDEError(f'noise({name!r}): coefficient depends on t.')
+                for k, e in enumerate(c if isinstance(c, (list, tuple)) else [c]):
+                    what = (f'noise({name!r}) coefficient {k + 1} for {f!r}'
+                            if isinstance(c, (list, tuple)) else f'noise({name!r}) coefficient for {f!r}')
+                    self._check_text(str(e), what)
+                    if 't' in expr_names(parse_expr(self._index(str(e)))):
+                        raise SDEError(f'noise({name!r}): coefficient depends on t.')
+            if isinstance(s['source'], GaussianVector) and any(
+                    self._field_dependent_text(expr_to_text(c)) for r in s['source'].cov for c in r):
+                raise SDEError(f'noise({name!r}): the GaussianVector cov must be free of the fields '
+                               f'(put a state-dependent coupling in into=).')
         for f, eq in self._eqs.items():
             self._check_text(eq['lhs'], f'equation({f!r}) lhs', eq['lhs_raw'])
             self._check_text(eq['rhs'], f'equation({f!r}) rhs', eq['rhs_raw'])
@@ -2113,6 +2221,8 @@ class SDE:
         gauss_units = []                             # (name, Gaussian source, couples): Stratonovich
         self._marcus_terms = OrderedDict()
         self._ito_drift = {}                         # field -> Stratonovich corrections (simulator)
+        self._colored_drift = {}                     # field -> coloured-noise terms (simulator)
+        vector_units = []                            # (name, GaussianVector, couplings): Stratonovich
 
         for name, s in self._sources.items():
             src = s['source']
@@ -2123,6 +2233,21 @@ class SDE:
                 jump = f'{n}t[i]' if size == '1' else f'{_wrap(size)}*{n}t[i]'
                 self._emit(source_terms, pop, f'{n}t[i]*{n}[i] - (exp({jump}) - 1)*{_wrap(rate)}', name)
                 exposed_eqs.append((n, rate if size == '1' else f'{_wrap(size)}*{_wrap(rate)}'))
+                continue
+            if isinstance(src, GaussianVector):
+                coupv = {f: [self._parse(str(e), f'coefficient {k + 1} of {name} in {f}')
+                             for k, e in enumerate(c)] for f, c in s['couples'].items()}
+                cov = [[self._parse(expr_to_text(e), f'{name}.cov') for e in r] for r in src.cov]
+                th = [sum((coupv[f][k] * SR.var(f'{f}t__i') for f in coupv), SR(0))
+                      for k in range(src.n)]
+                K = sum(cov[k][l] * th[k] * th[l] for k in range(src.n) for l in range(src.n)) / 2
+                for f, cs in coupv.items():
+                    mean = sum((cs[k] * self._parse(expr_to_text(src.mean_vector[k]), f'{name}.mean')
+                                for k in range(src.n)), SR(0))
+                    if not mean.is_zero():
+                        extra_rhs[f].append(mean)
+                self._emit(source_terms, pop, f'-{_wrap(expr_to_text(K.expand()))}', name)
+                vector_units.append((name, cov, coupv, self._src_interp(name)))
                 continue
             coup = {f: self._parse(str(c), f'coefficient of {name} in {f}')
                     for f, c in s['couples'].items()}
@@ -2173,8 +2298,40 @@ class SDE:
                 K_term = K_full.subs({THETA: theta_val})
                 self._emit(source_terms, pop, f'-{_wrap(expr_to_text(K_term))}', uname)
 
+        # coloured Gaussian noise: c*eta into each field (eta a combination of the
+        # filter's states, see _colored_noise)
+        for name, s in self._sources.items():
+            col = s.get('colored')
+            if not col:
+                continue
+            out = self._parse(col['output'], f'coloured noise of {name}')
+            for f, c in col['into'].items():
+                term = self._parse(str(c), f'coefficient of {name} in {f}') * out
+                extra_rhs[f].append(term)
+                self._colored_drift.setdefault(f, []).append(term)
+
         # Stratonovich -> Ito drift correction (Gaussian sources; under Marcus
         # the Gaussian sources and Gaussian parts, whose Marcus rule it is).
+        vector_units = [u for u in vector_units if u[3] in ('stratonovich', 'marcus')]
+        if vector_units:
+            mode = self._interp_mode()
+            dtcoef = self._dt_coefficients()
+            for name, cov, coupv, rule in vector_units:
+                rule = mode if mode != 'mixed' else rule
+                n = len(cov)
+                b = {f: [c / dtcoef[f] for c in cs] for f, cs in coupv.items()}
+                for fi in b:
+                    corr = sum((cov[k][l] * b[fj][l] * b[fi][k].diff(self._sym(fj))
+                                for k in range(n) for l in range(n) for fj in b), SR(0)) / 2
+                    corr = corr.simplify_full()
+                    if not corr.is_zero():
+                        extra_rhs[fi].append(dtcoef[fi] * corr)
+                        self._ito_drift.setdefault(fi, []).append(dtcoef[fi] * corr)
+                        self._drift_log.append({'field': fi, 'source': name, 'rule': rule,
+                                                'text': expr_to_text(dtcoef[fi] * corr)})
+                        self.notes.append(
+                            f'Stratonovich -> Ito: drift of {fi!r} += '
+                            f'{expr_to_text(dtcoef[fi] * corr)} (source {name!r}).')
         gauss_units = [u for u in gauss_units if u[3] in ('stratonovich', 'marcus')]
         if gauss_units:
             mode = self._interp_mode()

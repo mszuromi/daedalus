@@ -42,7 +42,7 @@ from engine.errors import DaedalusError
 
 __all__ = [
     'NoiseError', 'NoiseSource', 'CumulantTruncationWarning',
-    'Gaussian', 'Poisson', 'CompoundPoisson', 'GammaProcess',
+    'Gaussian', 'GaussianVector', 'Poisson', 'CompoundPoisson', 'GammaProcess',
     'InverseGaussianProcess', 'Cumulants', 'CGF',
     'JumpDistribution', 'Dirac', 'Exponential', 'Gamma', 'GaussianJump',
     'Laplace', 'Uniform', 'Bernoulli', 'Binomial', 'FinitePMF',
@@ -605,10 +605,23 @@ class Gaussian(NoiseSource):
     (``SDE(..., space=d)``): ``<eta(x,t) eta(x',t')> = var delta(x - x')
     delta(t - t')``.  (Conserved noise, ``div`` of a white vector noise, is not
     supported yet.)
+
+    ``kernel=`` makes it coloured: the white noise of intensity ``var``
+    filtered by a causal kernel ``h`` (an :class:`api.delay.Kernel`:
+    ``from api.delay import Kernel``, ``Gaussian(var, kernel=Kernel.exponential('tau'))``; ``Kernel.alpha('tau')``,
+    ``Kernel.gamma(n, 'mean')`` or ``Kernel.image(text)`` with a rational
+    image), ``eta = h * xi``, so ``<eta(t) eta(t')> = var (h * h~)(t - t')``
+    and the integral of the covariance is ``var |H(0)|^2`` (``var`` for a
+    kernel of unit area: ``Kernel.exponential(tau)`` gives the
+    Ornstein-Uhlenbeck covariance ``var/(2 tau) exp(-|t - t'|/tau)``, white
+    noise of intensity ``var`` as ``tau -> 0``).  The SDE builder embeds the
+    filter as fields (a Markov embedding, exact); its image must be rational
+    in ``I*omega`` and proper, and ``var`` free of the fields (a state-dependent
+    coupling goes in ``into=``).
     """
     is_gaussian = True
 
-    def __init__(self, var, mean=0, *, space=None):
+    def __init__(self, var, mean=0, *, space=None, kernel=None):
         if space not in (None, 'white'):
             if space == 'conserved':
                 raise NoiseError("Gaussian(space='conserved'): conserved noise (the divergence "
@@ -617,13 +630,86 @@ class Gaussian(NoiseSource):
             raise NoiseError(f"Gaussian(space={space!r}): use space='white' (space-time white "
                              f"noise of an SPDE) or omit it (time-only noise).")
         self.space = space
+        if kernel is not None:
+            from api.delay import Kernel
+            if not isinstance(kernel, Kernel):
+                raise NoiseError(f'Gaussian(kernel=...): give an api.delay.Kernel (e.g. '
+                                 f"Kernel.exponential('tau')); got {type(kernel).__name__}.")
+            if kernel.delay is not None:
+                raise NoiseError('Gaussian(kernel=...): a delayed kernel has no Markov embedding '
+                                 '(no finite state); filter the noise with a delay-free rational '
+                                 'kernel.')
+            if space is not None:
+                raise NoiseError('Gaussian(kernel=...): coloured noise is temporal (not with '
+                                 "space='white').")
+        self.kernel = kernel
         super().__init__(var=var, mean=mean)
+
+    def __repr__(self):
+        out = super().__repr__()
+        return out if self.kernel is None else f'{out[:-1]}, kernel={self.kernel!r})'
 
     def _check_domain(self):
         self._require('var', _nonneg, 'need var >= 0 (a variance per unit time)')
 
     def _cgf(self):
         return self.params['mean'] * THETA + self.params['var'] * THETA ** 2 / 2
+
+
+class GaussianVector(NoiseSource):
+    """Correlated white Gaussian noise of ``n`` components,
+    ``<d eta_k d eta_l> = cov[k][l] dt`` (``cov`` a symmetric ``n x n`` matrix
+    of numbers or parameter expressions, free of the fields; ``mean`` an
+    optional vector).  Coupled with ``into={field: [c_1, ..., c_n]}`` (one
+    coefficient per component, ``dx += sum_k c_k d eta_k``); its action term is
+    ``-(1/2) theta^T cov theta`` with ``theta_k = sum_x c_xk xt``.  Under the
+    Stratonovich (or Marcus) rule the drift correction is
+    ``1/2 sum_kl cov_kl sum_j b_jl d_j b_ik`` (``b = c/a``)."""
+    is_gaussian = True
+
+    def __init__(self, cov, mean=None):
+        try:
+            rows = [list(r) for r in cov]
+        except TypeError:
+            raise NoiseError('GaussianVector(cov=...): give a square matrix (a list of rows).') from None
+        n = len(rows)
+        if n < 1 or any(len(r) != n for r in rows):
+            raise NoiseError(f'GaussianVector(cov=...): cov must be square; got rows of lengths '
+                             f'{[len(r) for r in rows]}.')
+        C = [[parse_expr(v, what=f'GaussianVector(cov[{k}][{l}])') for l, v in enumerate(r)]
+             for k, r in enumerate(rows)]
+        for k in range(n):
+            for l in range(k):
+                if not (SR(C[k][l]) - SR(C[l][k])).simplify_full().is_zero():
+                    raise NoiseError(f'GaussianVector(cov=...): cov must be symmetric; cov[{k}][{l}] '
+                                     f'= {C[k][l]} but cov[{l}][{k}] = {C[l][k]}.')
+        mean = [0] * n if mean is None else list(mean)
+        if len(mean) != n:
+            raise NoiseError(f'GaussianVector(mean=...): {n} components; got {len(mean)} means.')
+        self.n = n
+        params = {f'cov_{k + 1}_{l + 1}': rows[k][l] for k in range(n) for l in range(k, n)}
+        params.update({f'mean_{k + 1}': m for k, m in enumerate(mean)})
+        super().__init__(**params)
+        self.cov = [[self.params[f'cov_{min(k, l) + 1}_{max(k, l) + 1}'] for l in range(n)]
+                    for k in range(n)]
+        self.mean_vector = [self.params[f'mean_{k + 1}'] for k in range(n)]
+        num = [[_numeric(c) for c in r] for r in self.cov]
+        if all(v is not None for r in num for v in r):
+            import numpy as _np
+            if _np.linalg.eigvalsh(_np.array(num, dtype=float)).min() < -1e-12 * max(
+                    1.0, abs(_np.array(num, dtype=float)).max()):
+                raise NoiseError('GaussianVector(cov=...): cov must be positive semidefinite.')
+
+    def _k0_roundoff(self):
+        return True                         # (K(0) = 0 by construction)
+
+    def _cgf(self):
+        raise NoiseError('GaussianVector has no scalar CGF: its action term is '
+                         '-(1/2) theta^T cov theta over its components.')
+
+    def __repr__(self):
+        cov = [[expr_to_text(c) for c in r] for r in self.cov]
+        return f'GaussianVector(cov={cov!r})'
 
 
 class Poisson(NoiseSource):
@@ -1481,7 +1567,7 @@ class Weibull(_SeriesJump):
 
 #: every noise-source class (config files / SDE accept these by name)
 SOURCE_TYPES = (
-    'Gaussian', 'Poisson', 'CompoundPoisson', 'GammaProcess',
+    'Gaussian', 'GaussianVector', 'Poisson', 'CompoundPoisson', 'GammaProcess',
     'InverseGaussianProcess', 'Cumulants', 'CGF', 'VarianceGamma',
     'NormalInverseGaussian', 'CGMY', 'TemperedStableSubordinator', 'Meixner',
     'BilateralGamma', 'Skellam', 'NegativeBinomialProcess')
