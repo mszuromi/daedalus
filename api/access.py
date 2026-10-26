@@ -83,6 +83,53 @@ def _build_reverse_saddle_map(saddle_map: dict[str, str]) -> dict[str, str]:
     return rev
 
 
+def _field_units(model: dict, name: str):
+    """``(units, population)`` of the physical field ``name`` (its plain
+    name ``x``, its fluctuation name ``dx`` or its response ``xt``), or
+    ``None`` when the model has no such field."""
+    pfs = model.get('physical_fields') or []
+    pf = next((f for f in pfs if name in (f.get('natural_name'), f.get('name'))), None)
+    if pf is None and name.endswith('t'):
+        pf = next((f for f in pfs if name[:-1] in (f.get('natural_name'), f.get('name'))), None)
+    if pf is None:
+        return None
+    pop = pf.get('population')
+    if pop:
+        for p in (model.get('populations') or []):
+            if p.get('name') == pop:
+                return max(1, int(p.get('size') or 1)), pop
+    if pf.get('indexed'):
+        idx = (model.get('index_sets') or {}).get('pop')
+        if idx:
+            return max(1, len(idx)), 'pop'
+    return 1, pop
+
+
+def resolve_external_fields(model: dict, external_fields) -> list:
+    """External fields with bare names resolved: a field name alone
+    (``'x'``, or ``'dx'``) is the leg ``('x', 1)`` of a field with one unit,
+    so ``['x', 'x']`` is ``[('x', 1), ('x', 1)]`` (the same run, byte for
+    byte).  A field whose population has several units needs the unit,
+    ``('x', i)``; a bare name for it raises ``ValueError``.  Pairs pass
+    through unchanged; a name the model does not have is left to the
+    later checks.  Without a bare name the input is returned as it is."""
+    if external_fields is None or not any(isinstance(e, str) for e in external_fields):
+        return external_fields
+    out = []
+    for e in external_fields:
+        if not isinstance(e, str):
+            out.append(e)
+            continue
+        info = _field_units(model, e)
+        if info is not None and info[0] > 1:
+            raise ValueError(
+                f'external field {e!r}: the field lives in population {info[1]!r} of '
+                f'{info[0]} units, so a bare name does not say which unit; give '
+                f'({e!r}, i) with 1 <= i <= {info[0]}, e.g. [({e!r}, 1), ({e!r}, 2)].')
+        out.append((e, 1))
+    return out
+
+
 def normalize_external_fields(external_fields,
                               naming_convention: Optional[dict] = None):
     """Translate user-facing external fields to internal fluctuation

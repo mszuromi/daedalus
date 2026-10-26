@@ -16,7 +16,7 @@ Core entry points
       k                = 2,                    # k-point cumulant
       max_ell          = 0,                    # tree-level only
       fundamental      = {...},                # numerical parameters
-      external_fields  = [('dn', 1), ('dn', 2)],
+      external_fields  = [('n', 1), ('n', 2)],   # plain field names; ['x', 'x'] for one unit
       tau_max          = 50.0,                 # τ grid extent
       tau_step         = 0.5,
       output_npz       = 'result.npz',         # optional save
@@ -27,7 +27,7 @@ Core entry points
       k                = 2,
       max_ell          = 0,
       fundamental      = {...},
-      external_fields  = [('dn', 1), ('dn', 2)],
+      external_fields  = [('n', 1), ('n', 2)],   # plain field names; ['x', 'x'] for one unit
       output_pdf       = 'report.pdf',
   )
 

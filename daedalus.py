@@ -485,7 +485,7 @@ class Config:
     k: Optional[int] = None                 # cumulant order; inferred from
                                             # external_fields if left None
     max_ell: Optional[int] = None           # loop order (0=tree, 1, 2, …)
-    external_fields: Optional[list] = None  # e.g. [('x', 1), ('x', 1)]
+    external_fields: Optional[list] = None  # e.g. ['x', 'x'] or [('v', 1), ('v', 2)]
     parameters: Optional[dict] = None        # numeric parameter overrides, by name
     fundamental: Optional[dict] = None       # deprecated alias for ``parameters``
     # Output quantity.  The diagrammatics produce CONNECTED cumulants
@@ -836,7 +836,8 @@ def config_options(spatial=None):
         ('what to compute', [
             ('k',               'cumulant order: 1=mean ⟨φ⟩, 2=covariance, ≥3=higher cumulant'),
             ('max_ell',         'loop order: 0=tree, 1=+1-loop, 2=+2-loop, …'),
-            ('external_fields', "the k legs, e.g. [('x',1),('x',1)]; sets k if k is None"),
+            ('external_fields', "the k legs, e.g. ['x', 'x'] (one-unit fields) or [('v',1),('v',2)]; "
+                                "sets k if k is None; at k=1 the loop shift <x> - x* (output='moment': the mean)"),
             ('parameters',      "numeric overrides {name: value} (dd.param_names(model) lists the valid names); None → model defaults  [alias: fundamental]"),
             ('output',          "'cumulant' | 'moment' | 'central_moment'"),
         ]),
@@ -1645,6 +1646,9 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     # caught above.
     if not ext_is_explicit and not _ext_is_valid(model, ext, k):
         ext = _auto_external_fields(model, k)
+    # a bare field name ('x') is the leg ('x', 1) of a one-unit field
+    from api.access import resolve_external_fields
+    ext = resolve_external_fields(model, ext)
     # Layered fundamental: model param defaults ← model DEFAULT_FUNDAMENTAL
     # ← explicit cfg override.  Each layer wins over the one before, so a
     # loaded model runs out of the box and the notebook can override any

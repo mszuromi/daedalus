@@ -23,11 +23,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def _allen_cahn():
     return (SDE('Allen-Cahn', space=1)
-            .operator('dt', TimeDerivative()).operator('lap', Laplacian())
+            .operator('D_t', TimeDerivative()).operator('lap', Laplacian())
             .parameter('mu', default=1.0, domain='positive').parameter('D', default=1.0, domain='positive')
             .parameter('lam', default=0.1, domain='positive').parameter('T', default=1.0, domain='positive')
             .field('phi')
-            .equation('phi', lhs='dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
+            .equation('phi', lhs='D_t(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
             .noise('eta', Gaussian(var='2*T', space='white'), into={'phi': 1}))
 
 
@@ -153,7 +153,7 @@ def test_check_population_model():
 def test_check_spde_through_the_bridge():
     m = _allen_cahn()
     r = m.check(verbose=False)
-    assert r['space'] == 1 and r['declarations']['operators'] == {'dt': 'TimeDerivative', 'lap': 'Laplacian'}
+    assert r['space'] == 1 and r['declarations']['operators'] == {'D_t': 'TimeDerivative', 'lap': 'Laplacian'}
     assert 'Laplacian' in r['action']['terms'][0]['text']
     assert r['mean_field'][0]['field'] == 'phi' and r['mean_field'][0]['population'] is None
     rows = _rows(r)
@@ -257,8 +257,8 @@ def test_latex_stratonovich_marcus_delay_and_noise_kinds():
     assert r'c x(t - d)' in C.delay_ou().latex()['sde']
 
 
-def _spde_with_lap_of_square(rhs='D*lap(u) - mu*u - lap(u^2)', lhs='dt(u)'):
-    return (SDE('m', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+def _spde_with_lap_of_square(rhs='D*lap(u) - mu*u - lap(u^2)', lhs='D_t(u)'):
+    return (SDE('m', space=1).operator('D_t', TimeDerivative()).operator('lap', Laplacian())
             .parameter('D', default=1.0, domain='positive').parameter('mu', default=1.0, domain='positive')
             .field('u').equation('u', lhs=lhs, rhs=rhs)
             .noise('eta', Gaussian(var=2, space='white'), into={'u': 1}))
@@ -272,7 +272,7 @@ def test_latex_laplacian_of_an_expression_is_grouped_and_never_falls_back():
     assert r'- \nabla^2 \left(u^{2}\right)\right)\right)' in L['action']
     assert not any('texttt' in v for v in L.values())
     # product-style operators on a model that also has an operator on an expression
-    mixed = _spde_with_lap_of_square(lhs='(dt + mu)*u', rhs='D*lap(u) - lap(u^2)').latex()
+    mixed = _spde_with_lap_of_square(lhs='(D_t + mu)*u', rhs='D*lap(u) - lap(u^2)').latex()
     assert not any('texttt' in v for v in mixed.values())
     assert r'\mu u + \partial_t u' in mixed['sde'] or r'\partial_t u + \mu u' in mixed['sde']
 
@@ -336,7 +336,7 @@ def test_latex_is_deterministic_across_processes():
 # ── caret parse errors ──────────────────────────────────────────────────────────────────────────
 
 def _base():
-    return (SDE('t').operator('dt', TimeDerivative())
+    return (SDE('t').operator('D_t', TimeDerivative())
             .parameter('mu', default=1.0).parameter('eps', default=0.1).parameter('D', default=1.0).field('x'))
 
 
@@ -378,7 +378,7 @@ def test_typical_syntax_mistakes_point_at_the_problem(expr, char, word):
 
 def test_errors_name_the_field_or_the_noise_they_belong_to():
     with pytest.raises(SDEError, match=r"equation\('x'\) lhs"):
-        _base().equation('x', lhs='dt(x', rhs='-mu*x')
+        _base().equation('x', lhs='D_t(x', rhs='-mu*x')
     with pytest.raises(SDEError, match=r"noise\('xi'\) coefficient for 'x'"):
         _base().noise('xi', Gaussian(var='2*D'), couples={'x': '2 D'})
     with pytest.raises(SDEError, match=r"define_function\('phi'\) expression"):
@@ -408,19 +408,19 @@ def test_undeclared_name_in_a_noise_parameter_names_the_noise_and_the_parameter(
 
 def test_operator_misuse_is_pointed_at():
     with pytest.raises(SDEError, match='argument of a function') as ei:
-        (_base().equation('x', lhs='dt(x)', rhs='-mu*exp(dt)')
+        (_base().equation('x', lhs='D_t(x)', rhs='-mu*exp(D_t)')
          .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
     text, col, _ = _caret_lines(ei.value)
-    assert text == '-mu*exp(dt)' and text[col:col + 2] == 'dt'
+    assert text == '-mu*exp(D_t)' and text[col:col + 3] == 'D_t'
     with pytest.raises(SDEError, match='operators act in the equations only') as ei:
-        (_base().equation('x', lhs='dt(x)', rhs='-mu*x')
-         .noise('xi', Gaussian(var='2*D'), couples={'x': 'dt*2'}).build())
+        (_base().equation('x', lhs='D_t(x)', rhs='-mu*x')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 'D_t*2'}).build())
     text, col, _ = _caret_lines(ei.value)
-    assert text == 'dt*2' and col == 0 and 'hint' in str(ei.value)
-    sp = (SDE('s', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+    assert text == 'D_t*2' and col == 0 and 'hint' in str(ei.value)
+    sp = (SDE('s', space=1).operator('D_t', TimeDerivative()).operator('lap', Laplacian())
           .parameter('mu', default=1.0).parameter('D', default=1.0).parameter('T', default=1.0).field('u'))
     with pytest.raises(SDEError, match=r"operator 'lap' is the argument of the function 'exp'") as ei:
-        (sp.equation('u', lhs='dt(u)', rhs='D*exp(lap) - mu*u')
+        (sp.equation('u', lhs='D_t(u)', rhs='D*exp(lap) - mu*u')
          .noise('eta', Gaussian(var='2*T', space='white'), into={'u': 1}).build())
     text, col, _ = _caret_lines(ei.value)
     assert text == 'D*exp(lap) - mu*u' and text[col:col + 3] == 'lap'
@@ -448,7 +448,7 @@ def test_error_types_are_unchanged():
 def test_valid_models_are_not_refused_by_the_syntax_check():
     # population sums, indices, calls, powers and sage constants all read as expressions
     for ok in ('-mu*x + 2^3 - x^-1', 'sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)', 'exp(-x/2)*I', '1e-3*x',
-               'phi[i](v[i])', 'x(t - d)', 'Dt*x', '(tau*dt + 1)*x'):
+               'phi[i](v[i])', 'x(t - d)', 'Dt*x', '(tau*D_t + 1)*x'):
         from api.noise import expression_syntax_problem
         assert expression_syntax_problem(ok) is None, ok
 

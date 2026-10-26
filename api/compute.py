@@ -39,7 +39,7 @@ from api._diagrams  import enumerate_unique_diagrams
 from engine.enumeration import prediagram_cache as _pd_cache
 from api.save       import _phase_j_convention, _phase_j_flags
 from api.access     import (
-    MeanField, Parameters, normalize_external_fields,
+    MeanField, Parameters, normalize_external_fields, resolve_external_fields,
 )
 from engine.errors import DaedalusError
 
@@ -1739,8 +1739,17 @@ def compute_cumulants(
              'w_X': 0.3, 'lambda_X': 2.5, 'p_part': 0.6,
              'mu_shift_diff': 0.0, 'sigma_shift_diff_sq': 1.0}
 
-    external_fields : list of (str, int)
-        Length-k list of leaf field tuples, e.g. ``[('dn', 1), ('dn', 2)]``.
+    external_fields : list
+        The ``k`` legs, each a field name or a ``(field, unit)`` pair: the
+        plain field name (``'x'``) is the documented form, its fluctuation
+        name (``'dx'``) an accepted alias, and the two give the same result
+        byte for byte.  A bare name (``['x', 'x']``) is the leg ``('x', 1)``
+        of a field with one unit; a field in a population of several units
+        needs the unit (``[('v', 1), ('v', 2)]``).  At ``k = 1`` the result is
+        the loop SHIFT of the mean, ``<x> - x*`` (tree level 0): the mean is
+        ``mf_values['xstar']`` plus the sum of the shifts over loop orders, and
+        ``dd.Config(output='moment')`` returns that loop-corrected mean
+        directly (``res['moment']``).
     tau_max, tau_step : float
         τ-grid extent and spacing for the Phase J slice evaluation.
     taylor_order : int or None
@@ -2138,6 +2147,10 @@ def compute_cumulants(
     max_ell = _entry_int('max_ell', max_ell)
     if external_fields is None:
         raise ValueError('external_fields is required')
+    if isinstance(external_fields, str):
+        raise ValueError(f'external_fields must be a list of k legs (e.g. [{external_fields!r}] * k); '
+                         f'got the string {external_fields!r}.')
+    external_fields = resolve_external_fields(model, external_fields)
     if len(external_fields) != k:
         raise ValueError(
             f'external_fields has {len(external_fields)} entries but k={k}'
