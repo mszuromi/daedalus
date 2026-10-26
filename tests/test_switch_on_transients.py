@@ -506,17 +506,21 @@ def test_non_markov_noise_kernel_refuses_t_min():
     assert FI.PHASE_J_T_MIN == float('-inf') and not SS.switch_on_active()
 
 
-def test_delay_kernel_model_refuses_t_min():
-    """The delay driver (api.delay: exact stationary tree, Pade-order search) is stationary: refused."""
+def test_delay_kernel_model_runs_under_t_min():
+    """A delay kernel is computed with the Pade tree and loops (tests/test_delay_switch_on.py has the
+    references); ``initial_covariance`` stays refused there."""
     from api.noise import Gaussian
     from api.sde import SDE
     model = (SDE('delayed OU (switch-on)').parameter('a', default=1.0).parameter('c', default=-0.5)
              .parameter('d', default=0.5, domain='positive').parameter('D', default=0.1).field('x')
              .drift('x', '-a*x + c*x(t - d)')
              .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
-    with pytest.raises(SS.SwitchOnUnsupported, match='delay'):
-        AC.compute_cumulants(model, k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)], t_min=0.0,
-                             times=[[1.0, 1.0]], use_cache=False, parallel=False, verbose=False)
+    kw = dict(k=2, max_ell=0, external_fields=[('x', 1), ('x', 1)], t_min=0.0, times=[[1.0, 1.0]],
+              use_cache=False, parallel=False, verbose=False)
+    r = AC.compute_cumulants(model, delay={'order': 4}, **kw)
+    assert r['delay']['tree'] == 'pade' and np.isfinite(np.real(r['C_times'])).all()
+    with pytest.raises(SS.SwitchOnUnsupported, match='initial_covariance'):
+        AC.compute_cumulants(model, initial_covariance=np.eye(1), **kw)
 
 
 @pytest.mark.parametrize('kw, exc, match', [

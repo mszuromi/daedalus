@@ -1966,7 +1966,13 @@ def compute_cumulants(
         -inf`` the result tends to the stationary one.  A noise kernel
         the model builder Markov-embedded (an auxiliary field) starts at
         zero too: the noise is switched on with the system
-        (``result['nonstationary']['embedded_noise_states']``).
+        (``result['nonstationary']['embedded_noise_states']``).  A model
+        with delay kernels (``delay``) is computed with the Pade approximant
+        for the tree as well as the loops (the exact delayed tree is the
+        stationary covariance); the history of every delayed field is zero
+        before ``t_min``, and the Pade error is larger within the first
+        delay after ``t_min`` (the order search reports it honestly:
+        ``result['delay']['target_met']``, ``status``).
     times : array or None
         Required with ``t_min``: the absolute external times to evaluate,
         shape ``(n, k)`` (row ``i`` = the times of the ``k`` legs, in the
@@ -1985,7 +1991,8 @@ def compute_cumulants(
         R(t2 - t_min)^T`` (``R``: the response), which is the whole tree
         term of a Gaussian initial state (``C0`` enters like a noise vertex
         at ``t_min``); loops with ``C0 != 0`` are not implemented (raises).
-        Needs a first-order model whose response at ``0+`` is the identity.
+        Needs a first-order model whose response at ``0+`` is the identity
+        (not available with delay kernels).
         (A deterministic initial offset of the mean is not offered: its tree
         is the full nonlinear relaxation, a time-dependent saddle.)
     delay : dict or None
@@ -2461,13 +2468,17 @@ def compute_cumulants(
     if not model.get('_delay_pade') and model.get('kernel_ft_image') is not None:
         from api import delay as _delay
         _delays = _delay.kernel_delays(model, ft._ns)
-        if _delays and switch_on is not None:
-            # the delay driver's exact tree and its Pade-order search are
-            # stationary (not combined yet)
+        if _delays and switch_on is not None and switch_on['initial_covariance'] is not None:
+            # (the Pade realization of a delay is not a first-order model whose
+            # response at 0+ is the identity, which initial_covariance needs;
+            # and the history of the delayed fields before t_min is not defined)
             from engine.integration.time_domain import statespace as _ss_dl
             raise _ss_dl.SwitchOnUnsupported(
-                'delay_kernels', 'models with delay kernels (api.delay) are '
-                'computed for the stationary state only')
+                'delay_kernels', 'initial_covariance is not available for models with '
+                'delay kernels (api.delay): the history of the delayed fields before t_min '
+                'is zero, and the Pade realization of a delay is not a first-order model '
+                'with the identity response at 0+; drop initial_covariance (the '
+                'fluctuations start at zero)')
         if _delays:
             return _delay.compute_delayed(model, _delay_call, _delays, ns=ft._ns)
 
