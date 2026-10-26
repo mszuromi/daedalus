@@ -89,11 +89,13 @@ Options (``compute_cumulants(..., delay={...})``):
              tol / 100)``, later orders adaptive, above), a fixed relative
              H-infinity tolerance for every order, or ``0`` (exact
              realizations);
-``order_cache`` ``True`` (default): the order an automatic search settled on is
-             replayed (one run at that order, with the truncation tolerance of the
-             search) for later calls at the same model, parameter point and
-             options, whatever the entry or lag grid; ``False`` searches every
-             call; ``clear_order_cache()`` forgets them all.
+``order_cache`` ``True`` (default): at one model, parameter point and option set
+             the same entry (external fields, lag grid, ...) again replays its
+             search (one run at the order it settled on, bit-identical); another
+             entry starts its own search at the smallest cached order and the one
+             before it, measures its own estimate, and goes on upward if the
+             target is missed (``result['delay']['order_source']``).  ``False``
+             searches every call; ``clear_order_cache()`` forgets them all.
 
 The result carries ``result['delay']`` (orders tried, walls, the estimate,
 whether the target was met, the tree used and its comparison with the Pade
@@ -154,18 +156,25 @@ class DelayOrderWarning(UserWarning):
 #
 # The automatic order search runs the whole pipeline at n_start, 2 n_start, ...
 # until two orders agree, which costs several runs of the delayed model per
-# call.  Entries of one covariance matrix, lags of one slice and repeated
-# calls at one parameter point all share the model, the kernels and the
-# accuracy target, so the order the first search settled on is replayed for
-# the rest: ONE run at that order, with the balanced-truncation tolerance the
-# search used there.  That run is the run the search made at that order (bit
-# for bit for the same entry); a different entry takes the order, not its own
-# estimate.  The outcome of a wall-capped search is fixed by the first search
-# for the lifetime of the process, which also removes its dependence on the
-# machine's speed from every later call.
+# call.  Calls at one model, parameter point and option set share the order the
+# first search settled on, each ENTRY (external fields, lag grid, ...) with its
+# own accuracy estimate:
+#
+# * the same entry again replays its search: ONE run at that order with the
+#   truncation tolerance the search used there, bit-identical to the search's
+#   result (estimate and target as the search found them);
+# * another entry starts its own search at the smallest cached order and the
+#   order before it (two runs when the cached order is above n_start), measures
+#   ITS estimate from them, and goes on upward when the target is missed.  The
+#   cache then holds the order this entry settled on.
+#
+# The outcome of a wall-capped search is fixed by that entry's first search for
+# the lifetime of the process, which also removes its dependence on the
+# machine's speed from every later call of the entry.
 
 _ORDER_CACHE: 'OrderedDict' = OrderedDict()
 _ORDER_CACHE_MAX = 64
+_ORDER_CACHE_ENTRIES = 32
 _ORDER_CACHE_LOCK = threading.Lock()
 
 
@@ -198,28 +207,58 @@ def _order_cache_key(model, ctx, opts, call, k, max_ell, exact):
 
 
 def _order_cache_get(key):
+    """``{entry fingerprint: record}`` of a key (a copy), or ``{}``."""
     if key is None:
-        return None
+        return {}
     with _ORDER_CACHE_LOCK:
-        rec = _ORDER_CACHE.get(key)
-        if rec is not None:
-            _ORDER_CACHE.move_to_end(key)
-        return rec
+        recs = _ORDER_CACHE.get(key)
+        if recs is None:
+            return {}
+        _ORDER_CACHE.move_to_end(key)
+        return dict(recs)
 
 
-def _order_cache_put(key, rec):
+def _order_cache_put(key, entry, rec):
     if key is None:
         return
     with _ORDER_CACHE_LOCK:
-        _ORDER_CACHE[key] = rec
+        recs = _ORDER_CACHE.setdefault(key, OrderedDict())
+        recs[entry] = rec
+        recs.move_to_end(entry)
+        while len(recs) > _ORDER_CACHE_ENTRIES:
+            recs.popitem(last=False)
         _ORDER_CACHE.move_to_end(key)
         while len(_ORDER_CACHE) > _ORDER_CACHE_MAX:
             _ORDER_CACHE.popitem(last=False)
 
 
-def _order_cache_drop(key):
+def _order_cache_drop(key, entry):
     with _ORDER_CACHE_LOCK:
-        _ORDER_CACHE.pop(key, None)
+        recs = _ORDER_CACHE.get(key)
+        if recs is not None:
+            recs.pop(entry, None)
+
+
+#: arguments of a call that do not change what the order search measures
+_ENTRY_IGNORED = frozenset(['model', 'delay', 'output_npz', 'output_csv', 'spectra', 'verbose',
+                            'parallel', 'n_workers', 'use_cache', 'preflight', 'policy'])
+
+
+def _entry_fingerprint(call):
+    """What the search's accuracy estimate is measured on: the call's
+    arguments except those that only steer how it runs (external fields, lag
+    grid, evaluation points, ...).  Arrays by content."""
+    import hashlib
+
+    def norm(v):
+        if isinstance(v, np.ndarray):
+            return ('nd', v.shape, str(v.dtype), hashlib.sha256(v.tobytes()).hexdigest())
+        if isinstance(v, (list, tuple)):
+            return tuple(norm(x) for x in v)
+        if isinstance(v, dict):
+            return tuple(sorted((str(a), norm(b)) for a, b in v.items()))
+        return repr(v)
+    return repr(sorted((k_, norm(v)) for k_, v in call.items() if k_ not in _ENTRY_IGNORED))
 
 
 # ── Pade approximants of exp(-z) ─────────────────────────────────────────
@@ -1016,11 +1055,13 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     w_first = []
     cache_key = _order_cache_key(model, ctx, opts, call, k, max_ell, exact) \
         if loops_need_n else None
-    out, replayed, approximant = None, None, 'pade'
-    rec = _order_cache_get(cache_key)
+    entry = _entry_fingerprint(call) if cache_key is not None else None
+    out, source, approximant = None, 'search', 'pade'
+    recs = _order_cache_get(cache_key)
+    rec = recs.get(entry)
     if rec is not None:
-        # the order of an earlier search at this model and parameter point:
-        # one run at it, with that search's truncation tolerance
+        # this entry searched before: one run at its order, with that search's
+        # truncation tolerance
         try:
             out = _run_orders(model, sub_call, [rec['n']], opts, k, exact, loops_need_n, ctx,
                               runs, walls, skipped, failed, ests, verbose, call,
@@ -1029,15 +1070,37 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
             out = None
         if out is None or out[2] is None or out[3] or failed or skipped:
             out = None                      # not reproducible: search afresh
-            _order_cache_drop(cache_key)
+            _order_cache_drop(cache_key, entry)
             for dct in (runs, walls, skipped, failed, ests):
                 dct.clear()
         else:
-            replayed, approximant = rec, rec['approximant']
+            source, approximant = 'replay', rec['approximant']
             ests.update(rec['ests'])
             out = (rec['est'], rec['cap'], out[2], out[3], dict(out[4], stop=rec['stop']))
             if verbose:
                 print(f"[delay] Pade order n = {rec['n']} from the order cache")
+    elif recs:
+        # another entry searched at this model and point: start its own search
+        # at the smallest cached order and the one before it
+        base = min(recs.values(), key=lambda r_: r_['n'])
+        n0 = base['n']
+        seq2 = [n0] + [n_ for n_ in seq if n_ > n0]
+        if n0 in seq and seq.index(n0) > 0:
+            seq2 = [seq[seq.index(n0) - 1]] + seq2
+        try:
+            out = _run_orders(model, sub_call, seq2, opts, k, exact, loops_need_n, ctx,
+                              runs, walls, skipped, failed, ests, verbose, call,
+                              proper=base['approximant'] == 'pade_proper')
+        except Exception:
+            out = None
+        if out is None or out[2] is None or out[3]:
+            out = None                      # incomplete or unusable: search afresh
+            for dct in (runs, walls, skipped, failed, ests):
+                dct.clear()
+        else:
+            source, approximant = 'verified', base['approximant']
+            if verbose:
+                print(f'[delay] Pade search for this entry started at the cached n = {n0}')
     if out is None:
         if bare:
             with warnings.catch_warnings(record=True) as w_first:
@@ -1125,11 +1188,11 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         cap = cap or 'a single order was run (no doubling estimate)'
         if ctrl['stop'].startswith('n_max'):
             ctrl['stop'] = cap
-    if replayed is None and cache_key is not None and not incomplete:
-        _order_cache_put(cache_key, dict(
+    if source != 'replay' and cache_key is not None and not incomplete:
+        _order_cache_put(cache_key, entry, dict(
             n=n_used, approximant=approximant, trunc=ctrl['truncation_by_order'].get(n_used),
             est=est, ests=dict(ests), cap=cap, stop=ctrl['stop']))
-    ctrl['order_from_cache'] = replayed is not None
+    ctrl['order_source'] = source
     _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
             t_all, ctrl, approximant)
@@ -1363,9 +1426,12 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'predicted_walls_s': ctrl['predicted_walls_s'],
         'cost_correction': ctrl['cost_correction'],
         'stop_reason': ctrl['stop'],
-        # True: the order was replayed from an earlier search (order_cache),
-        # est_rel_error / target_met are that search's
-        'order_from_cache': bool(ctrl.get('order_from_cache')),
+        # 'search'; 'replay': this entry's earlier search at this model and point
+        # (order_cache), its estimate and target; 'verified': the search of another
+        # entry started the ladder at the cached order (the estimate is this
+        # entry's own)
+        'order_source': ctrl.get('order_source', 'search'),
+        'order_from_cache': ctrl.get('order_source', 'search') != 'search',
         # k >= 3: the time unit of the controller's sample points of total_C
         'sample_time_scale': ctrl.get('sample_time_scale'),
     }

@@ -1931,9 +1931,9 @@ def compute_cumulants(
         default 4 / 16), ``wall_max`` (cap in s on the predicted wall time of
         the next order, default 900), ``tree`` (``'exact'``, default: the
         k = 2 tree from the exact delayed covariance; ``'pade'``),
-        ``order_cache`` (default ``True``: the order an automatic search chose
-        is replayed for later calls at the same model, parameter point and
-        options; ``False`` searches every call).  Ignored
+        ``order_cache`` (default ``True``: an entry's repeated call replays its
+        search; another entry at the same model and parameter point starts its
+        own search at the cached order; ``False`` searches every call).  Ignored
         for models without delays.  The result then carries
         ``result['delay']``.
 
