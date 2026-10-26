@@ -18,7 +18,7 @@ paths (numpy; no processes):
   ``x += (rhs - b x)/a dt`` (+ its Gaussian sources, ``sqrt(var dt)``, with
   the Ito drift correction under ``'stratonovich'``/``'marcus'``), a spike
   train in ``rhs`` contributing its count (a jump);
-* a jump source coupled to fields (``noise(..., couples=...)``) draws its
+* a jump source coupled to fields (``noise(..., into=...)``) draws its
   increment ``dL`` over the step (rates read at the start of the step):
   Ito moves the state by ``c(x) dL / a``; Marcus moves it along the flow of
   ``c/a`` for the time ``dL`` (exact for an affine coupling, a DOP853

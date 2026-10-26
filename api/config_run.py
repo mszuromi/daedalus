@@ -44,7 +44,8 @@ noise and the action are derived exactly as for a Python-built model)::
       fields: [x]
       drift: {x: "-mu*x - eps*x^3"}   # or equations: {x: {lhs: ..., rhs: ...}}
       noise:                          # type = a class of api.noise, the rest are its arguments
-        xi: {type: Gaussian, var: "2*D", couples: {x: 1}}
+        xi: {type: Gaussian, var: "2*D", into: {x: 1}}   # couples: is the former name
+                                      # (interpretation: per source, optional)
       interpretation: ito             # or stratonovich, marcus
       series_order: 8                 # Taylor / Marcus series order of a jump source
       marcus_route: auto              # or series (marcus: exact for affine couplings)
@@ -333,9 +334,17 @@ class _Parser:
                 self.fail(vnode, f"sde.noise.{nname}: 'type' must be one of "
                                  f'{", ".join(SDE_NOISE_TYPES)}; got '
                                  f'{d.get("type")!r}')
-            if not isinstance(d.get('couples'), dict) or not d['couples']:
-                self.fail(vnode, f"sde.noise.{nname}: 'couples' must be a "
+            if 'into' in d and 'couples' in d:
+                self.fail(vnode, f"sde.noise.{nname}: give 'into' or 'couples' (the "
+                                 'same), not both')
+            key = 'into' if 'into' in d or 'couples' not in d else 'couples'
+            if not isinstance(d.get(key), dict) or not d[key]:
+                self.fail(vnode, f"sde.noise.{nname}: 'into' must be a "
                                  'mapping {field: coefficient}')
+            if 'interpretation' in d and d['interpretation'] not in (
+                    'ito', 'stratonovich', 'marcus'):
+                self.fail(vnode, f'sde.noise.{nname}.interpretation must be ito, '
+                                 f"stratonovich or marcus; got {d['interpretation']!r}")
             spec['noise'][nname] = (d, knode.start_mark.line + 1)
         if 'interpretation' in items:
             v = self.string(items['interpretation'][1], 'sde.interpretation')
@@ -656,7 +665,7 @@ def _noise_object(desc):
     from api import noise as N
     args = {}
     for key, value in desc.items():
-        if key in ('type', 'couples'):
+        if key in ('type', 'couples', 'into', 'interpretation'):
             continue
         if isinstance(value, dict) and 'type' in value:
             law = getattr(N, str(value['type']), None)
@@ -701,7 +710,8 @@ def _build_sde(raw):
         at(line, lambda f=f, eq=eq: s.equation(f, **eq))
     for name, (desc, line) in spec['noise'].items():
         def add(name=name, desc=desc):
-            s.noise(name, _noise_object(desc), couples=desc['couples'])
+            s.noise(name, _noise_object(desc), into=desc.get('into', desc.get('couples')),
+                    interpretation=desc.get('interpretation'))
         at(line, add)
     if 'interpretation' in spec:
         s.interpretation(spec['interpretation'])
