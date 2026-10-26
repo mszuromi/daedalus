@@ -246,7 +246,8 @@ def test_delay_auto_order_unchanged_by_discard():
          .parameter('b', default=0.3).parameter('D', default=0.1)
          .field('x').drift('x', '-a*x + c*x(t - d) - b*x^2')
          .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
-    kw = dict(parallel=False, delay={'tol': 5e-5})
+    # both runs search: the order cache would start the second one at the first's order
+    kw = dict(parallel=False, delay={'tol': 5e-5, 'order_cache': False})
     a = _cc(m, 3, 0, tau_grid=np.array([0.0]), **kw)
     b = _cc(m, 3, 0, tau_grid=np.array([0.0]), discard=True, **kw)
     assert b['delay']['n'] == a['delay']['n']

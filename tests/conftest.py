@@ -64,6 +64,17 @@ def shuffle_diagram_order(monkeypatch):
     apply_diagram_order(monkeypatch, 'shuffle', seed=1)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_delay_order_cache():
+    """A delayed model's automatic Pade order is cached for the process
+    (``api.delay``); a test that asserts the order search starts from none."""
+    import sys
+    mod = sys.modules.get('api.delay')
+    if mod is not None:
+        mod.clear_order_cache()
+    yield
+
+
 # ── Sage assumption guard ────────────────────────────────────────────────
 # Sage symbols and their assumptions are GLOBAL: a test that removes an
 # assumption others hold, or leaves a symbol with conflicting domains, makes
