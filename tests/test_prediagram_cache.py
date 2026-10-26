@@ -698,19 +698,17 @@ def test_v1_and_v2_totals_agree_to_rounding_k2(ell, tmp_path, monkeypatch):
 
 
 def test_leaf_swap_reproduces_the_v2_total_bit_for_bit(tmp_path, monkeypatch):
-    """The residual v1/v2 gap IS leaf order, and nothing else.
+    """Swapping two leaves of the v1 records does not change the total: it
+    equals the v2 total bit for bit.
 
-    Take the v1 records at (k=2, ell=1), swap leaf 0 with leaf 1 and change
-    nothing else, and the total becomes the v2 total exactly --- same bits.
-    That identifies the gap as IEEE rounding in a leaf-ordered integrand
-    assembly, not as a diagram the v2 format got wrong.
+    The v1/v2 gap used to be one ULP of leaf-ordered integrand assembly; on the
+    box-free routes v1 and v2 agree at this point, so the swap only has to
+    leave the bits where they are.  The claim holds in both cases (a gap
+    closed by the swap, or no gap to close), so there is no skip.
     """
     from sage.all import DiGraph, Graph
 
-    taus = [3.0]                       # where the last bit actually differs
-    # The documented 1-ULP example was measured on the boxed routes retired
-    # in audit W7; on the box-free routes v1 and v2 may agree bit for bit at
-    # this point, which leaves nothing to demonstrate (the skip below).
+    taus = [3.0]
     ctx = _ctx(2, 1, 'pdcache-leafswap')
     v1, v2 = _both_sources(ctx, 2, 1, monkeypatch, tmp_path)
 
@@ -733,13 +731,10 @@ def test_leaf_swap_reproduces_the_v2_total_bit_for_bit(tmp_path, monkeypatch):
     t_v2 = _total(ctx, _stages(ctx, v2)['unique'], taus)
     t_swap = _total(ctx, _stages(ctx, [swap_leaves(r) for r in v1])['unique'],
                     taus)
-    # The claim under test: leaf order accounts for the gap COMPLETELY.
+    # The claim under test: leaf order accounts for the gap COMPLETELY (and
+    # no gap is left to account for when v1 already equals v2).
     assert [x.hex() for x in t_swap] == [x.hex() for x in t_v2], (
-        f'leaf swap gave {t_swap}, v2 gave {t_v2}')
-    if t_v1 == t_v2:
-        pytest.skip('v1 and v2 now agree bit for bit here; the demonstration '
-                    'is vacuous but nothing is wrong -- re-derive the '
-                    'documented 1-ULP example if this persists')
+        f'leaf swap gave {t_swap}, v2 gave {t_v2}; v1 gave {t_v1}')
 
 
 def test_compute_cumulants_agrees_through_the_real_wiring(tmp_path,

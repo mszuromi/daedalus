@@ -684,6 +684,20 @@ def _content_key(K, om):
     return ck
 
 
+def release_solve_data():
+    """Drop the resolvent data (the ``lam`` tensors of the active-edge
+    patterns) that the cached realizations keep: a run that evaluated its
+    diagrams and released them (``discard``) has no callable left to use it,
+    and a later run rebuilds it on first use."""
+    with _REAL_LOCK:
+        cached = [v[1] for v in _REAL_CACHE.values()]
+    seen = set()
+    for ops in cached:
+        if ops is not None and id(ops) not in seen:
+            seen.add(id(ops))
+            ops.release_solve_data()
+
+
 def _clear_caches():
     """Drop the realization and dense-generator caches (tests)."""
     with _REAL_LOCK:
@@ -1079,6 +1093,12 @@ class _ModelOps:
         return (np.asarray(ar, dtype=self.dtype),
                 np.asarray(br, dtype=self.dtype).reshape(-1),
                 np.asarray(cr, dtype=self.dtype).reshape(-1))
+
+    def release_solve_data(self):
+        """Drop the resolvent data of every active-edge pattern (rebuilt on
+        first use, bit-identically: it is a function of the entries only)."""
+        with self._lock:
+            self._solve_data = {}
 
     def solve_data(self, ents):
         """Resolvent data for a tensor whose axes carry the entries ``ents``
