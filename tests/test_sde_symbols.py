@@ -60,24 +60,24 @@ def test_declarations_still_chain():
     assert isinstance(out, SDE)
     assert digest(out) == digest(_ouq_strings())
     # the colliding names: operator(name, op) and show() are the builder's
-    op = SDE('o').field('u').operator('dt', TimeDerivative())
-    assert isinstance(op, Symbol) and 'dt' in op._operators
+    op = SDE('o').field('u').operator('D_t', TimeDerivative())
+    assert isinstance(op, Symbol) and 'D_t' in op._operators
 
 
 def test_operators_functions_kernels_and_exposed_sources_as_symbols():
     m = SDE('ops')
-    dt = m.operator('dt', TimeDerivative())
+    D_t = m.operator('D_t', TimeDerivative())
     tau, E = m.parameter('tau', default=2.0), m.parameter('E', default=0.5)
     v = m.field('v')
-    m.equation(v, (tau*dt + 1)*v, E).noise('n', Gaussian(var=1), into={v: 1})
-    s = (SDE('ops').operator('dt', TimeDerivative()).parameter('tau', default=2.0).parameter('E', default=0.5)
-         .field('v').equation('v', '(dt*tau + 1)*v', 'E').noise('n', Gaussian(var=1), into={'v': 1}))
+    m.equation(v, (tau*D_t + 1)*v, E).noise('n', Gaussian(var=1), into={v: 1})
+    s = (SDE('ops').operator('D_t', TimeDerivative()).parameter('tau', default=2.0).parameter('E', default=0.5)
+         .field('v').equation('v', '(D_t*tau + 1)*v', 'E').noise('n', Gaussian(var=1), into={'v': 1}))
     assert digest(m) == digest(s)
     m2 = SDE('call')
-    dt = m2.operator('dt', TimeDerivative())
+    D_t = m2.operator('D_t', TimeDerivative())
     x = m2.field('x')
-    m2.equation(x, dt(x), -x)
-    assert m2._eqs['x']['lhs_raw'] == 'dt(x)'                       # a call, not Sage's substitution
+    m2.equation(x, D_t(x), -x)
+    assert m2._eqs['x']['lhs_raw'] == 'D_t(x)'                       # a call, not Sage's substitution
     # a function, a kernel and an exposed source
     h = SDE('hawkes')
     a, w, taug = h.parameter('a', default=1.0), h.parameter('w', default=0.3), h.parameter('taug', default=1.0)
@@ -104,14 +104,14 @@ def test_point_process_and_spde_with_symbols():
          .drift('v', '-v + Conv(r, n)'))
     assert digest(m) == digest(s)
     a = SDE('ac', space=1)
-    dt, lap = a.operator('dt', TimeDerivative()), a.operator('lap', Laplacian())
+    D_t, lap = a.operator('D_t', TimeDerivative()), a.operator('lap', Laplacian())
     D, mu, T = (a.parameter(p, default=1.0, domain='positive') for p in ('D', 'mu', 'T'))
     phi = a.field('phi')
-    a.equation(phi, dt(phi), D*lap(phi) - mu*phi).noise('eta', Gaussian(var=2*T, space='white'), into={phi: 1})
-    b = (SDE('ac', space=1).operator('dt', TimeDerivative()).operator('lap', Laplacian())
+    a.equation(phi, D_t(phi), D*lap(phi) - mu*phi).noise('eta', Gaussian(var=2*T, space='white'), into={phi: 1})
+    b = (SDE('ac', space=1).operator('D_t', TimeDerivative()).operator('lap', Laplacian())
          .parameter('D', default=1.0, domain='positive').parameter('mu', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive').field('phi')
-         .equation('phi', 'dt(phi)', '-mu*phi + D*lap(phi)').noise('eta', Gaussian(var='2*T', space='white'),
+         .equation('phi', 'D_t(phi)', '-mu*phi + D*lap(phi)').noise('eta', Gaussian(var='2*T', space='white'),
                                                                 into={'phi': 1}))
     assert digest(a) == digest(b)
 

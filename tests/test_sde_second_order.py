@@ -83,8 +83,8 @@ def test_embedding_is_the_hand_written_first_order_system():
     assert da['model'] == db['model']
     assert a.notes[0].startswith("equation('x'): order-2 lhs")
     # a noise declared before the equation is moved to the top derivative too, and the operator spelling counts
-    c = _osc().operator('dt', TimeDerivative()).field('x').noise('xi', Gaussian(var='2*D'), into={'x': 1}) \
-        .equation('x', 'mass*dt^2*x + gam*dt*x + k*x', '-0.1*x^3')
+    c = _osc().operator('D_t', TimeDerivative()).field('x').noise('xi', Gaussian(var='2*D'), into={'x': 1}) \
+        .equation('x', 'mass*D_t^2*x + gam*D_t*x + k*x', '-0.1*x^3')
     assert c._sources['xi']['couples'] == {'xdot': 1}
     assert c.equations() == a.equations()
     # one loop on a nonlinear oscillator runs and matches the hand-written system

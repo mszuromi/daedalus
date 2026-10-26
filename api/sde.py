@@ -12,7 +12,8 @@ where ``lhs_x`` is the linear differential operator on ``x`` (contains
 ``Dt``: ``'Dt*x'``, ``'(tau*Dt + 1)*v'``), ``rhs_x`` is everything
 deterministic (fields, parameters, defined functions, kernels), and the
 noise sources ``eta_a`` (:mod:`api.noise`) couple in through
-``into={field: coefficient}`` (``couples=`` is its former name).  The
+``into={field: coefficient}`` (the coefficient ``c_xa``, not a population; ``couples=``
+is its former name).  The
 derived action is
 
     S = sum_x xt*(lhs_x - rhs_x) - sum_a K_a( sum_x c_xa*xt )
@@ -89,7 +90,7 @@ gives the same model.
 Higher-order equations and pure integrators
 -------------------------------------------
 An lhs of order ``N > 1`` in the time derivative, a polynomial acting on the
-field alone (``(m*Dt^2 + gamma*Dt + k)*x``, ``m*dt^2*x + ...``), is embedded as
+field alone (``(m*Dt^2 + gamma*Dt + k)*x``, ``m*D_t^2*x + ...`` with a declared ``D_t``), is embedded as
 a first-order system, which is what the engine takes (the MSR action is first
 order in ``Dt``): the velocities ``xdot`` (``xddot``, ...; or
 ``equation(..., velocity=...)``) are declared as fields, ``Dt*x = xdot``, and
@@ -143,12 +144,14 @@ Declared operators and SPDEs
 The operators an equation uses are named with :meth:`SDE.operator` and the
 objects of :mod:`api.operators`.  ``Dt`` is a ``TimeDerivative`` declared by
 default, so a model that never declares an operator is unchanged; declaring
-the time derivative under another name renames it (``Dt`` is then refused).
-Each operator is written in product style (``(tau*dt + 1)*x``, ``D*lap*u``)
-or call style (``dt(x)``, ``lap(u)``): ``dt(x)`` is ``Dt*x``, byte for byte.
-An operator name may not collide with a field (or its ``xt`` / ``dx`` /
-``xstar``), parameter, function, kernel or population, nor with a built-in
-name.
+the time derivative under another name renames it (``Dt`` is then refused);
+``∂t`` (or ``∂_t``) in an equation is the time derivative too.  Each operator
+is written in product style (``(tau*Dt + 1)*x``, ``D*lap*u``) or call style
+(``Dt(x)``, ``lap(u)``): ``Dt(x)`` is ``Dt*x``, byte for byte.  An operator
+name may not collide with a field (or its ``xt`` / ``dx`` / ``xstar``),
+parameter, function, kernel or population, nor with a built-in name, nor
+with an increment of the paper-style syntax (``dt``, ``dW``, ``dN``,
+``dW_<name>``, ``d<X>_<name>``; a field's ``dx`` already counts).
 
 A ``Laplacian`` (or ``SDE(name, space=d)``) makes the model an SPDE in ``d``
 dimensions, built for the spatial pipeline as by hand with
@@ -159,13 +162,13 @@ of :meth:`SDE.boundary` (default infinite) and a stationary initial
 condition::
 
     m = (SDE('Allen-Cahn', space=1)
-         .operator('dt', TimeDerivative()).operator('lap', Laplacian())
+         .operator('lap', Laplacian())
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
          .parameter('lam', default=0.1, domain='positive')
          .parameter('T', default=1.0, domain='positive')
          .field('phi')
-         .equation('phi', lhs='dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
+         .equation('phi', lhs='Dt(phi)', rhs='D*lap(phi) - mu*phi - lam*phi^3')
          .noise('eta', Gaussian(var='2*T', space='white'), into={'phi': 1})
          .build())
 
@@ -404,6 +407,7 @@ _CANONICAL_OPS = {'Dt', 'Laplacian', 'Lap'}
 _NO_OPERATOR = ((_KEYWORDS | {'theta', 't', 'i', 'j', 'k', 'l', 'pop', 'pop_all', 'Dx', 'omega'}
                  | set(_SAGE_PRINTED_CALLS)) - _CANONICAL_OPS)
 _NO_DECLARE = _KEYWORDS | {'theta', 't'}
+_UNICODE_DT = ('∂t', '∂_t')
 _NO_POPULATION = {'Dt', 'Conv', 'theta', 't'}
 
 
@@ -907,24 +911,33 @@ class SDE:
     def operator(self, name: str, op):
         """Declare the operator ``op`` (:mod:`api.operators`) under ``name``.
 
-        ``m.operator('dt', TimeDerivative())`` names the time derivative ``dt``
+        ``m.operator('D_t', TimeDerivative())`` names the time derivative ``D_t``
         (it replaces the default ``Dt``, which is then no longer accepted);
         ``m.operator('lap', Laplacian())`` declares the spatial Laplacian, which
         makes the model an SPDE (``SDE(name, space=d)``).  An operator is
-        written in product style (``(tau*dt + 1)*x``, ``D*lap*u``) or call style
-        (``dt(x)``, ``lap(u)``, ``lap(u^2)``).  Declare an operator before the
+        written in product style (``(tau*Dt + 1)*x``, ``D*lap*u``) or call style
+        (``Dt(x)``, ``lap(u)``, ``lap(u^2)``).  Declare an operator before the
         equations that use it.  Its name must be a Python identifier that no
         field, response field, parameter, function, kernel or population of the
-        model takes; ``Dt`` is reserved for the time derivative, ``Laplacian``
-        and ``Lap`` for the Laplacian.  Returns its
-        :class:`~api.sde_symbols.Symbol` (``dt(x)`` and ``(tau*dt + 1)*x``
-        are then Sage expressions)."""
+        model takes; ``Dt`` is reserved for the time derivative (``∂t`` names it
+        too), ``Laplacian`` and ``Lap`` for the Laplacian, and the paper-style
+        increments (``dt``, ``dW``, ``dN``, ``dW_<name>``, ``d<X>_<name>``)
+        cannot be operators.  Returns its :class:`~api.sde_symbols.Symbol`
+        (``lap(u)`` and ``(tau*D_t + 1)*x`` are then Sage expressions)."""
         if isinstance(op, type) and issubclass(op, Operator):
             op = op()
+        if str(name) in _UNICODE_DT and isinstance(op, TimeDerivative):
+            name = 'Dt'                 # ∂t: the default time derivative's own spelling
         if not isinstance(op, Operator):
             raise SDEError(f'operator({name!r}): give an operator from api.operators '
                            f'(TimeDerivative(), Laplacian()); got {type(op).__name__}.')
         name = str(name)
+        if name == 'dt' or re.fullmatch(r'd[WN]|d[A-Z]_\w+', name):
+            raise SDEError(
+                f'operator({name!r}): {name!r} is an increment of the paper-style syntax '
+                f'(dx = f dt + g dW + c dN(rate), SDE.sde), so it cannot name an operator; '
+                f'the time derivative is Dt (the default, also spelled ∂t in equations), and '
+                f'another operator takes another name (e.g. lap, D_t).')
         if not name.isidentifier() or keyword.iskeyword(name) or '__' in name:
             raise SDEError(f'operator({name!r}): an operator name must be a Python identifier '
                            f'(e.g. dt, lap, Δ) without a double underscore.')
@@ -1034,6 +1047,7 @@ class SDE:
         into ``x`` (``noise(..., into={'x': c})`` is the force ``c*eta``)."""
         field = as_name(field)
         lhs, rhs = (v if isinstance(v, str) else str(as_text(v)) for v in (lhs, rhs))
+        lhs, rhs = self._unicode_dt(lhs), self._unicode_dt(rhs)
         info = self._fields.get(field) or {}
         user = not (info.get('embedded_of') or info.get('colored_of'))
         out = self._equation(field, lhs, rhs, velocity)
@@ -1091,6 +1105,13 @@ class SDE:
                             'rhs': self._translate(rhs, 'v1', where=f'equation({field!r}) rhs'),
                             'lhs_raw': lhs, 'rhs_raw': rhs}
         return self
+
+    def _unicode_dt(self, text: str) -> str:
+        """``∂t`` / ``∂_t`` -> the model's time derivative (``Dt`` unless renamed)."""
+        if '∂' not in text:
+            return text
+        t0 = (self._time_names() or ['Dt'])[0]
+        return re.sub(r'∂_?t(?!\w)', t0, text)
 
     def _lhs_orders(self, field: str, lhs: str):
         """The coefficients ``[c_0, ..., c_N]`` of ``lhs = sum_n c_n Dt^n x``
@@ -1294,9 +1315,10 @@ class SDE:
               *, expose: Optional[str] = None, domain: Optional[str] = None,
               population: Optional[str] = None, into: Optional[dict] = None,
               interpretation: Optional[str] = None, as_field: Optional[str] = None):
-        """Declare a noise source ``name`` feeding ``into={field: c}``
-        (``dx_field += c * d eta``; fields and coefficients may be symbols and
-        Sage expressions).  ``as_field='n'`` exposes it as the field ``n``
+        """Declare a noise source ``name`` feeding ``into={field: c}``: ``c`` is
+        the coupling COEFFICIENT of the noise in that field's equation
+        (``dx_field += c * d eta``), not a population index; fields and
+        coefficients may be symbols and Sage expressions.  ``as_field='n'`` exposes it as the field ``n``
         (use ``n`` in the equations' rhs) and returns the symbol of ``n``;
         otherwise the builder is returned.  An SPDE takes space-time white
         Gaussian noise, ``Gaussian(var=..., space='white')``.
@@ -1655,7 +1677,7 @@ class SDE:
         """``text`` with the declared operator names in the engine's spelling.
 
         ``style='v1'``: the plain multiplicative symbols (``Dt``, ``Laplacian``):
-        product style ``dt*x`` -> ``Dt*x``, call style ``dt(x)`` -> ``Dt*x``
+        product style ``D_t*x`` -> ``Dt*x``, call style ``D_t(x)`` -> ``Dt*x``
         (parenthesised where precedence needs it).  ``style='ir'``: the spatial
         operator IR calls (``Dt(u)``, ``Lap(u^2)``); a product-style use is
         left as a placeholder for :meth:`_ir_text`.  ``info`` collects the
@@ -1762,7 +1784,7 @@ class SDE:
             raise SDEError(f'{where}: cannot read the operator argument ({exc}).') from exc
         xs = [x for x in self._field_syms() if E.has(x)]
         if not xs:
-            # (dt(mu), lap(c): zero, or a symbol the engine would misread)
+            # (Dt(mu), lap(c): zero, or a symbol the engine would misread)
             raise SDEError(f'{where} acts on no field; an operator acts on the '
                            f"model's fields (e.g. lap(u), lap(u^2)).")
         lam = SR.var('_lin_scale')

@@ -332,6 +332,7 @@ def apply_paper(sde, text: str, noises: Optional[dict] = None):
         raise SDEError(f"sde(): the model has interpretation({sde._interp!r}); paper-style "
                        f"terms carry their own (a plain dW is Ito, ∘dW Stratonovich, ∘dN "
                        f"Marcus): drop interpretation(...) and mark the terms.")
+    text = sde._unicode_dt(str(text))          # ∂t: the time derivative of an operator form
     noises = dict(noises or {})
     for k, v in noises.items():
         if not isinstance(v, NoiseSource):
