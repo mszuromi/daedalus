@@ -54,6 +54,12 @@ def _noise_value(coeff, sub, exp_vec):
         return complex(val)
     except (TypeError, ValueError):
         left = sorted(str(v) for v in val.free_variables())
+        if {'Laplacian', 'GradX'} & set(left):
+            from engine.integration.spatial import CONSERVED_NOISE_WHY
+            raise SpatialPropagatorError(
+                f'noise coefficient {coeff} (monomial exponents {tuple(exp_vec)}) '
+                f'depends on the momentum (an operator in the response-field '
+                f'noise term): {CONSERVED_NOISE_WHY}.')
         raise SpatialPropagatorError(
             f'noise coefficient {coeff} (monomial exponents {tuple(exp_vec)}) '
             f'does not reduce to a number: leftover symbol(s) {left}.  Supply '

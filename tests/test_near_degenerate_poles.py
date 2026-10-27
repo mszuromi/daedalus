@@ -344,3 +344,15 @@ def _pole_engine_s3():
     with pytest.MonkeyPatch.context() as mp_:
         mp_.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
         yield
+
+
+def test_mpmath_root_and_value_helpers_warn_nothing():
+    """mpmath >= 1.4 warns (DeprecationWarning) on descending coefficients without asc=; the helpers pass
+    ascending ones (asc=True where supported) and give the same numbers as the descending call."""
+    asc = [mp.mpf(-6), mp.mpf(11), mp.mpf(-6), mp.mpf(1)]          # (x - 1)(x - 2)(x - 3)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        roots = sorted(PC._roots(asc), key=lambda r: float(mp.re(r)))
+        val = PC._polyval_asc(asc, mp.mpf('2.5'))
+    assert [float(mp.re(r)) for r in roots] == pytest.approx([1.0, 2.0, 3.0], abs=1e-12)
+    assert val == PC._horner(asc, mp.mpf('2.5')) == mp.mpf('-0.375')

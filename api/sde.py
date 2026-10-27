@@ -187,8 +187,20 @@ refused with a Laplacian, never dropped: populations, kernels and delays
 or time-only noise, the Stratonovich and Marcus rules, and the SDE simulator.
 Everything the spatial pipeline refuses (UV-divergent subgraphs, periodic
 loops, switch-on transients, ...) it refuses for these models as for the
-hand-written ones.  Conserved noise (``div`` of a white vector noise) is not
-supported yet.
+hand-written ones.
+
+Conserved noise (``div`` of a white vector noise, ``Gaussian(var,
+space='conserved')``, noise spectrum ``var |q|^2``) is refused, in each form
+it can be written (``space='conserved'``, an operator in a noise coefficient,
+``div(eta)``, an operator on a response field in :meth:`extra_action`, or a
+hand-written action whose response-field quadratic term holds a Laplacian):
+the spatial integrator takes momentum-independent noise only.  Its tree heat
+kernels and its loop integral (the Symanzik reduction of one constant noise
+vertex per correlation line) would need a ``|q|^2`` factor on every
+correlation line, and the Model B dynamics that conserved noise belongs to
+(``Dt u = lap(r u + g u^3 - K lap(u)) + div(eta)``) need two more things the
+spatial pipeline refuses: the ``k^4`` propagator of ``lap(lap(u))`` and the
+conserved vertex ``lap(u^3)`` (field-degree 3).
 
 Paper-style equations and per-source interpretations
 ----------------------------------------------------
@@ -1071,12 +1083,15 @@ class SDE:
         for n in self._operators:
             if not (n == 'Dt' and self._dt_implicit) and self._has_token(text, n):
                 shown = ' '.join(str(text).split())
+                hint = (f'move the operator to the equation\'s lhs/rhs, e.g. '
+                        f'{n}(x) or {n}*x, not inside a function argument or a coefficient')
+                if where.startswith('noise(') and self._operators[n].spatial:
+                    from engine.integration.spatial import CONSERVED_NOISE_WHY
+                    hint = CONSERVED_NOISE_WHY
                 raise SDEError(format_caret_error(
                     shown, max(self._token_at(shown, n), 0),
                     f'{where} uses the operator {n!r}; operators act in the equations '
-                    f'only.',
-                    f'move the operator to the equation\'s lhs/rhs, e.g. '
-                    f'{n}(x) or {n}*x, not inside a function argument or a coefficient'))
+                    f'only.', hint))
 
     # ── dynamics ──────────────────────────────────────────────────────
     def equation(self, field: str, lhs: str, rhs: str = '0', *, velocity=None):
@@ -1840,6 +1855,10 @@ class SDE:
         except NoiseError as exc:
             raise SDEError(f'{where}: cannot read the operator argument ({exc}).') from exc
         xs = [x for x in self._field_syms() if E.has(x)]
+        if not xs and any(self._has_token(text_v1, f + 't') for f in self._fields):
+            from engine.integration.spatial import CONSERVED_NOISE_WHY
+            raise SDEError(f'{where} acts on a response field (a noise term with an '
+                           f'operator): {CONSERVED_NOISE_WHY}.')
         if not xs:
             # (Dt(mu), lap(c): zero, or a symbol the engine would misread)
             raise SDEError(f'{where} acts on no field; an operator acts on the '
@@ -1915,11 +1934,16 @@ class SDE:
             if at < 0:
                 shown, at = ' '.join(str(text).split()), self._token_at(' '.join(str(text).split()), first)
             more = [u for u in unknown if u != first]
+            hint = self._name_hint(first, allowed, shown, at)
+            if first in ('div', 'grad', 'nabla') and (
+                    self._space is not None
+                    or any(op.spatial for op in self._operators.values())):
+                from engine.integration.spatial import CONSERVED_NOISE_WHY
+                hint = CONSERVED_NOISE_WHY
             raise SDEError(format_caret_error(
                 shown, max(at, 0),
                 f'{what}: undeclared symbol {first!r}'
-                + (f' (also undeclared: {more})' if more else ''),
-                self._name_hint(first, allowed, shown, at)))
+                + (f' (also undeclared: {more})' if more else ''), hint))
 
     def _source_error(self, name, src, allowed, exc) -> SDEError:
         """The undeclared symbol of a noise source's parameter, with a caret
