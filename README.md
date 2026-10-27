@@ -168,7 +168,10 @@ res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('phi', 1), 
 
 A Laplacian of an expression (`g*lap(phi^2)`, a conserved derivative vertex) is supported, through the spatial
 operator IR. Temporal-only features with a Laplacian are refused, not dropped: populations, kernels and delays, point
-processes, non-Gaussian noise, and the Stratonovich and Marcus rules.
+processes, non-Gaussian noise, and the Stratonovich and Marcus rules. Conserved noise (`Gaussian(var, space='conserved')`, the
+divergence of a white vector noise) is refused in every form it can be written: the spatial integrator carries one
+constant noise vertex per correlation line, and Model B dynamics also need the `k^4` propagator of `lap(lap(u))` and
+the `lap(u^3)` vertex, which it refuses too.
 
 Before computing anything, an `SDE` can show what it derived. `m.check()` prints and returns a report (a dict) with the
 declarations, the derived action split by origin (one term per field and per noise source), the mean-field equations,
