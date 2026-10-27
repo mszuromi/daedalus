@@ -43,7 +43,7 @@ def _lin(d, mu, D, T, bc='infinite', L=None):
          .parameter('T', default=T, domain='positive'))
     if L is not None:
         b = b.parameter('L', default=L, domain='positive')
-    b = (b.equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+    b = (b.mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
          .set_action_text('phit*((Dt + mu - D*Laplacian)*phi) - T*phit^2'))
     b = b.boundary('periodic', length='L') if bc == 'periodic' else b.boundary('infinite')
     return b.initial('stationary').build()
@@ -134,7 +134,7 @@ def _coupled(d, bc='infinite', L=None):
     if L is not None:
         b = b.parameter('L', default=L, domain='positive')
     b = (b.set_action_text(f'at*({ea}) + bt*({eb}) - Ta*at^2 - Tb*bt^2')
-         .equation(lhs=ea, rhs='0').equation(lhs=eb, rhs='0'))
+         .mf_residual(lhs=ea, rhs='0').mf_residual(lhs=eb, rhs='0'))
     b = b.boundary('periodic', length='L') if bc == 'periodic' else b.boundary('infinite')
     return b.initial('stationary').build()
 
@@ -198,7 +198,7 @@ def test_d1_one_loop_unequal_times_exact():
          .parameter('D', default=D, domain='positive')
          .parameter('T', default=T, domain='positive')
          .parameter('lam', default=lam)
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi + lam*phi^3', rhs='0')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi + lam*phi^3', rhs='0')
          .set_action_text(
              'phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
          .boundary('infinite').initial('stationary').build())
@@ -268,7 +268,7 @@ def test_mc_backend_warns_on_derivative_vertices(monkeypatch):
          .parameter('D', default=1.0, domain='positive')
          .parameter('c', default=0.2)
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
          .set_action_text('phit*(Dt(phi)+mu*phi-D*Lap(phi)-c*Lap(phi^2))-T*phit^2')
          .operator_ir().boundary('infinite').initial('stationary').build())
     with pytest.warns(RuntimeWarning, match='BIASED'):

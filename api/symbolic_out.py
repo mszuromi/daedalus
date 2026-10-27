@@ -128,7 +128,7 @@ __all__ = [
     'from_sympy', 'to_latex', 'to_callable', 'to_json', 'from_json',
     # stage C2
     'AssumptionViolation', 'Mode', 'RootOf', 'Assumption', 'ModeSum',
-    'PairingKernel', 'Kernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
+    'PairingKernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
     # stage C3 (api.symbolic_loop; resolved lazily, see __getattr__)
     'symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
     'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning',
@@ -3066,10 +3066,6 @@ class PairingKernel:
         return [SR(x) for t in self.terms for x in (t.coeff, t.rate)]
 
 
-
-#: Deprecated alias of :class:`PairingKernel` (renamed: ``api.delay.Kernel`` is a
-#: different class, a delay/kernel *image* builder).  Kept so existing code works.
-Kernel = PairingKernel
 
 @dataclass
 class KernelIntegral:

@@ -931,7 +931,7 @@ def resolve(raw, model, mod):
         raise ConfigError(
             src, qlines['external_fields'],
             f'k={k} (line {qlines["k"]}) but external_fields lists {len(ext)} '
-            f'leg(s); a k-point correlator needs exactly k legs')
+            f'leg(s); a k-point cumulant needs exactly k legs')
     if k is None:
         k = len(ext) if ext is not None else dd._meta(mod, 'k_default', 2)
     max_ell = q.get('max_ell')

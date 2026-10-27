@@ -26,7 +26,7 @@ def build():
         .parameter('D', default=1.0, domain='positive')
         .set_action_text(
             'sum(xt[i]*((Dt+mu)*x[i] + eps*x[i]^3) - D*xt[i]^2 for i in pop)')
-        .equation(lhs='(Dt+mu)*x[i]', rhs='-eps*x[i]^3', population='pop')
+        .mf_residual(lhs='(Dt+mu)*x[i]', rhs='-eps*x[i]^3', population='pop')
         .build()
     )
 

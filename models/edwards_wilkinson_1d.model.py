@@ -26,7 +26,7 @@ def build():
         .parameter('D',  default=2.0, domain='positive')
         .parameter('T',  default=1.0, domain='positive')
         .set_action_text('phit*((Dt + mu - D*Laplacian)*phi) - T*phit^2')
-        .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
         .boundary('infinite')
         .initial('stationary')
         .build()

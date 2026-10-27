@@ -1,6 +1,6 @@
 """Contributing-prediagram plots, grouped by topology family.
 
-For a model at correlator order ``k`` and loop order ``max_ell``, draw the
+For a model at cumulant order ``k`` and loop order ``max_ell``, draw the
 MSR-JD *prediagrams* (directed topologies) that survive the vertex/source
 filter -- i.e. the ones the model can actually realise.  Layout convention:
 time flows RIGHT -> LEFT, with sources on the right, interaction
@@ -634,7 +634,7 @@ def draw_prediagram(D, leaves, ax, title=None, labels=None):
 
 # ── grouped figure (public entry point) ───────────────────────────────
 def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
-    """Draw the contributing prediagrams for ``model`` at correlator order
+    """Draw the contributing prediagrams for ``model`` at cumulant order
     ``k`` and loop order ``max_ell``, grouped by topology family and labelled
     by role (sources i,ii right; internals a,b,c middle; external legs 1,2 left;
     propagators named by endpoints, e.g. a→b).  ``model`` is a model dict (from

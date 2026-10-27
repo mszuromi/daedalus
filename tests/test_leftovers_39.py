@@ -308,7 +308,7 @@ def _saturating_model():
             .physical_field('x', population='E')
             .parameter('k', default=300.0, domain='positive')
             .set_action_text('sum(xt[i]*((Dt + 1)*x[i] - 1/(1 + exp(k*x[i]^2))) for i in E)')
-            .equation(lhs='(Dt+1)*x', rhs='1/(1 + exp(k*x[i]^2))', population='E').build())
+            .mf_residual(lhs='(Dt+1)*x', rhs='1/(1 + exp(k*x[i]^2))', population='E').build())
 
 
 @pytest.mark.parametrize('action', ['always', 'default', 'error'])
@@ -335,7 +335,7 @@ def _pop_model(pname, size=3):
             .parameter('mu', default=[1.0, 1.5, 2.0][:size], indexed_by=[pname], domain='positive')
             .parameter('D', default=0.2, domain='positive')
             .set_action_text(f'sum(xt[i]*((Dt + mu[i])*x[i]) - D*xt[i]^2 for i in {pname})')
-            .equation(lhs='(Dt + 1)*x[i]', rhs='(1 - mu[i])*x[i]', population=pname).build())
+            .mf_residual(lhs='(Dt + 1)*x[i]', rhs='(1 - mu[i])*x[i]', population=pname).build())
 
 
 def test_population_named_pop_is_not_truncated():
@@ -363,9 +363,9 @@ def _two_pops(pname):
     txt = (f'sum(xt[i]*((Dt + mu[i])*x[i]) - D*xt[i]^2 for i in {pname}) + '
            'sum(y1t[i]*((Dt + 1)*y1[i]) - D*y1t[i]^2 for i in F1) + '
            'sum(y2t[i]*((Dt + 1)*y2[i]) - D*y2t[i]^2 for i in F2)')
-    return (b.set_action_text(txt).equation(lhs='(Dt + 1)*x[i]', rhs='(1 - mu[i])*x[i]', population=pname)
-            .equation(lhs='(Dt + 1)*y1[i]', rhs='0', population='F1')
-            .equation(lhs='(Dt + 1)*y2[i]', rhs='0', population='F2').build())
+    return (b.set_action_text(txt).mf_residual(lhs='(Dt + 1)*x[i]', rhs='(1 - mu[i])*x[i]', population=pname)
+            .mf_residual(lhs='(Dt + 1)*y1[i]', rhs='0', population='F1')
+            .mf_residual(lhs='(Dt + 1)*y2[i]', rhs='0', population='F2').build())
 
 
 def test_population_named_pop_beside_other_populations_covers_its_members_only():
@@ -396,7 +396,7 @@ def test_scalar_mode_linear_stability_on_exp_of_the_field(rhs):
     from api._mean_field_dae import linear_stability, solve_mean_field_dae
     m = (TemporalModelBuilder('s').physical_field('x').parameter('a', default=0.5, domain='positive')
          .stability_analysis(True).set_action_text('xt*((Dt + 1)*x)')
-         .equation(lhs='(Dt+1)*x', rhs=rhs).build())
+         .mf_residual(lhs='(Dt+1)*x', rhs=rhs).build())
     r = solve_mean_field_dae(m, {'a': 0.5}, verbose=False)
     ls = linear_stability(m, {'a': 0.5}, r['mf_values'], verbose=False)
     assert ls['stable'] and ls['eigenvalues_finite'].size == 1

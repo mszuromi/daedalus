@@ -45,7 +45,7 @@ def _two(a_term=_A, b_term=_B, fields=('a', 'b')):
         b = b.parameter(k, default=v, domain='positive' if k in ('ma', 'mb', 'DD', 'T') else 'real')
     act = ''
     for f, m, term in zip(fields, ('ma', 'mb'), (a_term, b_term)):
-        b = b.equation(lhs=f'(Dt + {m} - DD*Laplacian)*{f}', rhs='0')
+        b = b.mf_residual(lhs=f'(Dt + {m} - DD*Laplacian)*{f}', rhs='0')
         act += (f'{f}t*(Dt({f}) + {m}*{f} - DD*Lap({f}) {term}) - T*{f}t^2 + ')
     return b.set_action_text(act[:-3]).operator_ir().boundary('infinite').initial('stationary').build()
 
@@ -95,7 +95,7 @@ def _alone(term, f):
     m = 'ma' if f == 'a' else 'mb'
     for k, v in _P.items():
         b = b.parameter(k, default=v, domain='positive' if k in ('ma', 'mb', 'DD', 'T') else 'real')
-    return (b.equation(lhs=f'(Dt + {m} - DD*Laplacian)*{f}', rhs='0')
+    return (b.mf_residual(lhs=f'(Dt + {m} - DD*Laplacian)*{f}', rhs='0')
             .set_action_text(f'{f}t*(Dt({f}) + {m}*{f} - DD*Lap({f}) {term}) - T*{f}t^2')
             .operator_ir().boundary('infinite').initial('stationary').build())
 

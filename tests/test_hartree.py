@@ -126,7 +126,7 @@ def test_on_model_large_n():
          .set_action_text(
              'sum(xt[i]*((Dt+mu)*x[i] + (eps/%d)*x[i]*sum(x[j]^2 for j in '
              'pop)) - D*xt[i]^2 for i in pop)' % N)
-         .equation(lhs='(Dt+mu)*x[i]',
+         .mf_residual(lhs='(Dt+mu)*x[i]',
                    rhs='-(eps/%d)*x[i]*sum(x[j]^2 for j in pop)' % N,
                    population='pop')
          .build())
@@ -186,7 +186,7 @@ def test_dt_pencil_noise_transformed():
          .parameter('gp', default=0.0, domain='real')
          .parameter('D', default=1.2, domain='positive')
          .set_action_text('xt*((tau*Dt+1)*x + gp*x^3) - D*xt^2')
-         .equation(lhs='(tau*Dt+1)*x', rhs='-gp*x^3')
+         .mf_residual(lhs='(tau*Dt+1)*x', rhs='-gp*x^3')
          .build())
     r = hartree(m, {})
     assert abs(r.cov[0, 0] / (1.2 / 2.5) - 1) < 1e-12
@@ -286,8 +286,8 @@ def _linear_two_field():
             .parameter('c', default=1.6, domain='positive')
             .set_action_text('xt*((Dt+a)*x - b*y) - xt^2 + yt*((Dt+c)*y) '
                              '- 0.5*yt^2')
-            .equation(lhs='(Dt+a)*x', rhs='b*y')
-            .equation(lhs='(Dt+c)*y', rhs='0')
+            .mf_residual(lhs='(Dt+a)*x', rhs='b*y')
+            .mf_residual(lhs='(Dt+c)*y', rhs='0')
             .build())
 
 
@@ -356,7 +356,7 @@ def test_refuses_derivative_vertices():
          .parameter('av', default=0.2, domain='real')
          .parameter('D', default=1.0, domain='positive')
          .set_action_text('xt*((Dt+mu)*x + av*x*Dt*x) - D*xt^2')
-         .equation(lhs='(Dt+mu)*x', rhs='0')
+         .mf_residual(lhs='(Dt+mu)*x', rhs='0')
          .build())
     with pytest.raises(HartreeUnsupported, match='time derivatives'):
         hartree(m, {})
@@ -386,7 +386,7 @@ def test_multiplicative_noise_exact_moment():
          .parameter('a', default=0.3, domain='positive')
          .parameter('D', default=1.2, domain='positive')
          .set_action_text('xt*((Dt+mu)*x) - D*(1+a*x^2)*xt^2')
-         .equation(lhs='(Dt+mu)*x', rhs='0')
+         .mf_residual(lhs='(Dt+mu)*x', rhs='0')
          .build())
     r = hartree(m, {})
     assert r.converged

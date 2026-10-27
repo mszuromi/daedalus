@@ -39,7 +39,7 @@ from api import symbolic_loop as SL                                  # noqa: E40
 from api.cumulant import Cumulant                                    # noqa: E402
 from api.noise import Poisson                                        # noqa: E402
 from api.sde import SDE                                              # noqa: E402
-from api.symbolic_out import Kernel                                  # noqa: E402
+from api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
 import engine.integration.time_domain.statespace as SS               # noqa: E402
 
 

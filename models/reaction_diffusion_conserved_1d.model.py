@@ -35,7 +35,7 @@ def build():
         .parameter('T',  default=1.0, domain='positive')
         # The deterministic EOM (for the MF saddle); the conserved forcing
         # g∇²(φ²) vanishes at the homogeneous φ*=0 saddle, so φ*=0.
-        .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='g*Laplacian*phi^2')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='g*Laplacian*phi^2')
         # Operator-IR action: Lap(phi^2) is a genuine derivative vertex (the
         # ∇² acts on the φ² composite → per-leg momentum form factor).
         .set_action_text(

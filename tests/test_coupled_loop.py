@@ -53,8 +53,8 @@ def _two_species(g, h, ga=0.0, gb=0.0):
               '+ bt*((Dt+mub-D*Laplacian)*b - h*a + gb*b^3) '
               '- Ta*at^2 - Tb*bt^2')
     return (b.set_action_text(action)
-            .equation(lhs='(Dt+mua-D*Laplacian)*a + g*b + ga*a^3', rhs='0')
-            .equation(lhs='(Dt+mub-D*Laplacian)*b - h*a + gb*b^3', rhs='0')
+            .mf_residual(lhs='(Dt+mua-D*Laplacian)*a + g*b + ga*a^3', rhs='0')
+            .mf_residual(lhs='(Dt+mub-D*Laplacian)*b - h*a + gb*b^3', rhs='0')
             .boundary('infinite').initial('stationary').build())
 
 
@@ -193,7 +193,7 @@ def test_decoupled_limit_matches_single_field_loop(monkeypatch):
               .parameter('T', default=_TA, domain='positive')
               .set_action_text('phit*((Dt+mu-D*Laplacian)*phi + gph*phi^3) '
                                '- T*phit^2')
-              .equation(lhs='(Dt+mu-D*Laplacian)*phi + gph*phi^3', rhs='0')
+              .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi + gph*phi^3', rhs='0')
               .boundary('infinite').initial('stationary').build())
     th_s = compute_cumulants(model=scalar,
                              fundamental={'mu': _MUA, 'D': _D, 'gph': ga,

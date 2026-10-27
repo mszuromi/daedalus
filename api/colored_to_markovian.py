@@ -380,7 +380,7 @@ def markovianize_spec(builder) -> None:
     # ── Inject the aux OU equations  (Dt + 1/τc) * xi = 0 ───────────
     for source_nat, aux_nat in aux_natural_by_source.items():
         src = _field_of(builder, f'{source_nat}t')
-        builder.equation(
+        builder.mf_residual(
             lhs=f'(Dt + 1/{tauc_text}) * {aux_nat}',
             rhs='0',
             population=(src.population if src is not None else None),

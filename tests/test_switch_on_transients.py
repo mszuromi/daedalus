@@ -114,7 +114,7 @@ def _ou_cubic():
             .parameter('mu', default=1.0, domain='positive').parameter('eps', default=0.02, domain='positive')
             .parameter('D', default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu)*x + eps*x^3) - D*xt^2')
-            .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='-eps*x^3')
             .stability_analysis(True).build())
 
 
@@ -124,7 +124,7 @@ def _quadratic():
             .parameter('mu', default=1.0, domain='positive').parameter('q', default=0.1, domain='real')
             .parameter('D', default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu)*x + q*x^2) - D*xt^2')
-            .equation(lhs='(Dt+mu)*x', rhs='-q*x^2')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='-q*x^2')
             .stability_analysis(True).build())
 
 
@@ -135,8 +135,8 @@ def _colored_embedded():
             .parameter('mu', default=1.0, domain='positive').parameter('gam', default=0.5, domain='positive')
             .parameter('eps', default=0.05, domain='positive').parameter('D', default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu)*x + eps*x^3 - y) + yt*((Dt+gam)*y) - D*yt^2')
-            .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3 + y')
-            .equation(lhs='(Dt+gam)*y', rhs='0')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='-eps*x^3 + y')
+            .mf_residual(lhs='(Dt+gam)*y', rhs='0')
             .stability_analysis(True).build())
 
 
@@ -149,8 +149,8 @@ def _coupled_cubic():
             .parameter('J1', default=0.5, domain='real').parameter('J2', default=0.3, domain='real')
             .parameter('D1', default=1.0, domain='positive').parameter('D2', default=0.6, domain='positive')
             .set_action_text('xt*((Dt+mu1)*x + eps*x^3 - J1*y) - D1*xt^2 + yt*((Dt+mu2)*y - J2*x) - D2*yt^2')
-            .equation(lhs='(Dt+mu1)*x', rhs='-eps*x^3 + J1*y')
-            .equation(lhs='(Dt+mu2)*y', rhs='J2*x')
+            .mf_residual(lhs='(Dt+mu1)*x', rhs='-eps*x^3 + J1*y')
+            .mf_residual(lhs='(Dt+mu2)*y', rhs='J2*x')
             .stability_analysis(True).build())
 
 
@@ -478,7 +478,7 @@ def _cgf_model(kernel):
             .parameter('D', default=1.0, domain='positive').parameter('tauc', default=1.0, domain='positive')
             .declare_cgf_term('CXX', response_legs=['xt', 'xt'], order=2, coefficient='2*D/tauc', kernel=kernel)
             .set_action_text('xt*((Dt+mu)*x + eps*x^3)')
-            .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='-eps*x^3')
             .stability_analysis(True).build())
 
 
@@ -561,7 +561,7 @@ def test_initial_state_needs_identity_response():
              .parameter('mu', default=1.0, domain='positive').parameter('c', default=2.0, domain='positive')
              .parameter('D', default=1.0, domain='positive')
              .set_action_text('xt*((c*Dt + mu)*x) - D*xt^2')
-             .equation(lhs='(c*Dt + mu)*x', rhs='0')
+             .mf_residual(lhs='(c*Dt + mu)*x', rhs='0')
              .stability_analysis(True).build())
     with pytest.raises(ValueError, match='identity'):
         _run(model, 2, 0, [X, X], {'mu': 1.0, 'c': 2.0, 'D': 1.0}, 0.0, [[1.0, 1.0]],

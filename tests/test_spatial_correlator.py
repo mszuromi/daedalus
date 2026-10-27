@@ -246,7 +246,7 @@ def test_d2_periodic_through_compute_cumulants():
              .parameter('D', default=1.0, domain='positive')
              .parameter('T', default=1.0, domain='positive')
              .parameter('L', default=L, domain='positive')
-             .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+             .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
              .set_action_text('phit*((Dt + mu - D*Laplacian)*phi) - T*phit^2'))
         b = (b.boundary('periodic', length='L') if bc == 'periodic'
              else b.boundary('infinite'))
@@ -284,7 +284,7 @@ def test_d2_tree_through_compute_cumulants():
          .parameter('mu', default=1.0, domain='positive')
          .parameter('D', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
          .set_action_text('phit*((Dt + mu - D*Laplacian)*phi) - T*phit^2')
          .boundary('infinite').initial('stationary').build())
     rs = np.array([0.5, 1.0, 2.0, 3.0])
@@ -317,7 +317,7 @@ def test_d2_tadpole_loop_refuses_through_compute_cumulants():
          .parameter('D', default=1.0, domain='positive')
          .parameter('g', default=0.2, domain='real')
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2')
          .set_action_text('phit*((Dt + mu - D*Laplacian)*phi + g*phi^2) - T*phit^2')
          .boundary('infinite').initial('stationary').build())
     with pytest.raises(SpatialUVDivergenceError, match='UV-divergent at d=2'):

@@ -157,10 +157,10 @@ def oscillator_red_noise():
     b.set_action_text('sum(pt[i]*(Dt*p[i] + lam*p[i] - w*q[i] - s*z[i] '
                       '- s*B*z[i]*p[i]) + qt[i]*(Dt*q[i] + w*p[i]) '
                       '+ zt[i]*(Dt*z[i] + r*z[i]) - r*zt[i]^2 for i in P)')
-    b.equation(lhs='(Dt + lam)*p[i]', rhs='w*q[i] + s*z[i] + s*B*z[i]*p[i]',
+    b.mf_residual(lhs='(Dt + lam)*p[i]', rhs='w*q[i] + s*z[i] + s*B*z[i]*p[i]',
                population='P')
-    b.equation(lhs='Dt*q[i] + w*p[i]', rhs='0', population='P')
-    b.equation(lhs='(Dt + r)*z[i]', rhs='0', population='P')
+    b.mf_residual(lhs='Dt*q[i] + w*p[i]', rhs='0', population='P')
+    b.mf_residual(lhs='(Dt + r)*z[i]', rhs='0', population='P')
     return b.build()
 
 

@@ -8,11 +8,11 @@ deliberately not expressible.
 
 | Source | `K(theta)` (per unit time) | cumulant rates `kappa_m` |
 |---|---|---|
-| `VarianceGamma(mu, sigma, nu, drift)` | `drift*theta - log(1 - nu*mu*theta - nu*sigma^2*theta^2/2)/nu` | `d+mu`, `sigma^2+nu mu^2`, ... |
-| `NormalInverseGaussian(alpha, beta, delta, mu)` | `mu*theta + delta*(sqrt(alpha^2-beta^2) - sqrt(alpha^2-(beta+theta)^2))` | `mu+delta beta/g`, `delta alpha^2/g^3`, ... (`g = sqrt(alpha^2-beta^2)`) |
+| `VarianceGamma(mu, sigma, nu, loc)` | `loc*theta - log(1 - nu*mu*theta - nu*sigma^2*theta^2/2)/nu` | `loc+mu`, `sigma^2+nu mu^2`, ... |
+| `NormalInverseGaussian(alpha, beta, delta, loc)` | `loc*theta + delta*(sqrt(alpha^2-beta^2) - sqrt(alpha^2-(beta+theta)^2))` | `loc+delta beta/g`, `delta alpha^2/g^3`, ... (`g = sqrt(alpha^2-beta^2)`) |
 | `CGMY(C, G, M, Y)` | `C*Gamma(-Y)*((M-theta)^Y - M^Y + (G+theta)^Y - G^Y)` | `C Gamma(m-Y)(M^(Y-m) + (-1)^m G^(Y-m))` |
 | `TemperedStableSubordinator(alpha, c, lam)` | `c*Gamma(-alpha)*((lam-theta)^alpha - lam^alpha)` | `c Gamma(m-alpha) lam^(alpha-m)` |
-| `Meixner(alpha, beta, delta, mu)` | `mu*theta + 2 delta (log cos(beta/2) - log cos((alpha theta+beta)/2))` | `mu + alpha delta tan(beta/2)`, ... |
+| `Meixner(alpha, beta, delta, loc)` | `loc*theta + 2 delta (log cos(beta/2) - log cos((alpha theta+beta)/2))` | `loc + alpha delta tan(beta/2)`, ... |
 | `BilateralGamma(alpha_p, lam_p, alpha_m, lam_m)` | `-alpha_p log(1-theta/lam_p) - alpha_m log(1+theta/lam_m)` | `(m-1)!(alpha_p/lam_p^m + (-1)^m alpha_m/lam_m^m)` |
 | `Skellam(rate_plus, rate_minus)` | `r+ (e^theta-1) + r- (e^-theta - 1)` | `r+ + (-1)^m r-` |
 | `NegativeBinomialProcess(shape_rate, p)` | `r (log(1-p) - log(1 - p e^theta))` | `r p/(1-p)`, `r p/(1-p)^2`, ... |

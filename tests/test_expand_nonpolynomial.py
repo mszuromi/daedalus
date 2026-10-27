@@ -48,8 +48,8 @@ def _model(form='exp'):
             .physical_field('y', population='pop')
             .parameter('qamp', default=0.3, domain='positive')
             .set_action_text(action)
-            .equation(lhs='(Dt+1)*x[i]', rhs=f'x[i] - {f1}', population='pop')
-            .equation(lhs='(Dt+1)*y[i]', rhs=f'y[i] - {f2}', population='pop')
+            .mf_residual(lhs='(Dt+1)*x[i]', rhs=f'x[i] - {f1}', population='pop')
+            .mf_residual(lhs='(Dt+1)*y[i]', rhs=f'y[i] - {f2}', population='pop')
             .build())
 
 

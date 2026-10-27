@@ -62,7 +62,7 @@ def _model_without_defaults():
         .parameter('E', domain='positive')
         .parameter('w', domain='positive')
         .set_action_text('sum(xt[i]*((Dt+E)*x[i]) - w*xt[i]^2 for i in pop)')
-        .equation(lhs='(Dt+E)*x[i]', rhs='0', population='pop')
+        .mf_residual(lhs='(Dt+E)*x[i]', rhs='0', population='pop')
         .build()
     )
 

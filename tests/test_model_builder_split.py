@@ -41,7 +41,7 @@ def _spatial(BB, **kw):
             .parameter('D', default=1.0, domain='positive')
             .parameter('T', default=1.0, domain='positive')
             .set_action_text('phit*((Dt+mu-D*Laplacian)*phi) - T*phit^2')
-            .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0')
+            .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0')
             .boundary('infinite').initial('stationary').build())
 
 
@@ -51,7 +51,7 @@ def _temporal(BB, **kw):
             .parameter('mu', default=1.0, domain='positive')
             .parameter('T', default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu)*x) - T*xt^2')
-            .equation(lhs='(Dt+mu)*x', rhs='0').build())
+            .mf_residual(lhs='(Dt+mu)*x', rhs='0').build())
 
 
 def test_spatial_forward_builder_equals_shim():
@@ -95,7 +95,7 @@ def test_temporal_rejects_spatial_field():
          .parameter('mu', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive')
          .set_action_text('phit*((Dt+mu)*phi) - T*phit^2')
-         .equation(lhs='(Dt+mu)*phi', rhs='0').build())
+         .mf_residual(lhs='(Dt+mu)*phi', rhs='0').build())
 
 
 def test_spatial_requires_spatial_field():
@@ -104,7 +104,7 @@ def test_spatial_requires_spatial_field():
          .parameter('mu', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive')
          .set_action_text('phit*((Dt+mu)*phi) - T*phit^2')
-         .equation(lhs='(Dt+mu)*phi', rhs='0').build())
+         .mf_residual(lhs='(Dt+mu)*phi', rhs='0').build())
 
 
 def test_serializer_phase1_round_trip():
@@ -158,7 +158,7 @@ def _spatial_dyson(**dyson_calls):
          .parameter('D', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive')
          .set_action_text('phit*((Dt+mu-D*Laplacian)*phi) - T*phit^2')
-         .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0'))
+         .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0'))
     if 'order' in dyson_calls:
         b = b.dyson_order(dyson_calls['order'])
     if 'D0' in dyson_calls:
@@ -220,7 +220,7 @@ def test_dyson_on_non_spatial_shim_raises():
          .parameter('mu', default=1.0, domain='positive')
          .parameter('T', default=1.0, domain='positive')
          .set_action_text('xt*((Dt+mu)*x) - T*xt^2')
-         .equation(lhs='(Dt+mu)*x', rhs='0')
+         .mf_residual(lhs='(Dt+mu)*x', rhs='0')
          .dyson_order(2).build())
 
 

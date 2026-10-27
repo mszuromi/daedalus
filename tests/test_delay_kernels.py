@@ -341,7 +341,7 @@ def test_rational_kernel_model_unchanged_and_g2k_info():
          .parameter('tg', default=0.7, domain='positive')
          .define_kernel('g', freq_image='1/(1 + I*omega*tg)')
          .set_action_text('xt*((Dt + mu)*x - J*g*x) - D*xt^2')
-         .equation(lhs='(Dt + mu)*x', rhs='0').build())
+         .mf_residual(lhs='(Dt + mu)*x', rhs='0').build())
     r = _cc(m, 0, taus=[0.0, 0.5, 2.0])
     assert 'delay' not in r
     assert r['analysis'].has('G2_KERNEL_STABILITY')

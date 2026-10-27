@@ -38,7 +38,7 @@ def build():
         # is 0), so the saddle is fixed by the linear part: −μφ*=0 ⇒ φ*=0.
         # (The MF-equation parser handles Dt/Laplacian but not the Dx node,
         # and the term is identically 0 here, so we write the reduced RHS.)
-        .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
         # Operator-IR action: Dx(phi^2, 0) is a first-derivative vertex on the
         # φ² composite (per-leg form factor, mode='composite').  The ``0`` is
         # the spatial axis (d=1).

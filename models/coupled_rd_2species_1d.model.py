@@ -40,8 +40,8 @@ def build():
             'at*((Dt+mua-Da*Laplacian)*a + g*b + ga*a^3) '
             '+ bt*((Dt+mub-Db*Laplacian)*b - h*a + gb*b^3) '
             '- Ta*at^2 - Tb*bt^2')
-        .equation(lhs='(Dt+mua-Da*Laplacian)*a + g*b + ga*a^3', rhs='0')
-        .equation(lhs='(Dt+mub-Db*Laplacian)*b - h*a + gb*b^3', rhs='0')
+        .mf_residual(lhs='(Dt+mua-Da*Laplacian)*a + g*b + ga*a^3', rhs='0')
+        .mf_residual(lhs='(Dt+mub-Db*Laplacian)*b - h*a + gb*b^3', rhs='0')
         .boundary('infinite')
         .initial('stationary')
         .build())

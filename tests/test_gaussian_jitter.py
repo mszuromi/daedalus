@@ -53,7 +53,7 @@ def _linear(sigma=0.5, tol=1e-6, name='jitter linear'):
             .parameter('sigma', default=sigma, domain='positive')
             .define_kernel('kX', kernel=Kernel.exponential('tauX'))
             .define_kernel('g', kernel=Kernel.gaussian('sigma', tol=tol))
-            .point_process('n', 'lam', size='p')
+            .point_process('n', 'lam', jump_size='p')
             .field('v').equation('v', lhs='(tau*Dt + 1)*v', rhs='w*Conv(kX*g, n)'))
 
 
@@ -187,7 +187,7 @@ def _rate_model():
     return (s.define_kernel('kX', kernel=Kernel.exponential('tauX'))
             .define_kernel('g', kernel=Kernel.gaussian('sigma'))
             .define_function('phi', args=['v'], expression='1/(1 + exp(-v))')
-            .point_process('n', 'lam', size='p')
+            .point_process('n', 'lam', jump_size='p')
             .field('v').equation('v', lhs='(tau*Dt + 1)*v',
                                  rhs='J*phi(v) + w*Conv(kX*g, n) - w*lam*p'))
 

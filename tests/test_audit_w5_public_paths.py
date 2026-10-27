@@ -50,7 +50,7 @@ def test_rational_kernel_value_at_zero_is_the_initial_value_theorem():
     km = ME.RationalKernel([3.0, 1.0], [1.0, 3.0, 2.0], side='-')
     assert ME.kernel_at_zero(k) == (3.0, 0j) and ME.kernel_at_zero(km) == (0j, 3.0)
     # mixed with a symbolic kernel term: L(0+) adds up
-    lp, lm = ME.kernel_at_zero([k, so.Kernel.exponential(0.5, -1.0, 'positive')])
+    lp, lm = ME.kernel_at_zero([k, so.PairingKernel.exponential(0.5, -1.0, 'positive')])
     assert abs(lp - 3.5) < 1e-15 and lm == 0
 
 

@@ -203,7 +203,7 @@ def _scalar_hawkes(population, conv_arg='n'):
             f'vt{ix}*((tau*Dt + 1)*v{ix} - Em - w*Conv(g, {conv_arg.replace("n", "n" + ix)}))')
     # the kernel's integral is 1: the mean-field equations carry no Conv
     for lhs, rhs in ((f'n{ix}', f'a*exp(v{ix})'), (f'v{ix}', f'Em + w*({conv_arg.replace("n", "n" + ix)})')):
-        b = b.equation(lhs=lhs, rhs=rhs, **kw)
+        b = b.mf_residual(lhs=lhs, rhs=rhs, **kw)
     return b.set_action_text(f'sum({body} for i in E)' if population else body).build()
 
 
@@ -233,7 +233,7 @@ def test_scalar_conv_still_validates_arity():
     from engine.core.field_theory import FieldTheory
     m = TemporalTheoryBuilder('bad').physical_field('n').parameter('a', default=1.0) \
         .define_kernel('g', freq_image='1/(1 + I*omega)') \
-        .set_action_text('nt*n - (exp(nt) - 1)*a*Conv(n)').equation(lhs='n', rhs='a').build()
+        .set_action_text('nt*n - (exp(nt) - 1)*a*Conv(n)').mf_residual(lhs='n', rhs='a').build()
     with pytest.raises(ValueError, match='Conv'):               # an arity error, not a coercion error
         FieldTheory(m, taylor_order=2).expand()
 

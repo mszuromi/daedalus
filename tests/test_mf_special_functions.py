@@ -142,7 +142,7 @@ def test_scalar_mode_bare_field_argument(rhs, g):
     from api.model import TemporalModelBuilder
     m = (TemporalModelBuilder('bare').physical_field('x').parameter('a', default=A, domain='positive')
          .stability_analysis(True).set_action_text('xt*((Dt + 1)*x)')
-         .equation(lhs='(Dt+1)*x', rhs=rhs).build())
+         .mf_residual(lhs='(Dt+1)*x', rhs=rhs).build())
     r = MF.solve_mean_field_dae(m, {'a': A}, verbose=False)
     ref = brentq(lambda x: x - g(x), -5, 5, xtol=1e-14, rtol=1e-14)
     assert r['mf_values']['xstar'][0] == pytest.approx(ref, rel=1e-9)

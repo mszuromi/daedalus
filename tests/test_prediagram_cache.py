@@ -577,7 +577,7 @@ def _ctx(k, max_ell, name):
              .parameter('T', default=1.0, domain='positive')
              .parameter('eps', default=eps)
              .set_action_text('xt*((Dt+mu)*x + eps*x^3) - T*xt^2')
-             .equation(lhs='(Dt+mu)*x + eps*x^3', rhs='0').build())
+             .mf_residual(lhs='(Dt+mu)*x + eps*x^3', rhs='0').build())
     ft = FieldTheory(model, taylor_order=max(k + 2 * max_ell, 4))
     ft.expand()
     prop = build_propagator(ft, model, use_cache=False, verbose=False)

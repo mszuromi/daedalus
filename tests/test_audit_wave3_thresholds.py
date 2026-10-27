@@ -86,7 +86,7 @@ def _colored_ou(S):
                            coefficient='2*D/tauc', kernel='exp(-abs(tau)/tauc)',
                            markovianize=False)
          .set_action_text('xt*((Dt+mu)*x)')
-         .equation(lhs='(Dt+mu)*x', rhs='0'))
+         .mf_residual(lhs='(Dt+mu)*x', rhs='0'))
     return b.build()
 
 

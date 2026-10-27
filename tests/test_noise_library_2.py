@@ -57,14 +57,14 @@ def _nbp(r, p):
 
 
 SOURCES = {
-    'vg': (lambda: N.VarianceGamma(0.1, 0.3, 0.5, drift=0.05), _vg(0.1, 0.3, 0.5, 0.05)),
-    'nig': (lambda: N.NormalInverseGaussian(2, 0.5, 1.2, mu=0.1), _nig(2, 0.5, 1.2, 0.1)),
+    'vg': (lambda: N.VarianceGamma(0.1, 0.3, 0.5, loc=0.05), _vg(0.1, 0.3, 0.5, 0.05)),
+    'nig': (lambda: N.NormalInverseGaussian(2, 0.5, 1.2, loc=0.1), _nig(2, 0.5, 1.2, 0.1)),
     'cgmy_half': (lambda: N.CGMY(1, 2, 3, '1/2'), _cgmy(1, 2, 3, 0.5)),
     'cgmy_neg': (lambda: N.CGMY(1, 2, 3, '-1/2'), _cgmy(1, 2, 3, -0.5)),
     'cgmy_32': (lambda: N.CGMY(1, 2, 3, '3/2'), _cgmy(1, 2, 3, 1.5)),
     'ts_sub': (lambda: N.TemperedStableSubordinator('1/2', 1, 2),
                {m: gamma(m - 0.5) * 2 ** (0.5 - m) for m in M4}),
-    'meixner': (lambda: N.Meixner(1, 0.3, 1, mu=0.1), _meixner(1, 0.3, 1, 0.1)),
+    'meixner': (lambda: N.Meixner(1, 0.3, 1, loc=0.1), _meixner(1, 0.3, 1, 0.1)),
     'meixner_neg': (lambda: N.Meixner('3/2', -0.5, 2), _meixner(1.5, -0.5, 2, 0)),
     'bilateral_gamma': (lambda: N.BilateralGamma(1, 2, 3, 4),
                         {m: factorial(m - 1) * (1 / 2 ** m + (-1) ** m * 3 / 4 ** m) for m in M4}),
@@ -90,7 +90,7 @@ def test_source_cumulants_match_closed_forms(name):
 def test_symbolic_cumulants():
     """exact symbolic identities for the algebraic families."""
     mu, s, nu, d = (SR.var(n) for n in ('mu', 's', 'nu', 'd'))
-    vg = N.VarianceGamma('mu', 's', 'nu', drift='d')
+    vg = N.VarianceGamma('mu', 's', 'nu', loc='d')
     for m, ref in _vg(mu, s, nu, d).items():
         assert _same(vg.cumulant(m), ref)
     a, b, dl = (SR.var(n) for n in ('a', 'b', 'dl'))

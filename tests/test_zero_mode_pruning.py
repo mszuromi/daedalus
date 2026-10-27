@@ -40,11 +40,11 @@ def _oscillator(h_eq=H_WORKAROUND):
     for k, v in PARS.items():
         mb = mb.parameter(k, default=float(v), domain='positive')
     return (mb.set_action_text(ACTION)
-            .equation(lhs='(Dt + lam)*T[i]',
+            .mf_residual(lhs='(Dt + lam)*T[i]',
                       rhs='om*h[i] + sig*x[i] + sig*B*x[i]*T[i]',
                       population='pop')
-            .equation(lhs=h_eq[0], rhs=h_eq[1], population='pop')
-            .equation(lhs='(Dt + r)*x[i]', rhs='0', population='pop')
+            .mf_residual(lhs=h_eq[0], rhs=h_eq[1], population='pop')
+            .mf_residual(lhs='(Dt + r)*x[i]', rhs='0', population='pop')
             .build())
 
 
@@ -474,8 +474,8 @@ def _two_field(h_eq):
             .set_action_text('sum(Tt[i]*(Dt*T[i] + lam*T[i]) '
                              '+ ht[i]*(Dt*h[i] + om*T[i]) - Tt[i]^2 '
                              'for i in pop)')
-            .equation(lhs='(Dt + lam)*T[i]', rhs='0', population='pop')
-            .equation(lhs=h_eq[0], rhs=h_eq[1], population='pop')
+            .mf_residual(lhs='(Dt + lam)*T[i]', rhs='0', population='pop')
+            .mf_residual(lhs=h_eq[0], rhs=h_eq[1], population='pop')
             .build())
 
 

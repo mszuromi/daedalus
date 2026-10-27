@@ -274,13 +274,13 @@ def sample_source(src, dt, size, rng, values=None):
         return rng.wald(P['mean_rate'] * dt, P['shape'] * dt ** 2, size)
     if isinstance(src, N.VarianceGamma):
         G = rng.gamma(dt / P['nu'], P['nu'], size)
-        return (P['drift'] * dt + P['mu'] * G
+        return (P['loc'] * dt + P['mu'] * G
                 + P['sigma'] * np.sqrt(G) * rng.standard_normal(size))
     if isinstance(src, N.NormalInverseGaussian):
         a, b, d = P['alpha'], P['beta'], P['delta']
         gam = np.sqrt(a ** 2 - b ** 2)
         Y = rng.wald(d * dt / gam, (d * dt) ** 2, size)
-        return P['mu'] * dt + b * Y + np.sqrt(Y) * rng.standard_normal(size)
+        return P['loc'] * dt + b * Y + np.sqrt(Y) * rng.standard_normal(size)
     if isinstance(src, N.BilateralGamma):
         return (rng.gamma(P['alpha_p'] * dt, 1.0 / P['lam_p'], size)
                 - rng.gamma(P['alpha_m'] * dt, 1.0 / P['lam_m'], size))
@@ -305,8 +305,8 @@ def sample_source(src, dt, size, rng, values=None):
     if isinstance(src, N.Meixner):
         if _has_array(P):
             return _loop_scalar(lambda q, n_: _meixner(
-                q['alpha'], q['beta'], q['delta'], q['mu'], dt, n_, rng), P, size)
-        return _meixner(P['alpha'], P['beta'], P['delta'], P['mu'], dt, size, rng)
+                q['alpha'], q['beta'], q['delta'], q['loc'], dt, n_, rng), P, size)
+        return _meixner(P['alpha'], P['beta'], P['delta'], P['loc'], dt, size, rng)
     if isinstance(src, (N.Cumulants, N.CGF)):
         raise NoiseError(
             f'{type(src).__name__} has no sampler: a cumulant list / CGF does not '
