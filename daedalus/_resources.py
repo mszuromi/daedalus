@@ -8,5 +8,6 @@ import os
 
 
 def data_path(*parts: str) -> str:
-    """``daedalus/<parts...>`` as a filesystem path."""
-    return os.fspath(importlib.resources.files('daedalus').joinpath(*parts))
+    """``daedalus/<parts...>`` as an absolute, normalised filesystem path
+    (the package may have been imported through ``<repo>/tests/..``)."""
+    return os.path.abspath(os.fspath(importlib.resources.files('daedalus').joinpath(*parts)))
