@@ -213,6 +213,9 @@ _PIPELINE_EXPORTS = {
     'SymbolicTriple':            'daedalus.api.symbolic_loop',
     'SymbolicLoopRefused':       'daedalus.api.symbolic_loop',
     'SaddleWarning':             'daedalus.api.symbolic_loop',
+    # the exact stationary mean relation (Schwinger-Dyson), symbolic
+    'mean_relation':             'daedalus.api.symbolic_mean',
+    'MeanRelation':              'daedalus.api.symbolic_mean',
 }
 
 
