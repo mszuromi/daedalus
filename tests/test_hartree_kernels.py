@@ -20,8 +20,8 @@ model's own fields.
   cache replay), the refusal of a target that is not reached, the always
   present advisory, and the screened order 1 at the Hartree mass equals
   Hartree curve for curve (loops and closure see the same Pade tree);
-* the refusals that stay: a kernel without a frequency image, non-local
-  noise cumulant kernels, an exogenous input field.
+* the refusals that stay: a kernel without a frequency image and non-local
+  noise cumulant kernels (exogenous inputs: ``test_hartree_inputs.py``).
 """
 import os
 import sys
@@ -237,16 +237,3 @@ def test_non_local_noise_cumulant_kernels_are_refused_unless_embedded():
          .set_action_text('xt*((Dt+mu)*x)').mf_residual(lhs='(Dt+mu)*x', rhs='0'))
     with pytest.raises(HartreeUnsupported, match='Markovian embedding'):
         hartree(b.build(), warn=False)
-
-
-def test_an_exogenous_input_field_is_refused_with_the_reason():
-    m = (SDE('input into a kernel')
-         .parameter('tau', default=1.0, domain='positive')
-         .parameter('tauX', default=0.5, domain='positive')
-         .parameter('lam', default=2.0, domain='positive')
-         .parameter('p', default=0.7).parameter('w', default=1.3)
-         .define_kernel('kX', kernel=Kernel.exponential('tauX'))
-         .point_process('n', 'lam', jump_size='p')
-         .field('v').drift('v', '(-v + w*Conv(kX, n))/tau'))
-    with pytest.raises(HartreeUnsupported, match='exogenous input field'):
-        hartree(m.build(), warn=False)

@@ -22,7 +22,6 @@ on the fields linearly, so the closure now embeds it before it runs:
   `delay={'order': n, 'tree': 'pade'}` its order 1 at the Hartree mass equals the Hartree curve to 5e-15.
 
 Still refused, by name: non-local noise cumulant kernels (declare the noise through its Markovian embedding), a kernel
-without a frequency image, spatial models, and exogenous input fields (a point-process input into a kernel, which
-includes the Gaussian-jitter inputs: they have no dynamics of their own). The closure's covariance test now accepts a
+without a frequency image and spatial models. The closure's covariance test now accepts a
 rounding-size negative eigenvalue (a stiff kernel state can be numerically uncontrollable). No number of a model
 without kernels moves (the models of `tests/test_hartree.py` and `tests/test_resum.py` are unchanged).
