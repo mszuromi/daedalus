@@ -171,7 +171,7 @@ def resolve_resum_options(value, where='resum'):
 
 
 def check_config(opts, *, k, max_ell, output, t_min, spatial_points,
-                 covariance, where='Config.resum'):
+                 covariance, where='Config.resum', spectra=None):
     """The ``dd.Config`` combinations a resummation refuses (``ValueError``)."""
     if opts is None:
         return
@@ -197,9 +197,16 @@ def check_config(opts, *, k, max_ell, output, t_min, spatial_points,
                 f"connected k >= 3 cumulants vanish); use method='screened' "
                 f"for the first non-Gaussian answer.")
     else:
-        if k not in (None, 2):
+        if k not in (None, 1, 2):
             raise ValueError(f"{where}: method='screened' is implemented for "
-                             f"k = 2 (got k={k!r}).")
+                             f"k = 1 (the resummed mean) and k = 2 (got "
+                             f"k={k!r}).")
+        if k == 1 and spectra is not None:
+            raise ValueError(f"{where}: method='screened' at k = 1 has no "
+                             f"spectra (the mean is a number).")
+        if k == 1 and covariance is not None:
+            raise ValueError(f"{where}: method='screened' at k = 1 has no "
+                             f"covariance matrix (it is a k = 2 object).")
         if max_ell is not None and max_ell < 1:
             raise ValueError(f"{where}: method='screened' needs max_ell >= 1 "
                              f"(the screened order N = max_ell).")
@@ -395,10 +402,11 @@ def _note_status(log, r, s):
 
 
 def _run_pairs(model_ct, values, s, pairs, max_ell, params, tau, run_kw,
-               spectra=None, log=None):
-    """The loop orders of every leg pair at trial position ``s``: a list of
-    ``{ell: array}`` (one per pair), and the spectra by ell of the first.
-    A run that is not ``'ok'`` is recorded in ``log``."""
+               spectra=None, log=None, k=2):
+    """The loop orders of every leg tuple (pairs for ``k = 2``, single legs
+    for ``k = 1``) at trial position ``s``: a list of ``{ell: array}`` (one
+    per tuple), and the spectra by ell of the first.  A run that is not
+    ``'ok'`` is recorded in ``log``."""
     from api.compute import compute_cumulants, stage_memo
     par = dict(params)
     par.update(values(s))
@@ -408,7 +416,7 @@ def _run_pairs(model_ct, values, s, pairs, max_ell, params, tau, run_kw,
             kw = dict(run_kw)
             if spectra is not None and n == 0:
                 kw['spectra'] = spectra
-            r = compute_cumulants(model_ct, 2, max_ell, par, list(pr),
+            r = compute_cumulants(model_ct, k, max_ell, par, list(pr),
                                   tau_grid=tau, **kw)
             _note_status(log, r, s)
             out.append({int(e): np.asarray(v)
@@ -491,10 +499,15 @@ def _stationary_points(derivs_fn, N, klo, khi):
 def screened(model, max_ell, parameters=None, *, external_fields,
              options=None, tau_grid, spectra=None, covariance=None,
              fixed_point_index=0, mf_dae_n_starts=64, mf_dae_seed_box=None,
-             hartree_result=None, verbose=False, **run_kw):
+             hartree_result=None, verbose=False, k=2, **run_kw):
     """The screened (optimized-perturbation) loop series at order
     ``N = max_ell`` for one ``k = 2`` pair (``external_fields``), or for the
-    covariance matrix (``covariance=``, the ``dd.Config.covariance`` dict).
+    covariance matrix (``covariance=``, the ``dd.Config.covariance`` dict), or
+    -- ``k = 1`` -- for the resummed mean of one field.  The mean uses the
+    SAME trial propagator as the covariance of that model: the principle of
+    minimal sensitivity is read off the equal-time covariance (the
+    ``observable`` option, ``'trace_cov'`` by default), so a ``k = 1`` run
+    and a ``k = 2`` run at one parameter point have the same ``kappa``.
 
     ``options``: the screened keys of :func:`resolve_resum_options`.
     ``run_kw``: ``compute_cumulants`` options of every run (``use_cache``,
@@ -534,6 +547,19 @@ def screened(model, max_ell, parameters=None, *, external_fields,
     plain_kw = dict(run_kw, verbose=verbose, **mf_kw)
     legs = [tuple(e) if isinstance(e, (list, tuple)) else e
             for e in external_fields]
+    if k not in (1, 2):
+        raise ValueError(f'screened series: k must be 1 (the mean) or 2; '
+                         f'got {k!r}')
+    if k == 1:
+        if len(legs) != 1:
+            raise ValueError(f'screened series: k = 1 takes one external '
+                             f'field; got {legs}')
+        if spectra is not None or covariance is not None:
+            raise ValueError('screened series: k = 1 has no spectra or '
+                             'covariance matrix')
+    # PMS reads the equal-time covariance whatever k is: the mean of a field
+    # is resummed with the propagator that is stationary for its variance
+    scan_legs = legs if k == 2 else [legs[0], legs[0]]
     n_runs = 0
     trial_log = []
 
@@ -547,7 +573,7 @@ def screened(model, max_ell, parameters=None, *, external_fields,
         plain_by_ell = {int(e): np.asarray(v)
                         for e, v in base['Sigma_by_ell'].items()}
     else:
-        base = compute_cumulants(model, 2, N, params, legs, tau_grid=tau,
+        base = compute_cumulants(model, k, N, params, legs, tau_grid=tau,
                                  **plain_kw)
         plain_by_ell = {int(e): np.asarray(v)
                         for e, v in base['C_tau_by_ell'].items()}
@@ -583,7 +609,7 @@ def screened(model, max_ell, parameters=None, *, external_fields,
         mass = opts['mass']
         pms = None
         if mass == 'pms':
-            pms = _pms_scan(model_ct, values, h, legs, N, params, inner,
+            pms = _pms_scan(model_ct, values, h, scan_legs, N, params, inner,
                             opts, klo, khi, log=trial_log)
             n_runs += pms['n_runs']
             kappa, source = pms['kappa'], pms['source']
@@ -619,7 +645,8 @@ def screened(model, max_ell, parameters=None, *, external_fields,
                 point_vals.append(v)
             else:
                 v, sp = _run_pairs(model_ct, values, s, [legs], N, params,
-                                   tau, inner, spectra=spectra, log=trial_log)
+                                   tau, inner, spectra=spectra, log=trial_log,
+                                   k=k)
                 point_vals.append(v[0])
                 spec_pts.append(sp)
             n_runs += 1
@@ -635,7 +662,7 @@ def screened(model, max_ell, parameters=None, *, external_fields,
         info.update({'kappa': kappa, 'kappa_source': source,
                      'A_trial': A_t, 'Q_trial': Q_t,
                      'stencil': {'nodes': nodes, 'step': hstep}})
-        if pms is not None and covariance is None and [
+        if pms is not None and covariance is None and k == 2 and [
                 [h.index(a) for a in pr] for pr in pms['pairs']] == [
                 [h.index(a) for a in legs]]:
             v0 = _at_zero(orders[N], tau)
@@ -669,6 +696,14 @@ def screened(model, max_ell, parameters=None, *, external_fields,
         out['C_tau_spread'] = spread
         if spec_by is not None:
             out['spectra'] = spec_by
+        if k == 1:
+            # the mean itself (the saddle plus the shift), as dd.hartree gives it
+            i = h.index(legs[0])
+            base_mean = float(h.saddle[i])
+            out['mean'] = base_mean + float(np.real(np.asarray(top).ravel()[0]))
+            out['mean_by_order'] = {
+                M: base_mean + float(np.real(np.asarray(v).ravel()[0]))
+                for M, v in orders.items()}
     out['resummation'] = info
     # the status covers every run the result is built from: the plain run
     # (already in ``base``) and each trial run of the scan and the stencil
