@@ -10,10 +10,15 @@ old name.
 
 :func:`install` puts an alias finder at the front of ``sys.meta_path`` (the
 front, so a submodule of an alias never loads a second copy from the
-package's ``__path__``).  It claims a top-level old name only when no other
-``api`` / ``engine`` / ``simulations`` package is importable, so a user's
-own package of that name always wins, and a submodule only while its
-top-level name is our alias.
+package's ``__path__``).  It claims a top-level old name unless a user's own
+regular package of that name is importable (that one always wins), and a
+submodule only while its top-level name is our alias.  The aliased module
+keeps its own ``__spec__``, so ``importlib.reload`` and autoreload still work
+on it.
+
+In a source checkout, a module that exists only in the checkout's old
+top-level folder (``<repo>/simulations/my_sim.py``, a local file git does
+not track) still imports under its old name, from that folder.
 """
 from __future__ import annotations
 
@@ -33,16 +38,34 @@ _CHECKOUT = os.path.dirname(_PACKAGE_DIR)
 _warned = set()
 
 
-def _is_our_shim(spec) -> bool:
-    """A spec for the checkout's own forwarding package (``<repo>/api/``)."""
-    origin = getattr(spec, 'origin', None) or ''
-    return os.path.dirname(os.path.dirname(os.path.abspath(origin))) == _CHECKOUT
+def _in_checkout() -> bool:
+    return os.path.isfile(os.path.join(_CHECKOUT, 'pyproject.toml'))
+
+
+def _shim_init(name: str) -> str:
+    return os.path.join(_CHECKOUT, name, '__init__.py')
+
+
+def _yields_to(spec, top: str) -> bool:
+    """Whether the finder leaves ``top`` to ``spec`` (what ``sys.path``
+    would import): only a user's own regular package or module does.  Not
+    the checkout's forwarding package, not a bare directory (a namespace
+    package, e.g. a results folder named ``engine``), and not a copy of our
+    own subpackage reached through a path that points inside ``daedalus/``
+    (that would be a second copy of the library)."""
+    if spec is None or spec.origin is None or spec.origin == 'namespace':
+        return False
+    origin = os.path.abspath(spec.origin)
+    if _in_checkout() and origin == _shim_init(top):
+        return False
+    if origin.startswith(_PACKAGE_DIR + os.sep):
+        return False
+    return True
 
 
 def _ours(filename: str) -> bool:
     """A frame of this module or of a checkout's forwarding package."""
-    return filename == __file__ or any(
-        filename == os.path.join(_CHECKOUT, n, '__init__.py') for n in OLD_NAMES)
+    return filename == __file__ or any(filename == _shim_init(n) for n in OLD_NAMES)
 
 
 def _internal(filename: str) -> bool:
@@ -67,14 +90,28 @@ def warn_old_name(top: str) -> None:
 
 
 class _AliasLoader(importlib.abc.Loader):
+    """Hands out the already-imported ``daedalus.<...>`` module."""
+
     def __init__(self, target):
         self.target = target
+        self._spec = None
 
     def create_module(self, spec):
-        return importlib.import_module(self.target)
+        if '.' not in spec.name:
+            warn_old_name(spec.name)
+        module = importlib.import_module(self.target)
+        self._spec = module.__spec__
+        return module
 
     def exec_module(self, module):
-        pass
+        # the import system set the alias spec on the module: put the
+        # module's own back (reload, autoreload and pickling use it)
+        module.__spec__ = self._spec
+
+    def get_code(self, fullname):
+        """For ``python -m <old name>``: the target module's code."""
+        spec = importlib.util.find_spec(self.target)
+        return spec.loader.get_code(self.target)
 
 
 class AliasFinder(importlib.abc.MetaPathFinder):
@@ -87,24 +124,34 @@ class AliasFinder(importlib.abc.MetaPathFinder):
         if fullname == top:
             if top in sys.modules:
                 return None
-            other = importlib.machinery.PathFinder.find_spec(top)
-            if other is not None and not _is_our_shim(other):
+            if _yields_to(importlib.machinery.PathFinder.find_spec(top), top):
                 return None
-            warn_old_name(top)
         else:
             alias = sys.modules.get(top)
             if alias is None or alias is not sys.modules.get(f'daedalus.{top}'):
                 return None
-        target = f'daedalus.{fullname}'
+        target_name = f'daedalus.{fullname}'
         try:
-            target_spec = importlib.util.find_spec(target)
+            target_spec = importlib.util.find_spec(target_name)
         except ModuleNotFoundError:
-            return None
+            target_spec = None
         if target_spec is None:
-            return None
+            return self._checkout_local(fullname)
         return importlib.machinery.ModuleSpec(
-            fullname, _AliasLoader(target),
+            fullname, _AliasLoader(target_name),
             is_package=target_spec.submodule_search_locations is not None)
+
+    @staticmethod
+    def _checkout_local(fullname):
+        """A module only the checkout's old folder holds (an untracked local
+        file), imported from there under its old name."""
+        if not _in_checkout():
+            return None
+        parts = fullname.split('.')
+        where = os.path.join(_CHECKOUT, *parts[:-1])
+        if not os.path.isdir(where):
+            return None
+        return importlib.machinery.PathFinder.find_spec(fullname, [where])
 
 
 _FINDER = AliasFinder()

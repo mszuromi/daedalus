@@ -442,7 +442,7 @@ Run these from anywhere once the package is installed (see *Install Daedalus*), 
 
 ```yaml
 # config.yaml: the connected 2-point function of the OU quartic model, tree + 1 loop
-model: ou_quartic                  # a daedalus/models/<name>.model.py, or a path to a *.model.py
+model: ou_quartic                  # a model name (dd.list_models()), or a path to a *.model.py
 parameters:                        # numbers, or lists of numbers for indexed parameters
   mu: 1.0
   eps: 0.02

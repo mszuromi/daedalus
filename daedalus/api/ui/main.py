@@ -2815,16 +2815,37 @@ class ModelUI:
             print(f'  Wall time:      {result.get("wall_seconds", 0):.2f}s')
 
     # ── Loading existing models ─────────────────────────────────
+    def _model_search_dirs(self) -> list[str]:
+        """``self.models_dir`` first, then the directories ``dd.load_model``
+        searches (``DAEDALUS_MODELS_PATH``, the clone's ``models/``, the
+        shipped ``daedalus/models``)."""
+        import daedalus as dd
+        out = [os.path.abspath(self.models_dir)]
+        for d in dd.model_dirs():
+            if d not in out:
+                out.append(d)
+        return out
+
     def _list_model_files(self) -> list[str]:
-        """Return the list of ``*.model.py`` filenames in
-        ``self.models_dir``, alphabetically sorted.  Used to
+        """Return the ``*.model.py`` filenames in the model directories
+        (:meth:`_model_search_dirs`), alphabetically sorted.  Used to
         populate the Load dropdown."""
-        try:
-            files = [f for f in os.listdir(self.models_dir)
-                     if f.endswith('.model.py')]
-        except OSError:
-            files = []
+        files = set()
+        for d in self._model_search_dirs():
+            try:
+                files.update(f for f in os.listdir(d) if f.endswith('.model.py'))
+            except OSError:
+                pass
         return sorted(files)
+
+    def _model_file_path(self, name: str) -> str:
+        """The file the Load dropdown entry ``name`` stands for: the first
+        directory of :meth:`_model_search_dirs` that holds it."""
+        for d in self._model_search_dirs():
+            path = os.path.join(d, name)
+            if os.path.isfile(path):
+                return path
+        return os.path.join(self.models_dir, name)
 
     def _on_load(self, _btn) -> None:
         """Read the file selected in the Load dropdown and repopulate
@@ -2852,7 +2873,7 @@ class ModelUI:
                 print('[load] No file selected — pick one from the '
                       'dropdown first.')
                 return
-            path = os.path.join(self.models_dir, target)
+            path = self._model_file_path(target)
             try:
                 spec = load_spec_from_file(path)
                 self.load(spec)

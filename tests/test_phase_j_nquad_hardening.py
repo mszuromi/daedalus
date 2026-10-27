@@ -104,7 +104,8 @@ _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 # A later Phase J milestone that adds a number-moving flag must set it to its
 # legacy value in the child of section G (or retire these comparisons).
 _PRE_M2B_REV = '16b5564'
-_FI_REL = 'daedalus/engine/integration/time_domain/final_integral.py'
+# the path AT that revision (before the package moved under daedalus/)
+_FI_REL = 'engine/integration/time_domain/final_integral.py'
 
 
 def _counter(name):

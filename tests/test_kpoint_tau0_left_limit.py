@@ -358,12 +358,17 @@ def _pre_change_daedalus():
         return None
     name = 'daedalus_pre_kpoint_nudge'
     mod = types.ModuleType(name)
-    mod.__file__ = dd.__file__
+    # where that file lived (the repo root): its repo_root() walks up from
+    # here and puts the directory it finds on sys.path, so restore sys.path
+    old_file = os.path.join(_REPO, 'daedalus.py')
+    mod.__file__ = old_file
     sys.modules[name] = mod           # @dataclass resolves its module by name
+    saved_path = list(sys.path)
     try:
-        exec(compile(src.stdout, dd.__file__, 'exec'), mod.__dict__)
+        exec(compile(src.stdout, old_file, 'exec'), mod.__dict__)
     finally:
         del sys.modules[name]
+        sys.path[:] = saved_path
     return mod
 
 

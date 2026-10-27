@@ -9,7 +9,7 @@ writers (``save_npz`` / ``save_csv`` / ``plot_cumulant`` / ``generate_report``).
 
 Schema (all sections but ``model`` are optional; unknown keys are errors)::
 
-    model: ou_quartic                 # name of daedalus/models/<name>.model.py, or a path
+    model: ou_quartic                 # a model name (dd.list_models()), or a path
                                       # (or an inline ``sde:`` block instead, below)
     parameters: {mu: 1.0, eps: 0.02}  # numbers, or (nested) lists of numbers
     question:

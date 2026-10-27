@@ -106,6 +106,97 @@ def test_a_users_own_api_package_wins(tmp_path):
     assert out.strip() == 'ok'
 
 
+def test_alias_keeps_the_modules_own_spec_and_reload_works():
+    out = _run('''
+        import importlib, sys
+        import daedalus
+        import engine.errors
+        import daedalus.engine.errors as E
+        assert E.__spec__.name == 'daedalus.engine.errors', E.__spec__
+        assert E.__name__ == 'daedalus.engine.errors'
+        assert importlib.reload(E) is E and E.__name__ == 'daedalus.engine.errors'
+        assert sys.modules['engine.errors'] is E
+        print('ok')
+    ''')
+    assert out.strip() == 'ok'
+
+
+def test_a_path_into_the_package_never_loads_a_second_copy():
+    """``<repo>/daedalus`` on sys.path makes ``daedalus/api`` look like a
+    top-level ``api``: the alias must still win (no second copy)."""
+    out = _run('''
+        import os, sys, pickle
+        import daedalus
+        sys.path.insert(0, os.path.dirname(daedalus.__file__))
+        import api, engine.errors
+        assert api is sys.modules['daedalus.api']
+        assert engine.errors is sys.modules['daedalus.engine.errors']
+        print('ok')
+    ''')
+    assert out.strip() == 'ok'
+
+
+def test_a_bare_folder_named_engine_does_not_hide_the_alias(tmp_path):
+    (tmp_path / 'engine').mkdir()                     # e.g. a results folder
+    out = _run('''
+        import sys, daedalus
+        import engine.errors
+        assert engine.errors is sys.modules['daedalus.engine.errors']
+        print('ok')
+    ''', cwd=str(tmp_path), path=('', ROOT))
+    assert out.strip() == 'ok'
+
+
+def test_a_package_next_to_an_installed_daedalus_wins(monkeypatch, tmp_path):
+    """Installed (no checkout), a package beside ``daedalus`` in the same
+    site-packages is another distribution's, not our forwarding package."""
+    from importlib.machinery import ModuleSpec
+    from daedalus import _compat
+    site_init = os.path.join(_compat._CHECKOUT, 'api', '__init__.py')
+    spec = ModuleSpec('api', None, origin=site_init)
+    monkeypatch.setattr(_compat, '_in_checkout', lambda: False)
+    assert _compat._yields_to(spec, 'api')
+    monkeypatch.setattr(_compat, '_in_checkout', lambda: True)
+    assert not _compat._yields_to(spec, 'api')
+
+
+def test_a_local_module_in_the_checkouts_old_folder_still_imports(tmp_path):
+    """An untracked local file in ``<repo>/simulations/`` keeps importing
+    under its old name (the folder now only forwards)."""
+    (tmp_path / 'pyproject.toml').write_text('')
+    (tmp_path / 'simulations').mkdir()
+    (tmp_path / 'simulations' / 'my_local_sim.py').write_text(
+        'from simulations.cumulant_estimator import estimate_kpoint_slices\nOK = 1\n')
+    out = _run(f'''
+        import sys
+        import daedalus
+        from daedalus import _compat
+        _compat._CHECKOUT = {str(tmp_path)!r}
+        import simulations.my_local_sim as m
+        assert m.OK == 1 and m.estimate_kpoint_slices is sys.modules[
+            'daedalus.simulations.cumulant_estimator'].estimate_kpoint_slices
+        try:
+            import simulations.not_here
+        except ModuleNotFoundError:
+            print('ok')
+    ''')
+    assert out.strip() == 'ok'
+
+
+def test_find_spec_probe_does_not_use_up_the_warning():
+    out = _run('''
+        import importlib.util, warnings
+        import daedalus
+        importlib.util.find_spec('engine')          # e.g. an IDE completer
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter('always')
+            import engine
+        assert sum(issubclass(w.category, DeprecationWarning) for w in rec) == 1
+        print('ok')
+    ''')
+    assert out.strip() == 'ok'
+
+
 def test_old_pickle_names_load_after_import_daedalus():
     import daedalus                                      # noqa: F401  (installs the alias)
     from daedalus.engine.errors import DaedalusError
