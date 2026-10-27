@@ -247,3 +247,52 @@ def test_an_input_whose_rate_holds_a_kernel_is_refused():
          .drift('v', '-mu*v + 0.5*n'))
     with pytest.raises(HartreeUnsupported, match='kernel in the noise vertex'):
         hartree(m.build(), warn=False)
+
+
+def test_a_state_dependent_rate_keeps_its_multiplicative_noise():
+    """The input's second cumulant is p^2 lambda(v): the noise variance
+    depends on the field.  The elimination keeps it as multiplicative noise
+    averaged in the Gaussian (<lambda> = lambda(<v>) + lamq Var v), against
+    (i) the hand-embedded model with that noise and (ii) the same model
+    whose noise variance is frozen at the saddle's rate: the second differs
+    visibly, the first does not."""
+    pars = dict(ts=0.5, lam0=0.5, lam1=0.0001, lamq=3.0, p=0.8, mu=3.0)
+    rate = 'lam0 + lam1*v + lamq*v^2'
+
+    def build(kind):
+        m = SDE(f'multiplicative {kind}')
+        for k, d in pars.items():
+            m.parameter(k, default=d, domain='positive')
+        m.field('v')
+        if kind == 'eliminated':
+            m.define_kernel('k', kernel=Kernel.exponential('ts'))
+            m.point_process('n', rate, jump_size='p')
+            m.drift('v', '-mu*v + Conv(k, n)')
+            return m.build()
+        m.field('s').drift('v', '-mu*v + s')
+        if kind == 'hand':
+            m.drift('s', '-s/ts')
+            m.noise('N', Poisson(rate=rate, size='p/ts'), into={'s': 1})
+        else:                          # the noise variance frozen at lambda(v*)
+            m.parameter('lamstar', default=frozen[0], domain='positive')
+            m.drift('s', '-s/ts + (' + rate + ' - lamstar)*p/ts')
+            m.noise('N', Poisson(rate='lamstar', size='p/ts'), into={'s': 1})
+        return m.build()
+    frozen = [0.0]
+    a = hartree(build('eliminated'), warn=False)
+    v_star = float(a.saddle[0])
+    frozen[0] = (pars['lam0'] + pars['lam1'] * v_star
+                 + pars['lamq'] * v_star ** 2)
+    b = hartree(build('hand'), warn=False)
+    c = hartree(build('frozen'), warn=False)
+    ib, ic = b.fields.index('dv1'), c.fields.index('dv1')
+    assert a.info['nonlinear_fields'] == ['dv1']
+    assert a.cov[0, 0] == pytest.approx(b.cov[ib, ib], rel=1e-12)
+    assert a.mean[0] == pytest.approx(b.mean[ib], rel=1e-12)
+    # the multiplicative part moves the variance visibly
+    assert abs(c.cov[ic, ic] / a.cov[0, 0] - 1) > 0.2        # 30 %
+    # and the averaged noise is lambda(<v>) + lamq Var v, not lambda(v*)
+    m_v, s_v = a.mean[0], a.cov[0, 0]
+    lam_avg = (pars['lam0'] + pars['lam1'] * m_v
+               + pars['lamq'] * (m_v ** 2 + s_v))
+    assert abs(lam_avg / frozen[0] - 1) > 0.3
