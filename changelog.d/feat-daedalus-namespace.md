@@ -10,8 +10,9 @@ model files are now in `daedalus/models/`. The PyPI distribution is named `daeda
 - **Deprecated old names, for one release.** `import api`, `import engine.<...>` and `import simulations.<...>` still
   work, with one `DeprecationWarning` per name, and give the same module objects as `daedalus.<...>` (no second
   copy: module state, classes and exceptions are shared). Old pickles and caches that name `engine.*` / `api.*`
-  classes still load; the modules keep their own `__spec__`, so `importlib.reload` and autoreload work. A user's own
-  top-level `api` / `engine` / `simulations` package always takes precedence (a bare folder of that name does not
+  classes still load once `daedalus` has been imported (a bare `pickle.load` in a fresh process does not import
+  it, so `import daedalus` first; the package's own loaders do). The modules keep their own `__spec__`, so
+  `importlib.reload` and autoreload work. A user's own top-level `api` / `engine` / `simulations` package always takes precedence (a bare folder of that name does not
   count). In a source checkout, the top-level `api/`, `engine/` and `simulations/` folders now hold only a
   forwarding `__init__.py` and are not installed; a local module git does not track in one of them
   (`simulations/my_sim.py`) still imports under its old name.

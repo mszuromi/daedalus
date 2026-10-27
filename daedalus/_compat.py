@@ -5,8 +5,8 @@ The library used to be three top-level packages, ``api``, ``engine`` and
 names keep working: ``import engine.core.vertices`` gives the module
 ``daedalus.engine.core.vertices`` itself (the same object, so its state,
 classes and exceptions are shared, and an old pickle that names
-``engine.<...>`` classes still loads), with one ``DeprecationWarning`` per
-old name.
+``engine.<...>`` classes still loads once ``daedalus`` is imported), with
+one ``DeprecationWarning`` per old name.
 
 :func:`install` puts an alias finder at the front of ``sys.meta_path`` (the
 front, so a submodule of an alias never loads a second copy from the
