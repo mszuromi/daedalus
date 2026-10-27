@@ -64,8 +64,16 @@ it keeps every distinct stable solution.
 - Refused (`HartreeUnsupported`): kernels (`Conv`, delays), spatial models, non-local noise cumulant kernels,
   derivative vertices, singular pencils.
 - A drift that is not polynomial in the fields is replaced by its Taylor polynomial (order 6 by default, or
-  `taylor_order`), with the advisory `HARTREE_TAYLOR_TRUNCATED`. A polynomial action is integrated exactly by tensor
-  Gauss-Hermite quadrature.
+  `taylor_order`), with the advisory `HARTREE_TAYLOR_TRUNCATED`.
+- **Expectations run over the nonlinear fields only.** A field that enters no drift monomial of degree two or more and
+  no noise term (a linear filter stage, a linear read-out) contributes through its mean alone, so it adds no dimension:
+  a model with 13 linear filter stages and two nonlinear voltages is a one- or two-dimensional integral, not a 15-fold
+  one. The fields counted are listed in `result.info['nonlinear_fields']`. A field that multiplies another field in the
+  drift, or enters the noise (a state-dependent rate), is counted. Over the nonlinear fields a polynomial action is
+  integrated exactly by tensor Gauss-Hermite quadrature, or, through `hartree(..., expectations='moments')`, by the
+  closed-form Gaussian (Isserlis) moments with no quadrature at all. The default `expectations='auto'` uses the
+  quadrature while its rule has at most 20 000 points and the moments beyond; `expectations='quadrature'` refuses above
+  `MAX_QUADRATURE_POINTS` points and names the nonlinear dimension and its fields.
 
 ## The screened (optimized-perturbation) loop series
 

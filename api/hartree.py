@@ -30,8 +30,14 @@ multi-exponential shape of ``C(τ)`` and activated hopping between wells.
 :mod:`api.resum` builds on it a screened loop series (optimized perturbation
 theory) that adds those back order by order.
 
-Expectations are taken by tensor Gauss-Hermite quadrature, exact for a
-polynomial drift and noise of the expansion's degree.
+Expectations are taken over the *nonlinear* fields only: a field that enters
+no monomial of degree two or more of the drift and none of the noise (a linear
+filter stage, say) has an exactly known contribution (its mean), so it adds no
+dimension.  Over the nonlinear fields the expectation is a tensor Gauss-Hermite
+quadrature, exact for a polynomial drift and noise of the expansion's degree,
+or -- for a polynomial system whose nonlinear dimension makes the tensor rule
+large -- the closed-form Gaussian moments (Isserlis / Wick), which need no
+quadrature at all.
 
 Scope
 -----
@@ -66,8 +72,13 @@ __all__ = ['hartree', 'gaussian_closure', 'HartreeResult', 'HartreeError',
            'HartreeAdvisoryWarning', 'action_system']
 
 #: tensor quadrature points above which the closure refuses (the rule has
-#: ``(degree // 2 + 2) ** n_fields`` points)
+#: ``(degree // 2 + 2) ** n_nonlinear`` points)
 MAX_QUADRATURE_POINTS = 2_000_000
+
+#: ``expectations='auto'`` uses the closed-form Gaussian moments of a
+#: polynomial system once the tensor rule over its nonlinear fields would
+#: have more points than this
+AUTO_QUADRATURE_POINTS = 20_000
 
 #: two closure solutions are the same when their means and covariances agree
 #: to this fraction of the solutions' scale
@@ -250,19 +261,73 @@ class HartreeResult:
 
 # ── quadrature and the closure ─────────────────────────────────────────────
 
-def _gh_rule(n_dim, n_nodes):
+def _gh_rule(n_dim, n_nodes, names=None):
     """Tensor Gauss-Hermite nodes ``z`` (shape ``(P, n_dim)``) and weights
     for the standard normal ``N(0, I)``."""
     if n_nodes ** n_dim > MAX_QUADRATURE_POINTS:
+        which = (f' ({", ".join(map(str, names))})' if names else '')
         raise HartreeUnsupported(
-            f'hartree: the tensor quadrature would need {n_nodes}^{n_dim} = '
+            f'hartree: the tensor quadrature over the {n_dim} nonlinear '
+            f'fields{which} would need {n_nodes}^{n_dim} = '
             f'{n_nodes ** n_dim} points (limit {MAX_QUADRATURE_POINTS}); '
-            f'models with this many fields are not supported yet.')
+            + ('expectations="moments" evaluates a polynomial model in '
+               'closed form instead.' if names is not None else
+               'pass nonlinear= (the fields the callables depend on '
+               'nonlinearly) to shrink the rule.'))
     z1, w1 = np.polynomial.hermite_e.hermegauss(n_nodes)
     w1 = w1 / w1.sum()
     Z = np.array(list(itertools.product(z1, repeat=n_dim)))
     W = np.prod(np.array(list(itertools.product(w1, repeat=n_dim))), axis=1)
     return Z, W
+
+
+class _MomentTable:
+    """Central moments ``E[y^e]`` of ``y ~ N(0, S)`` by the Stein recursion
+    ``E[y_i y^f] = sum_j S_ij f_j E[y^(f - 1_j)]``, memoised."""
+
+    def __init__(self, S):
+        self.S = np.asarray(S, dtype=float)
+        self._memo = {}
+
+    def __call__(self, e):
+        hit = self._memo.get(e)
+        if hit is not None:
+            return hit
+        if sum(e) % 2:
+            out = 0.0
+        elif not any(e):
+            out = 1.0
+        else:
+            i = next(k for k, v in enumerate(e) if v)
+            f = list(e)
+            f[i] -= 1
+            out = 0.0
+            for j, fj in enumerate(f):
+                if fj and self.S[i, j] != 0.0:
+                    g = list(f)
+                    g[j] -= 1
+                    out += self.S[i, j] * fj * self(tuple(g))
+        self._memo[e] = out
+        return out
+
+
+def _shifted_moment(e, m, table, memo):
+    """``E[prod_i (m_i + y_i)^e_i]`` for ``y ~ N(0, S)`` (``table``)."""
+    hit = memo.get(e)
+    if hit is not None:
+        return hit
+    idx = [i for i, v in enumerate(e) if v]
+    total = 0.0
+    for ks in itertools.product(*[range(e[i] + 1) for i in idx]):
+        k = [0] * len(e)
+        c = 1.0
+        for i, ki in zip(idx, ks):
+            k[i] = ki
+            c *= math.comb(e[i], ki) * m[i] ** (e[i] - ki)
+        if c != 0.0:
+            total += c * table(tuple(k))
+    memo[e] = total
+    return total
 
 
 def _chol_psd(S):
@@ -277,7 +342,7 @@ def _hurwitz(A):
 
 def gaussian_closure(drift, jac, noise, n, *, mean0, cov0=None, degree=3,
                      tol=1e-12, max_iter=200, damping=0.5, fields=None,
-                     saddle=None):
+                     saddle=None, nonlinear=None, moments=None):
     """Solve the self-consistent Gaussian closure for numeric callables.
 
     ``drift(X) -> (P, n)``, ``jac(X) -> (P, n, n)`` (``∂f_a/∂x_b``) and
@@ -286,20 +351,41 @@ def gaussian_closure(drift, jac, noise, n, *, mean0, cov0=None, degree=3,
     largest polynomial degree to integrate exactly (the quadrature uses
     ``degree // 2 + 2`` nodes per dimension).
 
+    ``nonlinear`` (indices; default every field) are the fields the
+    quadrature runs over.  The callables are evaluated with every other field
+    at its mean, which is exact when those fields enter the drift only
+    affinely and the noise not at all (a linear filter stage).  The tensor
+    rule then has ``(degree // 2 + 2) ** len(nonlinear)`` points.  ``moments``
+    -- ``(mean, cov) -> (<f>, <df/dx>, <Q>)`` -- replaces the quadrature
+    altogether (the closed-form Gaussian moments of a polynomial system).
+
     The iteration is a damped Newton step on the mean with the averaged
     Jacobian and a Lyapunov solve for the covariance, then a polish by
     ``scipy.optimize.root`` on the full residual.  Raises
     :class:`HartreeError` when the dressed drift stops being stable or no
     solution is found.
     """
-    Z, W = _gh_rule(n, max(2, degree // 2 + 2))
+    nl = (list(range(n)) if nonlinear is None
+          else sorted({int(i) for i in nonlinear}))
+    if moments is None:
+        names = ([(fields or range(n))[i] for i in nl]
+                 if nonlinear is not None else None)
+        Z, W = _gh_rule(len(nl), max(2, degree // 2 + 2), names=names)
+    else:
+        Z, W = None, np.ones(1)
     mean = np.asarray(mean0, dtype=float).copy()
     if cov0 is None:
         cov0 = np.eye(n)
     cov = np.asarray(cov0, dtype=float).copy()
 
     def averages(m, S):
-        X = m + Z @ _chol_psd(S).T
+        if moments is not None:
+            return moments(m, S)
+        if len(nl) == n:
+            X = m + Z @ _chol_psd(S).T
+        else:
+            X = np.repeat(m[None, :], len(W), axis=0)
+            X[:, nl] = m[nl] + Z @ _chol_psd(S[np.ix_(nl, nl)]).T
         return (W @ drift(X), np.einsum('p,pab->ab', W, jac(X)),
                 np.einsum('p,pab->ab', W, noise(X)))
 
@@ -369,7 +455,11 @@ def gaussian_closure(drift, jac, noise, n, *, mean0, cov0=None, degree=3,
         fields=list(fields or range(n)), mean=mean, cov=cov, A=A, Q=Q,
         saddle=(np.zeros(n) if saddle is None else np.asarray(saddle)),
         converged=final < 1e-9 * scale, residual=final, iterations=it,
-        info={'quadrature_nodes': len(W), 'fixed_point_step': res})
+        info={'quadrature_nodes': (len(W) if moments is None else 0),
+              'nonlinear_dim': len(nl),
+              'expectations': ('quadrature' if moments is None
+                               else 'moments'),
+              'fixed_point_step': res})
 
 
 # ── model adapter ──────────────────────────────────────────────────────────
@@ -443,6 +533,53 @@ class ActionSystem:
     taylor_order: int
     mf: dict
     num_params: dict
+    _terms: tuple = field(default=None, repr=False)
+
+    @property
+    def nonlinear(self):
+        """Indices of the fields that enter some monomial of degree two or
+        more of the drift, or any monomial of the noise: the dimensions the
+        Gaussian expectations really have.  Every other field enters the
+        drift only affinely and the noise not at all, so it contributes
+        through its mean."""
+        hit = set()
+        for p in self.f:
+            for e, c in zip(p.exps, p.coeffs):
+                if c != 0 and e.sum() >= 2:
+                    hit.update(np.flatnonzero(e).tolist())
+        for row in self.Q:
+            for p in row:
+                for e, c in zip(p.exps, p.coeffs):
+                    if c != 0 and e.sum() >= 1:
+                        hit.update(np.flatnonzero(e).tolist())
+        return sorted(hit)
+
+    def expectations(self, m, S):
+        """``(<f>, <df/dx>, <Q>)`` in ``N(m, S)`` by the closed-form Gaussian
+        (Isserlis / Wick) moments of the polynomial drift and noise."""
+        n = len(self.fields)
+        if self._terms is None:
+            self._terms = (
+                [(a, p) for a, p in enumerate(self.f)],
+                [(a, b, self.f[a].d(b)) for a in range(n) for b in range(n)],
+                [(a, b, self.Q[a][b]) for a in range(n) for b in range(n)])
+        table = _MomentTable(S)
+        memo = {}
+
+        def ev(p):
+            return sum((c * _shifted_moment(tuple(int(v) for v in e), m,
+                                            table, memo)
+                        for e, c in zip(p.exps, p.coeffs)), 0.0)
+        fbar = np.zeros(n)
+        A = np.zeros((n, n))
+        Q = np.zeros((n, n))
+        for a, p in self._terms[0]:
+            fbar[a] = ev(p)
+        for a, b, p in self._terms[1]:
+            A[a, b] = ev(p)
+        for a, b, p in self._terms[2]:
+            Q[a, b] = ev(p)
+        return fbar, A, Q
 
     def drift(self, X):
         return np.stack([p(X) for p in self.f], axis=1)
@@ -681,7 +818,8 @@ def _summary(r, label):
 
 def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
             mean0=None, cov0=None, taylor_order=None, multistart=True,
-            mf_dae_n_starts=64, mf_dae_seed_box=None, warn=True, **kw):
+            mf_dae_n_starts=64, mf_dae_seed_box=None, warn=True,
+            expectations='auto', **kw):
     """Self-consistent Gaussian (Hartree) approximation of a temporal model
     (``dd.hartree``).
 
@@ -709,6 +847,16 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
     warn : bool
         Issue the advisories as warnings (they are always in
         ``.advisories``).
+    expectations : {'auto', 'quadrature', 'moments'}
+        How the Gaussian expectations are taken.  Only the fields that enter
+        nonlinearly (``.info['nonlinear_fields']``) are integrated over: the
+        others -- linear filter stages -- contribute through their mean.
+        ``'quadrature'`` is the tensor Gauss-Hermite rule over those fields
+        (refused above ``MAX_QUADRATURE_POINTS`` points); ``'moments'`` the
+        closed-form Gaussian (Wick) moments of the polynomial drift and
+        noise, with no quadrature and no size limit; ``'auto'`` (default)
+        quadrature while the rule has at most ``AUTO_QUADRATURE_POINTS``
+        points, the moments beyond.
 
     Returns
     -------
@@ -730,6 +878,16 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
     n = len(sysm.fields)
     saddle = sysm.saddle
     deg = max(3, sysm.degree)
+    if expectations not in ('auto', 'quadrature', 'moments'):
+        raise ValueError(f"hartree: expectations must be 'auto', "
+                         f"'quadrature' or 'moments', not {expectations!r}")
+    nl = sysm.nonlinear
+    points = max(2, deg // 2 + 2) ** len(nl)
+    closed_form = (expectations == 'moments'
+                   or (expectations == 'auto'
+                       and points > AUTO_QUADRATURE_POINTS))
+    closure_kw = ({'moments': sysm.expectations} if closed_form
+                  else {'nonlinear': nl})
 
     def tree_cov(offset):
         A0 = sysm.jac(offset[None, :])[0]
@@ -761,7 +919,8 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
         try:
             r = gaussian_closure(sysm.drift, sysm.jac, sysm.noise, n,
                                  mean0=m, cov0=c, degree=deg,
-                                 fields=sysm.fields, saddle=saddle, **kw)
+                                 fields=sysm.fields, saddle=saddle,
+                                 **closure_kw, **kw)
         except (HartreeError, np.linalg.LinAlgError, ValueError) as exc:
             failures.append((label, str(exc)))
             continue
@@ -840,6 +999,9 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
     res.info.update({'taylor_order': sysm.taylor_order,
                      'polynomial': sysm.polynomial, 'degree': sysm.degree,
                      'pencil': sysm.M, 'starts': [s[0] for s in starts],
+                     'nonlinear_fields': [sysm.fields[i] for i in nl],
+                     'expectations': ('moments' if closed_form
+                                      else 'quadrature'),
                      'failed_starts': failures,
                      'model': model.get('name', '<unnamed>')})
     if warn:
