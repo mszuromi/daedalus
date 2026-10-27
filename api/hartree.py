@@ -42,9 +42,14 @@ quadrature at all.
 Scope
 -----
 Temporal models whose action has a first-order ``Dt`` pencil
-(``M Dt x``, ``M`` constant and invertible), white noise, no kernels
-(``Conv``, delays), no non-local cumulant kernels and no time derivatives
-inside vertices.  Colored noise enters through its Markovian embedding, which
+(``M Dt x``, ``M`` constant and invertible), white noise, no non-local
+cumulant kernels and no time derivatives inside vertices.  Kernels
+(``Conv``) of the fields enter linearly: a rational kernel is embedded
+exactly, before the closure, as linear state fields (the engine's
+state-space realization of the kernel entry), and a hard delay through its
+Pade approximant of an order chosen by the same search as the loop path
+(``delay=`` options); the results are on the model's own fields, the kernel
+states are in ``result.full``.  Colored noise enters through its Markovian embedding, which
 ``FieldTheory`` performs for ``declare_cgf_term`` exponential kernels.  A
 drift that is not a polynomial in the fields is replaced by its Taylor
 polynomial of ``taylor_order`` about the mean-field saddle, with an advisory.
@@ -58,6 +63,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import time
 import warnings
 from dataclasses import dataclass, field
 
@@ -140,6 +146,19 @@ class HartreeResult:
     solutions: list = field(default_factory=list)
     advisories: list = field(default_factory=list)
     info: dict = field(default_factory=dict)
+    #: models with kernels: the closure on the fields AND the kernel states
+    #: (``mean``, ``cov``, ``A``, ``Q``, ``saddle``, ``J0``, ``Q0``,
+    #: ``aux`` names); ``mean``/``cov``/``A``/``Q`` above are its block on the
+    #: model's own fields.  ``None`` for a model without kernels.
+    full: dict = None
+
+    @property
+    def _A_full(self):
+        return self.A if self.full is None else self.full['A']
+
+    @property
+    def _cov_full(self):
+        return self.cov if self.full is None else self.full['cov']
 
     # ── indexing ──
     def index(self, leg):
@@ -167,12 +186,14 @@ class HartreeResult:
         """``Σ(τ)[n, i, j] = κ(x_i(t), x_j(t + τ_n))`` on an array of lags
         (either sign): ``Σ e^{Aᵀτ}`` for ``τ >= 0``, ``e^{A|τ|} Σ`` below."""
         tau = np.atleast_1d(np.asarray(tau, dtype=float))
-        out = np.empty((tau.size, len(self.fields), len(self.fields)))
+        nf = len(self.fields)
+        A, S = self._A_full, self._cov_full
+        out = np.empty((tau.size, nf, nf))
         for n, t in enumerate(tau.ravel()):
             if t >= 0:
-                out[n] = self.cov @ sl.expm(self.A.T * t)
+                out[n] = (S @ sl.expm(A.T * t))[:nf, :nf]
             else:
-                out[n] = sl.expm(self.A * (-t)) @ self.cov
+                out[n] = (sl.expm(A * (-t)) @ S)[:nf, :nf]
         return out
 
     def C(self, tau, i=0, j=0):
@@ -203,13 +224,13 @@ class HartreeResult:
         ``H = (-iω - A)^{-1}``."""
         omega = np.atleast_1d(np.asarray(omega, dtype=float))
         i, j = self.index(i), self.index(j)
-        n = self.A.shape[0]
+        A, S = self._A_full, self._cov_full
+        n = A.shape[0]
         I = np.eye(n)
         out = np.empty(omega.shape, dtype=complex)
         for k, w in enumerate(omega.ravel()):
-            out.flat[k] = -(self.cov @ np.linalg.inv(self.A.T + 1j * w * I)
-                            + np.linalg.inv(self.A - 1j * w * I) @ self.cov
-                            )[i, j]
+            out.flat[k] = -(S @ np.linalg.inv(A.T + 1j * w * I)
+                            + np.linalg.inv(A - 1j * w * I) @ S)[i, j]
         return out
 
     def spectra(self, omega=None, T=None, i=0, j=0):
@@ -221,8 +242,8 @@ class HartreeResult:
         opts = resolve_spectra_options({'omega': omega, 'T': T},
                                        'HartreeResult.spectra')
         ii, jj = self.index(i), self.index(j)
-        n = self.A.shape[0]
-        A, S = self.A, self.cov
+        A, S = self._A_full, self._cov_full
+        n = A.shape[0]
         inf_pos = float((S @ np.linalg.solve(-A.T, np.eye(n)))[ii, jj])
         inf_neg = float((np.linalg.solve(-A, np.eye(n)) @ S)[ii, jj])
         om = opts['omega']
@@ -250,8 +271,9 @@ class HartreeResult:
 
     @property
     def rates(self):
-        """Decay rates (``-eig(A)``) of the dressed propagator."""
-        return -np.linalg.eigvals(self.A)
+        """Decay rates (``-eig(A)``) of the dressed propagator (with the
+        kernel states, for a model with kernels)."""
+        return -np.linalg.eigvals(self._A_full)
 
     @property
     def mean_shift(self):
@@ -443,8 +465,12 @@ def gaussian_closure(drift, jac, noise, n, *, mean0, cov0=None, degree=3,
         mean, cov = unpack(sol.x)
     fbar, A, Q = averages(mean, cov)
     final = float(np.max(np.abs(residual(pack(mean, cov)))))
-    if not np.all(np.isfinite(cov)) or np.min(
-            np.linalg.eigvalsh(0.5 * (cov + cov.T))) <= 0:
+    w_cov = np.linalg.eigvalsh(0.5 * (cov + cov.T)) if np.all(
+        np.isfinite(cov)) else None
+    # (a stiff kernel state can be numerically uncontrollable: a rounding-size
+    # negative eigenvalue is a zero one)
+    if w_cov is None or w_cov.min() < -1e-13 * max(w_cov.max(), 0.0) \
+            or (w_cov.min() <= 0 and w_cov.max() <= 0):
         raise HartreeError('hartree: the covariance is not positive '
                            'definite at the solution.')
     if not _hurwitz(A):
@@ -533,7 +559,16 @@ class ActionSystem:
     taylor_order: int
     mf: dict
     num_params: dict
+    #: names of the kernel states appended after ``fields`` (a model with
+    #: kernels), and what they realize
+    aux: list = field(default_factory=list)
+    kernel_info: dict = None
     _terms: tuple = field(default=None, repr=False)
+
+    @property
+    def n(self):
+        """The dimension of the closure: the fields and the kernel states."""
+        return len(self.f)
 
     @property
     def nonlinear(self):
@@ -557,7 +592,7 @@ class ActionSystem:
     def expectations(self, m, S):
         """``(<f>, <df/dx>, <Q>)`` in ``N(m, S)`` by the closed-form Gaussian
         (Isserlis / Wick) moments of the polynomial drift and noise."""
-        n = len(self.fields)
+        n = self.n
         if self._terms is None:
             self._terms = (
                 [(a, p) for a, p in enumerate(self.f)],
@@ -585,22 +620,22 @@ class ActionSystem:
         return np.stack([p(X) for p in self.f], axis=1)
 
     def jac(self, X):
-        n = len(self.fields)
+        n = self.n
         return np.stack([np.stack([self.f[a].d(b)(X) for b in range(n)],
                                   axis=1) for a in range(n)], axis=1)
 
     def noise(self, X):
-        n = len(self.fields)
+        n = self.n
         return np.stack([np.stack([self.Q[a][b](X) for b in range(n)],
                                   axis=1) for a in range(n)], axis=1)
 
     @property
     def J0(self):
-        return self.jac(np.zeros((1, len(self.fields))))[0]
+        return self.jac(np.zeros((1, self.n)))[0]
 
     @property
     def Q0(self):
-        return self.noise(np.zeros((1, len(self.fields))))[0]
+        return self.noise(np.zeros((1, self.n)))[0]
 
 
 def refusal_reason(model):
@@ -609,9 +644,9 @@ def refusal_reason(model):
     if model.get('spatial') or model.get('operator_ir'):
         return ('spatial models are not supported (the spatial Hartree '
                 'tadpole needs a mass counterterm for d >= 2)')
-    if model.get('kernels'):
-        return ('models with kernels (Conv, delays) are not supported: embed '
-                'the kernel states as fields first')
+    if model.get('kernels') and model.get('kernel_ft_image') is None:
+        return ('models with kernels but no frequency image of them are not '
+                'supported (the kernel states are realized from the image)')
     if model.get('iteration_saddles'):
         return ('models with iteration saddles are not supported')
     return None
@@ -669,6 +704,76 @@ def _physical_degree(model, ft_cls, taylor_probe=2):
         return False, None
 
 
+def _kernel_images(model, ns):
+    """``{kernel symbol: frequency image}`` of a model's kernels (``{}`` for
+    none): the hook every front end fills."""
+    from sage.all import SR
+    hook = model.get('kernel_ft_image')
+    if hook is None or not model.get('kernels'):
+        return {}
+    return dict(hook(ns, SR.var('omega')) or {})
+
+
+def _kernel_pencil(klin, n, images, num):
+    """The linear part of a model with kernels, as a pencil plus kernel
+    states: ``K(s) = K1 s + K0 + sum_blocks c (s - A_R)^-1 b`` for each entry
+    ``(i, j)`` of ``klin`` (the coefficients of the linear monomials
+    ``xt_i x_j``, with ``Dt`` and the kernel symbols).  This is the engine's
+    own realization (:func:`api._realization._realize_proper`: an exact
+    chain of first-order blocks per rate and Schwarz blocks per irreducible
+    factor, no roots); the closure then runs on the fields and these states.
+
+    Returns ``(K1, K0, blocks)``, ``blocks`` a list of ``(i, j, A, b, c)``
+    (numpy; the states obey ``Dt z = A z + b x_j`` and feed row ``i`` of
+    ``K1 Dt x + K0 x + c z = ...``)."""
+    from sage.all import SR, matrix
+    from api import _realization as R
+    omega, Dt = SR.var('omega'), SR.var('Dt')
+    K = matrix(SR, n, n)
+    for (i, j), c in klin.items():
+        K[i, j] = SR(c).subs(images).subs({Dt: SR.I() * omega})
+    try:
+        ents, F, P, fname = R._entries_to_field(K, omega, R._exact_subs(num))
+    except R.RealizationRefused as exc:
+        raise HartreeUnsupported(
+            f'hartree: a kernel is not a rational function of the frequency '
+            f'({exc}); a hard delay is embedded through its Pade '
+            f'approximant (the delay= options), any other kernel needs a '
+            f'rational frequency image.') from exc
+    if fname != 'QQ':
+        raise HartreeUnsupported(
+            'hartree: kernels with complex coefficients are not supported.')
+    K1, K0 = np.zeros((n, n)), np.zeros((n, n))
+    blocks = []
+    for (i, j), x in sorted(ents.items()):
+        q, r, d = R._split_entry(x, P)
+        if q.degree() >= 2:
+            raise HartreeUnsupported(
+                f'hartree: the entry ({i}, {j}) has a second time derivative '
+                f'(a polynomial part of degree {q.degree()} in the frequency).')
+        ql = q.list() + [0, 0]
+        K0[i, j], K1[i, j] = float(ql[0]), float(ql[1])
+        if r != 0:
+            Ae, be, ce, _desc = R._realize_proper(r, d, F)
+            # the same diagonal (power of two) balancing the engine applies,
+            # and a uniform one that equalizes the input and output vectors:
+            # exact similarity transforms of the states, which keep graded
+            # Pade blocks within the conditioning of the closure
+            Ab, bb, cb, _sca = R._balance(R._to_numpy(Ae, False),
+                                          R._to_numpy(be, False),
+                                          R._to_numpy(ce, False))
+            # and the engine's balanced truncation of the entry at its
+            # tolerance (1e-12 of the entry's H-infinity norm by default):
+            # a high-order Pade block keeps the states it needs
+            Ab, b1, c1, _info = R.balanced_truncation(
+                Ab, bb[:, 0], cb[0, :], R.truncation_tol())
+            bb, cb = np.asarray(b1)[:, None], np.asarray(c1)[None, :]
+            nb, nc = np.linalg.norm(bb), np.linalg.norm(cb)
+            mu = math.sqrt(nc / nb) if nb > 0 and nc > 0 else 1.0
+            blocks.append((i, j, Ab, bb[:, 0] * mu, cb[0, :] / mu))
+    return K1, K0, blocks
+
+
 def action_system(model, parameters=None, *, fixed_point_index=0,
                   taylor_order=None, mf_dae_n_starts=64, mf_dae_seed_box=None):
     """The drift and noise of a temporal model about its mean-field saddle
@@ -713,6 +818,9 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
     M = [[SR(0)] * n for _ in range(n)]
     g = [SR(0)] * n
     Qg = [[SR(0)] * n for _ in range(n)]
+    images = _kernel_images(model, ft._ns)
+    knames = {str(k) for k in images}
+    klin = {}
     degree = 1
     for (ntil, nphys), poly in ft._by_tp.items():
         if poly == 0 or ntil >= 3 or ntil == 0:
@@ -725,6 +833,19 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
                 mono = mono * x ** e
             if ntil == 1:
                 a = list(ex_r).index(1)
+                if knames:
+                    uses_k = bool(knames & {str(v) for v in c.variables()})
+                    if sum(ex_p) == 1:
+                        b = list(ex_p).index(1)
+                        klin[(a, b)] = klin.get((a, b), SR(0)) + c
+                        continue
+                    if uses_k:
+                        raise HartreeUnsupported(
+                            'hartree: a kernel acts on a nonlinear function '
+                            'of the fields in this action; only kernels of '
+                            'the fields themselves are embedded (a '
+                            'nonlinear argument is embedded by the model '
+                            'builder).')
                 cd = c.coefficient(Dt, 1)
                 if c.coefficient(Dt, 2) != 0:
                     raise HartreeUnsupported(
@@ -744,6 +865,11 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
                     raise HartreeUnsupported(
                         'hartree: time derivatives in the noise vertex are '
                         'not supported.')
+                if knames & {str(v) for v in c.variables()}:
+                    raise HartreeUnsupported(
+                        'hartree: a kernel in the noise vertex (a non-local '
+                        'noise cumulant) is not embedded; declare the noise '
+                        'through its Markovian embedding.')
                 idx = [i for i, e in enumerate(ex_r) for _ in range(e)]
                 a, b = idx
                 if a == b:
@@ -752,6 +878,34 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
                     Qg[a][b] = Qg[a][b] - c * mono
                     Qg[b][a] = Qg[b][a] - c * mono
                 degree = max(degree, sum(ex_p) + 1)
+    n_phys = n
+    aux, kernel_info = [], None
+    if klin:
+        K1, K0, blocks = _kernel_pencil(klin, n, images, num)
+        m_aux = sum(b[2].shape[0] for b in blocks)
+        zs = [SR.var(f'kernel_state_{k + 1}') for k in range(m_aux)]
+        aux = [str(z) for z in zs]
+        n = n_phys + m_aux
+        xs = xs + zs
+        M = [[SR(K1[a, b]) if a < n_phys and b < n_phys else SR(0)
+              for b in range(n)] for a in range(n)]
+        g = [g[a] - sum((SR(K0[a, b]) * xs[b] for b in range(n_phys)), SR(0))
+             for a in range(n_phys)] + [SR(0)] * m_aux
+        Qg = [[Qg[a][b] if a < n_phys and b < n_phys else SR(0)
+               for b in range(n)] for a in range(n)]
+        off = n_phys
+        for i_, j_, Ae, be, ce in blocks:
+            m_ = Ae.shape[0]
+            for k_ in range(m_):
+                M[off + k_][off + k_] = SR(1)
+                g[i_] = g[i_] - SR(ce[k_]) * zs[off - n_phys + k_]
+                g[off + k_] = (sum((SR(Ae[k_, l]) * zs[off - n_phys + l]
+                                    for l in range(m_)), SR(0))
+                               + SR(be[k_]) * xs[j_])
+            off += m_
+        kernel_info = {'kernels': sorted(knames), 'states': m_aux,
+                       'entries': [(i_, j_, Ae.shape[0])
+                                   for i_, j_, Ae, _be, _ce in blocks]}
     try:
         Mn = np.array([[float(SR(M[a][b]).subs(num)) for b in range(n)]
                        for a in range(n)])
@@ -762,7 +916,8 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
     if abs(np.linalg.det(Mn)) < 1e-300 or np.linalg.cond(Mn) > 1e14:
         raise HartreeUnsupported(
             'hartree: singular Dt pencil (algebraic constraints are not '
-            'supported).')
+            'supported; an exogenous input field, such as a point-process '
+            'input that drives a kernel, has no dynamics of its own).')
     Minv = np.linalg.inv(Mn)
     gp = [_to_poly(SR(gi).subs(num), xs, 'drift') for gi in g]
     Qp = [[_to_poly(SR(Qg[a][b]).subs(num), xs, 'noise') for b in range(n)]
@@ -783,9 +938,10 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
                            'stable': bool(r.get('stable'))})
     return ActionSystem(
         fields=[r[0] for r in layout], legs=[(r[1], r[2]) for r in layout],
-        naturals=[r[4] for r in layout], response=resp, f=f, Q=Qx, M=Mn, saddle=saddle, other_saddles=others,
+        naturals=[r[4] for r in layout], response=resp, f=f, Q=Qx, M=Mn,
+        saddle=saddle, other_saddles=others,
         degree=int(degree), polynomial=exact, taylor_order=order, mf=mf,
-        num_params=num)
+        num_params=num, aux=aux, kernel_info=kernel_info)
 
 
 def _combine(terms, n):
@@ -803,6 +959,161 @@ def _combine(terms, n):
                  np.array(list(acc.values())))
 
 
+def _restrict(r, nph, sysm):
+    """Move a closure solution on the fields and the kernel states to the
+    model's own fields (``nph`` of them): the full solution stays in
+    ``r.full``."""
+    if r.A.shape[0] == nph:
+        return
+    r.full = {'mean': r.mean.copy(), 'cov': r.cov.copy(), 'A': r.A.copy(),
+              'Q': r.Q.copy(), 'saddle': r.saddle.copy(),
+              'aux': list(sysm.aux)}
+    r.mean, r.cov = r.mean[:nph], r.cov[:nph, :nph]
+    r.A, r.Q = r.A[:nph, :nph], r.Q[:nph, :nph]
+    r.saddle = r.saddle[:nph]
+
+
+# ── hard delays: the Pade order search ─────────────────────────────────────
+
+def _delay_names(model):
+    """The kernels of ``model`` that carry a delay factor (``{}`` for none)."""
+    hook = model.get('kernel_ft_image')
+    if hook is None or not model.get('kernels'):
+        return {}
+    from api.delay import kernel_delays, specs_may_delay
+    specs = getattr(hook, '_kernel_specs', None)
+    if specs is not None and not specs_may_delay(specs):
+        return {}
+    from engine.core.field_theory import FieldTheory
+    ns, _R, _nt = FieldTheory(model, taylor_order=2)._build_namespace()
+    return kernel_delays(model, ns)
+
+
+def _delay_observable(r, omegas):
+    """What two Pade orders are compared on: the mean, the covariance and
+    the spectra of the model's own fields at ``omegas``.  These converge
+    geometrically with the order; the lag correlator at a fixed lag converges
+    only algebraically (the Pade approximant of a delay rings at its cutoff
+    frequency), so it is reported (:func:`_delay_lag_change`) but not part of
+    the target."""
+    parts = [np.asarray(r.mean).ravel(), np.asarray(r.cov).ravel()]
+    for i in range(len(r.fields)):
+        parts.append(np.real(r.spectrum(omegas, i, i)))
+    return np.concatenate(parts)
+
+
+def _delay_scales(r):
+    """Frequencies and lags in the units of the slowest relaxation of the
+    closure ``r``."""
+    rates = np.real(r.rates)
+    slow = rates[rates > 1e-12]
+    t_c = 1.0 / slow.min() if slow.size else 1.0
+    return (np.array([0.3, 1.0, 3.0]) / t_c, t_c * np.array([0.1, 0.5, 1.0, 2.0]))
+
+
+def _delay_lag_change(a, b, lags):
+    """Largest change of the lag correlator between two orders, relative to
+    its largest entry."""
+    ca, cb = a.C_matrix(lags), b.C_matrix(lags)
+    return float(np.max(np.abs(cb - ca)) / max(np.max(np.abs(cb)), 1e-300))
+
+
+def _hartree_delayed(model, parameters, delay, kw):
+    """The closure of a model with hard delays: every delay factor of the
+    kernel images by its Pade approximant of order ``n``; ``n`` from the
+    order search of the loop path (``api.delay``): ``n_start``, doubling up
+    to ``n_max``, the first order that agrees with the one before to ``tol``
+    (the mean, the covariance and the lag correlator, relative to the
+    largest entry).  A target that is not met is refused."""
+    from api import delay as D
+    o = D.resolve_options(delay)
+    warn = kw.get('warn', True)
+    kw = dict(kw, warn=False)
+    names = sorted(_delay_names(model))
+    run = lambda n: _hartree(D.pade_model(model, int(n)), parameters, **kw)
+
+    def finish(r, n, est, source, orders, ests):
+        r.info['model'] = model.get('name', '<unnamed>')
+        r.info['delay'] = {'order': int(n), 'estimate': est,
+                           'target': o['tol'], 'order_source': source,
+                           'orders': list(orders), 'estimates': list(ests),
+                           'kernels': names,
+                           'lag_correlator_change': r.info.get(
+                               'delay_lag_change')}
+        msg = (f'the hard delay of {", ".join(names)} is embedded through its '
+               f'Pade approximant of order {int(n)}'
+               + (f', estimated relative error {est:.2e} (target '
+                  f'{o["tol"]:.1e})' if est is not None else
+                  ' (order given: no error estimate)')
+               + (f'; the lag correlator changed by {r.info["delay_lag_change"]:.1e} '
+                  f'from the order before (it converges more slowly than the '
+                  f'spectrum and the covariance)'
+                  if r.info.get('delay_lag_change') is not None else ''))
+        r.advisories = list(r.advisories) + [
+            {'code': 'HARTREE_DELAY_PADE', 'message': msg}]
+        if warn:
+            for a in r.advisories:
+                cls = (HartreeBistabilityWarning
+                       if a['code'] == 'HARTREE_MULTIPLE_SOLUTIONS'
+                       else HartreeAdvisoryWarning)
+                warnings.warn(f"hartree [{a['code']}]: {a['message']}", cls,
+                              stacklevel=3)
+        return r
+    if o['order'] != 'auto':
+        return finish(run(o['order']), o['order'], None, 'given',
+                      [o['order']], [])
+    key = _delay_cache_key(model, parameters, kw, o)
+    cached = D._order_cache_get(key).get('hartree')
+    if cached is not None:
+        r = run(cached['order'])
+        return finish(r, cached['order'], cached['estimate'], 'replay',
+                      cached['orders'], cached['estimates'])
+    seq, n = [], o['n_start']
+    while n < o['n_max']:
+        seq.append(n)
+        n *= 2
+    seq.append(o['n_max'])
+    t0 = time.perf_counter()
+    prev, scales = None, None
+    orders, ests = [], []
+    for n in seq:
+        r = run(n)
+        orders.append(n)
+        if prev is not None:
+            scales = _delay_scales(prev) if scales is None else scales
+            a = _delay_observable(prev, scales[0])
+            b = _delay_observable(r, scales[0])
+            est = float(np.max(np.abs(b - a)) / max(np.max(np.abs(b)), 1e-300))
+            ests.append(est)
+            r.info['delay_lag_change'] = _delay_lag_change(prev, r, scales[1])
+            if est <= o['tol']:
+                D._order_cache_put(key, 'hartree', {
+                    'order': n, 'estimate': est, 'orders': list(orders),
+                    'estimates': list(ests)})
+                return finish(r, n, est, 'search', orders, ests)
+            if time.perf_counter() - t0 > o['wall_max']:
+                break
+        prev = r
+    raise HartreeError(
+        f'hartree: the Pade order of the delay of {", ".join(names)} did not '
+        f'reach the target: estimated relative error '
+        f'{ests[-1] if ests else float("nan"):.2e} at order {orders[-1]} '
+        f'(target {o["tol"]:.1e}; orders tried {orders}). Raise '
+        f'delay={{"n_max": ...}} or relax delay={{"tol": ...}}, or give '
+        f'delay={{"order": n}} to accept an order without an estimate.')
+
+
+def _delay_cache_key(model, parameters, kw, o):
+    if not o['order_cache'] or model.get('spec_signature') is None:
+        return None
+    from api._propagator import model_cache_signature
+    return repr(('hartree', model_cache_signature(model), model.get('name'),
+                 sorted((str(k), repr(v)) for k, v in (parameters or {}).items()),
+                 sorted((str(k), repr(v)) for k, v in kw.items()
+                        if k != 'warn'),
+                 sorted((k, v) for k, v in o.items() if k != 'order_cache')))
+
+
 def _same(a, b):
     scale = 1.0 + max(np.max(np.abs(a.cov)), np.max(np.abs(b.cov)),
                       np.max(np.abs(a.mean)), np.max(np.abs(b.mean)))
@@ -816,12 +1127,34 @@ def _summary(r, label):
             'converged': r.converged}
 
 
-def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
-            mean0=None, cov0=None, taylor_order=None, multistart=True,
-            mf_dae_n_starts=64, mf_dae_seed_box=None, warn=True,
-            expectations='auto', **kw):
+def hartree(model, parameters=None, *, delay=None, **kw):
     """Self-consistent Gaussian (Hartree) approximation of a temporal model
-    (``dd.hartree``).
+    (``dd.hartree``); see :func:`_hartree` for the other options.
+
+    ``delay``: the options of a model with hard delays (the keys of
+    ``dd.Config.delay``: ``order`` ``'auto'`` or an integer, ``tol``,
+    ``n_start``, ``n_max``, ``wall_max``, ``order_cache``).  A model without
+    a delay ignores it.  With delays the kernels are embedded through their
+    Pade approximants; ``order='auto'`` runs the order search of the loop
+    path (``n_start``, doubling to ``n_max``) until two orders agree to
+    ``tol`` in the mean, the covariance and the lag correlator, and refuses
+    (:class:`HartreeError`) when ``n_max`` or ``wall_max`` is reached first.
+    ``result.info['delay']`` records the order, the estimated error and
+    where the order came from (``'search'``, ``'replay'`` of a cached order,
+    ``'given'``), and the advisory ``HARTREE_DELAY_PADE`` is always set.
+    """
+    if not isinstance(model, dict) and callable(getattr(model, 'build', None)):
+        model = model.build()
+    if _delay_names(model):
+        return _hartree_delayed(model, parameters, delay, kw)
+    return _hartree(model, parameters, **kw)
+
+
+def _hartree(model, parameters=None, *, fixed_point_index=0, start=None,
+             mean0=None, cov0=None, taylor_order=None, multistart=True,
+             mf_dae_n_starts=64, mf_dae_seed_box=None, warn=True,
+             expectations='auto', **kw):
+    """The closure of a model without hard delays (see :func:`hartree`).
 
     Parameters
     ----------
@@ -875,8 +1208,13 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
                          taylor_order=taylor_order,
                          mf_dae_n_starts=mf_dae_n_starts,
                          mf_dae_seed_box=mf_dae_seed_box)
-    n = len(sysm.fields)
-    saddle = sysm.saddle
+    nph = len(sysm.fields)
+    n = sysm.n                       # the fields and the kernel states
+    saddle_o = sysm.saddle
+    saddle = np.concatenate([saddle_o, np.zeros(n - nph)])
+
+    def pad(v):
+        return np.concatenate([np.asarray(v, dtype=float), np.zeros(n - nph)])
     deg = max(3, sysm.degree)
     if expectations not in ('auto', 'quadrature', 'moments'):
         raise ValueError(f"hartree: expectations must be 'auto', "
@@ -903,16 +1241,21 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
 
     starts = []
     m0 = (np.zeros(n) if mean0 is None
-          else np.asarray(mean0, dtype=float).reshape(n) - saddle)
+          else pad(np.asarray(mean0, dtype=float).reshape(nph) - saddle_o))
+
+    def start_cov(m):
+        c = tree_cov(m)
+        if cov0 is not None:
+            c[:nph, :nph] = np.asarray(cov0, dtype=float).reshape(nph, nph)
+        return c
     starts.append(('start' if mean0 is not None else 'saddle', m0,
-                   tree_cov(m0) if cov0 is None
-                   else np.asarray(cov0, dtype=float).reshape(n, n)))
+                   start_cov(m0)))
     if multistart:
         if mean0 is not None:
             starts.append(('saddle', np.zeros(n), tree_cov(np.zeros(n))))
         for k, o in enumerate(sysm.other_saddles):
-            starts.append((f'mean-field root {k + 1}', o['offset'],
-                           tree_cov(o['offset'])))
+            starts.append((f'mean-field root {k + 1}', pad(o['offset']),
+                           tree_cov(pad(o['offset']))))
     found, failures = [], []
     first = None
     for label, m, c in starts:
@@ -944,10 +1287,13 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
     found.sort(key=lambda t: 0 if _same(t[0], first) else 1)
     for r, _l in found:
         r.mean = r.mean + saddle
+        _restrict(r, nph, sysm)
     res = first
     res.legs = list(sysm.legs)
     res.naturals = list(sysm.naturals)
-    res.J0, res.Q0 = sysm.J0, sysm.Q0
+    res.J0, res.Q0 = sysm.J0[:nph, :nph], sysm.Q0[:nph, :nph]
+    if res.full is not None:
+        res.full['J0'], res.full['Q0'] = sysm.J0, sysm.Q0
     res.solutions = [_summary(r, lab) for r, lab in found]
     if len(found) > 1:
         desc = '; '.join(
@@ -965,7 +1311,7 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
     if mean0 is None and sysm.other_saddles:
         # the closure from the selected saddle settled nearer another
         # mean-field root (distances in the solution's own covariance)
-        off = first.mean - saddle
+        off = first.mean - saddle_o
         P = np.linalg.inv(first.cov)
         d0 = float(off @ P @ off)
         near = [o for o in sysm.other_saddles
@@ -974,10 +1320,10 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
             advisories.append({
                 'code': 'HARTREE_LEFT_SADDLE',
                 'message': (f'the closure started at the selected saddle '
-                            f'{np.array2string(saddle, precision=4)} settled '
+                            f'{np.array2string(saddle_o, precision=4)} settled '
                             f'at mean {np.array2string(first.mean, precision=4)}'
                             f', nearer the mean-field root '
-                            f'{np.array2string(saddle + near[0]["offset"], precision=4)}'
+                            f'{np.array2string(saddle_o + near[0]["offset"], precision=4)}'
                             f': the Gaussian describes that basin. The screened '
                             f'series built on it mixes the vertices of the '
                             f'selected saddle with this propagator; a '
@@ -998,7 +1344,11 @@ def hartree(model, parameters=None, *, fixed_point_index=0, start=None,
     res.advisories = advisories
     res.info.update({'taylor_order': sysm.taylor_order,
                      'polynomial': sysm.polynomial, 'degree': sysm.degree,
-                     'pencil': sysm.M, 'starts': [s[0] for s in starts],
+                     'pencil': sysm.M[:nph, :nph],
+                     'kernel_states': (None if sysm.kernel_info is None
+                                       else dict(sysm.kernel_info,
+                                                 names=list(sysm.aux))),
+                     'starts': [s[0] for s in starts],
                      'nonlinear_fields': [sysm.fields[i] for i in nl],
                      'expectations': ('moments' if closed_form
                                       else 'quadrature'),

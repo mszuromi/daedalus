@@ -338,7 +338,7 @@ def test_options_and_refusals(ou_quartic):
     # max_ell inherited from the model file (0) is refused at run time
     with pytest.raises(ValueError, match='max_ell >= 1'):
         dd.run(ou_quartic[0], dd.Config(resum='screened'), ou_quartic[1])
-    with pytest.raises(dd.HartreeUnsupported, match='kernels'):
+    with pytest.raises(dd.HartreeUnsupported, match='iteration saddles'):
         dd.run(dd.load_model('single_population_quad_exp_test')[0],
                dd.Config(k=2, max_ell=1, resum='screened'))
 

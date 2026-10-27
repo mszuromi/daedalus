@@ -61,8 +61,30 @@ it keeps every distinct stable solution.
 
 - Covered: temporal models with a constant, invertible `Dt` pencil; white noise or colored noise through its Markovian
   embedding; Poisson (jump) sources, through their first two jump moments.
-- Refused (`HartreeUnsupported`): kernels (`Conv`, delays), spatial models, non-local noise cumulant kernels,
-  derivative vertices, singular pencils.
+- Refused (`HartreeUnsupported`): spatial models, non-local noise cumulant kernels (declare the noise through its
+  Markovian embedding), derivative vertices, singular pencils (algebraic constraints; an exogenous input field such as
+  a point-process input has no dynamics of its own), a kernel without a frequency image.
+- **Kernels and delays are embedded automatically.** A kernel acts on the fields linearly, so before the closure runs
+  each kernel entry becomes linear state fields: for a rational kernel (exponential, alpha, sums of these, any
+  rational image) the engine's own exact state-space realization of the entry (the one the state-space Phase J route
+  uses: a chain of first-order blocks per rate, a Schwarz block per irreducible factor, then the engine's diagonal
+  balancing and balanced truncation at its tolerance), so the embedding is exact. The results are on the model's own
+  fields (`mean`, `cov`, `A`, `Q`, `C`, `spectrum`); the closure on the fields and the kernel states is in
+  `result.full`, the states in `result.info['kernel_states']`. The kernel states are linear, so they add no
+  dimension to the quadrature. A hard delay is embedded through its Padé approximant, with the order chosen like the
+  loop path's (`dd.Config(delay={...})`: `order` `'auto'` or an integer, `tol` (default $10^{-8}$), `n_start`, `n_max`,
+  `wall_max`, `order_cache`): the orders $n_\mathrm{start}, 2n_\mathrm{start}, \dots, n_\mathrm{max}$ are run until two
+  consecutive orders agree to `tol` in the mean, the covariance and the spectra of the fields, which converge
+  geometrically with the order. If $n_\mathrm{max}$ or `wall_max` is reached first the call is **refused**
+  (`HartreeError`, with the estimate and the orders tried); `delay={'order': n}` accepts an order without an estimate.
+  `result.info['delay']` records the order, the estimate, the orders tried and where the order came from (`'search'`,
+  `'replay'` of a cached order, `'given'`); the advisory `HARTREE_DELAY_PADE` is always set, and also gives the change
+  of the lag correlator from the order before, which converges only algebraically (the Padé approximant of a delay
+  rings at its cutoff frequency) and is not part of the target. For a linear model with a delay the closure is
+  exact and its spectrum equals $2D/|i\omega + a - c\,e^{-i\omega d}|^2$ within the reported error
+  (`test_linear_hard_delay_is_exact_within_the_reported_error`). The screened series takes the same `delay=`; its loop
+  orders are the loop path's (automatic Padé order unless `delay={'order': n}`); with
+  `delay={'order': n, 'tree': 'pade'}` its order 1 at $\kappa = 1$ equals the Hartree curve to $10^{-14}$.
 - A drift that is not polynomial in the fields is replaced by its Taylor polynomial (order 6 by default, or
   `taylor_order`), with the advisory `HARTREE_TAYLOR_TRUNCATED`.
 - **Expectations run over the nonlinear fields only.** A field that enters no drift monomial of degree two or more and
@@ -210,8 +232,9 @@ $g = 10$.
   equations) is a research item. It does not reuse the Phase J engine directly.
 - **k ≥ 3.** The screened series is implemented for $k = 1$ (the mean) and $k = 2$. Applied to $k = 4$, the research prototype's 0-D series
   recovered 87–99 % of $\kappa_4$ at the variance's PMS mass. Hartree alone has $\kappa_{k\ge3} = 0$.
-- **Not supported yet.** Kernel and delay models need their kernel states embedded first. Spatial models need a mass
-  counterterm for the UV-divergent tadpole at $d \ge 2$.
+- **Not supported yet.** Spatial models need a mass counterterm for the UV-divergent tadpole at $d \ge 2$. Exogenous
+  input fields (a point-process input into a kernel, the Gaussian-jitter inputs) have no dynamics of their own, so the
+  closure refuses them; their white noise would enter the kernel states as a noise term (future work).
 - **Mean shift.** The screened series keeps the expansion point at the mean-field saddle. Hartree's own mean shift
   enters only through the loop tadpoles, so for an asymmetric model order 1 at $\kappa = 1$ is not exactly Hartree
   (it agrees to the next order in the couplings, `test_order_one_at_the_hartree_mass_is_the_hartree_mean`).

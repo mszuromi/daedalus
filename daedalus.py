@@ -2181,13 +2181,13 @@ def _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental, opts, cov):
     if opts['method'] == 'hartree':
         from api.hartree import hartree, run_result
         h = hartree(model, fundamental, taylor_order=opts.get('taylor_order'),
-                    **mf_kw)
+                    delay=kw.get('delay'), **mf_kw)
         res = run_result(h, ext, k, tau, spectra=spec, covariance=cov)
     else:
         from api.resum import screened
         run_kw = {key: kw[key] for key in (
             'use_cache', 'parallel', 'n_workers', 'policy', 'preflight',
-            'backend', 'accuracy', 'taylor_order') if key in kw}
+            'backend', 'accuracy', 'taylor_order', 'delay') if key in kw}
         res = screened(model, max_ell, fundamental, external_fields=ext,
                        options={key: v for key, v in opts.items()
                                 if key != 'method'},
