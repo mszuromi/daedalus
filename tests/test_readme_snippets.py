@@ -35,7 +35,8 @@ def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
                "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(', 'dd.JumpProcess(',
-               'dd.covariance_matrix(', "SDE('Mixed noise')", 'dd.hartree(', "SDE('Delayed network')"]
+               'dd.covariance_matrix(', "SDE('Mixed noise')", 'dd.hartree(', "SDE('Delayed network')",
+               "SDE('Jittered input')"]
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -157,3 +158,9 @@ def test_readme_model_ergonomics_example():
                           verbose=False)
     np.testing.assert_allclose(ns['power'], c['C_tau'], rtol=1e-12)
     assert 'v[j](t - d)' in ns['text'] and digest(SDE.from_text(ns['text'])) == digest(ns['m'])
+
+
+def test_readme_gaussian_jitter_example():
+    ns = _exec(_block("SDE('Jittered input')"), 'Gaussian jitter example')
+    assert ns['res']['status'] == 'ok'
+    assert ns['bounds'][1] == 0.0 and 0 < ns['bounds'][2] < 1e-6 < ns['bounds'][3] < 1e-5

@@ -1517,7 +1517,7 @@ def test_phase_J_total_C_batch_parallel_matches_serial():
                   (-3.0, -1.0, -0.3, 0.3, 1.0, 3.0, 5.0, 7.0)]
 
     serial_vals = total_C_batch(tau_points, parallel=False)
-    parallel_vals = total_C_batch(tau_points, parallel=True, n_workers=3)
+    parallel_vals = total_C_batch(tau_points, parallel=True, n_workers=3, start_method='fork')
 
     assert len(serial_vals) == len(parallel_vals) == len(tau_points)
     max_abs_diff = 0.0
@@ -1574,7 +1574,7 @@ def test_phase_J_total_C_batch_nested_matches_serial():
     # Single-point batch — forces nested path with n_workers > 1
     single_pt = [(0.5, 0.0)]
     serial_val_list = total_C_batch(single_pt, parallel=False)
-    nested_val_list = total_C_batch(single_pt, parallel=True, n_workers=4)
+    nested_val_list = total_C_batch(single_pt, parallel=True, n_workers=4, start_method='fork')
 
     assert len(serial_val_list) == 1
     assert len(nested_val_list) == 1
@@ -1589,7 +1589,7 @@ def test_phase_J_total_C_batch_nested_matches_serial():
     # larger than n_tau)
     multi_pt = [(0.5, 0.0), (1.0, 0.0), (2.0, 0.0)]
     serial_vals = total_C_batch(multi_pt, parallel=False)
-    nested_vals = total_C_batch(multi_pt, parallel=True, n_workers=6)
+    nested_vals = total_C_batch(multi_pt, parallel=True, n_workers=6, start_method='fork')
 
     assert len(serial_vals) == len(nested_vals) == len(multi_pt)
     max_abs_diff = 0.0

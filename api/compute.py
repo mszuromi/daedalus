@@ -1441,6 +1441,62 @@ def _engine_census(result, counters):
         warnings.warn(_msg, PhaseJEngineFallbackWarning, stacklevel=3)
 
 
+def _jitter_precheck(model, external_fields, t_min, times, initial_covariance):
+    """A Gaussian-jittered exogenous input (``Kernel.gaussian``; the model's
+    ``exogenous_jitter``) is fitted as the density shifted by ``T``, the
+    shift dropped: only stationary statistics of the rest of the network
+    are unchanged by it.  Refused: the input itself (or its response field)
+    as an external leg (its cross-cumulants with the network move by ``T``),
+    and switch-on runs (a transient is not invariant under a time shift)."""
+    jit = model.get('exogenous_jitter') if isinstance(model, dict) else None
+    if not jit:
+        return
+    names = {str(f[0]) if isinstance(f, (tuple, list)) else str(f)
+             for f in (external_fields or ())}
+    hit = sorted(n for n in names if n in jit or (n.endswith('t') and n[:-1] in jit))
+    if hit:
+        raise ValueError(
+            f'external field(s) {hit}: the Gaussian-jittered input(s) {sorted(jit)} are '
+            f'fitted with a dropped time shift ({", ".join(j["shift"] for j in jit.values())}), '
+            f'free for the statistics of the rest of the network only; their own '
+            f'cumulants with it would move by that shift.  Observe the fields the input '
+            f'drives.')
+    if t_min is not None or times is not None or initial_covariance is not None:
+        raise ValueError(
+            f'switch-on transients (t_min / times / initial_covariance) with the '
+            f'Gaussian-jittered input(s) {sorted(jit)}: the jitter is fitted with a '
+            f'dropped time shift, which only stationary statistics do not see.')
+
+
+def _attach_jitter(result, model):
+    """``result['input_jitter']`` and the ledger's approximation entry of a
+    Gaussian-jittered exogenous input (``Kernel.gaussian``)."""
+    jit = model.get('exogenous_jitter') if isinstance(model, dict) else None
+    if not jit or not isinstance(result, dict):
+        return
+    result['input_jitter'] = {n: dict(j) for n, j in jit.items()}
+    rep = result.get('analysis')
+    if rep is None:
+        return
+    from dataclasses import replace
+    from api import analyze as _an
+    entries = tuple(
+        _an.LedgerEntry(
+            kind='approximation', name=f'jitter:{n}',
+            detail=(f'Gaussian jitter of the exogenous input {n} (sigma = {j["sigma"]}) as '
+                    f'a rational fit of {j["fit"]["order"]} states of the density shifted '
+                    f'by {j["shift"]} (shift dropped); L1 error {j["fit"]["l1"]:.2g}, '
+                    f'relative error bounds by order '
+                    + ', '.join(f'{q}: {b:.2g}' for q, b in j['fit']['bound_by_order'].items()
+                                if q <= 4)),
+            declared=True, satisfied=True)
+        for n, j in jit.items())
+    result['analysis'] = replace(rep, ledger=tuple(rep.ledger) + entries)
+    cfg = result.get('config')
+    if isinstance(cfg, dict):
+        cfg['assumptions'] = result['analysis'].ledger_dicts()
+
+
 def _attach_provenance(result, route, pf):
     """The route and the analyzer report on the result (``result['route']``,
     ``result['analysis']``; ``config['route']`` / ``config['assumptions']``
@@ -1808,9 +1864,9 @@ def compute_cumulants(
         Phase J's τ grid (step [7]) fans its diagrams out: diagrams with
         large state blocks go to threads on every platform (notebooks
         included); a batch predicted to take seconds goes to spawned,
-        Sage-free worker processes in a macOS / Windows script (in a
-        notebook only on request: ``DAEDALUS_SPAWN_IN_KERNEL=1``); on
-        Linux a fork pool takes batches with many diagrams.  Type
+        Sage-free worker processes in a script on any platform (in a
+        notebook only on request: ``DAEDALUS_SPAWN_IN_KERNEL=1``); a Linux
+        fork pool only on request (``start_method='fork'``).  Type
         assignment (step [5]) forks on Linux only.  macOS never forks.
         Every pool fits the memory budget (fewer workers, then serial).
         ``DAEDALUS_PARALLEL=0`` turns every worker pool off, spatial
@@ -1913,7 +1969,13 @@ def compute_cumulants(
         -inf`` the result tends to the stationary one.  A noise kernel
         the model builder Markov-embedded (an auxiliary field) starts at
         zero too: the noise is switched on with the system
-        (``result['nonstationary']['embedded_noise_states']``).
+        (``result['nonstationary']['embedded_noise_states']``).  A model
+        with delay kernels (``delay``) is computed with the Pade approximant
+        for the tree as well as the loops (the exact delayed tree is the
+        stationary covariance); the history of every delayed field is zero
+        before ``t_min``, and the Pade error is larger within the first
+        delay after ``t_min`` (the order search reports it honestly:
+        ``result['delay']['target_met']``, ``status``).
     times : array or None
         Required with ``t_min``: the absolute external times to evaluate,
         shape ``(n, k)`` (row ``i`` = the times of the ``k`` legs, in the
@@ -1932,7 +1994,8 @@ def compute_cumulants(
         R(t2 - t_min)^T`` (``R``: the response), which is the whole tree
         term of a Gaussian initial state (``C0`` enters like a noise vertex
         at ``t_min``); loops with ``C0 != 0`` are not implemented (raises).
-        Needs a first-order model whose response at ``0+`` is the identity.
+        Needs a first-order model whose response at ``0+`` is the identity
+        (not available with delay kernels).
         (A deterministic initial offset of the mean is not offered: its tree
         is the full nonlinear relaxation, a time-dependent saddle.)
     delay : dict or None
@@ -2252,6 +2315,7 @@ def compute_cumulants(
     # an exact-route Marcus source whose jump law has no mgf where a usable
     # vertex needs it: refused before the mean-field solve
     _marcus_precheck(model, fundamental, k, max_ell)
+    _jitter_precheck(model, external_fields, t_min, times, initial_covariance)
     _ndo = model.get('noise_declared_orders') if isinstance(model, dict) else None
     for _src, _top in sorted((_ndo or {}).items()):
         _key = (model.get('name'), _src, int(_top))
@@ -2414,13 +2478,17 @@ def compute_cumulants(
     if not model.get('_delay_pade') and model.get('kernel_ft_image') is not None:
         from api import delay as _delay
         _delays = _delay.kernel_delays(model, ft._ns)
-        if _delays and switch_on is not None:
-            # the delay driver's exact tree and its Pade-order search are
-            # stationary (not combined yet)
+        if _delays and switch_on is not None and switch_on['initial_covariance'] is not None:
+            # (the Pade realization of a delay is not a first-order model whose
+            # response at 0+ is the identity, which initial_covariance needs;
+            # and the history of the delayed fields before t_min is not defined)
             from engine.integration.time_domain import statespace as _ss_dl
             raise _ss_dl.SwitchOnUnsupported(
-                'delay_kernels', 'models with delay kernels (api.delay) are '
-                'computed for the stationary state only')
+                'delay_kernels', 'initial_covariance is not available for models with '
+                'delay kernels (api.delay): the history of the delayed fields before t_min '
+                'is zero, and the Pade realization of a delay is not a first-order model '
+                'with the identity response at 0+; drop initial_covariance (the '
+                'fluctuations start at zero)')
         if _delays:
             return _delay.compute_delayed(model, _delay_call, _delays, ns=ft._ns)
 
@@ -2577,6 +2645,7 @@ def compute_cumulants(
             else result, _counters, complete=_complete,
             evaluated=state.evaluated_grid)
     _attach_provenance(result, route, _pf)
+    _attach_jitter(result, model)
     if isinstance(result, dict) and isinstance(result.get('route'), dict) \
             and result.get('phase_j_engine') is not None:
         result['route']['phase_j_engine'] = result['phase_j_engine']

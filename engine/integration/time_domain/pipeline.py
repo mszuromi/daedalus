@@ -65,7 +65,11 @@ from engine.errors import DaedalusError
 #   releases the GIL (measured 2.7-3.0x at 4 threads), while small diagrams
 #   are dispatch-bound and slower on threads (0.75-0.86x measured), so the
 #   main thread evaluates those meanwhile.  Largest blocks first.
-# * **fork** (Linux only; ``engine.fork_safety.fork_unsafe``).  The workers
+# * **spawn** (every platform, the automatic choice for batches that take a
+#   few seconds, outside a Jupyter kernel): Sage-free interpreters fed the
+#   diagrams' numeric state (``engine.spawn_pool``).
+# * **fork** (Linux only, ONLY with ``start_method='fork'``;
+#   ``engine.fork_safety.fork_unsafe``).  The workers
 #   inherit the per-diagram closures (nested functions that ``pickle``
 #   cannot serialise) through ``_FANOUT``; each returns its diagrams' values
 #   and its ``_RUNTIME_COUNTERS`` delta.  Used when the batch has enough
@@ -86,7 +90,7 @@ from engine.errors import DaedalusError
 THREAD_BLOCK_MIN = 256
 #: Default thread count of the fan-out (``n_workers`` overrides).
 DEFAULT_THREADS = 8
-#: Automatic spawned workers (macOS / Windows, outside a Jupyter kernel):
+#: Automatic spawned workers (every platform, outside a Jupyter kernel):
 #: only when a timing sample of the batch predicts at least this many
 #: seconds of serial work (a worker starts in ~0.3 s; measured).
 SPAWN_MIN_SECONDS = 3.0
@@ -182,7 +186,10 @@ def _fan_out(fns, tau_list, parallel, n_workers, start_method):
         return None             # a switch-on scope is per thread: stay here
     import os
     want = int(n_workers) if n_workers is not None else None
-    fork_ok = start_method in (None, 'fork') and not _fork_unsafe('fork')
+    # fork only when asked for, and never on macOS: the automatic method is
+    # threads / spawned workers on every platform (a fork of the multithreaded
+    # Sage parent warns on CPython >= 3.12)
+    fork_ok = start_method == 'fork' and not _fork_unsafe('fork')
     if start_method == 'fork' and not fork_ok:
         _warn_fork_guard_once()
     if fork_ok:
@@ -226,9 +233,10 @@ def _fill_serial(fns, tau_list, vals, which=None):
 
 
 def _spawn_allowed(start_method, fork_ok):
-    """Spawned workers: asked for explicitly, or automatically where fork
-    is not available (macOS, Windows) outside a Jupyter kernel (inside one
-    only with ``DAEDALUS_SPAWN_IN_KERNEL=1``)."""
+    """Spawned workers: asked for explicitly, or automatically (every
+    platform) outside a Jupyter kernel (inside one only with
+    ``DAEDALUS_SPAWN_IN_KERNEL=1``).  Never when another method was asked for
+    (``fork_ok``: an explicit, allowed ``'fork'``)."""
     if start_method == 'spawn':
         return True
     if start_method is not None or fork_ok:
@@ -624,8 +632,8 @@ def compute_correction_td(
     diagram of a group with the group's summed prefactor and
     now raises ``TypeError``.
 
-    For each tree-level diagram, calls ``integrate_tree_diagram``
-    directly.  Loop diagrams are marked as skipped.
+    Every diagram, at any loop order, goes through ``integrate_diagram``; one
+    that cannot be integrated is recorded as skipped (``skipped_kernel_ids``).
 
     Parameters
     ----------
@@ -952,11 +960,13 @@ def compute_correction_td(
 
         ``parallel=True`` fans the diagrams out to a worker pool when one
         helps (module notes: threads for diagrams with large state blocks,
-        on every platform; fork on Linux; never fork on macOS) and sums each
+        on every platform; spawned workers for batches that take seconds; fork on
+        Linux only on request; never fork on macOS) and sums each
         point's diagram values in diagram order, so the result is
         bit-identical to ``parallel=False`` for any ``n_workers``.
         ``n_workers``: pool size (default: up to ``DEFAULT_THREADS``
-        threads, ``os.cpu_count()`` fork workers, within the memory budget).
+        threads, 4 spawned workers or ``os.cpu_count()`` fork workers, within the
+        memory budget).
         ``start_method``: ``None`` (auto), ``'threads'`` or ``'fork'``
         (Linux; on macOS it falls back with one warning).
         ``DAEDALUS_PARALLEL=0`` makes every batch serial.

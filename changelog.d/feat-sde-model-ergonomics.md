@@ -22,16 +22,19 @@
 - **`m.to_text()` / `SDE.from_text(text)`** (new `api/sde_text.py`): the model as the YAML `sde:` block of a
   `daedalus run` config, read back through the config's own parser and builder (`api/config_run.py`:
   `sde_block_from_text`, `sde_from_block`). The equations are kept as written (higher-order lhs with `velocity`,
-  delays as `x(t - d)`); derived things (velocities, coloured-noise states, delay kernels) are derived again.
+  delays as `x(t - d)`); derived things (velocities, coloured-noise states, delay kernels, the product kernels of
+  `Conv(a*b, x)`) are derived again.
   `to_text()` reads its text back and compares action, equations and built dict; a model declared in an order the
   block cannot record raises with the differing order.
-- **YAML `sde:` block**: new keys `n_populations`, `space`, `operators`, `populations`, `functions`, `kernels`,
+- **YAML `sde:` block**: new keys `n_populations`, `space`, `operators`, `populations`, `functions`, `kernels`
+  (a `Kernel.gaussian` jitter as `{gaussian: {sigma: s, tol: 1e-6}}`, fitted again on reading),
   `point_processes`, `extra_action`, `boundary`, `dyson`, `observables`; parameter keys `indexed`, `indexed_by`
   (before: `indexed` was an unknown key); field entries with attributes (`- v: {population: E}`); an `equations`
   entry that is an expression is a drift, and an equation takes `velocity`; noise entries take `as_field`,
   `population`, `domain` and a Gaussian's `kernel` (an image, or `{freq_image: ...}`); `noise` is optional with
   `point_processes`, and `into` with `as_field`. Existing configs read as before.
-- Tests (`tests/test_sde_model_ergonomics.py`): delayed indexed fields and rates equal the explicit `Conv` forms; the
+- Tests (`tests/test_sde_model_ergonomics.py`): delayed indexed fields and rates equal the explicit `Conv` forms, also in a
+  switch-on (`t_min`) run; a Gaussian jitter kernel round-trips; the
   connectivity equals the parameter call, with its refusals; the one-loop mean of `exp(x/2) + x^2` vs the exact
   stationary density of a 1-d SDE (error ratio 3.9 when `D` halves, O(D^2); saddle only: ratio 2); the k = 2 tree
   `f_a C_ax`; a linear observable at one loop equals the sum of the field cumulants per loop order; a population

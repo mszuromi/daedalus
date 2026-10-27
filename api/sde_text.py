@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 
 from api.noise import GaussianVector, expr_to_text
+from api.sde import _unwrap
 
 __all__ = ['sde_spec', 'to_text', 'from_text']
 
@@ -185,8 +186,12 @@ def sde_spec(sde) -> dict:
         out['functions'] = funcs
     kernels = {}
     for name, k in sde._kernels.items():
-        if name in sde._auto_kernels:
-            continue                        # (declared again by x(t - d))
+        if name in sde._auto_kernels or name in sde._composite_kernels:
+            continue                        # (declared again by x(t - d) / Conv(a*b, x))
+        jit = sde._jitter.get(name)
+        if jit and 'factors' not in jit:    # Kernel.gaussian (fitted again on reading)
+            kernels[name] = {'gaussian': {'sigma': _unwrap(jit['sigma']), 'tol': jit['tol']}}
+            continue
         e = {}
         for key in ('time_expr', 'freq_image', 'delay', 'latex_name', 'indexed', 'indexed_by'):
             if k.get(key) not in (None, '', False):

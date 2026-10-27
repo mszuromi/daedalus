@@ -61,6 +61,23 @@ def test_point_process_rate_takes_a_delayed_field():
         base().point_process('n', 'a*x(t - t)')
 
 
+def test_indexed_delayed_field_switch_on_is_the_explicit_kernel_run():
+    """t_min runs of a delayed model: v[j](t - d) takes the switch-on route of the explicit Conv form, bit for bit."""
+    def run(m):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            return compute_cumulants(m, k=2, max_ell=0, external_fields=[('v', 1), ('v', 2)], t_min=0.0,
+                                     times=np.array([[0.2, 0.2], [0.7, 0.7], [1.5, 1.0]]), parallel=False,
+                                     verbose=False, use_cache=False, delay={'order': 8})
+    a = run(_pop().equation('v', '(Dt + 1)*v', 'sum(w[i,j]*v[j](t - d) for j in E)')
+            .noise('xi', Gaussian(var=1), into={'v': 1}))
+    b = run(_pop().define_kernel('g', kernel=Kernel.delay('d'))
+            .equation('v', '(Dt + 1)*v', 'sum(w[i,j]*Conv(g, v[j]) for j in E)')
+            .noise('xi', Gaussian(var=1), into={'v': 1}))
+    assert a['status'] == b['status'] == 'ok'
+    np.testing.assert_array_equal(a['C_times'], b['C_times'])
+
+
 def test_delayed_fields_write_back_as_written():
     m = SDE('paper').parameter('d', default=0.5).parameter('c', default=0.3).sde('dx = (-x + c*x(t - d)) dt + dW')
     text = m.sde_text()
@@ -265,6 +282,33 @@ def test_an_order_the_block_does_not_record_is_refused():
         m.to_text()
     text = m.to_text(verify=False)                    # (unchecked: the same model up to that order)
     assert list(SDE.from_text(text)._fields) == ['x', 'y', 'xdot']
+
+
+@pytest.mark.parametrize('sigma, tol', [('sigma', 1e-6), ('sigma/2 + 0.1', 1e-4)])
+def test_gaussian_jitter_kernel_round_trips(sigma, tol):
+    """Kernel.gaussian is written as {gaussian: {sigma, tol}} (fitted again on reading); the product kernel of
+    Conv(kX*g, n) is derived again, not written."""
+    m = (SDE('jit').parameter('tauX', default=0.5, domain='positive').parameter('lam', default=2.0)
+         .parameter('sigma', default=0.3, domain='positive')
+         .define_kernel('kX', kernel=Kernel.exponential('tauX'))
+         .define_kernel('g', kernel=Kernel.gaussian(sigma, tol=tol))
+         .point_process('n', 'lam').field('v').equation('v', lhs='(Dt + 1)*v', rhs='Conv(kX*g, n)'))
+    text = m.to_text()
+    import yaml
+    kernels = yaml.safe_load(text)['sde']['kernels']
+    assert kernels['g'] == {'gaussian': {'sigma': sigma, 'tol': tol}} and set(kernels) == {'kX', 'g'}
+    back = SDE.from_text(text)
+    assert digest(back) == digest(m) and set(back._jitter) == {'g', 'kX_g'}
+
+
+@pytest.mark.parametrize('bad, msg', [('{gaussian: {tol: 1e-6}}', 'gaussian needs sigma'),
+                                      ('{gaussian: s, delay: d}', 'gaussian is given alone'),
+                                      ('{gaussian: {sigma: s, tl: 1}}', "unknown key 'tl'")])
+def test_gaussian_kernel_key_errors(bad, msg):
+    with pytest.raises(ConfigError, match=msg) as e:
+        SDE.from_text(f'parameters: {{s: 0.3}}\nkernels: {{g: {bad}}}\nfields: [x]\ndrift: {{x: "-x"}}\n'
+                      f'noise: {{xi: {{type: Gaussian, var: 1, into: {{x: 1}}}}}}\n')
+    assert e.value.line == 2
 
 
 def test_from_text_errors_name_the_line():

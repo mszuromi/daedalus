@@ -60,6 +60,7 @@ writes any model in this form and ``SDE.from_text()`` reads it)::
       parameters: {w: {default: [[0, 0.4], [0.3, 0]], indexed_by: [E, E]}}   # indexed: true | matrix
       functions: {phi: {args: [v], expression: "a*exp(v)", population: E}}
       kernels: {g: {freq_image: "1/(1 + I*omega*tau)", delay: d}}            # or time_expr
+                                          # (or {gaussian: {sigma: s, tol: 1e-6}}: Kernel.gaussian)
       fields: [n, {v: {population: E}}]   # in order; a point process or a noise's field declares that
       point_processes: {n: {rate: "phi(v)", population: E}}
       equations: {v: {lhs: "(Dt + 1)*v", rhs: "sum(w[i,j]*v[j](t - d) for j in E)"}, y: "-y"}
@@ -102,7 +103,9 @@ SDE_PARAMETER_KEYS = ('default', 'domain', 'description', 'indexed', 'indexed_by
 SDE_FIELD_KEYS = ('population', 'description', 'domain', 'latex')
 SDE_POPULATION_KEYS = ('size', 'description')
 SDE_FUNCTION_KEYS = ('args', 'expression', 'latex', 'description', 'population')
-SDE_KERNEL_KEYS = ('time_expr', 'freq_image', 'delay', 'latex_name', 'indexed', 'indexed_by')
+SDE_KERNEL_KEYS = ('time_expr', 'freq_image', 'delay', 'latex_name', 'indexed', 'indexed_by',
+                   'gaussian')
+SDE_GAUSSIAN_KEYS = ('sigma', 'tol')
 SDE_POINT_PROCESS_KEYS = ('rate', 'size', 'population', 'domain', 'description')
 SDE_OBSERVABLE_KEYS = ('expr', 'population', 'description')
 SDE_OPERATOR_TYPES = ('TimeDerivative', 'Laplacian')
@@ -385,6 +388,17 @@ class _Parser:
                 if 'indexed_by' in sub:
                     entry['indexed_by'] = self._names(sub['indexed_by'][1],
                                                       f'sde.kernels.{name}.indexed_by')
+                if 'gaussian' in sub:
+                    if len(sub) > 1:
+                        self.fail(sub['gaussian'][1], f'sde.kernels.{name}: gaussian is given alone')
+                    gnode = sub['gaussian'][1]
+                    if isinstance(gnode, Y.MappingNode):
+                        g = self.mapping(gnode, SDE_GAUSSIAN_KEYS, f'sde.kernels.{name}.gaussian')
+                        if 'sigma' not in g:
+                            self.fail(gnode, f'sde.kernels.{name}.gaussian needs sigma')
+                        entry['gaussian'] = {k: self.py(v[1]) for k, v in g.items()}
+                    else:
+                        entry['gaussian'] = {'sigma': self.py(gnode)}
                 spec['kernels'][name] = (entry, knode.start_mark.line + 1)
         if 'fields' in items:
             fnode = items['fields'][1]
@@ -870,6 +884,9 @@ def sde_from_block(block, src='<text>'):
     for name, (entry, line) in (spec.get('functions') or {}).items():
         at(line, lambda name=name, entry=entry: s.define_function(name, **entry))
     for name, (entry, line) in (spec.get('kernels') or {}).items():
+        if 'gaussian' in entry:
+            from api.delay import Kernel
+            entry = {'kernel': Kernel.gaussian(**entry['gaussian'])}
         at(line, lambda name=name, entry=entry: s.define_kernel(name, **entry))
     noise = dict(spec.get('noise') or {})
     pps = dict(spec.get('point_processes') or {})

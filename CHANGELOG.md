@@ -10,6 +10,295 @@ which still used the 0.1.0 rules. (The `DAEDALUS_PHASE_J_LEGACY` switch that
 reproduced it was retired in 0.3.0; those numbers survive as frozen test baselines.)
 "After" is the new default.
 
+## 0.3.3 (2026-10-26)
+
+**Important fix (silent wrong numbers in 0.3.2 and earlier):** loop corrections through a kernel acting on a NONLINEAR function of fields, `Conv(K, f(x))` (e.g. synaptic kernels on a rate nonlinearity, `Conv(k, v^2)`), were wrong by 10-25 % with status `ok`. The saddle and tree level were correct. Such terms are now realized as an exact linear filter (the Markov embedding), and a raw action with a nonlinear `Conv` argument is refused instead of mis-evaluated. No tracked model, example notebook or paper script used such a term; re-run any of your own models that do.
+
+New: the paper-style parser `m.sde('dx = ... dt + ... dW')` with per-term interpretations; declarations that return Sage symbols and `into=` / `as_field=`; second-order equations and pure integrators; coloured and vector Gaussian noise; `dd.JumpProcess` (reactions and transitions); opt-in resummation (`dd.hartree`, `Config(resum='screened')`); the delay Pade-order cache; bare external field names (`['x', 'x']`) and reserved increment names. Fixed: derivative-vertex species keyed by field content; audit cleanups. Entries are newest first, with the fix on top.
+
+### Fix: kernels of nonlinear functions of the fields (`Conv(K, v^2)`, `Conv(K, phi(v))`) were wrong at loop order
+
+- **The bug (silent, status 'ok').** `Conv(K, X)` with `X` nonlinear in the fields expands at the saddle into
+  `K * (dv^2, ...)`: every leg of the product sits at the same earlier time `s`, bridged to `t` by `K(t - s)` once.
+  The kernel route treated `K*dv^2` as a conductance vertex `dv (K * dv)` and delayed ONE copy of the leg. Saddles,
+  k = 2 trees and everything linear in `X` were exact; loop orders (and k >= 3 trees) were wrong for every kernel
+  type, not only repeated rates.
+- **The fix.** The SDE front end embeds such a `Conv` as auxiliary linear fields (`SDE._embed_nonlinear_convs`):
+  one stage `(b*Dt + a)*u = prev` per linear factor `a + b*(I*omega)` of the kernel image's denominator (repeated
+  and near-repeated rates included), a companion block per irreducible factor of higher degree, the numerator read
+  off the stages; fed by `X`, its output replaces the `Conv`. Fields `<kernel>_emb<n>_<stage>`, listed in `notes`.
+  Equal to the hand-written Markov embedding to round-off (1e-15 .. 1e-14), k = 1 and 2, one and two loops. Works
+  in equations and point-process rates, for unindexed kernels, kernels of the unit and kernels of the summed
+  population (`sum(w[i,j]*Conv(g[j], phi(v[j])) for j in E)`). Refused by name: a delayed kernel, a kernel given
+  only by `time_expr`, a non-rational image, and a kernel indexed by both the unit and the summed population.
+  Affine arguments keep the kernel route (unchanged).
+- **Hand-written actions** (`TemporalModelBuilder`) with such a term are refused by name in `FieldTheory.expand`
+  (`engine.core.convolution.NonlinearConvError`, pointing to the SDE front end or a hand embedding) instead of
+  giving wrong numbers; a `c delta` kernel (a weight) still passes.
+- **Numbers that move** (old = main, new = this fix = the hand embedding; `test_conv_nonlinear_embedding.py`
+  models):
+
+  | model | quantity | old | new |
+  |---|---|---|---|
+  | 2-pop rate model, synapses on v^2, single pole | k=1, 1 loop, dvE | -0.657561 | -0.730332 |
+  | same, separated poles (s, 1.7 s) | k=1, 1 loop, dvE | -3.267518 | -4.334712 |
+  | same, repeated pole (alpha) | k=1, 1 loop, dvE | -1.257674 | -1.541525 |
+  | same, numerator (1 + i w q) / two poles | k=1, 1 loop, dvE | -2.706166 | -3.609435 |
+  | same, single pole | k=2, 1 loop, (dvE, dvI), tau=0 | 0.478816 | 0.706759 |
+  | 1-field, Conv(K, v^2), single pole | k=1, loops 1 / 2 | 0.0219156 / 8.879e-4 | 0.0277304 / 1.0564e-3 |
+  | same, repeated pole | k=1, loops 1 / 2 | 0.0161531 / 5.296e-4 | 0.0257904 / 7.520e-4 |
+  | same, numerator | k=1, loops 1 / 2 | 0.0170489 / 5.661e-4 | 0.0260920 / 7.889e-4 |
+
+  Blast radius: no tracked model (`models/`), SDE catalogue model or example notebook convolves a nonlinear
+  function of a field (all their `Conv` arguments are single fields); the full default test suite run with the
+  offending term logged hit only `tests/test_frontend_small_bugs.py` (a tree-level comparison, numbers correct,
+  now refused for the nonlinear argument and run with an affine one) and the reducer's unit test (no kernel image,
+  unchanged).
+- Tests: `tests/test_conv_nonlinear_embedding.py` (two-population model with four kernel types against the hand
+  embedding at k = 1 and 2; a one-field model at two loops; a rate with a kernel of the summed population; the
+  refusals); `tests/test_frontend_small_bugs.py` (the builder refusal).
+
+### SDE front end: coloured Gaussian noise (`kernel=`) and correlated vector noise (`GaussianVector`)
+
+- **`Gaussian(var, kernel=h)`**: white noise of intensity `var` filtered by a causal kernel `h`, an `api.delay.Kernel`
+  with a rational image (`Kernel.exponential('tau')`, `Kernel.alpha('tau')`, `Kernel.gamma(n, 'mean')`,
+  `Kernel.image('(1 + I*omega*a)/(1 + I*omega*tau)^2')`, products). The SDE builder embeds the filter exactly: with
+  `H(I omega) = N/D`, the state field `z` (the source's name, or `as_field=`; returned as a symbol) obeys
+  `D(Dt) z = xi` (a higher-order `D` gets velocities, as for higher-order equations), `eta = N(Dt) z`, and `c*eta`
+  enters the rhs of each field in `into=` (`c` may depend on the fields). Normalisation: `<eta eta>(s) = var (h * h~)(s)`,
+  so `Kernel.exponential(tau)` gives the Ornstein-Uhlenbeck noise `var/(2 tau) exp(-|s|/tau)` (white noise of
+  intensity `var` as `tau -> 0`). A proper image adds its direct part as white noise into the fields; a mean is
+  filtered (`H(0) mean`). Refused: delayed kernels, non-rational or improper images, a constant image, and a
+  field-dependent `var`.
+- **`GaussianVector(cov=[[...]], mean=None)`**: correlated white noise of `n` components, coupled with
+  `into={field: [c_1, ..., c_n]}`; action term `-(1/2) theta^T cov theta`, Stratonovich drift
+  `1/2 sum_kl cov_kl sum_j b_jl d_j b_ik`. `cov` must be symmetric, positive semidefinite (checked when numeric) and
+  free of the fields. Also accepted in the YAML `sde:` noise block (`type: GaussianVector`).
+- The simulator runs both (coloured noise through its state fields; vector noise through `cov = L L^T` at the run's
+  parameters); `latex()` shows `c eta dt` terms, vector increments `dW_{xi,k}` and the covariance matrix.
+  `sde_text()` refuses both (no paper-style term).
+- White Gaussian sources are unchanged (golden snapshot).
+- Tests (`tests/test_sde_colored_noise.py`): OU-driven, alpha-kernel and proper-kernel (direct part) models vs exact
+  Lyapunov covariances and C(tau) to 1e-11; the OU noise's own covariance; the filtered mean; a state-dependent
+  coloured coupling vs the hand-written two-field model at one loop; cross-correlated vector noise vs Lyapunov (all
+  four pairs) and the simulator; the vector Stratonovich correction; refusals; YAML.
+
+### Audit cleanups: state released after a discard run, editor saddle names, README
+
+- **Resident state (MEM-08).** A run made with `discard=True` evaluated its diagrams and released them, but the cached
+  realizations kept the resolvent data (`lam` tensors of every active-edge pattern) alive for the life of the
+  process. It is now released at the end of such a run (rebuilt on first use, bit-identically: a test compares a kept run
+  and a discard run). `SymbolicCumulant._ctx` held the pipeline result of its reference run (every diagram's callables)
+  as long as the symbolic result lived; it now keeps the propagator and substitutions only.
+- **Model editor (GEN-04).** Converting a legacy `set_mf_equation(saddle, rhs)` entry took the field name by cutting a
+  `star` suffix off the saddle; it now uses the saddle parameter's declared `natural_name` and falls back on the
+  `<field>star` spelling only for an undeclared saddle.
+- **README.** The "Changes between versions" paragraph said `DAEDALUS_PHASE_J_DD_KERNELS=0` and
+  `DAEDALUS_PHASE_J_LEGACY=1` restore the pre-0.2.0 behaviour; both are retired (set, they warn once and are ignored).
+- **Test.** `test_leaf_swap_reproduces_the_v2_total_bit_for_bit` no longer skips when v1 and v2 agree: the swap claim
+  holds either way.
+- No numbers move.
+
+### Reserved paper-syntax names; bare external-field names; plain field names documented
+
+- **Reserved names.** The increments of the paper-style syntax cannot name an operator: `dt`, `dW`, `dN`, `dW_<name>`,
+  `dN_<name>`, `d<X>_<name>` (and, as before, `d<field>` for every field, in either declaration order).
+  `operator('dt', ...)` raises `SDEError` with the hint to use `Dt` (the default). `∂t` / `∂_t` in an equation (or a
+  paper-style operator line) is the time derivative, and `operator('∂t', TimeDerivative())` declares the default
+  `Dt`. Docs and examples that named the time derivative `dt` now use the default `Dt` (or `D_t` where a rename is
+  shown); the tests that renamed it to `dt` use `D_t`.
+- **Bare external-field names.** `external_fields=['x', 'x']` (or `['dx', 'dx']`) is `[('x', 1), ('x', 1)]` for a
+  field with one unit, in `compute_cumulants`, `dd.Config` / `dd.run`, `covariance_matrix(fields=...)`, the analyzer
+  and the YAML `question.external_fields` (`[x, x]`). Results are byte-identical to the pair form. A bare name for a
+  field in a population of several units raises `ValueError` (`ConfigError` with the line in YAML) asking for the
+  unit; before, `covariance_matrix` silently took unit 1.
+- **Documented form.** The plain field name (`'x'`) is the documented form everywhere (README, docstrings, error
+  remedies), with the fluctuation name (`'dx'`) an accepted alias. The docs now say that at `k = 1` the result is the
+  loop shift `<x> - x*` (tree level 0), that the mean is `mf_values['xstar']` plus the shifts, and that
+  `dd.Config(output='moment')` gives the loop-corrected mean (`res['moment']`); and that the values in
+  `into={x: c}` are coupling coefficients, not populations.
+- Messages: the analyzer's `G0_EXTERNAL_FIELD` remedies name the plain-name and bare-name forms.
+- Tests: `tests/test_reserved_names_bare_fields.py`.
+
+### SDE front end: second- and higher-order equations, pure integrators, operator-form paper lines
+
+- **Higher-order equations.** An lhs that is a polynomial of order `N > 1` in the time derivative acting on the field
+  (`equation('x', '(m*Dt^2 + gamma*Dt + k)*x', rhs)`, or `m*D_t^2*x + ...` with a declared `D_t`) is embedded as a
+  first-order system: the velocities `xdot` (`xddot`, ...; or `velocity='v'` / a list) are declared as fields,
+  `Dt*x = xdot`, and the top equation is `m*Dt*xdot + gamma*xdot = rhs - k*x`. Noise coupled into `x` (declared
+  before or after the equation) forces the top equation. The model is the one the hand-written first-order system
+  builds (identical action, equations and dict, tested). Before, the engine refused any `Dt^2` term. An lhs with
+  other fields or field-dependent coefficients is refused with a message.
+- **Pure integrators.** `drift('x', 'v')` (an rhs without `x`) is accepted: its mean-field equation `0 = v` constrains
+  the other fields and `x*` comes from the system solved together (a damped forced `v` gives `x* = F/k` exactly). An
+  rhs without any field (a random walk) is still refused, now saying so.
+- **Operator form of paper-style lines.** `m.sde('(tau*Dt + 1)*v = E + sum(w[i,j]*v[j] for j in pop) + s dW/dt')`: a
+  linear operator on the left (on one field), the right side per unit time, noise terms `c dW/dt` (`c dN(rate)/dt`,
+  `c dX_name/dt`, marks as usual). This also covers drifts with population sums, which the `dx = (f) dt` form cannot
+  split. `sde_text()` now writes any lhs other than `a*Dt*x` (higher order included) in this form; it refuses
+  velocities named with `velocity=` (the text names them `xdot`, ...).
+- Tests (`tests/test_sde_second_order.py`): a Langevin oscillator and an RLC circuit (`<q^2> = C kT`, `<i^2> = kT/L`)
+  against the exact Lyapunov covariance and C(tau) to 1e-11; a third-order equation; embedding vs the hand-written
+  system (tree and one loop on a Duffing-type oscillator); the pure-integrator saddle; operator-form lines; round
+  trips; the simulator on the embedded system; refusals. Existing models are unchanged (golden snapshot).
+
+### Spatial operator IR: derivative vertices of different fields at one leg count stay separate
+
+The form-factor table of the operator IR (`ns._operator_ir_vertex_terms`) matched a diagram node to its entries by the
+node's physical-leg count alone. In a model with several fields, vertices on different fields with the same leg count
+(`-c1*Lap(a^2)` and `-c2*Dx(b, 0)^2`, both `phit*phi^2`) were therefore treated as one group: on the single-term
+path each entry took the weight `c_t / (c1 + c2)` and every node of either field summed both form factors, and on
+the multi-term path the model was refused ("two vertex groups with the same physical-leg count but different fields").
+The one-loop correlator of one field then depended on the other field's vertex, or was refused as UV-divergent.
+
+- **Fix.** Each table entry carries `fields`, the sorted propagator-matrix columns of its physical legs, and a node
+  only takes the entries of its own field content (`diagram_form_factor`). The single-term table groups by field
+  content, and the multi-term table no longer refuses a second field's vertex.
+- **Unchanged.** A model with one field, or with distinct leg counts per field, gives the same table (plus the new
+  `fields` key), the same lowered action and bit-identical numbers: checked by `array_equal` on the table, the action
+  and the k = 2 tree and one-loop values of every tracked spatial model. Two fields with the SAME vertex type (both
+  `Lap(.^2)`) already came out right, because the weights summed to 1 over equal form factors.
+- **Cache.** The operator-IR expand-cache signature now includes `fields`: an operator-IR model's expand cache is
+  rebuilt once.
+- **Moved numbers.** Decoupled `a`, `b` (`ma = 1, mb = 1.6, DD = T = 1`, `c1 = 0.3, c2 = 0.2`), k = 2 one loop at
+  `x = 0, 0.5, 1`, tau = 0: with `-c1*Dx(a, 0)^2` and `-c2*Lap(b^2)` before: both fields refused as UV-divergent;
+  after: `a` = 0.0037887, 0.00353117, 0.00293334 and `b` = 0.0082327, 0.00015896, -0.0009592, equal to the one-field
+  models. A coupled (non-diagonal) multi-field model with a derivative vertex is still refused at loops and k >= 3.
+- **Checks** (`tests/test_operator_ir_vertex_fields.py`): the table of two fields at one leg count; a multi-term group
+  next to another field's vertex; decoupled-field loops and k = 3 trees against the one-field models.
+
+### SDE front end: declarations return Sage symbols; `into=` / `as_field=`
+
+- **Symbols.** `field`, `parameter`, `operator`, `define_function`, `define_kernel`, `population`, `point_process` (and
+  `noise(..., as_field=)`) return the declared name's Sage symbol (`api.sde_symbols.Symbol`, a Sage `Expression`), so
+  expressions can be written as Sage objects: `x = m.field('x')`, `mu = m.parameter('mu', default=1.0)`,
+  `m.drift(x, -mu*x - eps*x**3).noise('xi', Gaussian(var=2*D), into={x: 1})`. A call of an operator, function or field
+  symbol is that call (`dt(x)`, `phi(v)`, `x(t - d)`; never Sage's substitution), `x[i]` / `w[i, j]` the indexed
+  name, and `api.sde_symbols.Conv` writes `Conv(K, x)`. Every method that takes an expression or a field name accepts
+  a string or a symbol / Sage expression; a Sage expression is read as its printed text (Sage's order of terms), so a
+  symbol model equals the string model with that text byte for byte. Strings work unchanged.
+- **Chaining is unchanged.** A returned symbol forwards every builder method (`SDE(...).field('x').drift(...)` builds
+  as before); the two names Sage expressions also have behave as the builder's (`operator(name, op)`, `show()`;
+  `operator()` with no arguments is still Sage's).
+- **Renamed keywords** (old names keep working, with a `DeprecationWarning`): `noise(couples=)` -> `into=`,
+  `noise(expose=)` -> `as_field=`; giving both spellings is refused. The YAML `sde:` noise entries take `into:`
+  (`couples:` still accepted) and a per-source `interpretation:`. Messages and docs use the new names. The config
+  error for a noise without couplings now says `'into' must be a mapping` (was `'couples' ...`), and the SDE error for a
+  source with neither names `into=` / `as_field=`.
+- `dd.Config` describes `k` as the cumulant order (was "correlator order"; the audit's terminology finding).
+- Other names from the audit's naming list were reviewed and kept: `Poisson(size=)` / `point_process(size=)` (the jump
+  size, consistently in both), `parameter(indexed=)` (shorthand next to `indexed_by=`), the location parameter `mu`
+  of the jump laws (the standard name of each law), and `SDE.equation` vs `TemporalModelBuilder.equation` (different
+  builders; renaming would break every model file).
+- Identity: every catalogue model is byte-identical under the new keywords and under the old ones (golden snapshot).
+- Tests: `tests/test_sde_symbols.py`.
+
+### Opt-in resummation at strong coupling: Hartree and the screened loop series
+
+Two new resummations, both opt-in through `dd.Config(resum=...)`. Without `resum=` every code path and every number
+is unchanged.
+
+- `dd.hartree(model, parameters)` and `Config(resum='hartree')` (`api/hartree.py`) compute the self-consistent
+  Gaussian of a temporal model. It solves $\langle f\rangle = 0$, $A\Sigma + \Sigma A^{\mathsf T} + \langle Q\rangle = 0$,
+  $A = \langle\partial f\rangle$, read off the expanded action. This sums every cactus diagram and is the Gaussian moment
+  closure (for a jump model, that of the master equation).
+  - Outputs: mean, covariance, dressed drift, decay rates and $C(\tau) = \Sigma e^{A^{\mathsf T}\tau}$. `.spectra()`
+    returns the `dd.spectra` keys and conventions. `Config(covariance=True)` gives the `covariance_matrix` layout.
+  - It starts from every mean-field root. Several stable solutions give the advisory `HARTREE_MULTIPLE_SOLUTIONS` and a
+    `HartreeBistabilityWarning`: one Gaussian describes one basin, and hopping is missing.
+  - The advisory `HARTREE_LEFT_SADDLE` is given when the closure started at the selected saddle settles nearer another
+    mean-field root.
+  - It refuses kernels, delays, spatial models, derivative vertices and singular `Dt` pencils.
+  - A non-polynomial drift is Taylor-truncated, with an advisory.
+  - Compared with the research prototype, the noise of an action with a `Dt` pencil `M Dt x` is now transformed to
+    $M^{-1} Q M^{-\mathsf T}$. For `(tau*Dt + 1)*x` the variance moves from `D tau` to the exact `D / tau`.
+- `Config(resum='screened')` (`api/resum.py`, k = 2) re-expands the existing loop orders around a trial propagator
+  (optimized perturbation theory).
+  - The trial lies on the line `A(kappa) = J0 + kappa (A_H - J0)` from the tree through Hartree. It is injected as a
+    bilinear counterterm on a copy of the model (`'<name> [screened]'`, its own caches).
+  - `kappa` is fixed by minimal sensitivity, from equal-time runs on Chebyshev nodes in `log kappa`. An even order takes
+    the odd order's mass.
+  - The orders are built from a central stencil about `kappa` (7 points through N = 3).
+  - Outputs: `C_tau` (order N = max_ell), `C_tau_by_order`, `C_tau_spread` (`C_N - C_{N-1}`, the error estimate), the
+    plain series in `C_tau_loops_by_ell`, and `resummation` (kappa, its source, the PMS curve, the trial matrices,
+    the Hartree closure). `spectra=` and `covariance=` are combined order by order.
+  - OU quartic at three loops: equal-time error 8.6e-4 at g = 1 and 4.5e-3 at g = 1000 (plain series: -589 and
+    -1.4e13). The lag correlator is within 1 % at g = 1.
+- `save_npz` of a resummed result also writes `resum_method`, `resum_kappa`, `C_screened_order_N` and `C_loops_total`
+  (`C_total` is the resummed value). The files of plain results are unchanged.
+- The G5 loop-parameter advisory (`G5_LOOP_PARAMETER`) now suggests `Config(resum='screened')` among its remedies (text
+  only).
+- New docs: `docs/resummation.md` and `docs/resummation_validation.py` (the validation tables).
+
+### Delay kernels: the automatic Pade order is searched once per entry and reused as a start for the others
+
+A delayed model's automatic Pade order search runs the pipeline at `n_start`, `2 n_start`, ... until two orders agree.
+Every call used to repeat it for every entry of a covariance matrix, every lag grid and every repeated call (5-9 s per
+entry against 0.2 s for white noise). The outcome is now cached in the process, keyed by the model text and index sets,
+the full parameter point (delays and saddle included), the question's accuracy and Taylor order, the delay options and
+the balanced-truncation tolerance in effect, and then by ENTRY (external fields, lag grid, evaluation points).
+
+- **The same entry again** replays its search: one run at the order it settled on, with the truncation tolerance the
+  search used there. The result, `est_rel_error` and `target_met` are those of the search, bit for bit.
+- **Another entry** starts its own search at the smallest cached order and the order before it (two runs instead of the
+  whole ladder when the cached order is above `n_start`), measures ITS OWN estimate from them, and goes on upward when its
+  target is missed; it never reports another entry's estimate. The order it settles on is cached for it.
+  `result['delay']['order_source']` is `'search'`, `'replay'` or `'verified'`.
+- **A wall-capped search is pinned** per entry: `wall_max` stops a search where the machine's speed put it, and the
+  replay does not re-decide.
+- **Opt out:** `delay={'order_cache': False}`; `api.delay.clear_order_cache()` empties the cache. Not cached: fixed
+  orders, hand-written dict models (no text signature), runs that left diagrams skipped; a replay that fails or skips falls
+  back to a full search.
+- **No numbers move** for a call that searches (the first call of an entry at a key). A `'verified'` entry starts its
+  ladder at the cached order, so its lower order runs at the base truncation tolerance rather than the adaptive one of a
+  full ladder: the same estimate to the accuracy of the target (test: 1e-6 relative on the cumulant).
+
+### Paper-style SDE equations and per-source interpretations
+
+- **`m.sde(text, noises=None)`** reads equations written as in a paper, one per line (or `;`), into the existing
+  declarations (`api/sde_paper.py`): `dx = (-mu*x - eps*x^3) dt + sqrt(2*D) dW`, `tau*dv = (E - v) dt + s ∘ dW_a +
+  J dN(r*exp(v))`. Each term ends in `dt` (drift), `dW` (standard Wiener, `Gaussian(var=1)`), `dN(rate)`
+  (`Poisson(rate)`) or `d<X>_<name>` for a source passed in `noises=`; the factor in front is the coupling (`into=`).
+  A subscript names a process, and one name in several equations is one source; an unnamed `dW` / `dN` is a source
+  of its own equation (`W_x`, `N_x`). Fields not yet declared are declared. Malformed lines raise `SDEError` with a
+  caret (no differential, a mark on the drift, `dN` without a rate, an unknown `d<X>_<name>`, the same process twice
+  in one equation, a second `=`, ...).
+- **Per-term interpretation.** A circle before the differential (`∘ dW`, ASCII `o dW`; `◇` / `⋄` read the same) makes
+  a Gaussian term Stratonovich and a jump term Marcus; a plain term is Ito. One source takes one interpretation (a
+  named process marked in one equation and not in another is refused). The model-wide `interpretation(...)` is
+  refused together with paper-style terms, which carry their own.
+- **`noise(..., interpretation='ito'|'stratonovich'|'marcus')`**: the same per source on the explicit API; it
+  overrides the model-wide mode for that source. Mixed models build as the explicit model with the same per-source
+  interpretations: only the Stratonovich sources get the drift correction, only the Marcus jump sources the Marcus
+  noise term, and the model dict is stamped `interpretation: marcus` when any source takes the Marcus rule. When the
+  per-source choices amount to a model-wide mode (all Gaussian terms marked: Stratonovich; all terms marked with a
+  jump: Marcus), the model, `check()` and `latex()` are byte-identical to that mode's model. `check()` reports
+  `interpretation: 'mixed'` plus `interpretations` per source otherwise; `latex()` marks each term by its own rule.
+  Refused as before: Stratonovich on a jump source, Stratonovich/Marcus on exposed sources and SPDEs, Marcus on a
+  coupling that reads other units (joint jumps). The simulator applies the rules per source.
+- **`m.sde_text()`** writes the equations back in this form (its `noises` attribute holds the sources it names);
+  `.sde(text, noises=text.noises)` on a model with the same parameters rebuilds the same model.
+- Existing models are unchanged: the byte-identical snapshot of the SDE catalogue passes. Latex: a source named
+  `W_x` for its own letter prints `W_{x}` (was `W_{W_{x}}`; no catalogue model has such a name).
+- Tests: `tests/test_sde_paper.py` (paper lines vs explicit models by digest, Stratonovich/Marcus/mixed
+  interpretations vs hand-corrected Ito actions, refusals with carets, `sde_text` round trips including catalogue
+  models), and a README example in `tests/test_readme_snippets.py`.
+
+### Reaction / transition builder for jump processes (`dd.JumpProcess`)
+
+- New `api/jump_process.py`, exported as `dd.JumpProcess`: declare species, parameters, a system size `Omega`, and mass-action
+  `reaction('A + B -> C', rate='k')` (combinatorics `'stochastic'` falling factorials by default, `'macroscopic'`,
+  `'rate_law'`; reversible `<->`) or `transition(rate, jump)` channels. `sde()` / `build()` give the SDE-front-end model with
+  zero drift and one state-dependent `Poisson(rate, size=1/Omega)` source per transition (action text identical to the
+  hand-written model); `dd.run(jp, cfg)` accepts the builder directly. `to_master_equation()` and `compare()` hand the same
+  transitions to the exact oracle (`dd.master_equation`), `convergence(omegas)` repeats the comparison over system sizes.
+  Negative rates (probed on the lattice at the defaults) and ill-formed jumps / reactions are refused (`JumpProcessError`).
+- `MasterEquation.compare_with_daedalus` no longer passes `h` to a model that does not declare it (a model written in the
+  system size). No numbers change.
+- Tests: `tests/test_jump_process.py` (immigration-death exact Poisson, dimerisation one-loop convergence with the tree error
+  ~ 1/Omega and the one-loop error ~ 1/Omega^2, a correlated two-species linear network against Lyapunov, identical action
+  text, refusals). Docs: `docs/jump_process.md`.
+
 ## 0.3.2 (2026-10-26)
 
 **Breaking:** Daedalus now runs on and is pinned to SageMath 10.9 (Python 3.14, numpy 2.4, sympy 1.14); `SDE.define_function` refuses the names `gamma` and `factorial`. **Numbers moved** only for spatial models that combine a derivative vertex (e.g. `Lap(u^2)`) with a local vertex of the same fields, which were wrong before (see the operator-IR entry).

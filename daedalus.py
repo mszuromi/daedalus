@@ -41,7 +41,7 @@ import matplotlib.pyplot as plt
 #: CITATION.cff describes the latest RELEASE and is bumped, with its
 #: date-released, when this version is released; tests/
 #: test_save_version_stamp.py checks all of it).
-__version__ = '0.3.2'
+__version__ = '0.3.3'
 
 
 # ── Repo / model discovery ──────────────────────────────────────────────────
@@ -617,10 +617,10 @@ class Config:
     parallel: bool = False
     # Worker count for the parallel backend (forwarded to compute_cumulants).
     # None → the backend's own default (spatial threads: min(8, cores);
-    # temporal batch: up to 8 threads, or os.cpu_count() fork workers on
-    # Linux).  The spatial backend and the temporal batch's thread fan-out
+    # temporal batch: up to 8 threads, or 4 spawned workers for a batch of
+    # seconds).  The spatial backend and the temporal batch's thread fan-out
     # (diagrams with large state blocks) are safe in a Jupyter kernel; fork
-    # (temporal batch, type assignment) is Linux-only: macOS never forks
+    # (type assignment; the temporal batch only on request) is Linux-only: macOS never forks
     # (engine.fork_safety).  The numbers do not depend on it.
     # DAEDALUS_PARALLEL=0 turns every pool off.
     n_workers: Optional[int] = None
