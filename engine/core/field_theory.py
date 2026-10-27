@@ -1451,7 +1451,15 @@ def _mf_numerical_residual(expr, ns, model, memo=None, raw=None):
     if num_params is None or isinstance(num_params, Exception):
         return None
     vals, errs = num_params
-    return mf_sector_residual(expr, vals, errs, unbound=1.0, raw=raw)
+    out = mf_sector_residual(expr, vals, errs, unbound=1.0, raw=raw)
+    if out is None and raw is not None:
+        # The symbolic saddle substitution can put a pole at the default point
+        # (a restoring coefficient that vanishes there: ``mu - b - c = 0``
+        # divides the closed form of the saddle).  The check is about the
+        # coefficient at the NUMERICAL saddle, so evaluate it before the
+        # substitution.
+        out = mf_sector_residual(raw, vals, errs, unbound=1.0, raw=raw)
+    return out
 
 
 def _mf_saddle_values(ns, model):
