@@ -33,6 +33,13 @@ the mean at each loop order from lower orders only:
 
 Loop order ``L`` needs the drift to degree ``2 L``.
 
+One loop, diagram by diagram (:func:`one_loop_mean`).  The first line is a
+sum of tadpoles, ``-G(0)_{a r} V^{(2)}_{r; pq} C0_pq(0)``, with the
+equal-time tree covariance ``C0_pq(0) = kappa_{pq}^{(0)}`` named, as its
+Fourier integral ``(1/2 pi) int C0_pq(omega) d omega``, exact (rational in
+the parameters, by the state-space route) or as a residue sum over the poles
+of ``C0_pq`` (``RootOf`` beyond degree two).
+
 Polynomial drifts are exact.  A non-polynomial drift (``exp(v)``, a sigmoid)
 is Taylor-expanded to ``order=`` and the relation holds up to the dropped
 terms of degree ``order + 1`` and higher; :attr:`MeanRelation.truncation`
@@ -46,6 +53,7 @@ averages are not moments at one time; a singular ``K(omega = 0)``.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
@@ -58,7 +66,8 @@ from daedalus.api.symbolic_out import (
     _expand_param_names, _is_saddle_symbol, to_sympy, to_latex,
 )
 
-__all__ = ['DriftTerm', 'MeanRelation', 'mean_relation']
+__all__ = ['DriftTerm', 'MeanRelation', 'mean_relation', 'Tadpole', 'OneLoopMean',
+           'one_loop_mean']
 
 
 @dataclass(frozen=True)
@@ -374,9 +383,10 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
     known = {str(v) for poly in list(ft._by_tp.values()) + list(
         (ft._mf_sector_raw or {}).values()) for c in poly.coefficients()
         for v in SR(c).variables()}
-    known |= {str(p['name']) for p in model.get('parameters') or []
-              if not p.get('indexed')}
-    unknown = sorted(k for k in sub_names if k not in known)
+    known |= {str(v) for e in prop['K_ft'].list() for v in SR(e).variables()}
+    bases = [str(p['name']) for p in model.get('parameters') or []]
+    unknown = sorted(k for k in sub_names if k not in known and not any(
+        re.fullmatch(re.escape(b) + r'\d*', k) for b in bases))
     if unknown:
         raise SymbolicOutError(
             f'values= / mean_field= name {unknown}, which the action does not '
@@ -438,3 +448,369 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
     if not rel.exact:
         rel.notes.append(rel.truncation)
     return rel
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The one-loop mean, diagram by diagram
+# ═════════════════════════════════════════════════════════════════════════════
+
+C0_FORMS = ('named', 'integral', 'rational', 'residues')
+
+
+@dataclass(frozen=True)
+class Tadpole:
+    """One one-loop mean diagram: the drift vertex
+    ``coefficient * xt_response * dx_p * dx_q`` with its two physical legs
+    closed by the equal-time tree covariance ``C0_pq(0)``, attached to the
+    external field ``a`` by ``G_{a, response}(omega = 0)``:
+
+        <dx_a>^{(1)}  ⊃  -G_{a, response}(0) * coefficient * C0_pq(0)
+
+    ``legs = (p, q)`` (``p == q`` allowed); ``propagator`` maps each physical
+    field ``a`` to ``G_{a, response}(0)``."""
+    response: str
+    legs: tuple
+    coefficient: Any
+    propagator: dict
+
+    def weight(self, a, G0=None):
+        """``-G_{a, response}(0) * coefficient``: the factor of
+        ``C0_pq(0)`` in this diagram's contribution to ``<dx_a>`` (``G0``:
+        ``{(a, response): entry}`` in place of the explicit entries)."""
+        g = self.propagator[a] if G0 is None else G0[(a, self.response)]
+        return -g * self.coefficient
+
+
+@dataclass
+class OneLoopMean:
+    """The one-loop mean shift of a model as its tadpole diagrams
+    (:class:`Tadpole`), with the equal-time tree covariance ``C0_pq(0)`` in
+    one of the forms of :meth:`C0`:
+
+    ``'named'``     the symbol ``kappa^{(0)}(dx_p, dx_q)`` (as in
+                    :meth:`MeanRelation.loop_order`);
+    ``'integral'``  ``(1/2 pi) int C0_pq(omega) d omega`` (held, unevaluated)
+                    of the symbolic tree covariance;
+    ``'rational'``  its exact value, rational in the parameters and the
+                    saddle (state-space route, no roots);
+    ``'residues'``  the residue sum over the poles of ``C0_pq``: explicit for
+                    factors of degree <= 2, ``RootOf`` symbols above.
+
+    The expressions are not simplified towards any closed form; ``relation``
+    is the :class:`MeanRelation` they come from."""
+    relation: MeanRelation
+    tadpoles: list
+    model: Any = field(repr=False, default=None)
+    parameters: Optional[dict] = field(repr=False, default=None)
+    notes: list = field(default_factory=list)
+    _cache: dict = field(default_factory=dict, repr=False)
+
+    @property
+    def phys_names(self) -> list:
+        return self.relation.phys_names
+
+    @property
+    def loops(self) -> list:
+        """The distinct loops ``(p, q)`` of the tadpoles, in field order."""
+        seen = []
+        for t in self.tadpoles:
+            if t.legs not in seen:
+                seen.append(t.legs)
+        return seen
+
+    # ── C0(0) ───────────────────────────────────────────────────────────
+    def _legs(self, p, q) -> tuple:
+        return self.relation._canon((p, q))
+
+    def covariance(self):
+        """The symbolic tree covariance (:class:`TreeCovariance`) the
+        ``'integral'`` and ``'residues'`` forms use (built once, with this
+        relation's values and saddle substituted before it is simplified)."""
+        if 'cov' not in self._cache:
+            from daedalus.api.symbolic_out import tree_covariance
+            self._cache['cov'] = tree_covariance(
+                self.model, values=self.relation.values or None,
+                parameters=self.parameters)
+        return self._cache['cov']
+
+    def _fix(self, e):
+        sub = {SR.var(k): SR(v) for k, v in self.relation.values.items()}
+        e = SR(e)
+        return e.subs(sub) if sub else e
+
+    def _entry(self, legs):
+        """``C0_pq(omega)`` with this relation's substitutions; refused if it
+        has a contact term (a white-noise-like field: ``C_pq(tau)`` has a
+        ``delta(tau)`` and no equal-time value)."""
+        cov = self.covariance()
+        e = self._fix(cov.entry(*legs))
+        tail = self._fix(cov.contact(*legs))
+        if not SR(tail).is_trivial_zero() and SR(tail).simplify_rational() != 0:
+            raise UnsupportedModelError(
+                f'C0_{legs[0]},{legs[1]}(omega) tends to {tail} as omega -> '
+                f'infinity: C(tau) has a delta(tau) term and no equal-time '
+                f'value, so this loop has no finite C0(0)')
+        return e
+
+    def C0(self, p, q, form: str = 'named'):
+        """The equal-time tree covariance ``C0_pq(tau = 0)`` in ``form``
+        (class docstring)."""
+        legs = self._legs(p, q)
+        if form == 'named':
+            return self.relation.kappa(*legs, ell=0)
+        if form == 'integral':
+            from sage.all import integral, pi, oo
+            cov = self.covariance()
+            w = cov.omega
+            return integral(self._entry(legs), w, -oo, oo, hold=True) / (2 * pi)
+        if form == 'rational':
+            return self._rational(legs)
+        if form == 'residues':
+            ms = self.modes(*legs)
+            return ms.expression('negative').subs({ms.tau: 0})
+        raise SymbolicOutError(f'form must be one of {C0_FORMS}; got {form!r}')
+
+    def modes(self, p, q):
+        """The time-domain mode sum of ``C0_pq`` (:class:`ModeSum`, the
+        ``'residues'`` form at ``tau = 0``); its half-plane split is decided at
+        the model defaults (``parameters=``) and stated in its
+        ``assumptions``."""
+        legs = self._legs(p, q)
+        key = ('modes', legs)
+        if key not in self._cache:
+            from daedalus.api.symbolic_out import tree_modes
+            e = self._entry(legs)
+            cov = self.covariance()
+            free = {str(v) for v in e.variables()} - {str(cov.omega)}
+            ref = {k: v for k, v in self._reference().items() if k in free}
+            self._cache[key] = tree_modes(e, cov.omega, reference=ref or None)
+        return self._cache[key]
+
+    def _reference(self) -> dict:
+        """The model defaults (``parameters=`` over them), with the solved
+        saddle, as pipeline symbol names."""
+        if 'ref' not in self._cache:
+            cov = self.covariance()
+            ref = {str(k): v for k, v in cov.default_values().items()}
+            ref.update(self.relation.values)
+            self._cache['ref'] = ref
+        return self._cache['ref']
+
+    def _rational(self, legs):
+        key = ('rational', legs)
+        if key in self._cache:
+            return self._cache[key]
+        from daedalus.api.symbolic_loop import symbolic_cumulant
+        ext = [_external_field(self.model, f) for f in legs]
+        vals = self.relation.values
+        fixed = {k: v for k, v in vals.items()
+                 if not _is_saddle_symbol(k, self.model)}
+        saddle = {k: v for k, v in vals.items()
+                  if _is_saddle_symbol(k, self.model)}
+        params = _pack_parameters(self.model, self.parameters, fixed)
+        symbols = [n for n in _expand_param_names(params) if n not in fixed]
+        sc = symbolic_cumulant(self.model, k=2, max_ell=0, external_fields=ext,
+                               parameters=params, symbols=symbols,
+                               saddle=saddle or 'symbol')
+        e = self._fix(SR(sc.by_ell[0]))
+        self._cache[key] = e
+        return e
+
+    # ── the mean ────────────────────────────────────────────────────────
+    def G0(self, a, r, propagator: str = 'explicit'):
+        """``G_{a r}(omega = 0)``: its expression (``'explicit'``) or the
+        symbol ``G0_a_r`` (``'named'``)."""
+        rel = self.relation
+        i, j = rel.phys_names.index(str(a)), rel.resp_names.index(str(r))
+        if propagator == 'explicit':
+            return rel.G0[i, j]
+        if propagator != 'named':
+            raise SymbolicOutError(f"propagator must be 'explicit' or 'named'; "
+                                   f'got {propagator!r}')
+        name = f'G0_{a}_{r}'
+        lx = (rf'G_{{{rel._field_latex(str(a))}, '
+              rf'{self._resp_latex(str(r))}}}(0)')
+        return SR.var(name, latex_name=lx)
+
+    def _resp_latex(self, r) -> str:
+        for rf in (self.model or {}).get('response_fields') or []:
+            nm, lx = str(rf.get('name')), rf.get('latex')
+            idx = r[len(nm):]
+            if lx and r.startswith(nm) and idx.isdigit():
+                return f'{lx}_{{{idx}}}'
+        return r
+
+    def contributions(self, form: str = 'named',
+                      propagator: str = 'explicit') -> list:
+        """``[(tadpole, {a: its contribution to <dx_a>})]``; ``propagator``
+        as in :meth:`G0`."""
+        c0 = {legs: self.C0(*legs, form=form) for legs in self.loops}
+        G0 = None
+        if propagator != 'explicit':
+            G0 = {(a, t.response): self.G0(a, t.response, propagator)
+                  for t in self.tadpoles for a in self.phys_names}
+        return [(t, {a: t.weight(a, G0) * c0[t.legs] for a in self.phys_names})
+                for t in self.tadpoles]
+
+    def mean_shift(self, form: str = 'named',
+                   propagator: str = 'explicit') -> dict:
+        """``<dx_a>^{(1)} = <x_a> - x*_a`` at one loop, ``{a: sum over the
+        tadpoles}`` (not simplified); ``propagator`` as in :meth:`G0`."""
+        out = {a: SR(0) for a in self.phys_names}
+        for _, contrib in self.contributions(form, propagator):
+            for a, v in contrib.items():
+                out[a] += v
+        return out
+
+    def evaluate(self, form: str = 'rational', values: Optional[dict] = None
+                 ) -> dict:
+        """``{a: number}``: the one-loop mean shift with every remaining
+        symbol given in ``values`` (pipeline names; the saddle too, unless the
+        relation was built with ``mean_field=``).  ``'integral'`` integrates
+        numerically (an independent check of ``'rational'``), ``'residues'``
+        sums the modes at 256 bits."""
+        vals = _expand_param_names(_as_name_dict(values))
+        if form == 'integral':
+            c0 = {legs: self._integral_number(legs, vals) for legs in self.loops}
+        elif form == 'residues':
+            c0 = {}
+            for legs in self.loops:
+                ms = self.modes(*legs)
+                missing = sorted(k for k in ms.reference if k not in vals)
+                if missing:
+                    raise SymbolicOutError(f'no value for {missing}')
+                c0[legs] = complex(ms.evaluate(
+                    0.0, {k: vals[k] for k in ms.reference})[()])
+        elif form in ('rational', 'named'):
+            c0 = {legs: self.C0(*legs, form='rational') for legs in self.loops}
+        else:
+            raise SymbolicOutError(f'form must be one of {C0_FORMS}; got {form!r}')
+        sub = {SR.var(k): SR(v) for k, v in vals.items()}
+        out = {}
+        for a in self.phys_names:
+            tot = SR(0)
+            for t in self.tadpoles:
+                tot += t.weight(a) * c0[t.legs]
+            tot = SR(tot).subs(sub)
+            free = sorted(str(v) for v in tot.variables())
+            if free:
+                raise SymbolicOutError(f'no value for {free}')
+            out[a] = complex(tot.n())
+        return out
+
+    def _integral_number(self, legs, vals) -> complex:
+        from scipy.integrate import quad
+        cov = self.covariance()
+        w = cov.omega
+        e = self._entry(legs).subs({SR.var(k): SR(v) for k, v in vals.items()})
+        free = sorted(str(v) for v in e.variables() if str(v) != str(w))
+        if free:
+            raise SymbolicOutError(f'no value for {free}')
+        f = e.function(w)
+        re = quad(lambda x: float(f(x).real()), -np.inf, np.inf,
+                  epsabs=0, epsrel=1e-13, limit=400)[0]
+        im = quad(lambda x: float(f(x).imag()), -np.inf, np.inf,
+                  epsabs=1e-300, epsrel=1e-13, limit=400)[0]
+        return complex(re, im) / (2 * np.pi)
+
+    # ── exports ─────────────────────────────────────────────────────────
+    def sympy(self, form: str = 'named', propagator: str = 'explicit') -> dict:
+        return {k: to_sympy(v)
+                for k, v in self.mean_shift(form, propagator).items()}
+
+    def latex(self, form: str = 'named', propagator: str = 'named') -> str:
+        """One line per field: ``<dx_a>^{(1)} = sum of tadpoles`` (the
+        propagator named by default: one term per diagram)."""
+        rel = self.relation
+        lines = []
+        for a in self.phys_names:
+            terms = [to_latex(c[a])
+                     for _, c in self.contributions(form, propagator)
+                     if not SR(c[a]).is_trivial_zero()]
+            lines.append(f'{to_latex(rel.kappa(a, ell=1))} = '
+                         + (' + '.join(terms) if terms else '0'))
+        return r' \\ '.join(lines)
+
+    def __str__(self):
+        lines = [f'OneLoopMean({self.relation.model_name!r}; '
+                 f'{len(self.tadpoles)} tadpoles)']
+        for t in self.tadpoles:
+            lines.append(f'  {t.response} <- ({t.coefficient}) * '
+                         f'C0_{t.legs[0]},{t.legs[1]}(0)')
+        return '\n'.join(lines)
+
+
+def _external_field(model, phys: str) -> tuple:
+    """``'dv2'`` -> ``('v', 2)``: the pipeline's external field of a physical
+    fluctuation generator."""
+    for pf in model.get('physical_fields') or []:
+        nm = str(pf.get('name'))
+        idx = phys[len(nm):]
+        if phys.startswith(nm) and idx.isdigit():
+            return (str(pf.get('natural_name') or nm), int(idx))
+    raise SymbolicOutError(f'cannot map the field {phys!r} to an external '
+                           f'field of the model')
+
+
+def _pack_parameters(model, parameters: Optional[dict], fixed: dict) -> dict:
+    """The model's parameter dict (``parameters=`` over the defaults) with
+    the pipeline-named ``fixed`` values written into it (``W12`` into
+    ``W[0][1]``, ``tau2`` into ``tau[1]``)."""
+    import copy
+    full = {p['name']: copy.deepcopy(p['default'])
+            for p in model.get('parameters') or []
+            if p.get('default') is not None and not p.get('mean_field')}
+    full.update(copy.deepcopy(dict(parameters or {})))
+    left = dict(fixed)
+    for name, v in full.items():
+        if isinstance(v, (list, tuple, np.ndarray)):
+            v = [list(r) if isinstance(r, (list, tuple, np.ndarray)) else r
+                 for r in v]
+            for i, row in enumerate(v):
+                if isinstance(row, list):
+                    for j in range(len(row)):
+                        k = f'{name}{i + 1}{j + 1}'
+                        if k in left:
+                            row[j] = left.pop(k)
+                else:
+                    k = f'{name}{i + 1}'
+                    if k in left:
+                        v[i] = left.pop(k)
+            full[name] = v
+        elif name in left:
+            full[name] = left.pop(name)
+    if left:
+        raise SymbolicOutError(f'values= names {sorted(left)} are not model '
+                               f'parameters')
+    return full
+
+
+def one_loop_mean(model: dict, *, values: Optional[dict] = None,
+                  mean_field: Any = None, parameters: Optional[dict] = None,
+                  use_cache: bool = True, verbose: bool = False) -> OneLoopMean:
+    """The one-loop (``k = 1``, ``ell = 1``) mean shift of ``model`` as its
+    tadpole diagrams (:class:`OneLoopMean`).
+
+    Each tadpole is ``-G(omega = 0)_{a r} V^{(2)}_{r; pq} C0_pq(0)``: a
+    quadratic drift vertex of the expanded action, its loop closed by the
+    equal-time tree covariance.  One loop needs the drift to degree two only,
+    so the result is exact at this order for any drift (a non-polynomial one
+    included).  ``values``, ``mean_field`` and ``parameters`` as in
+    :func:`mean_relation`."""
+    if not isinstance(model, dict) and callable(getattr(model, 'build', None)):
+        model = model.build()
+    rel = mean_relation(model, order=2, values=values, mean_field=mean_field,
+                        parameters=parameters, use_cache=use_cache,
+                        verbose=verbose)
+    G0 = rel.G0
+    tads = []
+    for t in rel.terms:
+        if t.degree != 2:
+            continue
+        r = rel.resp_names.index(t.response)
+        prop = {a: G0[i, r] for i, a in enumerate(rel.phys_names)}
+        tads.append(Tadpole(t.response, t.legs, t.coefficient, prop))
+    out = OneLoopMean(relation=rel, tadpoles=tads, model=model,
+                      parameters=parameters)
+    out.notes = [n for n in rel.notes if not n.startswith('Taylor-truncated')]
+    return out

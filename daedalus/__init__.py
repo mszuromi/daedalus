@@ -216,6 +216,8 @@ _PIPELINE_EXPORTS = {
     # the exact stationary mean relation (Schwinger-Dyson), symbolic
     'mean_relation':             'daedalus.api.symbolic_mean',
     'MeanRelation':              'daedalus.api.symbolic_mean',
+    'one_loop_mean':             'daedalus.api.symbolic_mean',
+    'OneLoopMean':               'daedalus.api.symbolic_mean',
 }
 
 
