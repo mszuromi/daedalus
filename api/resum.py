@@ -64,11 +64,16 @@ maximum relative to ``max |C_N|`` (``resummation['spread_last_two']``).
 In the OU quartic tests it is conservative (7–280x the true error at equal
 time from ``g = 0.01`` to ``1000``); it is not a bound.
 
+Kernels and hard delays: the Hartree closure embeds them (``api.hartree``:
+rational kernels exactly, delays through their Pade approximant), the trial
+propagator is its block on the model's own fields, and the loop orders run
+the loop path's kernel / delay routes (the options of ``Config.delay``).
+
 Out of scope (future work): exact ``λ``-derivatives through Fréchet
 derivatives of the state-space exponentials (in place of the stencil), the
-self-consistent sunset of the 2PI expansion at next-to-leading order, kernel
-and delay models, spatial models (the spatial tadpole needs a mass
-counterterm).
+self-consistent sunset of the 2PI expansion at next-to-leading order, spatial
+models (the spatial tadpole needs a mass counterterm), exogenous input
+fields.
 """
 from __future__ import annotations
 

@@ -916,7 +916,8 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
     if abs(np.linalg.det(Mn)) < 1e-300 or np.linalg.cond(Mn) > 1e14:
         raise HartreeUnsupported(
             'hartree: singular Dt pencil (algebraic constraints are not '
-            'supported).')
+            'supported; an exogenous input field, such as a point-process '
+            'input that drives a kernel, has no dynamics of its own).')
     Minv = np.linalg.inv(Mn)
     gp = [_to_poly(SR(gi).subs(num), xs, 'drift') for gi in g]
     Qp = [[_to_poly(SR(Qg[a][b]).subs(num), xs, 'noise') for b in range(n)]
@@ -1032,6 +1033,7 @@ def _hartree_delayed(model, parameters, delay, kw):
     run = lambda n: _hartree(D.pade_model(model, int(n)), parameters, **kw)
 
     def finish(r, n, est, source, orders, ests):
+        r.info['model'] = model.get('name', '<unnamed>')
         r.info['delay'] = {'order': int(n), 'estimate': est,
                            'target': o['tol'], 'order_source': source,
                            'orders': list(orders), 'estimates': list(ests),

@@ -336,10 +336,15 @@ def test_run_resum_hartree_matches_dd_hartree(ou_quartic):
     assert r['_resolved']['resum'] == 'hartree'
 
 
-def test_refuses_kernels():
+def test_refuses_what_the_closure_cannot_take():
+    # a model with iteration saddles (the conductance example)
     m = dd.load_model('single_population_quad_exp_test')[0]
-    with pytest.raises(HartreeUnsupported, match='kernels'):
+    with pytest.raises(HartreeUnsupported, match='iteration saddles'):
         hartree(m, {})
+    # a kernel without a frequency image cannot be realized
+    m2 = dict(m, iteration_saddles=None, kernel_ft_image=None)
+    with pytest.raises(HartreeUnsupported, match='frequency image'):
+        hartree(m2, {})
 
 
 def test_refuses_spatial():
