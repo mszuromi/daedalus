@@ -116,9 +116,10 @@ def resolve_external_fields(model: dict, external_fields) -> list:
     if external_fields is None or not any(isinstance(e, str) for e in external_fields):
         return external_fields
     out = []
+    obs = model.get('observables') or {}
     for e in external_fields:
-        if not isinstance(e, str):
-            out.append(e)
+        if not isinstance(e, str) or e in obs:
+            out.append(e)                 # (an observable leg: api.observables)
             continue
         info = _field_units(model, e)
         if info is not None and info[0] > 1:

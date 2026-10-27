@@ -1805,7 +1805,10 @@ def compute_cumulants(
         the loop SHIFT of the mean, ``<x> - x*`` (tree level 0): the mean is
         ``mf_values['xstar']`` plus the sum of the shifts over loop orders, and
         ``dd.Config(output='moment')`` returns that loop-corrected mean
-        directly (``res['moment']``).
+        directly (``res['moment']``).  A leg may also name an observable of
+        the model (``SDE.observable``; ``('rate', u)`` for a unit of a
+        population observable): its composite-operator expansion over the
+        field legs (:mod:`api.observables`, ``result['observable']``).
     tau_max, tau_step : float
         τ-grid extent and spacing for the Phase J slice evaluation.
     taylor_order : int or None
@@ -2148,6 +2151,13 @@ def compute_cumulants(
                              'wall', 'cpu'}}
     """
     model = as_model_dict(model)         # an SDE / builder is built here
+    if model.get('observables') and external_fields is not None:
+        # legs that name observables (SDE.observable): their composite-operator
+        # expansion over the field legs (api.observables)
+        import api.observables as _obs
+        if _obs.is_observable_call(model, external_fields):
+            return _obs.observable_cumulants(model, dict(locals()))
+        del _obs                         # (locals() is the delay route's call below)
     # Grouped Phase J is retired: the flag is accepted
     # for one release and runs the per-diagram integrator (same numbers)
     if use_grouped_phase_j:
