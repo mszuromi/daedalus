@@ -70,6 +70,9 @@ The orchestration layer `dd` drives:
   `G(omega = 0)`, the drift vertices of the expanded action and connected-cumulant symbols, at all orders, and its
   loop expansion order by order; and the one-loop mean as its tadpole diagrams (`dd.one_loop_mean`), with the
   equal-time tree covariance named, as its Fourier integral, exact (rational) or as a residue sum.
+- `symbolic_spectrum.py` — the one-loop spectrum as its self-energy diagrams (`dd.one_loop_spectrum`): tadpoles,
+  mean-shift insertions and bubbles read off the cubic and quartic vertices by Wick's theorem, `S^(1) = L Sigma L^H`
+  with the tree lines named or written out and each bubble as its held frequency integral.
 - `_pole_clusters.py` — near-degenerate and repeated propagator poles: replaces a nearly
   cancelling pole sum by a contour average around the cluster, so close poles keep their precision.
 - `_expand_cache.py` — a disk cache for `FieldTheory.expand()` results (the dominant cost for

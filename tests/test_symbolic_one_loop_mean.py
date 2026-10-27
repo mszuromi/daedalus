@@ -4,6 +4,9 @@ Each tadpole is ``-G(0)_{a r} V^{(2)}_{r; pq} C0_pq(0)``.  The equal-time tree
 covariance ``C0_pq(0)`` named, as its Fourier integral, exactly (rational) and
 by residues: every form reproduces the pipeline's k = 1, ell = 1 mean.
 """
+import os
+import sys
+
 import numpy as np
 import pytest
 from sage.all import SR
@@ -14,7 +17,8 @@ from daedalus.api.sde import SDE
 from daedalus.api.symbolic_out import SymbolicOutError
 from daedalus.api.symbolic_mean import one_loop_mean, mean_relation
 
-from test_symbolic_mean import rate_network, W2, W3, TAU0, _value
+sys.path.insert(0, os.path.dirname(__file__))
+from test_symbolic_mean import rate_network, W2, W3, TAU0, _value  # noqa: E402
 
 FORMS = ('rational', 'integral', 'residues')
 
