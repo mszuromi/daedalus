@@ -22,7 +22,7 @@ conda activate daedalus
 jupyter lab                             # then open notebooks/model_builder_tutorial.ipynb
 ```
 
-[`environment.yml`](environment.yml) pulls SageMath 10.9 and the extras from conda-forge —
+[`environment.yml`](https://github.com/mszuromi/daedalus/blob/main/environment.yml) pulls SageMath 10.9 and the extras from conda-forge —
 that is the entire setup. The sections below explain each step, give a non-conda alternative,
 and list tested versions.
 
@@ -49,7 +49,7 @@ conda env create -f environment.yml      # or:  mamba env create -f environment.
 conda activate daedalus
 ```
 
-[`environment.yml`](environment.yml) installs SageMath 10.9 plus the `numba`/`pydot`/`graphviz`
+[`environment.yml`](https://github.com/mszuromi/daedalus/blob/main/environment.yml) installs SageMath 10.9 plus the `numba`/`pydot`/`graphviz`
 extras from conda-forge (validated to resolve on macOS/Linux). For the optional GUI clipboard,
 also `pip install pyperclip`.
 
@@ -103,11 +103,11 @@ Everything lives in one package, `daedalus`:
 
 | path | what it is |
 |---|---|
-| [`daedalus/__init__.py`](daedalus/__init__.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
-| [`daedalus/api/`](daedalus/api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `ModelBuilder`, `generate_report`, `save_npz`) |
-| [`daedalus/engine/`](daedalus/engine/) | the core engine: symbolic field theory → diagram enumeration → loop integration |
-| [`daedalus/simulations/`](daedalus/simulations/) | independent numerical simulators used to validate the analytic results |
-| [`daedalus/models/`](daedalus/models/) | the shipped `*.model.py` specs loaded by `dd.load_model(name)` |
+| [`daedalus/__init__.py`](https://github.com/mszuromi/daedalus/blob/main/daedalus/__init__.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
+| [`daedalus/api/`](https://github.com/mszuromi/daedalus/tree/main/daedalus/api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `ModelBuilder`, `generate_report`, `save_npz`) |
+| [`daedalus/engine/`](https://github.com/mszuromi/daedalus/tree/main/daedalus/engine/) | the core engine: symbolic field theory → diagram enumeration → loop integration |
+| [`daedalus/simulations/`](https://github.com/mszuromi/daedalus/tree/main/daedalus/simulations/) | independent numerical simulators used to validate the analytic results |
+| [`daedalus/models/`](https://github.com/mszuromi/daedalus/tree/main/daedalus/models/) | the shipped `*.model.py` specs loaded by `dd.load_model(name)` |
 
 `dd.load_model(name)` also finds your own `<name>.model.py` files in the directories listed in
 `DAEDALUS_MODELS_PATH` (separated like `PATH`) and, in a clone, in a top-level `models/` folder; a path
@@ -548,7 +548,7 @@ each part (`result['phase_j_engine']`). To use the pole engine everywhere, set
 `DAEDALUS_PHASE_J_ENGINE=poles` before the run (for example `DAEDALUS_PHASE_J_ENGINE=poles python
 script.py`); this gives the numbers of the release before the change. Phase J refuses to exhaust
 memory: `PHASE_J_MEM_BUDGET_GB` (default 6, or `off`) sets the cap, and a run over it stops with
-`PhaseJResourceError` and the numbers to raise it. See [`ARCHITECTURE.md`](ARCHITECTURE.md).
+`PhaseJResourceError` and the numbers to raise it. See [`ARCHITECTURE.md`](https://github.com/mszuromi/daedalus/blob/main/ARCHITECTURE.md).
 
 ## Prediagram cache
 
@@ -571,10 +571,10 @@ Then open one of:
 
 | notebook | purpose |
 |---|---|
-| [`notebooks/model_builder_tutorial.ipynb`](notebooks/model_builder_tutorial.ipynb) | guided tour — build a temporal model and run it |
-| [`notebooks/model_builder.ipynb`](notebooks/model_builder.ipynb) | point-and-click model builder (the `ModelUI` form) |
-| [`notebooks/model_runner.ipynb`](notebooks/model_runner.ipynb) | load and run any saved `daedalus/models/*.model.py` |
-| [`notebooks/examples/`](notebooks/examples/) | one notebook per capability, each with a simulation overlay |
+| [`notebooks/model_builder_tutorial.ipynb`](https://github.com/mszuromi/daedalus/blob/main/notebooks/model_builder_tutorial.ipynb) | guided tour — build a temporal model and run it |
+| [`notebooks/model_builder.ipynb`](https://github.com/mszuromi/daedalus/blob/main/notebooks/model_builder.ipynb) | point-and-click model builder (the `ModelUI` form) |
+| [`notebooks/model_runner.ipynb`](https://github.com/mszuromi/daedalus/blob/main/notebooks/model_runner.ipynb) | load and run any saved `daedalus/models/*.model.py` |
+| [`notebooks/examples/`](https://github.com/mszuromi/daedalus/tree/main/notebooks/examples/) | one notebook per capability, each with a simulation overlay |
 
 If a notebook reports its kernel (`sagemath-10.9`) is missing — e.g. your Sage registered a
 differently-named kernel — just pick your **SageMath** kernel from Jupyter's kernel menu.
@@ -607,7 +607,7 @@ sage -python -m pytest tests/ -q
 
 ## Changes between versions
 
-See [`CHANGELOG.md`](CHANGELOG.md). Version 0.2.0 changes the numbers of some models with
+See [`CHANGELOG.md`](https://github.com/mszuromi/daedalus/blob/main/CHANGELOG.md). Version 0.2.0 changes the numbers of some models with
 instantaneous (δ) propagator parts, and integrates every Phase J region exactly, without an
 integration box, which moves models with slow modes (for example the one-loop of
 `single_population_quad_exp_test` by up to 6 %). The pre-0.2.0 rollback switches
@@ -618,4 +618,4 @@ the change.
 
 ## Citing
 
-If you use this software, please cite it — see [`CITATION.cff`](CITATION.cff).
+If you use this software, please cite it — see [`CITATION.cff`](https://github.com/mszuromi/daedalus/blob/main/CITATION.cff).
