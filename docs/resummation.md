@@ -232,9 +232,17 @@ $g = 10$.
   equations) is a research item. It does not reuse the Phase J engine directly.
 - **k ≥ 3.** The screened series is implemented for $k = 1$ (the mean) and $k = 2$. Applied to $k = 4$, the research prototype's 0-D series
   recovered 87–99 % of $\kappa_4$ at the variance's PMS mass. Hartree alone has $\kappa_{k\ge3} = 0$.
-- **Not supported yet.** Spatial models need a mass counterterm for the UV-divergent tadpole at $d \ge 2$. Exogenous
-  input fields (a point-process input into a kernel, the Gaussian-jitter inputs) have no dynamics of their own, so the
-  closure refuses them; their white noise would enter the kernel states as a noise term (future work).
+- **Exogenous inputs are eliminated.** A point process, or a noise source exposed as a field (`as_field=`), is a
+  field without dynamics: $n = \xi$. The closure replaces it by its drive and feeds that to the equations and the
+  kernel states it enters: its rate is the mean drive (the saddle), a rate that depends on the fields is a drift (a
+  Hawkes-type feedback through a kernel is covered, to any polynomial order), and its second cumulant is white noise
+  that drives the kernel states directly (higher cumulants are dropped, as in the closure). The input is not a field of
+  the result (`result.info['kernel_states']['inputs']` names it); the model is the one written with the filter stages
+  and the jumps by hand, to rounding. A Gaussian-jittered input goes through the rational fit of the density: the
+  spectrum and the variance equal those of the exactly jittered input within the fit tolerance. Refused, with the
+  reason: an input that enters a nonlinear term of another equation, an input whose rate holds a kernel (a non-local
+  noise cumulant), an algebraic field that depends on another algebraic field, or on a time derivative.
+- **Not supported yet.** Spatial models need a mass counterterm for the UV-divergent tadpole at $d \ge 2$.
 - **Mean shift.** The screened series keeps the expansion point at the mean-field saddle. Hartree's own mean shift
   enters only through the loop tadpoles, so for an asymmetric model order 1 at $\kappa = 1$ is not exactly Hartree
   (it agrees to the next order in the couplings, `test_order_one_at_the_hartree_mass_is_the_hartree_mean`).

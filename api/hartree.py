@@ -774,6 +774,53 @@ def _kernel_pencil(klin, n, images, num):
     return K1, K0, blocks
 
 
+def _input_fields(K1, K0, blocks, n, g_nl, Qg, xs, num, SR):
+    """The exogenous input fields of a linear pencil: the fields without a
+    time derivative whose equation is ``K0[a, a] x_a = noise`` and which
+    enter the others only linearly (a point process or a noise source
+    exposed as a field).  Raises :class:`HartreeUnsupported` for an
+    algebraic field that is not one, with the reason."""
+    rows = [a for a in range(n) if not np.any(K1[a, :])]
+    rowset = set(rows)
+    row_names = {str(xs[a]) for a in rows}
+    kernel_rows = {b[0] for b in blocks}
+    kernel_cols = {b[1] for b in blocks}
+    inputs = []
+    for a in rows:
+        name = str(xs[a])
+        if a in kernel_rows or any(K0[a, j] != 0.0 and j in rowset
+                                   for j in range(n) if j != a):
+            raise HartreeUnsupported(
+                f'hartree: the algebraic field {name} depends on a kernel '
+                f'or on another algebraic field (a constraint, not an '
+                f'exogenous input; a rate may depend on the dynamical '
+                f'fields, not through a kernel).')
+        if K0[a, a] == 0.0:
+            raise HartreeUnsupported(
+                f'hartree: the field {name} has no dynamics and no '
+                f'constraint (singular pencil).')
+        if np.any(K1[:, a]):
+            raise HartreeUnsupported(
+                f'hartree: the exogenous input {name} enters through a time '
+                f'derivative (white noise differentiated).')
+        # a field-dependent rate (the input's own drift) is allowed; the
+        # input itself in another equation's nonlinear terms, in the noise,
+        # or an input in an input's rate, is not
+        used = ({str(v) for i, g in enumerate(g_nl) if i not in rowset
+                 for v in SR(g).variables()}
+                | {str(v) for row in Qg for q in row
+                   for v in SR(q).variables()}
+                | {str(v) for i in rowset for v in SR(g_nl[i]).variables()
+                   if str(v) in row_names})
+        if name in used:
+            raise HartreeUnsupported(
+                f'hartree: the input field {name} enters a nonlinear term, a '
+                f'state-dependent noise or another input\'s rate, so it '
+                f'cannot be replaced by its white noise.')
+        inputs.append(a)
+    return inputs
+
+
 def action_system(model, parameters=None, *, fixed_point_index=0,
                   taylor_order=None, mf_dae_n_starts=64, mf_dae_seed_box=None):
     """The drift and noise of a temporal model about its mean-field saddle
@@ -820,7 +867,8 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
     Qg = [[SR(0)] * n for _ in range(n)]
     images = _kernel_images(model, ft._ns)
     knames = {str(k) for k in images}
-    klin = {}
+    klin = {}                  # the linear monomials, with Dt and the kernels
+    g_nl = [SR(0)] * n         # the drift without them
     degree = 1
     for (ntil, nphys), poly in ft._by_tp.items():
         if poly == 0 or ntil >= 3 or ntil == 0:
@@ -833,12 +881,15 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
                 mono = mono * x ** e
             if ntil == 1:
                 a = list(ex_r).index(1)
+                if sum(ex_p) == 1:
+                    b = list(ex_p).index(1)
+                    klin[(a, b)] = klin.get((a, b), SR(0)) + c
+                    if knames:
+                        continue
+                else:
+                    g_nl[a] = g_nl[a] - c * mono
                 if knames:
                     uses_k = bool(knames & {str(v) for v in c.variables()})
-                    if sum(ex_p) == 1:
-                        b = list(ex_p).index(1)
-                        klin[(a, b)] = klin.get((a, b), SR(0)) + c
-                        continue
                     if uses_k:
                         raise HartreeUnsupported(
                             'hartree: a kernel acts on a nonlinear function '
@@ -880,32 +931,87 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
                 degree = max(degree, sum(ex_p) + 1)
     n_phys = n
     aux, kernel_info = [], None
-    if klin:
+    keep, input_info = list(range(n)), None
+    layout_all = None
+    need_pencil = bool(knames)
+    if not need_pencil and klin:
+        # no kernel: the legacy pencil, unless it is singular (an exogenous
+        # input field has no Dt term: eliminated below, or refused)
+        try:
+            M0 = np.array([[float(SR(M[a][b]).subs(num)) for b in range(n)]
+                           for a in range(n)])
+            need_pencil = (abs(np.linalg.det(M0)) < 1e-300
+                           or np.linalg.cond(M0) > 1e14)
+        except TypeError:
+            need_pencil = False
+        if need_pencil:
+            g = list(g_nl)
+    if need_pencil and klin:
         K1, K0, blocks = _kernel_pencil(klin, n, images, num)
+        inputs = _input_fields(K1, K0, blocks, n, g_nl, Qg, xs, num, SR)
+        keep = [i for i in range(n) if i not in inputs]
+        nk = len(keep)
+        pos = {i: k for k, i in enumerate(keep)}
         m_aux = sum(b[2].shape[0] for b in blocks)
         zs = [SR.var(f'kernel_state_{k + 1}') for k in range(m_aux)]
         aux = [str(z) for z in zs]
-        n = n_phys + m_aux
-        xs = xs + zs
-        M = [[SR(K1[a, b]) if a < n_phys and b < n_phys else SR(0)
-              for b in range(n)] for a in range(n)]
-        g = [g[a] - sum((SR(K0[a, b]) * xs[b] for b in range(n_phys)), SR(0))
-             for a in range(n_phys)] + [SR(0)] * m_aux
-        Qg = [[Qg[a][b] if a < n_phys and b < n_phys else SR(0)
-               for b in range(n)] for a in range(n)]
-        off = n_phys
+        n_new = nk + m_aux
+        xk = [xs[i] for i in keep] + zs
+        # the noise of the new state: the fields' own, plus each input's
+        # white noise through the direct couplings (the polynomial part of
+        # the entry) and the kernel states it drives
+        T = np.zeros((n_new, n))
+        for i in keep:
+            T[pos[i], i] = 1.0
+        off = nk
+        for i_, j_, Ae, be, ce in blocks:
+            m_ = Ae.shape[0]
+            if j_ in inputs:
+                T[off:off + m_, j_] += be / K0[j_, j_]
+            off += m_
+        for a_ in inputs:
+            for i_ in keep:
+                if K0[i_, a_] != 0.0:
+                    T[pos[i_], a_] += -K0[i_, a_] / K0[a_, a_]
+        Mx = [[SR(0)] * n_new for _ in range(n_new)]
+        gx = [SR(0)] * n_new
+        # an input is its own drift (a rate that depends on the fields) plus
+        # its white noise
+        nu = {a_: (g_nl[a_] - sum((SR(K0[a_, j]) * xs[j] for j in keep
+                                   if K0[a_, j] != 0.0), SR(0)))
+                  / SR(K0[a_, a_]) for a_ in inputs}
+        for i in keep:
+            for j in keep:
+                Mx[pos[i]][pos[j]] = SR(K1[i, j])
+            gx[pos[i]] = g_nl[i] - sum(
+                (SR(K0[i, j]) * xs[j] for j in keep), SR(0)) - sum(
+                (SR(K0[i, a_]) * nu[a_] for a_ in inputs
+                 if K0[i, a_] != 0.0), SR(0))
+        off = nk
         for i_, j_, Ae, be, ce in blocks:
             m_ = Ae.shape[0]
             for k_ in range(m_):
-                M[off + k_][off + k_] = SR(1)
-                g[i_] = g[i_] - SR(ce[k_]) * zs[off - n_phys + k_]
-                g[off + k_] = (sum((SR(Ae[k_, l]) * zs[off - n_phys + l]
+                Mx[off + k_][off + k_] = SR(1)
+                gx[pos[i_]] = gx[pos[i_]] - SR(ce[k_]) * zs[off - nk + k_]
+                gx[off + k_] = sum((SR(Ae[k_, l]) * zs[off - nk + l]
                                     for l in range(m_)), SR(0))
-                               + SR(be[k_]) * xs[j_])
+                if j_ in pos:
+                    gx[off + k_] = gx[off + k_] + SR(be[k_]) * xs[j_]
+                else:
+                    gx[off + k_] = gx[off + k_] + SR(be[k_]) * nu[j_]
             off += m_
+        Qx_sr = [[sum((SR(T[p, a]) * SR(T[q, b]) * Qg[a][b]
+                       for a in range(n) for b in range(n)
+                       if T[p, a] != 0.0 and T[q, b] != 0.0), SR(0))
+                  for q in range(n_new)] for p in range(n_new)]
+        M, g, Qg, xs, n = Mx, gx, Qx_sr, xk, n_new
+        n_phys = nk
+        layout_all = keep
         kernel_info = {'kernels': sorted(knames), 'states': m_aux,
                        'entries': [(i_, j_, Ae.shape[0])
                                    for i_, j_, Ae, _be, _ce in blocks]}
+        if inputs:
+            input_info = {'fields': [phys[i] for i in inputs]}
     try:
         Mn = np.array([[float(SR(M[a][b]).subs(num)) for b in range(n)]
                        for a in range(n)])
@@ -916,8 +1022,7 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
     if abs(np.linalg.det(Mn)) < 1e-300 or np.linalg.cond(Mn) > 1e14:
         raise HartreeUnsupported(
             'hartree: singular Dt pencil (algebraic constraints are not '
-            'supported; an exogenous input field, such as a point-process '
-            'input that drives a kernel, has no dynamics of its own).')
+            'supported).')
     Minv = np.linalg.inv(Mn)
     gp = [_to_poly(SR(gi).subs(num), xs, 'drift') for gi in g]
     Qp = [[_to_poly(SR(Qg[a][b]).subs(num), xs, 'noise') for b in range(n)]
@@ -928,6 +1033,8 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
                      for d in range(n)], n) for b in range(n)]
           for a in range(n)]
     layout = _phys_layout(model, ft._ns)
+    if layout_all is not None:
+        layout = [layout[i] for i in layout_all]
     saddle = _saddle_vector(layout, mf.get('saddle_values'))
     others = []
     for r in mf.get('mf_all_roots') or []:
@@ -941,7 +1048,9 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
         naturals=[r[4] for r in layout], response=resp, f=f, Q=Qx, M=Mn,
         saddle=saddle, other_saddles=others,
         degree=int(degree), polynomial=exact, taylor_order=order, mf=mf,
-        num_params=num, aux=aux, kernel_info=kernel_info)
+        num_params=num, aux=aux,
+        kernel_info=(kernel_info if input_info is None else dict(
+            kernel_info or {}, inputs=input_info['fields'])))
 
 
 def _combine(terms, n):
