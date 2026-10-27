@@ -434,14 +434,24 @@ def _run_cov(model_ct, values, s, cov, max_ell, params, tau, run_kw,
 
 # ── the screened series ────────────────────────────────────────────────────
 
+def _trial_matrices(h):
+    """``(A_H - J0, Q_H - Q0, J0, Q0)`` on the closure's whole state: the
+    fields and, for a model with kernels, the kernel states (whose rows do
+    not change along the trial line)."""
+    if h.full is not None:
+        f = h.full
+        return f['A'] - f['J0'], f['Q'] - f['Q0'], f['J0'], f['Q0']
+    return h.A - h.J0, h.Q - h.Q0, h.J0, h.Q0
+
+
 def _stable_range(h, lo, hi):
     """The largest sub-interval of ``[lo, hi]`` around ``s = 1`` where the
     trial drift is stable and the trial noise positive semi-definite."""
-    D, DQ = h.A - h.J0, h.Q - h.Q0
+    D, DQ, J0, Q0 = _trial_matrices(h)
 
     def ok(s):
-        A = h.J0 + s * D
-        Q = h.Q0 + s * DQ
+        A = J0 + s * D
+        Q = Q0 + s * DQ
         return (np.max(np.linalg.eigvals(A).real) < 0
                 and np.min(np.linalg.eigvalsh(0.5 * (Q + Q.T)))
                 >= -1e-12 * max(1.0, np.max(np.abs(Q))))
@@ -528,7 +538,8 @@ def screened(model, max_ell, parameters=None, *, external_fields,
                  mf_dae_n_starts=mf_dae_n_starts,
                  mf_dae_seed_box=mf_dae_seed_box)
     h = hartree_result if hartree_result is not None else hartree(
-        model, params, taylor_order=opts.get('taylor_order'), **mf_kw)
+        model, params, taylor_order=opts.get('taylor_order'),
+        delay=run_kw.get('delay'), **mf_kw)
     model_ct, values = screened_model(model, h)
     inner = dict(run_kw, verbose=verbose, preflight=False, **mf_kw)
     plain_kw = dict(run_kw, verbose=verbose, **mf_kw)
@@ -570,6 +581,7 @@ def screened(model, max_ell, parameters=None, *, external_fields,
                      'pms_curve': None, 'stationary_points': {}})
     else:
         D, DQ = h.A - h.J0, h.Q - h.Q0
+        Df, _DQf, J0f, _Q0f = _trial_matrices(h)
         rng = _stable_range(h, *opts['kappa_range'])
         if rng is None:
             raise ValueError('screened series: the Hartree trial propagator '
@@ -605,7 +617,7 @@ def screened(model, max_ell, parameters=None, *, external_fields,
         nodes = kappa + hstep * np.arange(-half, half + 1)
         if nodes[0] <= 0 or nodes[0] < klo * (1 - 1e-12) or \
                 nodes[-1] > khi * (1 + 1e-12):
-            if not all(np.max(np.linalg.eigvals(h.J0 + s * D).real) < 0
+            if not all(np.max(np.linalg.eigvals(J0f + s * Df).real) < 0
                        for s in nodes):
                 raise ValueError(
                     f'screened series: the stencil about kappa = {kappa:g} '
