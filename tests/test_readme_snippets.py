@@ -35,7 +35,8 @@ def test_readme_python_blocks_are_the_ones_tested_here():
     """A new README snippet must get a test (or be listed here)."""
     markers = ['dd.run(model, dd.Config(', "SDE('Hawkes')", "SDE('Allen-Cahn', space=1)",
                "SDE('OU quartic')", 'spectra={', 'dd.build_cache(', 'dd.master_equation(', 'dd.JumpProcess(',
-               'dd.covariance_matrix(', "SDE('Mixed noise')", 'dd.hartree(', "SDE('Jittered input')"]
+               'dd.covariance_matrix(', "SDE('Mixed noise')", 'dd.hartree(', "SDE('Delayed network')",
+               "SDE('Jittered input')"]
     blocks = _blocks()
     assert len(blocks) == len(markers), [b.splitlines()[0] for b in blocks]
     for b in blocks:
@@ -144,6 +145,19 @@ def test_readme_paper_style_example():
     ns = _exec(_block("SDE('Mixed noise')"), 'paper-style example')
     assert [(c['source'], c['rule'], c['text']) for c in ns['fix']] == [('b', 'stratonovich', '(1/2)*g^2*x[i]')]
     assert ns['text'] == 'dx = (-mu*x) dt + s dW_a + g*x ∘ dW_b'
+
+
+def test_readme_model_ergonomics_example():
+    """The one-loop mean of v^2 in a linear (delayed) network is its exact variance; the text rebuilds the model."""
+    import numpy as np
+    from api import compute_cumulants
+    from api.sde import SDE
+    from tests._sde_model_catalogue import digest
+    ns = _exec(_block("SDE('Delayed network')"), 'model ergonomics example')
+    c = compute_cumulants(ns['m'], k=2, max_ell=0, external_fields=[('v', 1), ('v', 1)], tau_grid=[0.0],
+                          verbose=False)
+    np.testing.assert_allclose(ns['power'], c['C_tau'], rtol=1e-12)
+    assert 'v[j](t - d)' in ns['text'] and digest(SDE.from_text(ns['text'])) == digest(ns['m'])
 
 
 def test_readme_gaussian_jitter_example():
