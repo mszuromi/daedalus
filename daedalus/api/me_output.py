@@ -1,11 +1,11 @@
 """
-api.me_output
-=============
+daedalus.api.me_output
+======================
 C0 output (state-space route): the smooth part of a computed cumulant as
 **matrix-exponential triples**, with the exponential-mode list derived from
 them on request.
 
-The state-space route (``engine/integration/time_domain/statespace.py``)
+The state-space route (``daedalus/engine/integration/time_domain/statespace.py``)
 evaluates every Phase J subset integral by a downset sweep.  Along a ray of
 the external times (k = 2: the lag ``τ`` on one side of 0) the order of the
 external times is fixed and only the LAST segment of the sweep moves, so
@@ -40,11 +40,11 @@ From the triple, without poles:
   ill-conditioned (the triple itself is not affected).
 
 Conventions (k = 2) are those of ``C_tau``: ``C(τ) = κ(x_1(0), x_2(τ))``;
-side ``'+'`` is τ > 0, ``'-'`` is τ < 0; a :class:`~api.cumulant.ModeTerm`
+side ``'+'`` is τ > 0, ``'-'`` is τ < 0; a :class:`~daedalus.api.cumulant.ModeTerm`
 ``(coeff, rate, power, side)`` is ``coeff · τ**power · exp(rate · τ)`` in the
 signed τ (as the ``ModeSum``).  At τ = 0 the default is the Itô left
 limit (side '-', exactly), as ``C_tau``'s τ = 0 point (exact by default;
-``τ = −api.compute._ITO_EPS`` under DAEDALUS_TAU0=nudge).
+``τ = −daedalus.api.compute._ITO_EPS`` under DAEDALUS_TAU0=nudge).
 
 Where the triple is not available the object says why (``reasons``) and
 nothing is guessed: a subset on the pole route (the state-space route
@@ -59,7 +59,7 @@ from typing import Any, NamedTuple, Optional
 
 import numpy as np
 import scipy.linalg as sl
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['MEBlock', 'SideME', 'CumulantME', 'SliceME', 'MEUnavailable',
            'MEConditioningWarning', 'MEFallbackWarning', 'RationalKernel',
@@ -98,7 +98,7 @@ _FORM_CACHE_LOCK = __import__('threading').Lock()
 def _check_dense_bytes(nbytes, what):
     """Refuse (``PhaseJResourceError``) a dense form of ``nbytes`` larger than
     the memory budget before it is allocated."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     budget, rule = FI.mem_budget('PHASE_J_MEM_BUDGET_GB')
     if budget is None or nbytes <= budget:
         return
@@ -118,7 +118,7 @@ def _form_cache_admit(owner, form):
     """Whether ``form`` (a tuple of arrays) may be cached on ``owner``: its
     bytes are charged to the cache total until ``owner`` is collected."""
     import weakref
-    from engine.integration.time_domain.final_integral import mem_budget
+    from daedalus.engine.integration.time_domain.final_integral import mem_budget
     nbytes = int(sum(getattr(a, 'nbytes', 0) for a in form))
     budget = mem_budget('PHASE_J_MEM_BUDGET_GB')[0]
     with _FORM_CACHE_LOCK:
@@ -415,7 +415,7 @@ class MEChainBlock:
         if self.n > MAX_BLOCK:
             raise MEUnavailable(f'a block of {self.n} states is beyond '
                                 f'the dense forms (MAX_BLOCK={MAX_BLOCK})')
-        from api._realization import expm_upper_triangular
+        from daedalus.api._realization import expm_upper_triangular
         ch = self.chain
         if ch is None:
             G = np.zeros((1, 1))
@@ -513,7 +513,7 @@ class MEChainBlock:
         S2, S2i, cl2, cnd2, tr2 = _seg_decomposition(s2, rtol, abs(b2) * self.u_max)
         _T1, P1i, P1 = _seg_basis(s1)
         _T2, P2i, P2 = _seg_basis(s2)
-        from api._realization import expm_upper_triangular
+        from daedalus.api._realization import expm_upper_triangular
         y0 = expm_upper_triangular(_T1, L1) @ (P1i @ ch['x0'])
         w0 = expm_upper_triangular(_T2, L2).T @ (P2.T @ ch['c'])
         v = S1i @ y0                     # e^{T1 u} y0 = S1 ⊕ e^{A_k u} v
@@ -566,7 +566,7 @@ def _decomp_put(key, hit):
     dense ``n x n`` transformations; by count alone 256 of them could be
     tens of GB).  A full cache is cleared; an entry larger
     than the whole allowance is not cached."""
-    from engine.integration.time_domain.final_integral import mem_budget
+    from daedalus.engine.integration.time_domain.final_integral import mem_budget
     _seg, S, Si, cl, _cond = hit
     nbytes = S.nbytes + Si.nbytes + sum(c[3].nbytes for c in cl)
     budget = mem_budget('PHASE_J_MEM_BUDGET_GB')[0]
@@ -705,17 +705,17 @@ def _row_start(ent, r0, basis):
     if basis == 'tri':
         if r0 == 0:
             return np.asarray(ent.bt)
-        from api._realization import expm_upper_triangular
+        from daedalus.api._realization import expm_upper_triangular
         return expm_upper_triangular(np.asarray(ent.T), r0) @ ent.bt
     if r0 == 0:
         return np.asarray(ent.b)
-    from api._realization import expm_upper_triangular
+    from daedalus.api._realization import expm_upper_triangular
     v = expm_upper_triangular(np.asarray(ent.T), r0) @ ent.bt
     return ent.from_basis(v, 0)
 
 
 def _late():
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine.integration.time_domain import statespace as SS
     return SS._late_errors()
 
 
@@ -1187,11 +1187,11 @@ def _num(x, values):
                          f'{[str(v) for v in e.variables()]}: pass values=')
 
 
-# ─── the exact delayed tree (api.delay, k = 2) ──────────────────────────────
+# ─── the exact delayed tree (daedalus.api.delay, k = 2) ──────────────────────────────
 
 class ExactDelayTreeSide:
-    """One side of the EXACT delayed tree (``api._delay_exact.ExactTree``,
-    installed by ``api.delay`` as the k = 2 tree level) with the interface of
+    """One side of the EXACT delayed tree (``daedalus.api._delay_exact.ExactTree``,
+    installed by ``daedalus.api.delay`` as the k = 2 tree level) with the interface of
     :class:`SideME` where it has one: values, Laplace transforms
     (so the pairings ``integrate_against``) and the spectrum.  It is not one
     matrix exponential (a delay system has infinitely many characteristic
@@ -1408,7 +1408,7 @@ def exact_delay_spectrum(tree, omega):
 
 
 def _exact_tree_object(result):
-    """The ``ExactTree`` behind an exact delayed tree (``api.delay``
+    """The ``ExactTree`` behind an exact delayed tree (``daedalus.api.delay``
     attaches it to the tree's callable), or ``None``."""
     f0 = (result.get('total_C_by_ell') or {}).get(0)
     return getattr(f0, 'exact_tree', None)
@@ -1471,7 +1471,7 @@ class CumulantME:
     def modes(self, ell=None, **kw):
         """``{ell: [ModeTerm(coeff, rate, power, side)]}`` in the signed τ
         (see :meth:`SideME.modes` for the options)."""
-        from api.cumulant import ModeTerm
+        from daedalus.api.cumulant import ModeTerm
         out = {}
         for e in self._ells(ell):
             if self.mode_reasons.get(e):
@@ -1589,7 +1589,7 @@ def _global_reasons(result, FI):
 
 
 def _exact_delay_tree(result):
-    """True when ``api.delay`` installed the exact delayed tree in place of
+    """True when ``daedalus.api.delay`` installed the exact delayed tree in place of
     the Pade tree (k = 2): the tree's closures are then not ``C_tau``'s."""
     dl = result.get('delay') if isinstance(result, dict) else None
     return isinstance(dl, dict) and dl.get('tree') == 'exact'
@@ -1611,7 +1611,7 @@ def from_result(result) -> CumulantME:
     :class:`MEUnavailable` for results that cannot have one at all (k != 2,
     spatial, a loaded file, moment output); per-loop-order gaps are in
     ``reasons``."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     cfg = result.get('config') or {}
     _refuse_switch_on(result)
     k = int(cfg.get('k', 0))
@@ -1663,7 +1663,7 @@ def from_result(result) -> CumulantME:
                            counts, FI)
         if exact_tree:
             # the delay driver replaced the tree by the exact delayed
-            # covariance (api.delay); the closures are the Pade copy's
+            # covariance (daedalus.api.delay); the closures are the Pade copy's
             rs.append('the k = 2 tree is the exact delayed covariance (method '
                       'of steps over the delay: not one matrix exponential; '
                       "delay={'tree': 'pade'} gives the Pade tree's triples)")
@@ -1714,7 +1714,7 @@ def _line_blocks(parts, diagram_index, line, out, rs, counts, FI, scale=1.0):
     t_anchor, t_ref)``, or ``(T0, e, t_anchor, t_ref, t_end)`` for a finite
     chamber: a subset where several segments move, or a constant row
     shrinks, is then one :class:`MEChainBlock`)."""
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine.integration.time_domain import statespace as SS
     T0, e, t_anchor, t_ref = line[:4]
     t_end = line[4] if len(line) > 4 else math.inf
     perms = parts['perms']
@@ -1833,7 +1833,7 @@ class SliceME:
         """``{(lo, hi): {ell: [ModeTerm]}}`` in the swept leg's time τ (the
         side label is the chamber ``'(lo, hi)'``), for the chambers that
         have triples."""
-        from api.cumulant import ModeTerm
+        from daedalus.api.cumulant import ModeTerm
         out = {}
         for lo, hi, a, sg, sides in self.chambers:
             if any(self.reasons[(lo, hi)].values()):
@@ -1873,7 +1873,7 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     pinned at ``-eps``, as ``dd.run`` does: ``eps`` defaults to 0 -- the exact
     tie, ``DAEDALUS_TAU0=exact`` -- or to ``_ITO_EPS`` under
     ``DAEDALUS_TAU0=nudge``)."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     cfg = result.get('config') or {}
     _refuse_switch_on(result)
     k = int(cfg.get('k', 0))
@@ -1882,7 +1882,7 @@ def slice_me(result, j=1, base=None, eps=None) -> SliceME:
     if not 1 <= j < k:
         raise ValueError(f'slice index j={j} must be in 1..{k - 1}')
     if eps is None:
-        from api.compute import _ITO_EPS, _tau0_mode
+        from daedalus.api.compute import _ITO_EPS, _tau0_mode
         eps = 0.0 if _tau0_mode() == 'exact' else _ITO_EPS
     if base is None:
         base = result.get('_kpoint_base') or [0.0] * (k - 1)

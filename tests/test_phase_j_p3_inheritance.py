@@ -44,7 +44,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.integration.time_domain.final_integral as FI  # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI  # noqa: E402
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -277,7 +277,7 @@ def spike_k2(tmp_path_factory):
     times it is given; the API's ``total_C_by_ell`` moves a k = 2 tie to
     τ = -1e-6."""
     import daedalus as dd
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     prev = os.getcwd()
     os.chdir(tmp_path_factory.mktemp('phase_j_p3_cache'))
     try:

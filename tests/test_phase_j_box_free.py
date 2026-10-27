@@ -1,6 +1,6 @@
 """M7 (F5 + F6): box-free exact Phase J on the divided-difference kernels.
 
-Kernel level (``engine/integration/time_domain/boxfree.py``), each against a
+Kernel level (``daedalus/engine/integration/time_domain/boxfree.py``), each against a
 reference that shares no code with it:
 
 * the m = 1 interval against mpmath closed forms at 40 digits;
@@ -28,7 +28,7 @@ import mpmath as mp
 import numpy as np
 import pytest
 
-from engine.integration.time_domain import boxfree as bf
+from daedalus.engine.integration.time_domain import boxfree as bf
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -406,7 +406,7 @@ def test_exp_times_has_no_intermediate_overflow():
 @pytest.fixture
 def FI():
     pytest.importorskip('sage.all')
-    import engine.integration.time_domain.final_integral as fi
+    import daedalus.engine.integration.time_domain.final_integral as fi
     return fi
 
 
@@ -979,7 +979,7 @@ def test_dbm_translation_invariant_subset_with_t_min_is_divergent(FI,
 
 
 def test_dbm_cancelled_term_on_an_open_side(FI):
-    import engine.integration.time_domain.dbm_integral as DBM
+    import daedalus.engine.integration.time_domain.dbm_integral as DBM
     rows = [((1.0, 0.0), 1.0), ((-1.0, 1.0), 0.0)]     # s0 > -1, s1 > s0
     seeds = [(1.0, 0j, (0j, 0j)), (-1.0, 0j, (0j, 0j)), (1.0, 0j, (0j, -1.0))]
     res = DBM.integrate_exp_sum(rows, 2, seeds, math.inf)
@@ -1005,7 +1005,7 @@ def test_kernel_input_validation():
 def test_dbm_default_margin_with_generator_seeds():
     """The default open-side margin is taken from the seeds also when they
     come as a generator (they are walked twice)."""
-    import engine.integration.time_domain.dbm_integral as DBM
+    import daedalus.engine.integration.time_domain.dbm_integral as DBM
     rows = [((-1.0, 1.0), 0.0), ((1.0, 0.0), 5.0), ((0.0, 1.0), 5.0)]
     lam = -0.3 + 0.1j
     seeds = [(1.0, 0j, (-lam, lam + 1e-16))]   # the translation residue

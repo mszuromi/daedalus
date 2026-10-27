@@ -1,5 +1,5 @@
 """
-api.save — NPZ + CSV serialization of compute_cumulants results.
+daedalus.api.save — NPZ + CSV serialization of compute_cumulants results.
 
 The schema is k-/ell-/model-adaptive:
 
@@ -37,7 +37,7 @@ The schema is k-/ell-/model-adaptive:
 
 * **Route and assumptions** (D2, written when ``compute_cumulants`` recorded
   them, i.e. with the model analyzer on): ``route`` (the integrator backend
-  that computed the numbers, ``api.routing``), ``assumptions`` (the
+  that computed the numbers, ``daedalus.api.routing``), ``assumptions`` (the
   analyzer's assumptions ledger: every consent, convention, assertion and
   approximation the numbers depend on) and ``analyzer_findings`` (the
   findings' codes and levels), the last two as JSON text.  Files written
@@ -117,10 +117,10 @@ _LEGACY_PHASE_J_CONVENTIONS = frozenset({'theta0_legacy_clip'})
 # Oldest package version whose saved numbers use the current convention.
 _STAMP_MIN_VERSION = (0, 2, 0)
 
-_FI_MODULE = 'engine.integration.time_domain.final_integral'
+_FI_MODULE = 'daedalus.engine.integration.time_domain.final_integral'
 
 
-from engine._warn_helpers import (                    # noqa: E402
+from daedalus.engine._warn_helpers import (                    # noqa: E402
     ensure_warning_shown as _ensure_warning_shown)
 
 
@@ -136,13 +136,13 @@ _INIT_VERSION_RE = re.compile(r"""^__version__\s*=\s*['"]([^'"]+)['"]""",
 def _daedalus_version() -> str:
     """The running package version (``api.__version__``), read at call time.
 
-    ``api/__init__`` imports this module before it defines ``__version__``,
+    ``daedalus/api/__init__`` imports this module before it defines ``__version__``,
     so the value is looked up lazily.  When the package is not imported
     (this module loaded standalone, e.g. by a numpy-only test), it is read
-    from the ``api/__init__.py`` source next to this file instead of
+    from the ``daedalus/api/__init__.py`` source next to this file instead of
     importing the Sage-heavy package.  ``'unknown'`` if neither works.
     """
-    v = getattr(sys.modules.get('api'), '__version__', None)
+    v = getattr(sys.modules.get('daedalus.api'), '__version__', None)
     if v is None:
         try:
             init_py = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -469,7 +469,7 @@ def _sanitize_output_path(path: str) -> str:
     warnings.warn(
         f'save path component looked like a stringified params dict; '
         f'slugified to avoid a junk directory: {path!r} -> {new_path!r}. '
-        f'Build output paths with api.save.params_slug(...) instead '
+        f'Build output paths with daedalus.api.save.params_slug(...) instead '
         f'of str(params).',
         stacklevel=3,
     )
@@ -510,12 +510,12 @@ def _format_value(v: Any) -> str:
 
 def _delta_table(result: dict) -> dict | None:
     """The ``delta_components`` table of a ``compute_cumulants`` result
-    (Feature B, :func:`api.cumulant.delta_table`), or ``None`` when the
+    (Feature B, :func:`daedalus.api.cumulant.delta_table`), or ``None`` when the
     result carries no Phase J records (spatial, k = 1 without records, a
     hand-made dict)."""
     if not isinstance(result, dict) or 'phase_j_by_ell' not in result:
         return None
-    from api.cumulant import delta_table
+    from daedalus.api.cumulant import delta_table
     try:
         return delta_table(result)
     except Exception as exc:                      # noqa: BLE001
@@ -544,7 +544,7 @@ def _delta_payload(tab: dict) -> dict[str, np.ndarray]:
 # ── NPZ ───────────────────────────────────────────────────────────────
 
 def _spectra_payload(sp):
-    """``spectra_*`` arrays of ``result['spectra']`` (:mod:`api.spectra`):
+    """``spectra_*`` arrays of ``result['spectra']`` (:mod:`daedalus.api.spectra`):
     ``spectra_ells``; per quantity the total (``spectra_<name>``) and the
     loop orders stacked in the order of ``spectra_ells``
     (``spectra_<name>_by_ell``: shape ``(n_ell,)`` for the numbers,
@@ -671,7 +671,7 @@ def save_npz(result: dict, path: str, extra: dict | None = None) -> str:
         dtype=int)
 
     # Feature B: the shot-noise δ components (not in C_total; see
-    # api.cumulant).  Absent for results without Phase J records.
+    # daedalus.api.cumulant).  Absent for results without Phase J records.
     tab = _delta_table(result)
     if tab is not None:
         payload.update(_delta_payload(tab))

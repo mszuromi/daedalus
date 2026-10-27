@@ -13,9 +13,9 @@ The default has EQUAL diffusion (Da = Db = 0.8) so the spectral-
 assignment tree + loop driver applies directly.  Set Da ≠ Db (and a
 Dyson order via the notebook's ``Config.dyson_order``) to exercise the
 unequal-diffusion Dyson dressing.  The matched simulator is
-``simulations/coupled_rd_1d_sim.simulate_coupled_rd_1d``.
+``daedalus/simulations/coupled_rd_1d_sim.simulate_coupled_rd_1d``.
 """
-from api.model import SpatialModelBuilder
+from daedalus.api.model import SpatialModelBuilder
 
 
 def build():

@@ -1,4 +1,4 @@
-"""Model analyzer (api/analyze.py): golden traits of every tracked model (A), a gallery of unsupported models
+"""Model analyzer (daedalus/api/analyze.py): golden traits of every tracked model (A), a gallery of unsupported models
 that must each produce their specific finding without an exception escaping (B), and non-interference: under 10 s
 per model and the model dict left unchanged (C).
 
@@ -16,14 +16,14 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR, sin                                                  # noqa: E402
 
-from api import _expand_cache                                                 # noqa: E402
-from api.analyze import FINDING_CODES, Finding, ModelReport, Policy, analyze  # noqa: E402
-from api.model import TemporalModelBuilder                                    # noqa: E402
-from api.noise import CompoundPoisson, Dirac, Gaussian                        # noqa: E402
-from api.sde import SDE                                                       # noqa: E402
+from daedalus.api import _expand_cache                                                 # noqa: E402
+from daedalus.api.analyze import FINDING_CODES, Finding, ModelReport, Policy, analyze  # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                                    # noqa: E402
+from daedalus.api.noise import CompoundPoisson, Dirac, Gaussian                        # noqa: E402
+from daedalus.api.sde import SDE                                                       # noqa: E402
 from tests._cputime import CpuClock  # noqa: E402
 
-MODELS = Path(__file__).resolve().parent.parent / 'models'
+MODELS = Path(__file__).resolve().parent.parent / 'daedalus' / 'models'
 BUDGET_S = 10.0            # CPU seconds (tests._cputime.CpuClock), not wall seconds
 HEAVY = {'dendritic_quad_soma_sigmoid', 'multipopulation_test'}   # cold expand >= budget
 
@@ -110,7 +110,7 @@ GOLDEN = {
     'single_population_spike_reset_test': (4, False, _W, False, 'rational', 2, True, 'poles', True, 1, True,
                                            _HAWKES),
     'quadratic_hawkes_alpha':  (4, False, _W, False, 'rational', 8, True, 'poles', True, 2, True, _HAWKES),
-    # two pole clusters (kappa ~ 1e2): G3_CLOSE_POLES is info since they are resolved (api._pole_clusters)
+    # two pole clusters (kappa ~ 1e2): G3_CLOSE_POLES is info since they are resolved (daedalus.api._pole_clusters)
     'multipopulation_test':    (8, False, _W, False, 'rational', 16, True, 'poles', True, 1, True, _HAWKES),
     'dendritic_quad_soma_sigmoid': (8, False, _W, False, 'rational', 4, True, 'poles', True, 1, True, _HAWKES),
     # spatial: G3 skipped; stability is the k = 0 (homogeneous) linearization
@@ -326,7 +326,7 @@ GALLERY = {
     'unstable saddle':       (_unstable, 'G2_UNSTABLE_SADDLE', 'unstable'),
     'explicit time':         (_time_dependent, 'G2_TIME_DEPENDENT', 'sin(t)'),
     'colored noise_structure': (_colored_noise_structure, 'G2_NOISE_STRUCTURE', "'colored'"),
-    # a delay is recognised (api.delay: Pade loops, exact tree), not refused
+    # a delay is recognised (daedalus.api.delay: Pade loops, exact tree), not refused
     'delay kernel':          (_delay_kernel, 'G3_DELAY_KERNEL', "d in ['d']"),
     'sqrt kernel':           (_sqrt_kernel, 'G3_NONRATIONAL_KERNEL', 'sqrt'),
     'missing external field': (_missing_external, 'G0_EXTERNAL_FIELD', "('y', 1) not in phys_idx"),
@@ -464,9 +464,9 @@ def test_delay_approximation_finding_levels():
     """G3_DELAY_APPROXIMATED: info when the target is met, a warning when not
     (strict: an error, recorded)."""
     import numpy as np
-    from api.sde import SDE
-    from api.noise import Gaussian
-    from api import compute_cumulants
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api import compute_cumulants
     m = (SDE('Gallery delay approximated').parameter('a', default=1.0).parameter('c', default=-2.0)
          .parameter('d', default=0.5, domain='positive').parameter('eps', default=0.02)
          .parameter('D', default=0.1).field('x').drift('x', '-a*x + c*x(t - d) - eps*x^3')

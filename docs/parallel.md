@@ -19,7 +19,7 @@ on your platform. **The numbers do not depend on it:** every parallel path retur
 - **Threads** take only the diagrams whose largest stationary-state block has at least 256 entries
   (`pipeline.THREAD_BLOCK_MIN`). Their Kronecker / BLAS work releases the GIL: 2.7–3.0x at 4 threads, measured. Small
   diagrams are dispatch-bound and run on the main thread meanwhile. Default: up to 8 threads.
-- **Spawned workers** (`engine.spawn_pool`) are fresh Python interpreters started with `subprocess`. They never
+- **Spawned workers** (`daedalus.engine.spawn_pool`) are fresh Python interpreters started with `subprocess`. They never
   import Sage: start-up is about 0.4 s and 40 MB each. They receive each diagram's numeric state, already built by
   the parent (`statespace.diagram_payload`).
   - A diagram that cannot leave the parent stays there: off the state-space route, with a subset hook, or under a
@@ -46,7 +46,7 @@ on your platform. **The numbers do not depend on it:** every parallel path retur
 ## Memory
 
 Every pool sizes itself from what the run's memory budget (`PHASE_J_MEM_BUDGET_GB`) has left after the run's growth
-so far (`engine.worker_budget`). Workers that would not fit mean fewer workers, then serial.
+so far (`daedalus.engine.worker_budget`). Workers that would not fit mean fewer workers, then serial.
 
 A watcher polls each worker process's own footprint: macOS `phys_footprint`; Linux private pages, so pages a forked
 child still shares are not counted twice.
@@ -61,7 +61,7 @@ itself runs `!cmd`. Still, until this checklist has passed once on a machine, au
 inside a kernel. Run it yourself, with your work saved.
 
 1. *(no risk)* In a fresh kernel: `import daedalus`. Then
-   `from engine.fork_safety import in_jupyter_kernel; in_jupyter_kernel()` must return `True`.
+   `from daedalus.engine.fork_safety import in_jupyter_kernel; in_jupyter_kernel()` must return `True`.
 2. *(no risk: threads only)* Run a model with `parallel=True`, and again with `parallel=False`. Compare `C_tau`
    byte for byte (`np.asarray(a).tobytes() == np.asarray(b).tobytes()`).
 3. *(small risk: the first spawned workers from a kernel on this machine)*

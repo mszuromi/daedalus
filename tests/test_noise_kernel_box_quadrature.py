@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import mpmath as mp                                     # noqa: E402
 
-import engine.integration.time_domain.final_integral as FI   # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI   # noqa: E402
 
 KERNELS = {
     'pow4': ('1/(1+tau^4)', lambda t: 1 / (1 + t ** 4)),
@@ -50,7 +50,7 @@ KERNELS = {
 
 
 def _model(expr, mu, name):
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (TemporalModelBuilder(name, n_populations=0)
             .physical_field('x', indexed=True, description='variable')
             .parameter('mu', default=mu, domain='positive')
@@ -73,7 +73,7 @@ def _exact(kf, mu, taus):
 
 
 def _run(m, taus):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         return compute_cumulants(m, k=2, max_ell=0,
@@ -135,7 +135,7 @@ def test_quadrature_budget_refuses_by_name(monkeypatch):
     """A region past NQUAD_EVAL_BUDGET raises PhaseJQuadratureBudgetError
     (here with a tiny budget; the default refuses the one-loop colored-noise
     OU after ~3 minutes instead of running for hours)."""
-    from engine.errors import DaedalusError
+    from daedalus.engine.errors import DaedalusError
     monkeypatch.setattr(FI, 'NQUAD_EVAL_BUDGET', 1000)
     with pytest.raises(FI.PhaseJQuadratureBudgetError) as ei:
         _run(_model('1/(1+tau^4)', 1.0, 'kernel box budget'), [0.0, 0.7])

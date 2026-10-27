@@ -1,4 +1,4 @@
-"""api.jump_process -- reaction / transition builder for jump processes (``dd.JumpProcess``).
+"""daedalus.api.jump_process -- reaction / transition builder for jump processes (``dd.JumpProcess``).
 
 A chemical-kinetics or shot-noise model is a list of *transitions*: at state ``x`` the
 density jumps ``x -> x + jump / Omega`` at rate ``r(x)`` (``Omega`` the system size, the
@@ -17,11 +17,11 @@ already exist, with no new physics::
     jp.compare(ks=(1, 2), max_ell=1)                      # loops vs the exact master equation
 
 * **Building** (``sde()``, ``build()``): the SDE-front-end model whose noise is one
-  state-dependent :class:`api.noise.Poisson` source of rate ``r(x)`` and size ``1/Omega`` per
+  state-dependent :class:`daedalus.api.noise.Poisson` source of rate ``r(x)`` and size ``1/Omega`` per
   transition, coupled to every species with the jump vector as coefficients, and zero drift.
   The text of the action is exactly that of the hand-written model.
 * **Validation** (``to_master_equation()``, ``compare()``): the same transitions on the
-  lattice ``x = n / Omega`` as an exact :class:`api.master_equation.MasterEquation`.
+  lattice ``x = n / Omega`` as an exact :class:`daedalus.api.master_equation.MasterEquation`.
 
 Conventions
 -----------
@@ -53,7 +53,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['JumpProcess', 'JumpProcessError']
 
@@ -373,8 +373,8 @@ class JumpProcess:
         """The SDE-front-end model: zero drift and, per transition, one state-dependent
         ``Poisson(rate=r(x), size=1/Omega)`` source coupled to the species with the jump
         components as coefficients."""
-        from api.sde import SDE
-        from api.noise import Poisson
+        from daedalus.api.sde import SDE
+        from daedalus.api.noise import Poisson
         self._require_declared()
         s = SDE(self.name)
         for n, p in self._params.items():
@@ -423,11 +423,11 @@ class JumpProcess:
         return {k: float(v) for k, v in vals.items()}
 
     def to_master_equation(self, params=None, *, box='auto', **kwargs):
-        """The same transitions as an exact :class:`api.master_equation.MasterEquation` on the
+        """The same transitions as an exact :class:`daedalus.api.master_equation.MasterEquation` on the
         lattice ``x = n / Omega`` (``h = 1/Omega``).  ``params`` overrides parameter values
         (including the system size); ``box`` is ``'auto'`` (linear-noise box, lower bound 0) or
         index ranges; further keywords go to ``master_equation``."""
-        from api.master_equation import master_equation, Transition
+        from daedalus.api.master_equation import master_equation, Transition
         self._require_declared()
         vals = self._values(params)
         Om = vals[self._omega]
@@ -440,7 +440,7 @@ class JumpProcess:
     def compare(self, params=None, *, box='auto', ks=(1, 2), max_ell=1, config=None,
                 verbose=False, me_options=None):
         """Loop-order cumulants of ``compute_cumulants`` against the exact master equation,
-        as a :class:`api.master_equation.ComparisonResult` (``.rows``, ``.table()``,
+        as a :class:`daedalus.api.master_equation.ComparisonResult` (``.rows``, ``.table()``,
         ``.notes``).  The expansion is asymptotic in ``1/Omega``: it should converge to the
         exact values as ``Omega`` grows, not match at a fixed small ``Omega``."""
         me = self.to_master_equation(params, box=box, **(me_options or {}))

@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.causal_chambers
-==========================================
+daedalus.engine.integration.spatial.causal_chambers
+===================================================
 Backend C — **C2-full core**: the causal ordering chambers of a loop diagram's
 internal-vertex time integral, with **smooth per-chamber quadrature**.
 
@@ -33,7 +33,7 @@ from __future__ import annotations
 import numpy as np
 from scipy import integrate
 
-from engine.integration.time_domain.final_integral import (
+from daedalus.engine.integration.time_domain.final_integral import (
     _CausalPoset, _enumerate_linear_extensions,
 )
 

@@ -426,7 +426,7 @@ def count_rhp_roots(chi, *, budget=_MAX_PTS, d_max=0.0):
 def _split_delay(e, omega):
     """``(K0, K1, X)`` with ``e = K0 + K1 exp(-I omega X)`` (one delay), or None."""
     from sage.all import SR
-    from api.delay import delay_factors, _exp_delay
+    from daedalus.api.delay import delay_factors, _exp_delay
     ds = delay_factors(e, omega)
     if len(ds) != 1:
         return None
@@ -453,7 +453,7 @@ def _split_delay(e, omega):
 def _acausal_images(K_ft, omega, num_params):
     """Right-half-plane poles (in s) of the entries' denominators."""
     from sage.all import SR
-    from api.delay import _exp_delay
+    from daedalus.api.delay import _exp_delay
     bad = []
     for e in K_ft.list():
         e = SR(e)
@@ -486,7 +486,7 @@ def _acausal_images(K_ft, omega, num_params):
 def kernel_stability(K_ft, omega, num_params) -> KernelStability:
     """G2-K: stability of the saddle with the true kernel images."""
     from sage.all import SR
-    from api.delay import delay_factors
+    from daedalus.api.delay import delay_factors
     t0 = time.perf_counter()
     delays = []
     for e in K_ft.list():

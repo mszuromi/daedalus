@@ -1,7 +1,7 @@
 """
 Mean-field front door: parameter completion, the kernel values at the
 saddle, and :func:`solve_mean_field`, which hands every model to the one
-multi-root solver in :mod:`api._mean_field_dae` (the
+multi-root solver in :mod:`daedalus.api._mean_field_dae` (the
 former flat-population branch read the names ``nstar``/``vstar``/``E``/``g``
 and the single-root iteration started from four fixed unit-scale guesses).
 """
@@ -15,7 +15,7 @@ def _kernel_saddle_subs(ns, model, kernel_syms, exprs):
     ``ĝ(0)`` (read off ``kernel_ft_image`` at omega = 0) when the symbol
     occurs in ``exprs``, else (and for a kernel without an image, or with
     integral 1) the exact ``SR(1)`` of the normalised rule."""
-    from engine.core.field_theory import kernel_dc_gains_of
+    from daedalus.engine.core.field_theory import kernel_dc_gains_of
     present = set()
     for e in exprs:
         try:
@@ -64,7 +64,7 @@ def solve_mean_field(ft, model, fundamental, verbose=True, *,
                      fixed_point_index=0, n_starts=64, seed_box=None):
     """Solve the model's mean-field equations (``.equation`` rows or
     ``.set_mf_equation`` saddle equations) and return the solver dict of
-    :func:`api._mean_field_dae.solve_mean_field_dae_compat`: ``num_params``
+    :func:`daedalus.api._mean_field_dae.solve_mean_field_dae_compat`: ``num_params``
     (every parameter and saddle SR symbol on ``ft._ns`` -> value, ready for
     the propagator and Phase J), ``saddle_values`` / ``mf_values`` (``{saddle
     name: [values]}``), ``param_subs`` and the root census.  Multiple roots
@@ -76,7 +76,7 @@ def solve_mean_field(ft, model, fundamental, verbose=True, *,
             'with ModelBuilder (which declares one for every model: the '
             'scalar population, the n_populations=N population or the '
             '.population(...) declarations).')
-    from api._mean_field_dae import solve_mean_field_dae_compat
+    from daedalus.api._mean_field_dae import solve_mean_field_dae_compat
     return solve_mean_field_dae_compat(
         ft, model, fundamental, fixed_point_index=fixed_point_index,
         n_starts=n_starts, seed_box=seed_box, verbose=verbose)

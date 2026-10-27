@@ -13,10 +13,10 @@ Two output shapes:
   for checking the array before it goes near the paper.
 """
 
-from engine.diagrams.tikz_export import (
+from daedalus.engine.diagrams.tikz_export import (
     to_tikz_feynman, edge_style_map, vertex_symbol_map,
 )
-from engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
+from daedalus.engine.diagrams.typed_diagram_layout import DX, layout_typed_diagram
 
 __all__ = ['diagrams_to_figure', 'diagrams_to_standalone',
            'legend_table', 'diagrams_to_pages', 'PREAMBLE_PACKAGES']

@@ -19,11 +19,11 @@ import numpy as np
 import pytest
 
 pytest.importorskip('sage.all')
-from api.theory import TemporalTheoryBuilder                      # noqa: E402
-import api.compute as AC                                          # noqa: E402
+from daedalus.api.theory import TemporalTheoryBuilder                      # noqa: E402
+import daedalus.api.compute as AC                                          # noqa: E402
 import tests._ito_moments as im                                   # noqa: E402
-from engine.integration.time_domain import final_integral as FI   # noqa: E402
-from engine.integration.time_domain import statespace as SS       # noqa: E402
+from daedalus.engine.integration.time_domain import final_integral as FI   # noqa: E402
+from daedalus.engine.integration.time_domain import statespace as SS       # noqa: E402
 
 
 # ── the multi-time moment oracle ─────────────────────────────────────────────
@@ -433,8 +433,8 @@ def test_threads_do_not_leak_the_bound():
 
 def test_every_stored_callable_is_the_switch_on_one():
     """Review finding: the closures kept in ``phase_j_by_ell`` used to evaluate the stationary integrals."""
-    from api import me_output
-    from api.save import save_npz
+    from daedalus.api import me_output
+    from daedalus.api.save import save_npz
     T = [[1.0, 1.0], [1.0, 2.0]]
     res = _run(_ou_cubic(), 2, 1, [X, X], OU_P, 0.0, T)
     for ell in (0, 1):
@@ -453,10 +453,10 @@ def test_every_stored_callable_is_the_switch_on_one():
         me_output.slice_me(res)
     with pytest.raises(NotImplementedError, match='C_times'):
         save_npz(res, 'never_written.npz')
-    from api.report import generate_report
+    from daedalus.api.report import generate_report
     with pytest.raises(NotImplementedError, match='C_times'):
         generate_report(_ou_cubic(), 2, output_pdf='never_written.pdf', result=res)
-    from api.symbolic_out import tree_covariance_from_result, SymbolicOutError
+    from daedalus.api.symbolic_out import tree_covariance_from_result, SymbolicOutError
     with pytest.raises(SymbolicOutError, match='switch-on'):
         tree_covariance_from_result(res, model=_ou_cubic())
 
@@ -509,8 +509,8 @@ def test_non_markov_noise_kernel_refuses_t_min():
 def test_delay_kernel_model_runs_under_t_min():
     """A delay kernel is computed with the Pade tree and loops (tests/test_delay_switch_on.py has the
     references); ``initial_covariance`` stays refused there."""
-    from api.noise import Gaussian
-    from api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE
     model = (SDE('delayed OU (switch-on)').parameter('a', default=1.0).parameter('c', default=-0.5)
              .parameter('d', default=0.5, domain='positive').parameter('D', default=0.1).field('x')
              .drift('x', '-a*x + c*x(t - d)')

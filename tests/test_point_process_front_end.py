@@ -24,10 +24,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from sage.all import SR                                             # noqa: E402
 
-from api import compute_cumulants                                   # noqa: E402
-from api.delay import Kernel                                        # noqa: E402
-from api.sde import SDE, SDEError                                   # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api.delay import Kernel                                        # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                   # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
 from test_conv_leg_operator_hawkes import (ASYM, SYM, TAU,          # noqa: E402
                                            spike_only_form, voltage_form)
 
@@ -183,7 +183,7 @@ def test_marked_size():
 # ── simulator ─────────────────────────────────────────────────────────
 
 def test_simulator_poisson_rate_and_bias_free_constant_rate():
-    from api.pp_simulate import mean_rate, cross_covariance
+    from daedalus.api.pp_simulate import mean_rate, cross_covariance
     s = SDE('pp const').parameter('a', default=2.0).point_process('n', 'a')
     rec = s.simulate(T=200, dt=0.01, n_paths=200, burn_in=1.0, bin=0.1, seed=3)
     m, se = mean_rate(rec, 'n', 0)
@@ -204,7 +204,7 @@ def _theory_1n(tau):
 def test_simulator_one_neuron_hawkes_vs_theory_fast():
     """CI-fast: rate and autocovariance of the 1-neuron spike-only Hawkes vs
     tree + one loop, within 4 standard errors (+ the O(dt) bias budget)."""
-    from api.pp_simulate import mean_rate, cross_covariance
+    from daedalus.api.pp_simulate import mean_rate, cross_covariance
     lags = np.array([4, 8, 16])
     rate, C = _theory_1n(lags * 0.25)
     rec = pp_spike_only(1).simulate(T=400, dt=0.01, n_paths=400, burn_in=40, bin=0.25, seed=11)
@@ -216,7 +216,7 @@ def test_simulator_one_neuron_hawkes_vs_theory_fast():
 
 @pytest.mark.slow
 def test_simulator_two_neuron_hawkes_cross_covariance_vs_theory():
-    from api.pp_simulate import mean_rate, cross_covariance
+    from daedalus.api.pp_simulate import mean_rate, cross_covariance
     lags = np.array([-8, -2, 2, 8])
     s = pp_spike_only(2, p=SYM, name='Exp Hawkes spike-only sym 2')
     r = _run(s.build(), 2, 1, [('n', 1), ('n', 2)], lags * 0.25)
@@ -242,7 +242,7 @@ def test_spike_only_two_neuron_bit_identical_to_builder():
 def _delay_builder():
     """Hand-written voltage form: n_i ~ PP(a exp(v_i)), tau v_i' = -(v_i - Em)
     + sum_j w_ij (g * n_j), g the alpha function delayed by d."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     b = (TemporalModelBuilder('Hawkes delayed alpha')
          .population('E', size=2).physical_field('n', population='E')
          .physical_field('v', population='E')
@@ -340,7 +340,7 @@ def test_kernel_product_with_swapped_indices():
 
 
 def test_simulator_shared_gaussian_noise_and_refusals():
-    from api.pp_simulate import PPSimulationError
+    from daedalus.api.pp_simulate import PPSimulationError
     s = (SDE('pp corr').parameter('D', default=0.5).field('x').field('y')
          .equation('x', lhs='Dt*x + x', rhs='0').equation('y', lhs='(2*Dt + 1)*y', rhs='0')
          .noise('xi', Gaussian(var='2*D'), couples={'x': 1, 'y': 1}))

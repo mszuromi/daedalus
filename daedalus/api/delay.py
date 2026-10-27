@@ -21,7 +21,7 @@ realization cannot take it as it is.  This module
   an all-pass function (``|P_n(-i x)/P_n(i x)| = 1``) with exact rational
   coefficients, whose poles lie in the left half plane for every ``n``
   (``pade_substitute``).  The approximated model is an ordinary rational
-  kernel model: the state-space realization (``api._realization``) turns each
+  kernel model: the state-space realization (``daedalus.api._realization``) turns each
   Pade denominator into one Schwarz block and balances it, and the
   state-space Phase J route integrates it (its cost grows with the number of
   realization states, not with the number of pole tuples);
@@ -37,7 +37,7 @@ realization cannot take it as it is.  This module
   order's realization is built and balanced-truncated as the run will be:
   ``_order_cost``), corrected by the proxy's own error on the step before;
 * runs every order with its per-entry realizations balanced-truncated
-  (``api._realization.truncation_scope``; option ``truncation``): the Pade
+  (``daedalus.api._realization.truncation_scope``; option ``truncation``): the Pade
   blocks' fast, weakly coupled modes are where the state-space route's
   cost goes.  The first order uses ``min(truncation_tol(), tol / 100)``
   (``1e-12`` by default); every later order ``1 %`` of the relative loop
@@ -47,7 +47,7 @@ realization cannot take it as it is.  This module
   singular values)`` keeps the truncation far below the approximation
   error being estimated, while the high orders get the speed;
 * takes the TREE (``k = 2``) from the exact covariance of the linear delayed
-  system (``api._delay_exact``: a boundary-value problem on ``[0, d]`` plus
+  system (``daedalus.api._delay_exact``: a boundary-value problem on ``[0, d]`` plus
   the method of steps, exact up to rounding) instead of its Pade
   approximation, whose error decays only like ``n^-2`` at short lags.  Loops
   keep the Pade approximation (their error decays like ``n^-3`` and they are
@@ -71,7 +71,7 @@ and is refused by name (``bare_delays_on_delta_lines``); on a continuous
 field, next to continuous legs only, or in a linear term, it runs.  The tree
 stays exact.
 
-Stability is decided with the TRUE exponential (``api._kernel_stability``,
+Stability is decided with the TRUE exponential (``daedalus.api._kernel_stability``,
 the analyzer's G2-K gate), never from the approximant: an unstable delayed
 saddle is refused by name before any approximation runs.
 
@@ -196,8 +196,8 @@ def _order_cache_key(model, ctx, opts, call, k, max_ell, exact):
         return None
     if model.get('spec_signature') is None or getattr(ctx, 'num_params', None) is None:
         return None
-    from api._propagator import model_cache_signature
-    from api._realization import truncation_tol
+    from daedalus.api._propagator import model_cache_signature
+    from daedalus.api._realization import truncation_tol
     point = sorted((str(name), repr(val)) for name, val in ctx.num_params.items())
     o = {key: val for key, val in opts.items() if key != 'order_cache'}
     return repr((model_cache_signature(model), model.get('name'), point, int(k), int(max_ell),
@@ -522,7 +522,7 @@ class Kernel:
     ``Kernel.image(text)``: any frequency image;
     ``Kernel.gaussian(sigma, tol=1e-6)``: the Gaussian jitter density
     ``exp(-t^2/(2 sigma^2))/sqrt(2 pi sigma^2)`` of an EXOGENOUS input, by a
-    rational fit of the time-shifted density (``api._gaussian_fit``; the SDE
+    rational fit of the time-shifted density (``daedalus.api._gaussian_fit``; the SDE
     front end refuses it on anything but an exogenous source).
     Products compose (convolution): ``Kernel.delay('d') * Kernel.exponential('tau')``.
     Arguments are parameter names or expressions (text)."""
@@ -567,14 +567,14 @@ class Kernel:
         feeds back into.  The density is acausal; it is shifted by
         ``T = shift*sigma`` (``Phi(-T/sigma) <= tol/10``) and replaced by a
         rational fit of the shifted density with L1 error ``<= tol``
-        (``api._gaussian_fit``: Laguerre expansion, balanced truncation,
+        (``daedalus.api._gaussian_fit``: Laguerre expansion, balanced truncation,
         least-squares numerators; 16 states at ``tol = 1e-6``).  The shift
         is dropped: shifting a stationary exogenous input in time changes no
         stationary statistic of the network.  ``sigma`` is a parameter name or
         an expression of unindexed parameters; ``tol`` in ``[1e-9, 1e-2]``.
         ``.jitter['fit']`` holds the fit and its errors (``bound(k)``: the
         relative error bound of a k-th order statistic)."""
-        from api._gaussian_fit import gaussian_fit, TOL_RANGE
+        from daedalus.api._gaussian_fit import gaussian_fit, TOL_RANGE
         tol = float(tol)
         if not TOL_RANGE[0] <= tol <= TOL_RANGE[1]:
             raise ValueError(f'Kernel.gaussian: tol={tol:g} outside [{TOL_RANGE[0]:g}, '
@@ -620,7 +620,7 @@ def wrap_hook_with_delays(hook, delayed: dict, param_names=()):
 
     def hook_d(ns, omega, _hook=hook, _delayed=dict(delayed),
                _pnames=list(param_names)):
-        from api.model_compiler import (_builtin_namespace, _ns_var_namespace,
+        from daedalus.api.model_compiler import (_builtin_namespace, _ns_var_namespace,
                                         _safe_eval)
         out = dict(_hook(ns, omega) or {}) if _hook is not None else {}
         env = {**_builtin_namespace(), **_ns_var_namespace(ns, [], _pnames, [])}
@@ -654,7 +654,7 @@ def resolve_options(opts) -> dict:
             raise TypeError(f'delay options: unknown key(s) {unknown}; known: '
                             f'{sorted(DEFAULTS)}')
         o.update(opts)
-    from engine import _env
+    from daedalus.engine import _env
     if not _env.flag('DAEDALUS_DELAY_EXACT_TREE', True):
         o['tree'] = 'pade'
     if o['tree'] not in ('exact', 'pade'):
@@ -683,9 +683,9 @@ def resolve_options(opts) -> dict:
 def _truncation_tol(opts) -> float:
     """The relative H-infinity tolerance of the per-entry balanced truncation
     of the first Pade order (and the floor of the later ones): ``'auto'`` =
-    the tolerance in effect (environment / default, ``api._realization.
+    the tolerance in effect (environment / default, ``daedalus.api._realization.
     truncation_tol``) capped at ``tol / 100``; ``0`` when that is exact."""
-    from api._realization import truncation_tol
+    from daedalus.api._realization import truncation_tol
     if opts['truncation'] == 'auto':
         t = truncation_tol()
         return min(t, 0.01 * opts['tol']) if t > 0 else 0.0
@@ -720,7 +720,7 @@ def _order_cost(ctx, m, cache, tol):
     out = None
     try:
         from sage.all import SR
-        from api._realization import realize_K
+        from daedalus.api._realization import realize_K
         if ctx is not None and ctx.K_ft is not None and ctx.num_params is not None:
             om = ctx.omega
             Km = ctx.K_ft.apply_map(lambda e: pade_substitute(SR(e), om, m))
@@ -835,7 +835,7 @@ def _with_sample_points(sub_call, k, t_scale):
         return sub_call
     pts = sub_call.get('points')
     if pts is None:
-        from api._grids import resolve_grid
+        from daedalus.api._grids import resolve_grid
         tg = resolve_grid(sub_call.get('tau_grid'), 'tau_grid')
         if tg is None:
             return sub_call
@@ -907,14 +907,14 @@ def _reemit(recorded):
     distinct one once, the package's own (``api.*`` / ``engine.*``) also where
     the environment ignores warnings (the filters the pipeline set with
     ``_ensure_warning_shown`` were rolled back with the context)."""
-    from api.save import _ensure_warning_shown
+    from daedalus.api.save import _ensure_warning_shown
     seen = set()
     for w in recorded:
         key = (w.category, str(w.message), w.filename, w.lineno)
         if key in seen:
             continue
         seen.add(key)
-        if str(getattr(w.category, '__module__', '')).split('.')[0] in ('api', 'engine'):
+        if str(getattr(w.category, '__module__', '')).split('.')[:2] in (['daedalus', 'api'], ['daedalus', 'engine']):
             _ensure_warning_shown(w.category, 'always', message=w.message,
                                   module=_warn_explicit_module(w.filename))
         warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
@@ -972,7 +972,7 @@ def bare_delays_on_delta_lines(ctx, bare, orders=(1, 2), ns=None):
     ``delta(t - d)`` counts too).  Raises when it cannot decide (the caller
     then falls back to the per-model test)."""
     from sage.all import SR
-    from api import analyze as _an
+    from daedalus.api import analyze as _an
     raw = None
     for ns_ in (ns, ctx.ns, ctx.pipeline_ns):
         raw = getattr(ns_, '_kernel_attachments', None) if ns_ is not None else None
@@ -1020,9 +1020,9 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     """Run ``compute_cumulants`` for a model with delay kernels (``delays``:
     ``kernel_delays``); ``call``: the arguments of the original call; ``ns``:
     the expanded theory's namespace (``bare_delay_kernels``)."""
-    from api.compute import compute_cumulants
-    from api import analyze as _an
-    from api import _delay_exact as _dx
+    from daedalus.api.compute import compute_cumulants
+    from daedalus.api import analyze as _an
+    from daedalus.api import _delay_exact as _dx
     opts = resolve_options(call.get('delay'))
     k = int(call['k'])
     max_ell = int(call.get('max_ell') or 0)
@@ -1037,7 +1037,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     #    inputs of the exact tree; refuses an unstable saddle by name
     pf_on = call.get('preflight')
     if pf_on is None:
-        from api.compute import _preflight_default
+        from daedalus.api.compute import _preflight_default
         pf_on = _preflight_default()
     fundamental = call.get('parameters') if call.get('parameters') is not None \
         else call.get('fundamental')
@@ -1052,7 +1052,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         raise _an.AnalyzerError(_an._format_stop(report_true.errors, 'delay'),
                                 report_true, report_true.errors, 'delay')
     if report_true.errors:                  # preflight=False: still never silent
-        from api.save import _ensure_warning_shown
+        from daedalus.api.save import _ensure_warning_shown
         _msg = ('delay: preflight=False, but the analyzer of the delayed model found '
                 + '; '.join(f'[{f.code}] {f.message}' for f in report_true.errors))
         _ensure_warning_shown(DelayOrderWarning, 'always', message=_msg,
@@ -1100,7 +1100,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         sub_call.pop(key, None)            # the files and the spectra: once, from the result
     incomplete = None
     # every order runs with its per-entry realizations balanced-truncated
-    # (api._realization; the tolerance of each order: _next_truncation)
+    # (daedalus.api._realization; the tolerance of each order: _next_truncation)
     # a bare hard delay kernel can make the (n, n) pass incomplete (below):
     # only then are its warnings held back (a retry that completes replaces
     # them); every other model runs exactly as before
@@ -1259,9 +1259,9 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     from the order cache); returns ``(est, cap, n_used,
     incomplete, ctrl)`` (``ctrl``: the controller's record: state counts,
     predictions, cost exponent, why it stopped)."""
-    from api.compute import compute_cumulants
-    from api import analyze as _an
-    from api._realization import truncation_scope
+    from daedalus.api.compute import compute_cumulants
+    from daedalus.api import analyze as _an
+    from daedalus.api._realization import truncation_scope
     est, cap, n_used, incomplete, prev = None, None, None, None, None
     states_cache = {}
     t_base = _truncation_tol(opts)
@@ -1401,7 +1401,7 @@ def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None, r_last=N
     ``x * Conv(g, x)`` with a delayed ``g``: the operator does not see it).
     ``tols``: {order: truncation tolerance} (default: the tolerance in
     effect)."""
-    from api._realization import truncation_tol
+    from daedalus.api._realization import truncation_tol
     tols = dict(tols or {})
     tol_of = lambda m: tols.get(m, truncation_tol())         # noqa: E731
     c_n = _order_cost(ctx, n, cache, tol_of(n))
@@ -1497,10 +1497,10 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
     _record_in_report(r, report_true, info, call.get('policy'))
     if call.get('spectra') not in (None, False):
         # the spectral outputs of the final result (exact tree, Pade loops)
-        from api import spectra as _sp
+        from daedalus.api import spectra as _sp
         _sp.attach(r, _sp.resolve_spectra_options(call['spectra']))
     if call.get('output_npz') or call.get('output_csv'):
-        from api.save import save_npz, save_csv
+        from daedalus.api.save import save_npz, save_csv
         if call.get('output_npz'):
             save_npz(r, call['output_npz'])
         if call.get('output_csv'):
@@ -1512,7 +1512,7 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         msg = (f'delay: the Pade approximation of {what} reached an '
                f'estimated relative error {est if est is not None else float("nan"):.3g} '
                f'at n = {n_used} (target {opts["tol"]:g}); {cap or "n_max reached"}.')
-        from api.save import _ensure_warning_shown
+        from daedalus.api.save import _ensure_warning_shown
         _ensure_warning_shown(DelayOrderWarning, 'always', message=msg,
                               stacklevel=4)
         warnings.warn(msg, DelayOrderWarning, stacklevel=4)
@@ -1521,7 +1521,7 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
 
 def _install_exact_tree(r, exact, call):
     """Replace the tree level of ``r`` by the exact covariance (k = 2)."""
-    from api.compute import _tau0_lag
+    from daedalus.api.compute import _tau0_lag
     taus = np.asarray(r.get('tau_grid'), dtype=float)
     by = r.get('C_tau_by_ell') or {}
     pade_tree = by.get(0)
@@ -1540,7 +1540,7 @@ def _install_exact_tree(r, exact, call):
     fby = r.get('total_C_by_ell') or {}
     f0 = exact.callable()
     # the exact tree itself, for its exact pairing and spectrum
-    # (api.me_output.ExactDelayTreeSide)
+    # (daedalus.api.me_output.ExactDelayTreeSide)
     f0.exact_tree = exact
     fby[0] = f0
     r['total_C_by_ell'] = fby
@@ -1592,7 +1592,7 @@ def _fold_delay_into_g6(_an, findings, diag, info, pol):
 def _record_in_report(r, report_true, info, policy=None):
     """The delay record in ``r['analysis']``: the G2-K findings of the true
     model, ``G3_DELAY_APPROXIMATED`` and the ledger's approximation entry."""
-    from api import analyze as _an
+    from daedalus.api import analyze as _an
     rep = r.get('analysis')
     n = info['n']
     names = ', '.join(f'{kn} (d = {", ".join(ds)})' for kn, ds in info['delays'].items())

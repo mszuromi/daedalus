@@ -27,11 +27,11 @@ pytest.importorskip('sage.all')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                      # noqa: E402
-from api.analyze import AnalyzerError, Finding                         # noqa: E402
-from api._delay_exact import DelayedStateSpace, ExactTree              # noqa: E402
-from api.noise import Gaussian                                         # noqa: E402
-from api.sde import SDE                                                # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api.analyze import AnalyzerError, Finding                         # noqa: E402
+from daedalus.api._delay_exact import DelayedStateSpace, ExactTree              # noqa: E402
+from daedalus.api.noise import Gaussian                                         # noqa: E402
+from daedalus.api.sde import SDE                                                # noqa: E402
 
 
 def _ou(name, mu=1.0, D=3.0):
@@ -51,7 +51,7 @@ def _cc(model, taus, ell=0, **kw):
 # ── colored noise_structure (audit A3a-5 / B2-2) ─────────────────────────
 
 def test_colored_noise_structure_refused_and_amplitude_kept():
-    from engine.diagrams.symmetry import classify_coefficient_factors
+    from daedalus.engine.diagrams.symmetry import classify_coefficient_factors
     white = _ou('aw1 ou white')
     colored = copy.deepcopy(white)
     colored['noise_structure'] = {'temporal_type': 'colored', 'amplitude_params': []}
@@ -104,8 +104,8 @@ def test_exact_delayed_tree_is_unit_invariant(scales, coupled):
 # ── the delay approximant's error in G6 (audit 3B-13) ────────────────────
 
 def test_delay_estimate_folds_into_g6_accuracy():
-    from api import analyze as an
-    from api.delay import _fold_delay_into_g6
+    from daedalus.api import analyze as an
+    from daedalus.api.delay import _fold_delay_into_g6
     g6 = Finding(code='G6_ACCURACY', level='info', gate='G6',
                  message='accuracy estimate R = 2.03e-14: summed error estimates 3.7e-17 of 4 '
                          'closed-form subset evaluation(s)')
@@ -130,7 +130,7 @@ def test_delay_estimate_folds_into_g6_accuracy():
 # ── gentreeg exit status (audit B1) ──────────────────────────────────────
 
 def test_failing_gentreeg_raises(tmp_path, monkeypatch):
-    import engine.enumeration.loop_diagram_enumeration as L
+    import daedalus.engine.enumeration.loop_diagram_enumeration as L
     if not L._fe.available:
         pytest.skip('compiled tree stage not built')
     real = L._gentreeg_path()

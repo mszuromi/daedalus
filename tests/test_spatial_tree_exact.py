@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 pytest.importorskip('sage.all')
 
-from api.model import ModelBuilder, SpatialModelBuilder          # noqa: E402
+from daedalus.api.model import ModelBuilder, SpatialModelBuilder          # noqa: E402
 
 
 def _lin(d, mu, D, T, bc='infinite', L=None):
@@ -65,7 +65,7 @@ def _radial_ref(d, mu, D, T, r, tau):
 @pytest.mark.parametrize('d,mu,D,T', [(2, 1.3, 0.7, 0.9), (3, 0.8, 1.4, 1.1),
                                       (2, 400.0, 0.05, 1.0)])
 def test_dge2_tree_is_exact(d, mu, D, T):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     rs = np.array([0.3, 1.1])
     taus = np.array([0.0, 0.4])
     r = compute_cumulants(_lin(d, mu, D, T), k=2, max_ell=0,
@@ -74,7 +74,7 @@ def test_dge2_tree_is_exact(d, mu, D, T):
                           spatial_grid=rs, tau_grid=taus, verbose=False,
                           use_cache=False, parallel=False)
     C = np.real(np.asarray(r['C_tau_x']))
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         free_correlator_static_closed_form as cf)
     for ix, x in enumerate(rs):
         ref0 = cf(x, mu, D, T, d)
@@ -84,8 +84,8 @@ def test_dge2_tree_is_exact(d, mu, D, T):
 
 
 def test_dge2_equal_point_refuses():
-    from api import compute_cumulants
-    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from daedalus.api import compute_cumulants
+    from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
     with pytest.raises(SpatialPropagatorError, match='UV-divergent'):
         compute_cumulants(_lin(2, 1.0, 1.0, 1.0), k=2, max_ell=0,
                           fundamental={'mu': 1.0, 'D': 1.0, 'T': 1.0},
@@ -98,7 +98,7 @@ def test_dge2_equal_point_refuses():
 def test_d2_periodic_box_equals_mode_sum():
     """Image sum (production) vs a direct lattice mode sum at τ > 0 (where the
     mode sum converges as e^{−Dk²τ})."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     mu, D, T, L, tau = 0.9, 0.6, 1.0, 3.0, 0.3
     xs = np.array([0.4, 1.2])
     r = compute_cumulants(_lin(2, mu, D, T, 'periodic', L), k=2, max_ell=0,
@@ -153,7 +153,7 @@ _FUND = {'ma': _MA, 'mb': _MB, 'D': _DC, 'g': _G, 'h': _H, 'Ta': _TA, 'Tb': _TB}
 def test_coupled_tree_d2_exact():
     from scipy.integrate import quad
     from scipy.special import j0
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     xs = np.array([0.5])
     taus = np.array([-0.5, 0.0, 0.5])
     r = compute_cumulants(model=_coupled(2), k=2, max_ell=0, fundamental=_FUND,
@@ -171,7 +171,7 @@ def test_coupled_tree_d2_exact():
 def test_coupled_tree_large_ring_d1():
     """L = 400 ring: exact (image sum) vs the direct mode sum over enough
     modes; the fixed 1201-mode sum was 9 % low here."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     L, tau = 400.0, 0.2
     xs = np.array([0.0, 1.0])
     r = compute_cumulants(model=_coupled(1, 'periodic', L), k=2, max_ell=0,
@@ -189,8 +189,8 @@ def test_coupled_tree_large_ring_d1():
 
 
 def test_d1_one_loop_unequal_times_exact():
-    from api import compute_cumulants
-    from engine.integration.spatial.spatial_correlator import free_two_point
+    from daedalus.api import compute_cumulants
+    from daedalus.engine.integration.spatial.spatial_correlator import free_two_point
     mu, D, T, lam = 1.6, 0.5, 0.8, 0.03
     m = (ModelBuilder('ac_ut', n_populations=0)
          .physical_field('phi', spatial_dim=1)
@@ -227,7 +227,7 @@ def test_dyson_partial_fractions_near_degenerate(gap, n_extra):
     for a near-degenerate pair (the fixed 1e-8 clustering lost ~1e-2 at
     order 2 for gaps just above it)."""
     import mpmath as mp
-    from engine.integration.spatial.pipeline_bridge import _pf_labels
+    from daedalus.engine.integration.spatial.pipeline_bridge import _pf_labels
     masses = [1.0, 1.0 + gap] + [2.3, 3.1][:n_extra]
     w = 0.7
     labels = _pf_labels(masses, 1.0, max(masses))
@@ -244,10 +244,10 @@ def test_dyson_partial_fractions_near_degenerate(gap, n_extra):
 def test_unstable_mass_refuses():
     """Re μ ≤ 0 (no stationary state) raises in the engine primitives and on
     the coupled route (they returned finite garbage behind DAEDALUS_PREFLIGHT=0)."""
-    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         free_two_point, free_two_point_d)
-    from engine.integration.spatial.spectral_propagator import (
+    from daedalus.engine.integration.spatial.spectral_propagator import (
         build_reference, coupled_two_point)
     with pytest.raises(SpatialPropagatorError, match='Re'):
         free_two_point(-0.3, 1.0, 1.0, 0.5, 0.2)
@@ -259,7 +259,7 @@ def test_unstable_mass_refuses():
 
 
 def test_mc_backend_warns_on_derivative_vertices(monkeypatch):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     monkeypatch.setenv('SPATIAL_INTEGRATOR', 'mc')
     monkeypatch.setenv('SPATIAL_MC_N', '2000')
     m = (ModelBuilder('mb_mc', n_populations=0)

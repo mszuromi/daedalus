@@ -18,7 +18,7 @@ Templates currently provided:
                    spike_saddle='nstar', voltage_saddle='vstar')``
 
       The canonical 2-pop Hawkes-style action used by every model in
-      ``simulations/hawkes_*.py``.  Generates action, mf_bg_conditions,
+      ``daedalus/simulations/hawkes_*.py``.  Generates action, mf_bg_conditions,
       mf_equations, specializations, mf_substitutions, and the
       per-population ``phi`` function.
 

@@ -1,5 +1,5 @@
 """
-Near-degenerate and repeated poles (``api._pole_clusters``).
+Near-degenerate and repeated poles (``daedalus.api._pole_clusters``).
 
 Phase J sums pole-residue terms; residues ~ 1/gap of a close pole cluster
 cancel in those sums (about E log10(1/gap) digits lost, E cluster-carrying
@@ -33,12 +33,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import QQ, SR, matrix                                 # noqa: E402
 
-from api import compute_cumulants                                   # noqa: E402
-from api import _pole_clusters as PC                                # noqa: E402
-from api import _propagator as PR                                   # noqa: E402
-from api.model import TemporalModelBuilder                          # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api import _pole_clusters as PC                                # noqa: E402
+from daedalus.api import _propagator as PR                                   # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                          # noqa: E402
 
-MODELS = Path(__file__).resolve().parent.parent / 'models'
+MODELS = Path(__file__).resolve().parent.parent / 'daedalus' / 'models'
 TAU = np.array([0.0, 0.5, 2.0])
 TAU_REF = ['0', '0.5', '2']
 GAPS = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-10, 0.0]
@@ -170,7 +170,7 @@ def test_exact_repeated_pole_is_the_limit(colored):
                                rtol=1e-9)
     assert abs(complex(r['C_tau_by_ell'][0][0]) - 1.0) < 1e-12        # Var x = 1/mu at tauc = 1/mu
     assert abs(complex(r['C_tau_by_ell'][1][0]) + 0.09) < 1e-12       # 3 eps C0(0) dC0/dmu = -0.09
-    from engine.integration.time_domain import compute_correction_td
+    from daedalus.engine.integration.time_domain import compute_correction_td
     with pytest.raises(ValueError, match='repeated pole'):
         compute_correction_td(typed_diagrams=[r['diagrams'][0]['typed_diagram']], prefactors=[SR(1)], k=2,
                               propagator_data=r['propagator'])
@@ -263,7 +263,7 @@ def test_the_retired_switch_off_lost_the_one_loop_term():
 def test_the_retired_switch_is_ignored(monkeypatch):
     """``DAEDALUS_POLE_CLUSTERS=0`` (retired in audit W7) no longer turns the
     deformation off: the cluster is resolved and the one-loop term exact."""
-    from engine import _env
+    from daedalus.engine import _env
     monkeypatch.setenv('DAEDALUS_POLE_CLUSTERS', '0')
     _env._RETIRED_SEEN.discard('DAEDALUS_POLE_CLUSTERS')
     r = _run(_load('ou_quartic_colored'), _params(1e-4), policy=_MARKOV)
@@ -282,7 +282,7 @@ def test_strict_policy_refuses_only_unresolved_clusters(monkeypatch):
     assert r['pole_clusters']['status'] == 'resolved'
     # an unresolved cluster: the exact residue tier unavailable
     monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield', lambda *a, **kw: (None, None, None))
-    from api.analyze import AnalyzerError
+    from daedalus.api.analyze import AnalyzerError
     with pytest.raises(AnalyzerError, match='G3_POLE_CLUSTER_UNRESOLVED'):
         _run(model, _params(1e-4), policy=strict)
 
@@ -290,7 +290,7 @@ def test_strict_policy_refuses_only_unresolved_clusters(monkeypatch):
 # ── the analyzer on its own ─────────────────────────────────────────────────────────────────────
 
 def test_analyze_predicts_the_resolution():
-    from api.analyze import analyze
+    from daedalus.api.analyze import analyze
     model = _load('ou_quartic_colored')
     rep = analyze(model, question={'parameters': _params(1e-3)})
     assert rep.traits.pole_cluster_status == 'resolved' and rep.traits.pole_cluster_kappa > 100

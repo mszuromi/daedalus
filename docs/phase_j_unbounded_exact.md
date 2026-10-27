@@ -3,7 +3,7 @@
 Status: these are the only Phase J routes. The switches that selected the older boxed routes
 (`DAEDALUS_PHASE_J_DD_KERNELS`, `..._SEMIINF_CHAIN`, `..._UNBOUNDED_2D` and the umbrella
 `DAEDALUS_PHASE_J_LEGACY`) are retired: setting one warns and has no effect. The box-free routes were
-the default from 0.2.0. Code: `engine/integration/time_domain/boxfree.py` (kernels),
+the default from 0.2.0. Code: `daedalus/engine/integration/time_domain/boxfree.py` (kernels),
 `final_integral.py` (routing, certificate, divergence policy), `expdd.py` (divided differences),
 `dbm_integral.py` (the exact difference-constraint route). The public description is the 0.2.0 entry of
 `CHANGELOG.md`.

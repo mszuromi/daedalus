@@ -1,4 +1,4 @@
-"""SDE.check(), SDE.latex() and the caret parse errors of the SDE front end (api/sde.py, api/sde_latex.py).
+"""SDE.check(), SDE.latex() and the caret parse errors of the SDE front end (daedalus/api/sde.py, daedalus/api/sde_latex.py).
 
 Presentation and diagnostics only: the derived action, equations and built model are unchanged (tests/
 test_declared_operators.py keeps the byte-identical snapshot of the whole catalogue); here the reports read them.
@@ -12,9 +12,9 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-from api.noise import Gaussian, NoiseError, Poisson                           # noqa: E402
-from api.operators import Laplacian, TimeDerivative                           # noqa: E402
-from api.sde import SDE, SDEError, SDEReport                                  # noqa: E402
+from daedalus.api.noise import Gaussian, NoiseError, Poisson                           # noqa: E402
+from daedalus.api.operators import Laplacian, TimeDerivative                           # noqa: E402
+from daedalus.api.sde import SDE, SDEError, SDEReport                                  # noqa: E402
 
 from tests import _sde_model_catalogue as C                                   # noqa: E402
 
@@ -70,11 +70,11 @@ def test_check_ou_quartic(capsys):
 
 
 def test_check_runs_no_phase_j(monkeypatch):
-    import api.compute
+    import daedalus.api.compute
 
     def boom(*a, **k):
         raise AssertionError('check() must not integrate')
-    monkeypatch.setattr(api.compute, 'compute_cumulants', boom)
+    monkeypatch.setattr(daedalus.api.compute, 'compute_cumulants', boom)
     assert C.ou_quartic().check(verbose=False)['vertices'] is not None
 
 
@@ -449,7 +449,7 @@ def test_valid_models_are_not_refused_by_the_syntax_check():
     # population sums, indices, calls, powers and sage constants all read as expressions
     for ok in ('-mu*x + 2^3 - x^-1', 'sum(w[i,j]*Conv(g[i,j], n[j]) for j in E)', 'exp(-x/2)*I', '1e-3*x',
                'phi[i](v[i])', 'x(t - d)', 'Dt*x', '(tau*D_t + 1)*x'):
-        from api.noise import expression_syntax_problem
+        from daedalus.api.noise import expression_syntax_problem
         assert expression_syntax_problem(ok) is None, ok
 
 

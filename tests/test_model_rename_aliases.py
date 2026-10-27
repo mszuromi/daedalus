@@ -1,6 +1,6 @@
 """Regression: the July-2026 theory -> model rename keeps deprecated aliases.
 
-Old user code (``dd.load_theory``, ``dd.TheoryBuilder``, ``from api.theory
+Old user code (``dd.load_theory``, ``dd.TheoryBuilder``, ``from daedalus.api.theory
 import ...``) must keep working while the new Model* names are canonical.
 """
 import os
@@ -25,25 +25,25 @@ def test_list_models_alias_and_registry():
 
 
 def test_builder_aliases():
-    from api.model import ModelBuilder, TheoryBuilder
+    from daedalus.api.model import ModelBuilder, TheoryBuilder
     assert TheoryBuilder is ModelBuilder
     assert dd.TheoryBuilder is dd.ModelBuilder
 
 
 def test_api_theory_shim_module():
-    import api.theory as shim
-    from api.model import ModelBuilder
+    import daedalus.api.theory as shim
+    from daedalus.api.model import ModelBuilder
     assert shim.ModelBuilder is ModelBuilder
     assert shim.TheoryBuilder is ModelBuilder
 
 
 def test_ui_alias():
-    from api.ui import ModelUI, TheoryUI
+    from daedalus.api.ui import ModelUI, TheoryUI
     assert TheoryUI is ModelUI
 
 
 def test_model_files_layout():
     root = os.path.join(os.path.dirname(__file__), '..')
-    assert os.path.isdir(os.path.join(root, 'models'))
-    assert os.path.exists(os.path.join(root, 'models', 'ou_quartic.model.py'))
+    assert os.path.isdir(os.path.join(root, 'daedalus', 'models'))
+    assert os.path.exists(os.path.join(root, 'daedalus', 'models', 'ou_quartic.model.py'))
     assert not os.path.isdir(os.path.join(root, 'theories'))

@@ -16,8 +16,8 @@ sage_all = pytest.importorskip('sage.all')
 from sage.all import Integer, QQ, RealNumber, RR           # noqa: E402
 
 import daedalus as dd                                      # noqa: E402
-from api._grids import resolve_grid                        # noqa: E402
-from api.spectra import resolve_spectra_options            # noqa: E402
+from daedalus.api._grids import resolve_grid                        # noqa: E402
+from daedalus.api.spectra import resolve_spectra_options            # noqa: E402
 
 
 def test_tuple_range_with_sage_numbers():

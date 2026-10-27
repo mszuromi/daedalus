@@ -1,6 +1,6 @@
 """
-engine.diagrams.symmetry
-========================
+daedalus.engine.diagrams.symmetry
+=================================
 Combinatorial factor 𝒮(Γ) for fully-typed labeled diagrams, and
 deduplication of typed diagrams into unique representatives.
 
@@ -47,7 +47,7 @@ from operator import mul
 
 from sage.all import SR
 
-from engine import _env
+from daedalus.engine import _env
 
 
 # ── Combinatorial factor ────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ _env.retired('DAEDALUS_PHASE_J_LEGACY_SETUP',
 def _aut_count(name):
     """Bump a ``final_integral._RUNTIME_COUNTERS`` counter (when that module
     is loaded; observational only)."""
-    fi = _sys.modules.get('engine.integration.time_domain.final_integral')
+    fi = _sys.modules.get('daedalus.engine.integration.time_domain.final_integral')
     if fi is not None:
         c = fi._RUNTIME_COUNTERS
         c[name] = c.get(name, 0) + 1
@@ -548,7 +548,7 @@ def diagram_signature(td):
 #
 # Same equivalence as the Sage path above (colour-preserving isomorphism of
 # the typed diagram with leaves coloured by field only), computed by nauty
-# through engine.enumeration._fastnauty.nauty_cert_coloured on the diagram
+# through daedalus.engine.enumeration._fastnauty.nauty_cert_coloured on the diagram
 # itself (vertex colours + edge-copy colours) instead of on a Sage DiGraph
 # of the incidence encoding: ~10 us per diagram against ~230 us.  The
 # returned tuples are NOT byte-compatible with the Sage path's; both are
@@ -557,7 +557,7 @@ def diagram_signature(td):
 
 def _fast_signature_available():
     try:
-        from engine.enumeration import fastenum as _fe
+        from daedalus.engine.enumeration import fastenum as _fe
         return _fe.available and _fe.cert_backend == 'nauty'
     except Exception:                                    # pragma: no cover
         return False
@@ -579,7 +579,7 @@ def _vertex_colour_key(vt):
 
 
 def _diagram_signature_nauty(td):
-    from engine.enumeration import _fastnauty as _nauty
+    from daedalus.engine.enumeration import _fastnauty as _nauty
     D = td.prediagram[0]
     verts = sorted(D.vertices())
     idx = {v: i for i, v in enumerate(verts)}
@@ -719,7 +719,7 @@ def classify_coefficient_factors(typed_diagram, time_dep_params=None,
     Scal = combinatorial_factor(typed_diagram)
     # ``bool``'s zero verdict without Maxima for a coefficient with floats or
     # assumption symbols (seconds per call on a large one)
-    from engine.core.field_theory import _sr_nonzero
+    from daedalus.engine.core.field_theory import _sr_nonzero
 
     def _is_zero(c):
         return not _sr_nonzero(c)

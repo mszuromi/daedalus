@@ -1,5 +1,5 @@
 """
-Delay kernels inside nonlinear terms (``api.delay``).
+Delay kernels inside nonlinear terms (``daedalus.api.delay``).
 
 * A delayed strictly proper kernel at a vertex leg (a delayed leg operator
   inside a rate nonlinearity): the spike-only exponential Hawkes neuron with a
@@ -33,12 +33,12 @@ pytest.importorskip('sage.all')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                      # noqa: E402
-from api.delay import (DelayOrderWarning, pade_coefficients,          # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api.delay import (DelayOrderWarning, pade_coefficients,          # noqa: E402
                        pade_image, pade_mn_coefficients)
-from api.model import TemporalModelBuilder                             # noqa: E402
-from api.noise import Gaussian                                         # noqa: E402
-from api.sde import SDE                                                # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                             # noqa: E402
+from daedalus.api.noise import Gaussian                                         # noqa: E402
+from daedalus.api.sde import SDE                                                # noqa: E402
 
 EXT = [('x', 1), ('x', 1)]
 TAU = np.array([0.0, 0.5, 2.0])
@@ -116,7 +116,7 @@ def _markov_product_model(name, n):
 
 
 def _counter(name):
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     return FI._RUNTIME_COUNTERS.get(name, 0)
 
 
@@ -164,7 +164,7 @@ def test_hard_delay_in_a_product_equals_its_markov_embedding(n):
                                delay={'order': n, 'tree': 'pade'}, **kw)
         # the stable saddle x* = sqrt(3) - 1 (the search may list the
         # unstable root -1 - sqrt(3) first; the analyzer refuses that one)
-        from api.analyze import AnalyzerError
+        from daedalus.api.analyze import AnalyzerError
         rm = None
         for fpi in (0, 1):
             try:
@@ -187,7 +187,7 @@ def test_undressable_line_falls_back_on_the_strictly_proper_approximant(monkeypa
     holds only a strictly proper kernel): refused by name in Phase J, and the
     driver reruns with the [n-1/n] approximant, equal to that rational kernel
     declared without a delay (the item-47 route)."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     monkeypatch.setattr(FI, 'DRESS_CONV_KERNELS', False)
     n = 4
     kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
@@ -215,7 +215,7 @@ def test_hard_delay_in_a_product_drift_form_converges_with_an_exact_tree(monkeyp
     limit as the strictly proper [n-1/n] approximant (forced by switching
     line dressing off) at n = 8 (simulation agreement of the [n-1/n] route:
     internal (not distributed) acceptance run, within 0.6 SE)."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     m = _product_model('dnl hard product drift')
     kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=TAU, parallel=False,
               verbose=False)
@@ -360,7 +360,7 @@ def _spike_times_voltage(name, n_markov=None, n_pade=2):
     the Pade (n, n) delay as auxiliary linear fields (``n(t - d) -> c n +
     C z``, ``z' = A z + B n``; no kernel)."""
     from sage.all import SR, I
-    from api._realization import realize_kernel
+    from daedalus.api._realization import realize_kernel
     b = (TemporalModelBuilder(name).population('E', size=1)
          .physical_field('n', population='E').physical_field('v', population='E')
          .parameter('Em', default=[-1.0], indexed_by=['E'])
@@ -426,8 +426,8 @@ def test_delayed_spike_train_times_a_continuous_field_runs():
 
 
 def test_bare_delays_on_delta_lines_is_per_kernel_and_field():
-    from api import analyze as an
-    from api.delay import bare_delays_on_delta_lines, bare_delay_kernels
+    from daedalus.api import analyze as an
+    from daedalus.api.delay import bare_delays_on_delta_lines, bare_delay_kernels
     q = an.Question(k=2, max_ell=1, external_fields=(('dn', 1), ('dn', 1)))
     got = {}
     for m in (_hawkes_spike_only(p=0.3, image='1', name='dnl d10 spike'),

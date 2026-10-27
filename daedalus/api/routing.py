@@ -1,15 +1,15 @@
 """
-api.routing — the backend registry: which integrator computes a cumulant.
+daedalus.api.routing — the backend registry: which integrator computes a cumulant.
 
 Each backend declares ``applies(request) -> (bool, reasons)`` and a
 ``priority`` (lower is tried first); :func:`select` takes the first
 applicable one and returns a :class:`Route` that records the choice and
 every rejected backend with its reasons.  ``compute_cumulants`` calls
 ``route.backend.run(state)`` (``state``: the pipeline objects after the
-mean-field stage, see ``api.compute._PipelineState``), so a new backend is
+mean-field stage, see ``daedalus.api.compute._PipelineState``), so a new backend is
 one :func:`register` call and touches no existing backend::
 
-    from api.routing import Backend, Reason, register
+    from daedalus.api.routing import Backend, Reason, register
     register(Backend(
         name='my_backend', priority=5,
         applies=lambda req: ((True, ()) if req.traits.get('my_trait')
@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['Backend', 'Reason', 'RouteRequest', 'Route', 'NoBackendError',
            'NoBackendValueError', 'NoBackendNotImplementedError',
@@ -67,7 +67,7 @@ class Reason:
 class RouteRequest:
     """What a backend's ``applies`` sees: the question (declared) and the
     traits the analyzer detected so far (``traits``: a dict of
-    ``api.analyze.ModelTraits`` field values; empty when the analyzer is
+    ``daedalus.api.analyze.ModelTraits`` field values; empty when the analyzer is
     off, so every check here must also work from ``spatial``)."""
     model_name: str
     spatial: bool
@@ -310,7 +310,7 @@ def _applies_spatial(req):
 
 def _run_lazy(name):
     def run(state):
-        from api import compute as _compute
+        from daedalus.api import compute as _compute
         return getattr(_compute, name)(state)
     run.__name__ = f'run_{name}'
     return run
@@ -326,4 +326,4 @@ register(Backend(
     applies=_applies_phase_j_per_diagram,
     run=_run_lazy('_run_phase_j_per_diagram'), standard_tail=True,
     description='Phase J, one time-domain integral per typed diagram '
-                '(engine.integration.time_domain.pipeline)'))
+                '(daedalus.engine.integration.time_domain.pipeline)'))

@@ -2,7 +2,7 @@
 tests/test_covariance_matrix.py
 ===============================
 The k = 2 covariance matrix over many fields in one call, and its parameter
-derivatives (``api/covariance.py``; ``dd.covariance_matrix``,
+derivatives (``daedalus/api/covariance.py``; ``dd.covariance_matrix``,
 ``dd.Config(covariance=...)``).
 
 * every computed entry equals the per-entry ``compute_cumulants`` result on
@@ -34,11 +34,11 @@ ROOT = os.path.join(HERE, '..')
 sys.path.insert(0, ROOT)
 
 import daedalus as dd                                                # noqa: E402
-from api import compute_cumulants                                    # noqa: E402
-from api import covariance as CV                                     # noqa: E402
-from api.compute import stage_memo                                   # noqa: E402
-from api.noise import Gaussian, Poisson                              # noqa: E402
-from api.sde import SDE                                              # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api import covariance as CV                                     # noqa: E402
+from daedalus.api.compute import stage_memo                                   # noqa: E402
+from daedalus.api.noise import Gaussian, Poisson                              # noqa: E402
+from daedalus.api.sde import SDE                                              # noqa: E402
 from scipy.linalg import expm_frechet, solve_continuous_lyapunov     # noqa: E402
 from tests._cputime import CpuClock                                  # noqa: E402
 

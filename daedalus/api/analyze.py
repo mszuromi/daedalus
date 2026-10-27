@@ -1,9 +1,9 @@
 """
-api.analyze — a standalone model analyzer: traits, findings and an
+daedalus.api.analyze — a standalone model analyzer: traits, findings and an
 assumptions ledger for a model dict, without running the diagram
 enumeration or Phase J.
 
-    from api.analyze import analyze
+    from daedalus.api.analyze import analyze
     report = analyze(model)                       # defaults: k=2, ell<=1
     report = analyze(model,
                      question={'k': 2, 'max_ell': 1,
@@ -13,7 +13,7 @@ enumeration or Phase J.
     report.ok, report.codes, report.traits.n_poles, print(report.summary())
 
 ``model`` is any dict the builders emit (``TemporalModelBuilder``,
-``TemporalTheoryBuilder``, ``SpatialModelBuilder``, ``api.sde.SDE``).
+``TemporalTheoryBuilder``, ``SpatialModelBuilder``, ``daedalus.api.sde.SDE``).
 The analyzer reads it and never writes to it, and it neither reads nor
 writes the ``saved_models/`` caches.
 
@@ -64,7 +64,7 @@ approximation a result for this question would depend on.
 gates at the pipeline's stage boundaries on the pipeline's own objects
 (see the section "wired mode" below), stops with :class:`AnalyzerError` on
 any ``error`` (``Policy.downgrade`` accepts chosen ones), records the
-backend the router chose (``api.routing``; a standalone ``analyze`` report
+backend the router chose (``daedalus.api.routing``; a standalone ``analyze`` report
 says ``unrouted``) and adds the G6 run diagnostics after the run (the M8
 certificate verdicts, the error-accounting counters and a total-relative
 accuracy estimate).  ``compute_cumulants(..., preflight=False)`` or
@@ -132,7 +132,7 @@ FINDING_CODES = {
     'G2_STABILITY_UNAVAILABLE':  ('G2', 'warning'),
     'G2_ASSERTION_VIOLATED':     ('G2', 'error'),
     'G2_SKIPPED':                ('G2', 'info'),
-    # G2-K (api._kernel_stability): stability with the true kernel images
+    # G2-K (daedalus.api._kernel_stability): stability with the true kernel images
     'G2_KERNEL_STABILITY':       ('G2', 'info'),
     'G2_KERNEL_UNSTABLE':        ('G2', 'warning'),   # rational-kernel models (never refused by it)
     'G2_NEUTRAL_DELAY':          ('G2', 'error'),
@@ -140,7 +140,7 @@ FINDING_CODES = {
     'G3_UNRESOLVED_SYMBOLS':     ('G3', 'error'),
     'G3_NONRATIONAL_KERNEL':     ('G3', 'error'),
     'G3_POLES_UNAVAILABLE':      ('G3', 'warning'),
-    'G3_REPEATED_POLE':          ('G3', 'info'),      # resolved (api._pole_clusters)
+    'G3_REPEATED_POLE':          ('G3', 'info'),      # resolved (daedalus.api._pole_clusters)
     'G3_CLOSE_POLES':            ('G3', 'info'),
     'G3_POLE_CLUSTER_UNRESOLVED': ('G3', 'warning'),
     'G3_RESIDUES_HIGH_PRECISION': ('G3', 'info'),
@@ -150,7 +150,7 @@ FINDING_CODES = {
     'G3_IMPROPER':               ('G3', 'error'),
     'G3_ACAUSAL_POLE':           ('G3', 'error'),
     'G3_SKIPPED':                ('G3', 'info'),
-    # delay kernels (api.delay): exp(-i omega d) factors, approximated by Pade
+    # delay kernels (daedalus.api.delay): exp(-i omega d) factors, approximated by Pade
     'G3_DELAY_KERNEL':           ('G3', 'info'),
     'G3_DELAY_APPROXIMATED':     ('G3', 'warning'),   # info when the target is met
     # G4 noise
@@ -217,7 +217,7 @@ _G6_DEFAULT_RTOL = 1e-10
 #: heavy-tailed noise kernels against mpmath).  A declared question.accuracy
 #: replaces it.
 _G6_NQUAD_DEFAULT_RTOL = 1e-8
-#: the a posteriori realization error (api._realization.
+#: the a posteriori realization error (daedalus.api._realization.
 #: _aposteriori_error) enters the G6 estimate above this value (the
 #: realization is refused outright above 1e-2)
 _G6_REALIZATION_FLOOR = 1e-6
@@ -225,10 +225,10 @@ _G6_REALIZATION_FLOOR = 1e-6
 # Relative tolerances (decided in the D1 brief).
 _MARGINAL_RTOL = 1e-8      # |Re lambda| (or |Im omega_pole|) / scale
 # |p_i - p_j| / max(|p_i|, |p_j|): the pipeline's pole-cluster linkage
-# (api._pole_clusters.CLUSTER_RTOL; a cluster is deformed when its
+# (daedalus.api._pole_clusters.CLUSTER_RTOL; a cluster is deformed when its
 # cancellation factor exceeds KAPPA_MAX, see _g3_pole_findings)
-from api._pole_clusters import CLUSTER_RTOL as _CLOSE_POLE_RTOL  # noqa: E402
-from engine.errors import DaedalusError
+from daedalus.api._pole_clusters import CLUSTER_RTOL as _CLOSE_POLE_RTOL  # noqa: E402
+from daedalus.engine.errors import DaedalusError
 _STIFF_RATIO = 1e3         # fast/slow decay-rate ratio flagged as stiff
 _EXACT_POLE_BUDGET_SEC = 5  # SIGALRM budget for the exact CF[omega] inverse
 _SUPPORTED_DOMAINS = ('positive', 'real', 'integer', 'complex')
@@ -368,7 +368,7 @@ class ModelTraits:
     nonrational_factors: tuple = ()
     #: the delays of the kernel images (exp(-i omega d) factors), by kernel
     delays: tuple = ()
-    #: G2-K (stability with the true kernel images, ``api._kernel_stability``):
+    #: G2-K (stability with the true kernel images, ``daedalus.api._kernel_stability``):
     #: 'stable' | 'unstable' | 'marginal' | 'neutral' | 'acausal' | 'undetermined'
     kernel_stability: Optional[str] = None
     n_unstable_roots: Optional[int] = None
@@ -376,7 +376,7 @@ class ModelTraits:
     poles: tuple = ()                     # distinct roots of Q(omega)
     repeated_poles: Optional[bool] = None
     n_close_pole_pairs: Optional[int] = None
-    # near-degenerate / repeated poles (api._pole_clusters): 'harmless',
+    # near-degenerate / repeated poles (daedalus.api._pole_clusters): 'harmless',
     # 'resolved' or 'unresolved'; None without close poles
     pole_cluster_status: Optional[str] = None
     pole_cluster_kappa: Optional[float] = None   # largest cancellation factor
@@ -422,10 +422,10 @@ class ModelReport:
     findings: tuple = ()
     ledger: tuple = ()
     route: str = ('unrouted: standalone analysis (compute_cumulants '
-                  'records the route; api.routing)')
+                  'records the route; daedalus.api.routing)')
     question: Optional[Question] = None
     policy: Optional[Policy] = None
-    #: compute_cumulants only: the routing record (``api.routing.Route.
+    #: compute_cumulants only: the routing record (``daedalus.api.routing.Route.
     #: as_dict``), the stages the gates ran at, and the G6 run diagnostics
     #: (M8 certificate verdicts, error-accounting counters, accuracy estimate).
     route_detail: dict = field(default_factory=dict)
@@ -755,7 +755,7 @@ def analyze_with_context(model: dict, question=None, policy=None, *,
     """``analyze`` that also returns its internal state (``(report, ctx)``):
     ``ctx.K_ft`` / ``ctx.omega`` (the linear operator with the true kernel
     images), ``ctx.num_params`` (parameters and saddle), ``ctx.ring_names``
-    and the noise sectors.  Used by ``api.delay`` (the exact tree of a
+    and the noise sectors.  Used by ``daedalus.api.delay`` (the exact tree of a
     delayed model)."""
     t_start = time.perf_counter()
     question = _coerce(question, Question, 'question')
@@ -989,7 +989,7 @@ def _g0_declarations(ctx):
         return
     # the namespace (cheap: symbols only, no expansion)
     try:
-        from engine.core.field_theory import FieldTheory
+        from daedalus.engine.core.field_theory import FieldTheory
         with _quiet():
             ft = FieldTheory(model, taylor_order=ctx.t['taylor_order'])
             ns, R, n_tilde = ft._build_namespace()
@@ -1006,8 +1006,8 @@ def _g0_declarations(ctx):
         return
 
     if ext is not None:
-        from api.access import normalize_external_fields, resolve_external_fields
-        from engine.diagrams.type_assignment import build_field_index_map
+        from daedalus.api.access import normalize_external_fields, resolve_external_fields
+        from daedalus.engine.diagrams.type_assignment import build_field_index_map
         try:
             ext_int = normalize_external_fields(
                 resolve_external_fields(model, list(ext)),
@@ -1192,7 +1192,7 @@ def _g1_structure(ctx):
                 "routes implement white noise only and would silently drop "
                 "the noise kernel.",
                 'write colored noise as a Markov embedding (an extra '
-                'OU-driven field, as in models/ou_quartic_colored.model.py) '
+                'OU-driven field, as in daedalus/models/ou_quartic_colored.model.py) '
                 'or a kernel Conv term, and remove noise_structure')
         ctx.stop_numeric = True
 
@@ -1298,7 +1298,7 @@ def _read_expand_cache(ctx, N):
     """The pipeline's expand-cache bundle for ``N`` in dict form
     ``{(n_resp, n_phys): {exponent: coefficient}}``, or ``None``.
 
-    Runs the validity check of ``api._expand_cache.load_expand`` (the
+    Runs the validity check of ``daedalus.api._expand_cache.load_expand`` (the
     shared ``bundle_stale_reason``: ring variables, ``n_tilde``, model-text
     fingerprint, operator-IR signature) but skips its coercion back into the
     polynomial ring, which is the
@@ -1306,7 +1306,7 @@ def _read_expand_cache(ctx, N):
     only read the coefficients.  Never writes."""
     import os
     from sage.all import load as sage_load
-    from api import _expand_cache as _ec
+    from daedalus.api import _expand_cache as _ec
     model, ft = ctx.model, ctx.ft
     order = _ec.find_best_cached_order(model, N)
     if order is None:
@@ -1330,11 +1330,11 @@ def _read_expand_cache(ctx, N):
 
 def _build_k_ft(ctx):
     """K_mat from the (1,1) sector and its Fourier image K_ft(omega), as in
-    ``api._propagator.build_propagator`` up to (not including) the
+    ``daedalus.api._propagator.build_propagator`` up to (not including) the
     symbolic inverse, which is the slow part."""
     from sage.all import SR, I, matrix, dirac_delta, diff
-    from engine.core.field_theory import fourier_transform
-    from api._propagator import _to_kernel
+    from daedalus.engine.core.field_theory import fourier_transform
+    from daedalus.api._propagator import _to_kernel
     ft, model = ctx.ft, ctx.model
     ns = ft._ns
     K = _k_coeff_matrix(ctx)
@@ -1354,7 +1354,7 @@ def _build_k_ft(ctx):
             if not (c.has(dD) or c.has(dDp)):
                 # first order in Dt (checked by expand): c0*delta + c1*delta'
                 # transforms to c0 + c1*I*omega (the convention of
-                # engine.core.field_theory.fourier_transform)
+                # daedalus.engine.core.field_theory.fourier_transform)
                 K_ft[i][j] = c.subs({Dt: I * omega})
             else:
                 c = _to_kernel(c, Dt, dD, dDp)
@@ -1579,7 +1579,7 @@ def _g2_iteration_gate(ctx):
     fpi = ctx.q.fixed_point_index
     ctx.t['mf_solver'] = 'dae'
     try:
-        from api._mean_field import solve_mean_field
+        from daedalus.api._mean_field import solve_mean_field
         with _quiet():
             mf = solve_mean_field(ctx.ft, model, fund, verbose=False,
                                   fixed_point_index=(0 if fpi is None
@@ -1628,7 +1628,7 @@ def _saddle_tuple(values):
 
 
 def _g2_dae(ctx, fpi, fpi_eff):
-    from api._mean_field_dae import solve_mean_field_dae_compat
+    from daedalus.api._mean_field_dae import solve_mean_field_dae_compat
     model, fund = ctx.model, ctx.fundamental
     ctx.t['mf_solver'] = 'dae'
     m_all = dict(model)
@@ -1672,7 +1672,7 @@ def _g2_dae_records(ctx, roots, pipeline_records=None):
     eigenvalues and class.  ``pipeline_records``: the pipeline's
     ``mf_all_roots`` (wired mode); their eigenvalues are used when the
     pipeline classified the roots (``stability_analysis`` on)."""
-    from api._mean_field_dae import linear_stability
+    from daedalus.api._mean_field_dae import linear_stability
     model, fund = ctx.model, ctx.fundamental
     ctx.t['n_saddles'] = len(roots)
     recs = []
@@ -1812,7 +1812,7 @@ def _check_positivity(ctx):
     saddle = dict(ctx.t['saddle'])
     nat = ((ctx.model.get('naming_convention') or {})
            .get('mean_field_saddles') or {})
-    from api.naming import saddle_for_field
+    from daedalus.api.naming import saddle_for_field
     for nm in names:
         key = (nm if nm in saddle
                else nat.get(nm) or saddle_for_field(ctx.model, nm) or nm)
@@ -1853,7 +1853,7 @@ def _has_kernel_dynamics(K_ft, omega):
 
 def _g2_kernel(ctx):
     """G2-K: the saddle's stability from ``det K(s)`` with the true kernel
-    images (``api._kernel_stability``).  Runs for every model whose
+    images (``daedalus.api._kernel_stability``).  Runs for every model whose
     ``K(omega)`` holds a kernel (G2's linearization collapses each kernel to
     ``g_hat(0)``).  Delay models: an unstable / marginal / neutral saddle is an
     error (``G2_UNSTABLE_SADDLE`` / ``G2_MARGINAL_MODE`` / ``G2_NEUTRAL_DELAY``).
@@ -1866,12 +1866,12 @@ def _g2_kernel(ctx):
     if ctx.t.get('propagator_class') not in ('rational', 'delay'):
         return
     if ctx.model.get('_delay_pade'):
-        # a Pade copy (api.delay): the true model's G2-K decided already, and
+        # a Pade copy (daedalus.api.delay): the true model's G2-K decided already, and
         # the copy's poles are checked by G3
         return
     if not _has_kernel_dynamics(ctx.K_ft, ctx.omega):
         return
-    from api._kernel_stability import kernel_stability
+    from daedalus.api._kernel_stability import kernel_stability
     try:
         ks = kernel_stability(ctx.K_ft, ctx.omega, ctx.num_params)
     except Exception as exc:
@@ -1991,9 +1991,9 @@ def _standalone_route_prediction(ctx):
     findings get the levels the in-run analyzer gives them.  Left unset
     (registered levels, as before) when the prediction cannot be made."""
     try:
-        from engine.core.vertices import (extract_vertex_types,
+        from daedalus.engine.core.vertices import (extract_vertex_types,
                                           extract_source_types)
-        from api.compute import _ss_route_prediction
+        from daedalus.api.compute import _ss_route_prediction
         prop = {'K_ft': ctx.K_ft, 'omega': ctx.omega,
                 'nf': int(ctx.n_tilde),
                 'ring_gen_names': list(ctx.ring_names)}
@@ -2007,13 +2007,13 @@ def _standalone_route_prediction(ctx):
 
 
 def _pc_kappa_max():
-    from api._pole_clusters import KAPPA_MAX
+    from daedalus.api._pole_clusters import KAPPA_MAX
     return KAPPA_MAX
 
 
 def _g3_rational(ctx):
     """The propagator class: ``False`` (stop G3) when ``K(omega)`` is not
-    rational in omega.  Delay factors ``exp(-i omega d)`` (``api.delay``) are
+    rational in omega.  Delay factors ``exp(-i omega d)`` (``daedalus.api.delay``) are
     recognised: the class is then ``'delay'`` (``compute_cumulants``
     approximates them by Pade, the ledger records it; G2-K decides the
     stability with the true exponential) and the pole analysis is skipped
@@ -2024,7 +2024,7 @@ def _g3_rational(ctx):
         bad.extend(_offending_factors(e, [omega], allow_negative_powers=True))
     bad = list(dict.fromkeys(bad))
     if bad:
-        from api.delay import delay_factors, pade_substitute
+        from daedalus.api.delay import delay_factors, pade_substitute
         delays, rest = [], []
         for e in ctx.K_ft.list():
             delays.extend(delay_factors(e, omega))
@@ -2056,7 +2056,7 @@ def _g3_rational(ctx):
                 'replace the kernel by a rational (Pade or sum-of-exponentials) '
                 'approximation, or embed it with auxiliary fields'
                 + ('; a Gaussian jitter of an exogenous input (a source no field '
-                   'feeds back into) is Kernel.gaussian(sigma) in api.sde.SDE'
+                   'feeds back into) is Kernel.gaussian(sigma) in daedalus.api.sde.SDE'
                    if any('omega^2' in b for b in bad) else ''))
         return False
     ctx.t['propagator_class'] = 'rational'
@@ -2065,7 +2065,7 @@ def _g3_rational(ctx):
 
 def _g3_residue_route(ctx, pa):
     """How the pipeline's exact tier computed the residues
-    (``prop['pole_analysis']['residue_route']``, ``api._propagator``):
+    (``prop['pole_analysis']['residue_route']``, ``daedalus.api._propagator``):
     ``'double'`` (certified), ``'exact'`` (the 50-digit route, with the
     reason) or ``'failed'`` (the numerical cofactor tier)."""
     route = pa.get('residue_route')
@@ -2126,7 +2126,7 @@ def _g3_pole_findings(ctx, res):
                 'form Phase J sums cannot represent it (no t exp(lambda t) '
                 'term); '
                 + ('compute_cumulants averages deformed propagators instead '
-                   '(api._pole_clusters).' if status == 'resolved' else
+                   '(daedalus.api._pole_clusters).' if status == 'resolved' else
                    'it cannot be resolved here (G3_POLE_CLUSTER_UNRESOLVED).')
                 + ss_note,
                 'none needed when resolved; otherwise perturb the '
@@ -2144,7 +2144,7 @@ def _g3_pole_findings(ctx, res):
                            f'{_pc_kappa_max():g}: the pole-residue sums keep '
                            'their digits',
                'resolved': f'cancellation factor {kap:.3g}: compute_cumulants '
-                           'averages deformed propagators (api._pole_clusters)',
+                           'averages deformed propagators (daedalus.api._pole_clusters)',
                }.get(status, 'not resolved by the pole-cluster deformation ('
                      + str((pcr or {}).get('reason', '')) + ')'
                      if status == 'unresolved' else
@@ -2157,7 +2157,7 @@ def _g3_pole_findings(ctx, res):
                 'otherwise move the parameters off the degeneracy or '
                 'check G6 accuracy')
     if status == 'unresolved':
-        from api._pole_clusters import lost_digits, LOST_DIGITS_WARN
+        from daedalus.api._pole_clusters import lost_digits, LOST_DIGITS_WARN
         ml = ctx.q.max_ell if getattr(ctx.q, 'max_ell', None) is not None else 1
         digits = lost_digits(kap if squarefree else float('inf'), ml)
     if status == 'unresolved' and digits > LOST_DIGITS_WARN:
@@ -2264,7 +2264,7 @@ def _g3_spatial(ctx):
     if lap is None:
         return
     try:
-        from engine.integration.spatial.heat_kernel import (
+        from daedalus.engine.integration.spatial.heat_kernel import (
             reaction_diffusion_matrices)
         q = SR.var('_analyze_q')
         with _quiet():
@@ -2337,7 +2337,7 @@ def _exact_poles(K_num, omega, nf):
     ``None`` on budget expiry."""
     from sage.all import (SR, QQ, CDF, PolynomialRing, CyclotomicField,
                           matrix)
-    from api._propagator import _run_with_timeout, _PolynomialPathTimeout
+    from daedalus.api._propagator import _run_with_timeout, _PolynomialPathTimeout
     CF = CyclotomicField(4, 'I_')
     iC = CF.gen()
     PR = PolynomialRing(CF, 'om_an')
@@ -2381,7 +2381,7 @@ def _exact_poles(K_num, omega, nf):
                    key=lambda p: (p.imag, p.real)) if Q.degree() > 0 else []
     squarefree = bool(Q.is_squarefree())
     clusters = None
-    from api import _pole_clusters as _pc
+    from daedalus.api import _pole_clusters as _pc
     if not squarefree or _pc.has_close_pair(poles):
         # what compute_cumulants' exact tier will do with them
         try:
@@ -2448,7 +2448,7 @@ def _g4_noise(ctx):
     if pns is not None and hasattr(pns, '_cumulant_kernels'):
         src_ns = pns                          # wired: read, never written
     if not hasattr(src_ns, '_cumulant_kernels'):   # an expand-cache load skips it
-        from engine.core.field_theory import _build_cumulant_action
+        from daedalus.engine.core.field_theory import _build_cumulant_action
         with _quiet():
             _build_cumulant_action(ns, model)   # the analyzer's own namespace
         src_ns = ns
@@ -3446,7 +3446,7 @@ def _g6_engine(ctx, d, result, c):
                 'reported by G6_ACCURACY')
         ctx.ledger_add('assertion', 'realization_conditioning',
                        'the state-space realization failed its a posteriori check '
-                       '(api._realization: graded beyond double precision); the pole '
+                       '(daedalus.api._realization: graded beyond double precision); the pole '
                        f'routes took {n_dec} subset(s)', satisfied=False)
     if rep.get('covers_run') and n_dec:
         pc = result.get('pole_clusters') if isinstance(result, dict) else None
@@ -3484,7 +3484,7 @@ def _g6_marcus(ctx, d, result):
     worst = max(sized, key=lambda r: r['relative']) if sized else None
     d['marcus_truncation_max'] = None if worst is None else worst['relative']
     over = [r for r in sized if r.get('status') == 'above']
-    from api.compute import _marcus_detail, _marcus_remedy
+    from daedalus.api.compute import _marcus_detail, _marcus_remedy
     if worst is None:
         detail = ('the Marcus noise term could not be sized at the saddle ('
                   + '; '.join(sorted({str(r.get('status')) for r in rows})) + ')')
@@ -3547,7 +3547,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
                 f'First reason: {str(first.get("reason"))[:200]}',
                 'see result["phase_j_incomplete"]; the numbers are '
                 'incomplete until every diagram evaluates')
-    # spatial quadrature accuracy (api.compute._spatial_accuracy): a result
+    # spatial quadrature accuracy (daedalus.api.compute._spatial_accuracy): a result
     # the integrator cannot certify is 'approximate', named here
     for rec in ((result.get('spatial_accuracy') or [])
                 if isinstance(result, dict) else []):
@@ -3621,7 +3621,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
          + float(c.get('ss_err_abs_sum', 0.0)) + E_q)
     # the per-subset estimates above assume the ROUNDED realization
     # represents G; a graded / not numerically Hurwitz one was checked a
-    # posteriori (api._realization: refused above 1e-2) and its measured
+    # posteriori (daedalus.api._realization: refused above 1e-2) and its measured
     # relative error enters the estimate, so a realization that passes the
     # refusal but is off by more than the threshold does not pass G6
     rc = (result.get('phase_j_engine') or {}).get('realization_check') \
@@ -3636,7 +3636,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         if float(rc['err_rel']) > _G6_REALIZATION_FLOOR:
             real_rel = float(rc['err_rel'])
     # the balanced truncation of the propagator entries and of the
-    # dressed lines (api._realization; default tolerance 1e-12) moves the
+    # dressed lines (daedalus.api._realization; default tolerance 1e-12) moves the
     # cumulant by up to its relative H-infinity bound; the bound enters the
     # estimate like the a posteriori error above
     trunc = (rc or {}).get('truncation') if rc else None
@@ -3673,7 +3673,7 @@ def _g6(ctx, pf, result, c, complete, evaluated):
         R = R + real_rel
     if trunc_rel and complete and R is not None:
         R = R + trunc_rel
-    # Near-degenerate / repeated poles (api._pole_clusters): a resolved
+    # Near-degenerate / repeated poles (daedalus.api._pole_clusters): a resolved
     # cluster adds the deformation's own estimate (grid-L1, Fourier tail of
     # the node values); an unresolved one its lost-digit estimate.
     if pc and complete:

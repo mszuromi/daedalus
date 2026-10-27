@@ -1,4 +1,4 @@
-"""Feature B: the δ components of a cumulant (``api.cumulant``).
+"""Feature B: the δ components of a cumulant (``daedalus.api.cumulant``).
 
 Oracles:
 * linear Hawkes, tree: the autocorrelation spike weight is the mean rate
@@ -18,7 +18,7 @@ import pytest
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                        # noqa: E402
-from api.cumulant import (Cumulant, DeltaComponent,          # noqa: E402
+from daedalus.api.cumulant import (Cumulant, DeltaComponent,          # noqa: E402
                           DeltaRecordsIncompleteWarning, _rref,
                           _components_from_records, _bin_index)
 
@@ -114,7 +114,7 @@ def test_bin_index_nonuniform_and_outside():
 
 
 def test_spike_on_a_bin_edge_is_split():
-    from api.cumulant import _bin_deposits
+    from daedalus.api.cumulant import _bin_deposits
     tau = np.linspace(-1.0, 1.0, 10)          # no τ = 0 point
     dep = sorted(_bin_deposits(tau, 0.0))
     w = tau[1] - tau[0]

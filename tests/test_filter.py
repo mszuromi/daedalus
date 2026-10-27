@@ -1,7 +1,7 @@
 """
 tests/test_filter.py
 ====================
-Tests for engine.diagrams.filter — prediagram filtering (Build Phase D).
+Tests for daedalus.engine.diagrams.filter — prediagram filtering (Build Phase D).
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph
 
-from engine.diagrams.filter import classify_prediagram_vertices, filter_prediagrams
-from engine.core.vertices import VertexType, SourceType
+from daedalus.engine.diagrams.filter import classify_prediagram_vertices, filter_prediagrams
+from daedalus.engine.core.vertices import VertexType, SourceType
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

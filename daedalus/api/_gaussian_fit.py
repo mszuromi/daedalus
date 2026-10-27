@@ -28,7 +28,7 @@ impulse response ``r`` is close to ``g(t - T)`` (``sigma = 1``):
    realization (the Laguerre network) is input-normal (controllability
    Gramian = identity), well conditioned at any order.
 3. Balanced truncation (square-root method on the Hammarling factors of
-   ``api._realization.hankel_singular_values``) gives the poles: the order
+   ``daedalus.api._realization.hankel_singular_values``) gives the poles: the order
    ``r`` starts at the fewest states whose H-infinity bound ``2 sum(discarded
    Hankel singular values)`` meets ``tol`` and grows until the measured
    ``L1`` error of the final fit (below) is at most ``tol``.
@@ -342,7 +342,7 @@ def gaussian_fit(tol: float = 1e-6) -> GaussianFit:
     """The rational fit of the shifted unit Gaussian with L1 error ``<= tol``
     (module docstring); cached per ``tol``."""
     from scipy.special import ndtr
-    from api._realization import hankel_singular_values
+    from daedalus.api._realization import hankel_singular_values
     tol = float(tol)
     if not TOL_RANGE[0] <= tol <= TOL_RANGE[1]:
         raise ValueError(f'gaussian_fit: tol={tol:g} outside {TOL_RANGE}')

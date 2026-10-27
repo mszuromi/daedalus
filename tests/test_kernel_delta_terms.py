@@ -15,11 +15,11 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR, assumptions, dirac_delta, exp, heaviside, I, log, var   # noqa: E402
 
-import api.compute as AC                                            # noqa: E402
-from api.model_compiler import causal_exponential_ft                # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE                                             # noqa: E402
-from api.theory import TemporalTheoryBuilder                        # noqa: E402
+import daedalus.api.compute as AC                                            # noqa: E402
+from daedalus.api.model_compiler import causal_exponential_ft                # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
+from daedalus.api.theory import TemporalTheoryBuilder                        # noqa: E402
 
 TAU = np.array([-0.6, 0.0, 1.2])
 TE = '(0.3*dirac_delta(t) + exp(-t/tau)/tau)*heaviside(t)'
@@ -140,7 +140,7 @@ def _builder(**kw):
 
 
 def _images(model):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=2)
     ft.expand()
     out = {str(k): v for k, v in model['kernel_ft_image'](ft._ns, SR.var('omega')).items()}

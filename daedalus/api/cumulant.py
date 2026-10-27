@@ -1,6 +1,6 @@
 """
-api.cumulant
-============
+daedalus.api.cumulant
+=====================
 A computed cumulant as two parts: the smooth (continuous) part, per loop
 order, and the shot-noise δ components (Feature B).
 
@@ -34,7 +34,7 @@ The spectrum is ``S(ω) = ∫ dτ e^{-iωτ} C(τ)`` with the same τ, so the δ
 weights add the flat floor ``Σ w`` (times ``e^{-iω τ0}`` for a spike off
 τ = 0).
 
-C0 output (state-space route, ``api.me_output``).  For a k = 2 result
+C0 output (state-space route, ``daedalus.api.me_output``).  For a k = 2 result
 computed on the state-space route the smooth part is also held as
 matrix-exponential triples, one per loop order and side, assembled from the
 same subsets, prefactors and Wick permutations as ``C_tau``::
@@ -52,12 +52,12 @@ same field names (its sides are spelled 'positive' / 'negative').  Where the
 triples are not available ``c.me_reasons`` says why (``c.me`` is ``None`` for
 a loaded file or k ≠ 2, and lists per-loop-order ``reasons`` when, e.g., a
 subset is on the pole route; k >= 3 slices, every chamber: ``c.me_slice(j)``
-= ``api.me_output.slice_me``).  The exact delayed tree of a delay model
-(``api.delay``, k = 2) has exact values, pairings and spectrum but no
+= ``daedalus.api.me_output.slice_me``).  The exact delayed tree of a delay model
+(``daedalus.api.delay``, k = 2) has exact values, pairings and spectrum but no
 triple and no finite mode list (``c.me.mode_reasons``);
 ``spectrum`` and
 ``integrate_against`` then integrate the Phase J callables numerically and
-say so (:class:`~api.me_output.MEFallbackWarning`).
+say so (:class:`~daedalus.api.me_output.MEFallbackWarning`).
 """
 
 from __future__ import annotations
@@ -414,8 +414,8 @@ def _bin_index(tau, x):
 def _memo_C(fns):
     """``C(τ) = Σ f(0, τ)`` over the Phase J callables, memoized, for the
     quadrature routes.  A callable that cannot be evaluated at a large lag
-    (the exact delayed tree of ``api.delay``: its method-of-steps stack is
-    capped) raises :class:`api.me_output.MEUnavailable` naming it, instead
+    (the exact delayed tree of ``daedalus.api.delay``: its method-of-steps stack is
+    capped) raises :class:`daedalus.api.me_output.MEUnavailable` naming it, instead
     of failing inside QUADPACK."""
     memo = {}
 
@@ -428,7 +428,7 @@ def _memo_C(fns):
             except Exception as exc:
                 if type(exc).__name__ != 'ExactTreeUnavailable':
                     raise
-                from api.me_output import MEUnavailable
+                from daedalus.api.me_output import MEUnavailable
                 raise MEUnavailable(
                     f'the exact delayed tree cannot be integrated numerically '
                     f'to infinite lag ({exc}); pair the loop orders alone '
@@ -535,7 +535,7 @@ class Cumulant:
 
     @classmethod
     def from_saved(cls, data):
-        """From :func:`api.save.load_npz` output.  The δ components come
+        """From :func:`daedalus.api.save.load_npz` output.  The δ components come
         from the ``delta_*`` arrays (k = 2: weight and location; otherwise
         only the table, :meth:`deltas_frame`); a file written before
         Feature B has none and gives ``complete=False``."""
@@ -699,12 +699,12 @@ class Cumulant:
     @property
     def me(self):
         """The smooth part as matrix-exponential triples
-        (:class:`api.me_output.CumulantME`), built from the live result on
+        (:class:`daedalus.api.me_output.CumulantME`), built from the live result on
         first use; ``None`` when it cannot be built (see :attr:`me_reasons`).
         Per loop order gaps (a subset on the pole route, ...) are in
         ``me.reasons``."""
         if self._me is None and self._me_reasons is None:
-            from api.me_output import from_result, MEUnavailable
+            from daedalus.api.me_output import from_result, MEUnavailable
             if self._result is None:
                 self._me_reasons = ['no live result (a loaded file)']
             else:
@@ -718,8 +718,8 @@ class Cumulant:
     def me_slice(self, j=1, base=None):
         """k >= 3: the matrix-exponential triples of ``dd.run``'s slice
         ``j`` (leg ``j`` swept, the others at ``base``), every chamber
-        included (:func:`api.me_output.slice_me`)."""
-        from api.me_output import slice_me, MEUnavailable
+        included (:func:`daedalus.api.me_output.slice_me`)."""
+        from daedalus.api.me_output import slice_me, MEUnavailable
         if self.k < 3:
             raise MEUnavailable('me_slice is for k >= 3 (k = 2: .me)')
         if self._result is None:
@@ -741,9 +741,9 @@ class Cumulant:
         """``{ell: [ModeTerm, ...]}``: the exponential-mode sum of the smooth
         part, derived from the triples on first use (eigenvalue clusters of
         the final generators; ``τ**n`` terms for repeated eigenvalues;
-        :class:`api.me_output.MEConditioningWarning` when ill-conditioned).
+        :class:`daedalus.api.me_output.MEConditioningWarning` when ill-conditioned).
         Loop orders without triples are left out, with an
-        :class:`api.me_output.MEFallbackWarning` naming them
+        :class:`daedalus.api.me_output.MEFallbackWarning` naming them
         (:attr:`me_reasons`); ``None`` when no loop order has triples."""
         if self._modes is None:
             me = self.me
@@ -755,7 +755,7 @@ class Cumulant:
             left = [e for e in me.orders if e not in ells]
             if left:
                 import warnings
-                from api.me_output import MEFallbackWarning
+                from daedalus.api.me_output import MEFallbackWarning
                 why = self.me_reasons + [f'ell={e}: {r}' for e in left
                                          for r in mr.get(e, ())]
                 warnings.warn(f'modes: loop order(s) {left} have no '
@@ -774,7 +774,7 @@ class Cumulant:
     def _delta_pairing(self, kernel, ell, contact, values):
         """``Σ w L(location)`` over the δ components (k = 2) with the
         contact rule of ``symbolic_out.integrate_against`` at τ = 0."""
-        from api.me_output import kernel_value, kernel_at_zero
+        from daedalus.api.me_output import kernel_value, kernel_at_zero
         tot = 0j
         deltas = self._deltas_of(ell)
         self._warn_incomplete()
@@ -818,20 +818,20 @@ class Cumulant:
 
         ``kernel``: a ``symbolic_out.PairingKernel`` (``Kernel.exponential``,
         ``Kernel.two_sided_exponential``, sums; polynomial × exponential
-        terms), an :class:`api.me_output.RationalKernel`, or a list of them;
+        terms), an :class:`daedalus.api.me_output.RationalKernel`, or a list of them;
         ``values`` substitutes the kernel's symbols.  ``method='exact'``: one
         resolvent solve per triple block, ``q! c (zI − G)^{−q−1} x0`` (a
         Sylvester solve for a rational kernel): exact, no poles;
         ``'quad'``: adaptive quadrature of the Phase J callables;
         ``'auto'`` (default): exact when the triples cover ``ell``, else quad
-        with an :class:`api.me_output.MEFallbackWarning`.  ``contact``: the
+        with an :class:`daedalus.api.me_output.MEFallbackWarning`.  ``contact``: the
         δ(τ) term at τ = 0 as decided for the tree-level output (``None`` includes ``w L(0)``
         when the kernel is continuous at 0 and refuses otherwise;
         ``'exclude'`` / ``'positive'`` / ``'negative'`` / ``'mid'``); spikes
         off τ = 0 add ``w L(location)``.  Returns an
-        :class:`api.me_output.Pairing` (``value``, ``smooth``, ``contact``,
+        :class:`daedalus.api.me_output.Pairing` (``value``, ``smooth``, ``contact``,
         ``method``; ``complex(p)`` is the value)."""
-        from api.me_output import Pairing, quad_pairing
+        from daedalus.api.me_output import Pairing, quad_pairing
         self._need_k2('integrate_against')
         if contact not in (None, 'exclude', 'positive', 'negative', 'mid'):
             raise ValueError("contact must be None, 'exclude', 'positive', "
@@ -852,7 +852,7 @@ class Cumulant:
         exactly (from the triples) and by quadrature (``None`` = every
         order the callables have, ``False`` = none).  ``'auto'`` splits per
         loop order: the orders without triples fall back on quadrature with
-        an :class:`api.me_output.MEFallbackWarning` naming them and their
+        an :class:`daedalus.api.me_output.MEFallbackWarning` naming them and their
         reasons (counted in :attr:`me_fallbacks`); the label is then
         ``'exact+quad'`` (``'quad'`` when no order has triples)."""
         if method not in ('auto', 'exact', 'quad'):
@@ -884,12 +884,12 @@ class Cumulant:
             why = '; '.join(f'ell={e}: ' + '; '.join(me.reasons[e])
                             for e in left)
         if method == 'exact':
-            from api.me_output import MEUnavailable
+            from daedalus.api.me_output import MEUnavailable
             raise MEUnavailable(f'{what}: no matrix-exponential triples '
                                 f'({why})')
         self._refuse_exact_delay_quad(qu, what, infinite, why)
         import warnings
-        from api.me_output import MEFallbackWarning
+        from daedalus.api.me_output import MEFallbackWarning
         which = ('every loop order' if left is None
                  else f'loop order(s) {left}')
         warnings.warn(f'{what}: no matrix-exponential triples for {which} '
@@ -902,11 +902,11 @@ class Cumulant:
         return ('exact+quad' if ex else 'quad'), ex, qu
 
     def _refuse_exact_delay_quad(self, qu, what, infinite, why=None):
-        """The exact delayed tree (``api.delay``) has no triple and its
+        """The exact delayed tree (``daedalus.api.delay``) has no triple and its
         callable is a method-of-steps stack capped at a few hundred delay
         intervals: quadrature to infinite lag cannot finish (QUADPACK would
         build ever larger stacks first).  Refused up front, by name."""
-        from api.me_output import _exact_delay_tree, MEUnavailable
+        from daedalus.api.me_output import _exact_delay_tree, MEUnavailable
         if not infinite or self._result is None or \
                 not _exact_delay_tree(self._result):
             return
@@ -950,7 +950,7 @@ class Cumulant:
         callable evaluations per ω); ``tau_max`` truncates it to a finite
         window.  ``'grid'``: the trapezoid rule on the stored grid (display
         only).  ``'auto'`` (default): exact when the triples cover ``ell``,
-        else quad with an :class:`api.me_output.MEFallbackWarning`.
+        else quad with an :class:`daedalus.api.me_output.MEFallbackWarning`.
         """
         self._need_k2('spectrum')
         omega = np.atleast_1d(np.asarray(omega, dtype=float))

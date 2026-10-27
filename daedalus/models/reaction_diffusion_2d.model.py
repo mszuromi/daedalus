@@ -1,5 +1,5 @@
 """
-models/reaction_diffusion_2d.model.py
+daedalus/models/reaction_diffusion_2d.model.py
 ========================================
 2D reaction–diffusion field with a QUADRATIC nonlinearity — the d=2
 companion of ``reaction_diffusion_quadratic_1d``.  Its 1-loop self-energy
@@ -25,7 +25,7 @@ the spatial example notebooks
 VERBATIM (same field, parameters, equation, action, boundary, initial).
 """
 
-from api.model import ModelBuilder
+from daedalus.api.model import ModelBuilder
 
 
 def build():

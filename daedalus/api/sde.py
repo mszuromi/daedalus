@@ -1,7 +1,7 @@
 """SDE front-end: declare fields, drift and noise SOURCES; derive the MSR
 action and the mean-field equations; emit the same model dict
-:class:`api.model.TemporalModelBuilder` produces (for an SPDE, the one
-:class:`api.model.SpatialModelBuilder` produces; see *Declared operators and
+:class:`daedalus.api.model.TemporalModelBuilder` produces (for an SPDE, the one
+:class:`daedalus.api.model.SpatialModelBuilder` produces; see *Declared operators and
 SPDEs* below).
 
 Each field ``x`` obeys one equation in the repository's operator form,
@@ -11,7 +11,7 @@ Each field ``x`` obeys one equation in the repository's operator form,
 where ``lhs_x`` is the linear differential operator on ``x`` (contains
 ``Dt``: ``'Dt*x'``, ``'(tau*Dt + 1)*v'``), ``rhs_x`` is everything
 deterministic (fields, parameters, defined functions, kernels), and the
-noise sources ``eta_a`` (:mod:`api.noise`) couple in through
+noise sources ``eta_a`` (:mod:`daedalus.api.noise`) couple in through
 ``into={field: coefficient}`` (the coefficient ``c_xa``, not a population; ``couples=``
 is its former name).  The
 derived action is
@@ -107,8 +107,8 @@ refused.
 
 Coloured and vector Gaussian noise
 ----------------------------------
-``Gaussian(var, kernel=h)`` (``h`` an :class:`api.delay.Kernel` with a
-rational image: ``from api.delay import Kernel``, then
+``Gaussian(var, kernel=h)`` (``h`` an :class:`daedalus.api.delay.Kernel` with a
+rational image: ``from daedalus.api.delay import Kernel``, then
 ``Gaussian(var, kernel=Kernel.exponential('tau'))``) is the white noise of
 intensity ``var`` filtered by ``h``, ``eta = h * xi``.  It is Markov-embedded,
 exactly: with ``H(I*omega) = N/D`` the state field ``z`` (the source's name,
@@ -128,21 +128,21 @@ Delays, connectivity, observables and the text form
 ---------------------------------------------------
 A delayed field ``x(t - d)`` (``v[j](t - d)`` in a population sum, also in a
 point-process rate) is the hard-delay kernel ``Conv(delay_d, x)``, declared on
-the fly (:mod:`api.delay`); :meth:`sde_text` and :meth:`to_text` write it back
+the fly (:mod:`daedalus.api.delay`); :meth:`sde_text` and :meth:`to_text` write it back
 as ``x(t - d)``.  :meth:`connectivity` declares a weight matrix from an array
 (``w[i,j]`` onto unit ``i`` from unit ``j``), the matrix parameter of the
 populations.  :meth:`observable` names a function of the fields that
 ``compute_cumulants`` takes as an external leg, through its composite-operator
-expansion about the saddle (:mod:`api.observables`: exact for a linear
+expansion about the saddle (:mod:`daedalus.api.observables`: exact for a linear
 observable; for a nonlinear one the mean to one loop and the ``k = 2`` tree,
 higher orders refused).  :meth:`to_text` writes the model as the YAML ``sde:``
 block of a ``daedalus run`` config and :meth:`from_text` reads one, with the
-config's parser and builder (:mod:`api.sde_text`).
+config's parser and builder (:mod:`daedalus.api.sde_text`).
 
 Declared operators and SPDEs
 ----------------------------
 The operators an equation uses are named with :meth:`SDE.operator` and the
-objects of :mod:`api.operators`.  ``Dt`` is a ``TimeDerivative`` declared by
+objects of :mod:`daedalus.api.operators`.  ``Dt`` is a ``TimeDerivative`` declared by
 default, so a model that never declares an operator is unchanged; declaring
 the time derivative under another name renames it (``Dt`` is then refused);
 ``∂t`` (or ``∂_t``) in an equation is the time derivative too.  Each operator
@@ -155,7 +155,7 @@ with an increment of the paper-style syntax (``dt``, ``dW``, ``dN``,
 
 A ``Laplacian`` (or ``SDE(name, space=d)``) makes the model an SPDE in ``d``
 dimensions, built for the spatial pipeline as by hand with
-:class:`api.model.SpatialModelBuilder`: one scalar action, one field per
+:class:`daedalus.api.model.SpatialModelBuilder`: one scalar action, one field per
 species, space-time white noise ``Gaussian(var=..., space='white')``
 (``<eta(x,t) eta(x',t')> = var delta(x - x') delta(t - t')``), the boundary
 of :meth:`SDE.boundary` (default infinite) and a stationary initial
@@ -205,7 +205,7 @@ conserved vertex ``lap(u^3)`` (field-degree 3).
 Paper-style equations and per-source interpretations
 ----------------------------------------------------
 :meth:`SDE.sde` reads equations written as in a paper, one per line
-(``dx = (-mu*x) dt + sqrt(2*D) dW + c ∘ dN(lam)``; :mod:`api.sde_paper`), into
+(``dx = (-mu*x) dt + sqrt(2*D) dW + c ∘ dN(lam)``; :mod:`daedalus.api.sde_paper`), into
 the declarations above, so the model is the one those calls build.  Each
 noise term carries its interpretation: a plain ``dW`` / ``dN`` term is Ito, a
 term marked with a circle (``∘``, ASCII ``o``) is Stratonovich for a Gaussian
@@ -223,12 +223,12 @@ an SPDE, and Marcus on a coupling that reads other units (a joint jump).
 Gaussian-jittered exogenous inputs
 ----------------------------------
 ``define_kernel('g', kernel=Kernel.gaussian('sigma', tol=1e-6))``
-(:meth:`api.delay.Kernel.gaussian`) declares the Gaussian density, which is
+(:meth:`daedalus.api.delay.Kernel.gaussian`) declares the Gaussian density, which is
 acausal, for the jitter of an EXOGENOUS input: ``Conv(kX*g, n)`` with ``n`` a
 point process (or a source declared with ``as_field=``) whose rate holds no
 field.  Shifting a stationary exogenous input in time changes no stationary
 statistic of the network, so the density is shifted by ``T`` and replaced by a
-rational fit (``api._gaussian_fit``), and the shift is dropped.  The build
+rational fit (``daedalus.api._gaussian_fit``), and the shift is dropped.  The build
 (:meth:`_check_jitter`) refuses a jitter on anything else, a source whose rate
 depends on a field (feedback into the source), a use of the input without the
 jitter (``Conv(kX, n)`` next to ``Conv(kX*g, n)``: the shift must be common to
@@ -275,11 +275,11 @@ stability, saddle, linear operator and noise matrix, from the analyzer); and
 warnings (a Marcus series or CGF truncation, terms that enter the mean field
 only, the analyzer's warnings and errors).  No integration is done: the cost
 is the build and the expansion of the action.  It reads
-:meth:`action_text`, :meth:`equations` and the analyzer (:mod:`api.analyze`)
+:meth:`action_text`, :meth:`equations` and the analyzer (:mod:`daedalus.api.analyze`)
 rather than deriving anything a second time.
 
 :meth:`SDE.latex` returns ``{'sde', 'noise', 'action', 'mean_field'}``, LaTeX
-strings from Sage's ``latex()`` (:mod:`api.sde_latex`): the equations as written
+strings from Sage's ``latex()`` (:mod:`daedalus.api.sde_latex`): the equations as written
 (``dx = (...) dt + c sqrt(var) dW`` with ``dN`` for jump sources, the operator
 form ``(tau dt + 1) v = ...`` when the left side is not ``Dt x``, ``Dt`` typeset
 as ``\\partial_t`` and the Laplacian as ``\\nabla^2``), the noise sources, the
@@ -293,7 +293,7 @@ coefficients and parameters, function bodies, kernels, point-process rates,
 the field or noise it belongs to, and a hint; an undeclared name suggests the
 closest declared one, and an operator written inside a function argument or a
 noise coefficient says so.  The exception types are unchanged (``SDEError`` is
-a :class:`~api.noise.NoiseError` and a ``ValueError``).
+a :class:`~daedalus.api.noise.NoiseError` and a ``ValueError``).
 """
 from __future__ import annotations
 
@@ -305,11 +305,11 @@ from typing import Optional
 
 from sage.all import SR, integrate, oo, assume, assumptions, forget, function
 
-from api.noise import (NoiseError, NoiseSource, THETA, parse_expr, Gaussian, GaussianVector,
+from daedalus.api.noise import (NoiseError, NoiseSource, THETA, parse_expr, Gaussian, GaussianVector,
                        expr_to_text, expr_names, _MATH_FUNCS, _SAGE_PRINTED_CALLS,
                        expression_syntax_problem, format_caret_error, parse_failure_message)
-from api.operators import Laplacian, Operator, TimeDerivative
-from api.sde_symbols import Symbol, as_name, as_text
+from daedalus.api.operators import Laplacian, Operator, TimeDerivative
+from daedalus.api.sde_symbols import Symbol, as_name, as_text
 
 __all__ = ['SDE', 'SDEError', 'SDEReport']
 
@@ -698,7 +698,7 @@ class SDE:
     # ── declarations (passed through to TemporalModelBuilder) ─────────
     def population(self, name: str, *, size: int = 1, description: str = ''):
         """Declare a population (an index set of ``size`` units); returns its
-        :class:`~api.sde_symbols.Symbol`."""
+        :class:`~daedalus.api.sde_symbols.Symbol`."""
         _check_declarable(name, 'population')
         self._check_not_operator(name, 'population')
         self._pops.append({'name': name, 'size': max(int(size), 1),
@@ -709,7 +709,7 @@ class SDE:
               description: str = '', domain: Optional[str] = None,
               latex: str = ''):
         """Declare a physical field (its response field is ``<name>t``);
-        returns its :class:`~api.sde_symbols.Symbol`."""
+        returns its :class:`~daedalus.api.sde_symbols.Symbol`."""
         self._check_new_name(name)
         _check_declarable(name, 'field')
         self._fields[name] = {'population': as_name(population), 'description': description,
@@ -719,7 +719,7 @@ class SDE:
     def parameter(self, name: str, default=None, indexed=False,
                   domain: Optional[str] = None, description: str = '',
                   indexed_by: Optional[list] = None):
-        """Declare a parameter; returns its :class:`~api.sde_symbols.Symbol`.
+        """Declare a parameter; returns its :class:`~daedalus.api.sde_symbols.Symbol`.
         ``indexed_by=[population, ...]`` names the indexing; ``indexed=True``
         is its shorthand for the model's single population (ambiguous, and
         warned about at ``build()``, with several populations)."""
@@ -746,7 +746,7 @@ class SDE:
         declared :meth:`population`).  The entries must be finite numbers; it
         is :meth:`parameter` with ``default=`` the nested list (``indexed_by=``
         the populations, or ``indexed='matrix'``), so the built model is the
-        one that call builds.  Returns its :class:`~api.sde_symbols.Symbol`."""
+        one that call builds.  Returns its :class:`~daedalus.api.sde_symbols.Symbol`."""
         import numpy as np
         if hasattr(weights, 'toarray'):
             weights = weights.toarray()
@@ -796,7 +796,7 @@ class SDE:
 
         The cumulants are the composite-operator expansion of ``expr`` about
         the saddle, ``f(x* + dx) = f* + f_a dx_a + f_ab dx_a dx_b/2 + ...``,
-        assembled from the field cumulants (:mod:`api.observables`): exact at
+        assembled from the field cumulants (:mod:`daedalus.api.observables`): exact at
         every ``k`` and loop order for an observable linear in the fields;
         for a nonlinear one the mean to one loop (``k = 1``,
         ``f_a <dx_a> + f_ab C_ab(0)/2``) and the tree of ``k = 2``
@@ -875,7 +875,7 @@ class SDE:
                         latex: Optional[str] = None, description: str = '',
                         population: Optional[str] = None):
         """Declare the function ``name(args) = expression``; returns its
-        :class:`~api.sde_symbols.Symbol` (``phi(v)`` is its call)."""
+        :class:`~daedalus.api.sde_symbols.Symbol` (``phi(v)`` is its call)."""
         args, expression, population = [as_name(a) for a in args], as_text(expression), \
             as_name(population)
         _check_declarable(name, 'function')
@@ -896,11 +896,11 @@ class SDE:
                       indexed=False, indexed_by: Optional[list] = None,
                       delay: Optional[str] = None, kernel=None):
         """A convolution kernel ``Conv(name, x)`` (see
-        :meth:`api.model.TemporalModelBuilder.define_kernel`): ``time_expr`` or
+        :meth:`daedalus.api.model.TemporalModelBuilder.define_kernel`): ``time_expr`` or
         ``freq_image``, optionally delayed by ``delay`` (``g(t - d)``; the hard
         delay ``delta(t - d)`` alone), or ``kernel=Kernel.delay('d') *
-        Kernel.exponential('tau')`` (:class:`api.delay.Kernel`).  Returns its
-        :class:`~api.sde_symbols.Symbol`."""
+        Kernel.exponential('tau')`` (:class:`daedalus.api.delay.Kernel`).  Returns its
+        :class:`~daedalus.api.sde_symbols.Symbol`."""
         time_expr, freq_image, delay = as_text(time_expr), as_text(freq_image), as_text(delay)
         _check_declarable(name, 'kernel')
         self._check_not_operator(name, 'kernel')
@@ -925,7 +925,7 @@ class SDE:
         elif name in self._jitter:
             del self._jitter[name]
         if time_expr is not None and delay is None:
-            from api.delay import split_shifted_time_expr
+            from daedalus.api.delay import split_shifted_time_expr
             sh = split_shifted_time_expr(str(time_expr))
             if sh is not None:
                 delay, time_expr = sh
@@ -969,7 +969,7 @@ class SDE:
 
     # ── operators and space ───────────────────────────────────────────
     def operator(self, name: str, op):
-        """Declare the operator ``op`` (:mod:`api.operators`) under ``name``.
+        """Declare the operator ``op`` (:mod:`daedalus.api.operators`) under ``name``.
 
         ``m.operator('D_t', TimeDerivative())`` names the time derivative ``D_t``
         (it replaces the default ``Dt``, which is then no longer accepted);
@@ -982,14 +982,14 @@ class SDE:
         model takes; ``Dt`` is reserved for the time derivative (``∂t`` names it
         too), ``Laplacian`` and ``Lap`` for the Laplacian, and the paper-style
         increments (``dt``, ``dW``, ``dN``, ``dW_<name>``, ``d<X>_<name>``)
-        cannot be operators.  Returns its :class:`~api.sde_symbols.Symbol`
+        cannot be operators.  Returns its :class:`~daedalus.api.sde_symbols.Symbol`
         (``lap(u)`` and ``(tau*D_t + 1)*x`` are then Sage expressions)."""
         if isinstance(op, type) and issubclass(op, Operator):
             op = op()
         if str(name) in _UNICODE_DT and isinstance(op, TimeDerivative):
             name = 'Dt'                 # ∂t: the default time derivative's own spelling
         if not isinstance(op, Operator):
-            raise SDEError(f'operator({name!r}): give an operator from api.operators '
+            raise SDEError(f'operator({name!r}): give an operator from daedalus.api.operators '
                            f'(TimeDerivative(), Laplacian()); got {type(op).__name__}.')
         name = str(name)
         if name == 'dt' or re.fullmatch(r'd[WN]|d[A-Z]_\w+', name):
@@ -1026,13 +1026,13 @@ class SDE:
     def boundary(self, mode: str, **params):
         """The spatial boundary condition of an SPDE (``'infinite'``, the
         default, or ``'periodic'`` with ``length=``); see
-        :meth:`api.model.SpatialModelBuilder.boundary`."""
+        :meth:`daedalus.api.model.SpatialModelBuilder.boundary`."""
         self._boundary = {'mode': mode, **params}
         return self
 
     def dyson(self, mode: str = 'fixed', order: Optional[int] = None):
         """The Dyson truncation of a coupled SPDE with unequal diffusion; see
-        :meth:`api.model.SpatialModelBuilder.dyson`."""
+        :meth:`daedalus.api.model.SpatialModelBuilder.dyson`."""
         self._dyson = {'mode': mode, 'order': order}
         return self
 
@@ -1086,7 +1086,7 @@ class SDE:
                 hint = (f'move the operator to the equation\'s lhs/rhs, e.g. '
                         f'{n}(x) or {n}*x, not inside a function argument or a coefficient')
                 if where.startswith('noise(') and self._operators[n].spatial:
-                    from engine.integration.spatial import CONSERVED_NOISE_WHY
+                    from daedalus.engine.integration.spatial import CONSERVED_NOISE_WHY
                     hint = CONSERVED_NOISE_WHY
                 raise SDEError(format_caret_error(
                     shown, max(self._token_at(shown, n), 0),
@@ -1259,7 +1259,7 @@ class SDE:
         """``x(t - d)`` and ``x[j](t - d)`` (``x`` a declared field, ``d`` a
         parameter expression) -> ``Conv(delay_<d>, x)`` / ``Conv(delay_<d>,
         x[j])`` with the hard-delay kernel ``delay_<d>`` declared on the fly
-        (:mod:`api.delay`).  ``label`` names the declaration in errors
+        (:mod:`daedalus.api.delay`).  ``label`` names the declaration in errors
         (default ``equation(<where>)``)."""
         if not self._fields:
             return text
@@ -1338,26 +1338,26 @@ class SDE:
         becomes the existing declarations (:meth:`field` if new, :meth:`drift` or
         :meth:`equation`, :meth:`noise` with ``into=`` and
         ``interpretation=``), so the model is the one those calls build; see
-        :mod:`api.sde_paper`."""
-        from api.sde_paper import apply_paper
+        :mod:`daedalus.api.sde_paper`."""
+        from daedalus.api.sde_paper import apply_paper
         return apply_paper(self, text, noises)
 
     def to_text(self, *, verify: bool = True) -> str:
         """The model as the YAML ``sde:`` block of a ``daedalus run`` config
-        (:mod:`api.sde_text`): the declarations as given, read back by
+        (:mod:`daedalus.api.sde_text`): the declarations as given, read back by
         :meth:`from_text` (or a config file) into the same model.  With
         ``verify`` (default) the text is read back and compared with this
         model (action, equations, built dict); a model the block cannot
         record raises :class:`SDEError` with the reason."""
-        from api.sde_text import to_text
+        from daedalus.api.sde_text import to_text
         return to_text(self, verify=verify)
 
     @classmethod
     def from_text(cls, text: str) -> 'SDE':
         """The model of an ``sde:`` block (a config holding ``sde:``, or the
         block alone), as :meth:`to_text` writes it and ``daedalus run``
-        reads it; errors name the line (:class:`api.config_run.ConfigError`)."""
-        from api.sde_text import from_text
+        reads it; errors name the line (:class:`daedalus.api.config_run.ConfigError`)."""
+        from daedalus.api.sde_text import from_text
         return from_text(text)
 
     def sde_text(self) -> str:
@@ -1368,7 +1368,7 @@ class SDE:
         for point processes and exposed sources, and for velocities named with
         ``velocity=`` (a left side other than ``a*Dt*x`` is written in the
         operator form)."""
-        from api.sde_paper import paper_text
+        from daedalus.api.sde_paper import paper_text
         text, noises = paper_text(self)
         out = _PaperText(text)
         out.noises = noises
@@ -1411,7 +1411,7 @@ class SDE:
             couples = into
         if not isinstance(source, NoiseSource):
             raise SDEError(
-                f'noise({name!r}): source must be a noise source from api.noise '
+                f'noise({name!r}): source must be a noise source from daedalus.api.noise '
                 f'(Gaussian, Poisson, CompoundPoisson, GammaProcess, '
                 f'InverseGaussianProcess, Cumulants, CGF); got {type(source).__name__}. '
                 f'Per-step distributions are not processes.')
@@ -1856,7 +1856,7 @@ class SDE:
             raise SDEError(f'{where}: cannot read the operator argument ({exc}).') from exc
         xs = [x for x in self._field_syms() if E.has(x)]
         if not xs and any(self._has_token(text_v1, f + 't') for f in self._fields):
-            from engine.integration.spatial import CONSERVED_NOISE_WHY
+            from daedalus.engine.integration.spatial import CONSERVED_NOISE_WHY
             raise SDEError(f'{where} acts on a response field (a noise term with an '
                            f'operator): {CONSERVED_NOISE_WHY}.')
         if not xs:
@@ -1938,7 +1938,7 @@ class SDE:
             if first in ('div', 'grad', 'nabla') and (
                     self._space is not None
                     or any(op.spatial for op in self._operators.values())):
-                from engine.integration.spatial import CONSERVED_NOISE_WHY
+                from daedalus.engine.integration.spatial import CONSERVED_NOISE_WHY
                 hint = CONSERVED_NOISE_WHY
             raise SDEError(format_caret_error(
                 shown, max(at, 0),
@@ -2084,7 +2084,7 @@ class SDE:
         ``n!/a^(n+1)`` (``model_compiler.causal_exponential_ft`` at omega = 0), the
         decay rates being positive by declaration (``domain='positive'``); no
         assumption is made on any symbol."""
-        from api.model_compiler import causal_exponential_ft
+        from daedalus.api.model_compiler import causal_exponential_ft
         declared = {p[0][0] for p in self._params if p[1].get('domain') == 'positive'}
         positive = {str(v) for v in causal.variables()
                     if str(v).split('__')[0] in declared}
@@ -3156,7 +3156,7 @@ class SDE:
         takes the Marcus series (``series`` True); with a constant coupling
         and no state-dependent Gaussian part the source is unchanged (Marcus
         = Ito: the flow of a constant field is a translation)."""
-        from api.noise import SumSource, Cumulants, CGF
+        from daedalus.api.noise import SumSource, Cumulants, CGF
         src = s['source']
         fields = list(self._fields)
         parts = list(src.parts) if isinstance(src, SumSource) else [src]
@@ -3357,7 +3357,7 @@ class SDE:
         """A :class:`TemporalModelBuilder` with the derived action and
         mean-field equations set (continue by hand from here); for an SPDE
         (``space=d`` or a Laplacian), a :class:`SpatialModelBuilder`."""
-        from api.model import TemporalModelBuilder
+        from daedalus.api.model import TemporalModelBuilder
         d = self._derive()
         if d.get('spatial'):
             return self._spatial_builder(d)
@@ -3407,7 +3407,7 @@ class SDE:
         scalar action -- in the operator IR when an operator acts on an
         expression --, the equations, the boundary and the stationary initial
         condition)."""
-        from api.model import SpatialModelBuilder
+        from daedalus.api.model import SpatialModelBuilder
         b = SpatialModelBuilder(self.name)
         for f, info in self._fields.items():
             kw = dict(spatial_dim=self._space, description=info['description'])
@@ -3470,13 +3470,13 @@ class SDE:
 
     def simulate(self, **kw):
         """Simulate the model's point processes, drifts and Gaussian sources
-        (:func:`api.pp_simulate.simulate`; keywords ``T``, ``dt``, ``n_paths``,
+        (:func:`daedalus.api.pp_simulate.simulate`; keywords ``T``, ``dt``, ``n_paths``,
         ``burn_in``, ``bin``, ``params``, ``seed``)."""
         if self._derive().get('spatial'):
             raise SDEError(f'SDE({self.name!r}).simulate(): the SDE simulator is temporal; an '
-                           f'SPDE is simulated with simulations/spatial_field_1d_sim / '
+                           f'SPDE is simulated with daedalus/simulations/spatial_field_1d_sim / '
                            f'spatial_field_2d_sim.')
-        from api.pp_simulate import simulate
+        from daedalus.api.pp_simulate import simulate
         return simulate(self, **kw)
 
     def _emit(self, source_terms, pop, text, owner):
@@ -3542,7 +3542,7 @@ class SDE:
             # compute_cumulants warns when (k, max_ell) can reach them
             m['noise_declared_orders'] = declared
         if self._observables:
-            # functions of the fields read as external legs (api.observables)
+            # functions of the fields read as external legs (daedalus.api.observables)
             m['observables'] = self._observable_specs()
         return m
 
@@ -3629,7 +3629,7 @@ class SDE:
         stationary mean-field equations, fields at the saddle).  Each is an
         ``aligned`` environment (``'noise'`` is empty without sources).
         Nothing is compiled; the output depends on the declarations only."""
-        from api.sde_latex import render_latex
+        from daedalus.api.sde_latex import render_latex
         self._check_derived_names()
         return render_latex(self)
 
@@ -3753,9 +3753,9 @@ class SDE:
         return max(0, -((k - degree) // 2))
 
     def _analysis_report(self, rep, model, k, max_ell, params, warnings_):
-        from api.analyze import analyze_with_context, Question
+        from daedalus.api.analyze import analyze_with_context, Question
         from sage.all import SR as _SR
-        from api.analyze import Policy
+        from daedalus.api.analyze import Policy
         q = Question(k=k, max_ell=max_ell, parameters=params)
         # the SDE has declared its convention and derived a Taylor-truncated
         # action itself: the run-time consents are not what check() reports

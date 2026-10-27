@@ -37,7 +37,7 @@ sys.path.insert(0, os.path.join(_root, 'notebooks'))
 os.chdir(os.path.join(_root, 'notebooks'))
 
 import daedalus as dd
-from simulations.ou_langevin_sim_numba import sim_ou_quartic_numba
+from daedalus.simulations.ou_langevin_sim_numba import sim_ou_quartic_numba
 
 f = float
 MU, D = f(1.0), f(1.0)

@@ -1,6 +1,6 @@
 """
-engine.enumeration.prediagram_cache
-===================================
+daedalus.engine.enumeration.prediagram_cache
+============================================
 Two on-disk formats for the model-independent prediagram set at ``(k, ell)``.
 
 v1 (``saved_prediagrams/prediagrams_v1_k{k}_l{ell}.sobj``)
@@ -22,7 +22,7 @@ v2 (``saved_prediagrams/streaming_v2/prediagrams_v2_k{k}_l{ell}.pkl``)
     a file whose convention stamp differs from this code's is refused with a
     message naming both; a legacy bare-set file is accepted.
 
-shipped (``engine/enumeration/shipped_prediagrams/prediagrams_v2_k{k}_l{ell}.pkl``)
+shipped (``daedalus/engine/enumeration/shipped_prediagrams/prediagrams_v2_k{k}_l{ell}.pkl``)
     The stamped v2 files for the cells in :data:`SHIPPED_CELLS`, EXACTLY these
     21 cells (class counts in parentheses; 5.7 MB beyond the original
     3.4 MB):
@@ -47,7 +47,7 @@ shipped (``engine/enumeration/shipped_prediagrams/prediagrams_v2_k{k}_l{ell}.pkl
     under ``saved_prediagrams/`` is tracked: that directory is the per-machine
     cache, and the large cells that live there on the development machine
     ((6,2), (4,3)) are NOT shipped (see :func:`fetch_cache`).  Rebuild the
-    shipped files with ``sage -python -m engine.enumeration.prediagram_cache
+    shipped files with ``sage -python -m daedalus.engine.enumeration.prediagram_cache
     --rebuild-shipped --procs N`` and the manifest with ``--rebuild-manifest``;
     ``tests/test_shipped_prediagrams.py`` checks the manifest and compares
     the small cells with a fresh enumeration.
@@ -173,7 +173,9 @@ import uuid
 
 from sage.all import DiGraph, Graph
 
-from engine.enumeration.loop_diagram_enumeration import (
+from daedalus._resources import data_path
+
+from daedalus.engine.enumeration.loop_diagram_enumeration import (
     _iso_cert,
     cert_to_graph,
     enumerate_all as _enumerate_eager,
@@ -188,8 +190,7 @@ from engine.enumeration.loop_diagram_enumeration import (
 V2_SUBDIR = 'streaming_v2'
 
 #: Directory of the v2 cert files tracked in git, next to this module.
-SHIPPED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           'shipped_prediagrams')
+SHIPPED_DIR = data_path('engine', 'enumeration', 'shipped_prediagrams')
 
 #: The cells shipped with the package (see the module docstring).
 SHIPPED_CELLS = ((1, 1), (1, 2), (1, 3), (1, 4),
@@ -239,7 +240,7 @@ def make_stamp(k, ell, certs, cert_backend=None):
     """The stamp for a cert set at ``(k, ell)``; *cert_backend* defaults to
     the backend active in this process."""
     if cert_backend is None:
-        import engine.enumeration.loop_diagram_enumeration as _L
+        import daedalus.engine.enumeration.loop_diagram_enumeration as _L
         cert_backend = _L.CERT_BACKEND
     return {'format': V2_FORMAT, 'convention': CONVENTION,
             'edge_pack': EDGE_PACK, 'cert_backend': str(cert_backend),
@@ -379,8 +380,7 @@ def write_shipped_cell(k, ell, n_procs=1, verbose=False):
 #: ``file:///...``) the cells in ``fetch_manifest.json`` are downloaded from.
 #: There is no built-in default URL, and nothing is ever fetched implicitly.
 FETCH_URL_ENV = 'DAEDALUS_CACHE_URL'
-FETCH_MANIFEST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              'fetch_manifest.json')
+FETCH_MANIFEST = data_path('engine', 'enumeration', 'fetch_manifest.json')
 
 
 def load_fetch_manifest(path=None):
@@ -536,7 +536,7 @@ def load_manifest(directory=None):
         return json.load(f)
 
 
-#: Filename stems.  Both match what :class:`~engine.core.cache.PipelineCache`
+#: Filename stems.  Both match what :class:`~daedalus.engine.core.cache.PipelineCache`
 #: would produce for these stages at ``(k, ell)``, so the shipped v1 ``.sobj``
 #: files and the already-streamed v2 ``.pkl`` files are found unchanged.
 V1_STAGE = 'prediagrams_v1'
@@ -560,7 +560,7 @@ _PROCS_ENV = 'DAEDALUS_PREDIAGRAM_PROCS'
 #: Any other value raises ``ValueError``.
 _EAGER_ENV = 'DAEDALUS_PREDIAGRAM_EAGER'
 
-#: Whether the TEMPORAL compute path (``api.compute.compute_cumulants``)
+#: Whether the TEMPORAL compute path (``daedalus.api.compute.compute_cumulants``)
 #: streams its ``use_cache=False`` prediagrams.  False: it keeps the eager
 #: enumerator's records, as before streaming existed, so its numbers do not
 #: move.  Streamed records are other labelled representatives of the same
@@ -591,7 +591,7 @@ _FALSE = ('0', 'false', 'no', 'off')
 
 def cache_format():
     """Resolve the on-disk format preference; see :data:`_FORMAT_ENV`."""
-    from engine import _env
+    from daedalus.engine import _env
     return _env.choice(_FORMAT_ENV, ('auto', 'v1', 'v2'), 'auto')
 
 
@@ -599,9 +599,9 @@ def _enum_procs(n_procs=None):
     """Worker count of a streamed enumeration: ``DAEDALUS_PREDIAGRAM_PROCS``
     when set (an override kept for scripts; prefer ``n_workers``), else
     ``n_procs`` (``compute_cumulants``' ``n_workers`` / ``parallel``,
-    see ``api._diagrams.enumeration_procs``), else 1.  macOS never forks:
+    see ``daedalus.api._diagrams.enumeration_procs``), else 1.  macOS never forks:
     there the enumeration is serial whatever this says."""
-    from engine import _env
+    from daedalus.engine import _env
     if os.environ.get(_PROCS_ENV, '').strip():
         return _env.integer(_PROCS_ENV, 1, minimum=1)
     if n_procs is None:
@@ -642,7 +642,7 @@ _STREAMED_MEMO_MAX_CERTS = 200_000          # cells larger than this are not kep
 
 
 def _streamed_memo_key(k, ell):
-    import engine.enumeration.loop_diagram_enumeration as _L
+    import daedalus.engine.enumeration.loop_diagram_enumeration as _L
     return (int(k), int(ell), _L.CERT_BACKEND, _L.ORIENTATION_CHECKER,
             _L.EDGE_GENERATOR)
 
@@ -813,7 +813,7 @@ class PrediagramRecord(tuple):
     REVERSES each group of parallel edges in ``D.edges()`` (and, above 10
     vertices, can move vertex slots and with them ``G``'s edge order).  Every
     downstream stage inherits the record's iteration order, so a record
-    restored from the typed-diagram cache (``api._diagrams``) or returned by
+    restored from the typed-diagram cache (``daedalus.api._diagrams``) or returned by
     a type-assignment worker summed the same diagrams in another order than
     the record it was saved from: totals moved in the last bits between a
     cold and a warm cache.
@@ -1118,7 +1118,7 @@ def _load_guard(k, ell, n):
     records of (2,4) or (5,2) need 10-13 GB, of (4,3) / (6,2) 81 / 140 GB).
     ``n``: the class count when known (the cert set is in hand), else the
     manifests' count or an extrapolation (none: no check).  Raises
-    :class:`engine.integration.time_domain.final_integral.PhaseJResourceError`
+    :class:`daedalus.engine.integration.time_domain.final_integral.PhaseJResourceError`
    ."""
     if n is None:
         n, how = estimate_class_count(k, ell)
@@ -1128,7 +1128,7 @@ def _load_guard(k, ell, n):
     else:
         how = 'counted'
     need = int(n) * _LOAD_BYTES_PER_CLASS
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     budget, rule = _fi.mem_budget('PHASE_J_MEM_BUDGET_GB')
     # an extrapolated count is good to a factor of two: refuse on it only
     # beyond that (the count is checked again once the certs are in hand)
@@ -1250,7 +1250,7 @@ def _speed_factor():
     """How much slower than the reference machine a cold build is here: the
     small calibration cell is enumerated once, in memory, nothing written."""
     import time
-    from engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
+    from daedalus.engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
     t0 = time.perf_counter()
     stream_prediagram_certs(*_CALIBRATION_CELL, n_procs=1, verbose=False)
     return (time.perf_counter() - t0) / _CALIBRATION_S
@@ -1308,7 +1308,7 @@ def build_cache(cells, dest=None, dry_run=False, *, force=False,
     measured ``seconds`` and ``n_built``.
     """
     import time
-    from engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
+    from daedalus.engine.enumeration.loop_diagram_enumeration import stream_prediagram_certs
 
     if (isinstance(cells, (tuple, list)) and len(cells) == 2
             and all(isinstance(c, int) for c in cells)):
@@ -1383,7 +1383,7 @@ def build_cache(cells, dest=None, dry_run=False, *, force=False,
     return report
 
 
-if __name__ == '__main__':                      # sage -python -m engine.enumeration.prediagram_cache
+if __name__ == '__main__':                      # sage -python -m daedalus.engine.enumeration.prediagram_cache
     import argparse
     ap = argparse.ArgumentParser(description='Rebuild the shipped prediagram cert files.')
     ap.add_argument('--rebuild-shipped', action='store_true')

@@ -42,10 +42,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from scipy.special import erfc
 from sage.all import SR
 
-from api.model import SpatialModelBuilder
-from api import compute_cumulants
+from daedalus.api.model import SpatialModelBuilder
+from daedalus.api import compute_cumulants
 
-_MODELS = os.path.join(os.path.dirname(__file__), '..', 'models')
+_MODELS = os.path.join(os.path.dirname(__file__), '..', 'daedalus', 'models')
 _ACTION = ('phit*(Dt(phi) + mu*phi - D*Lap(phi) - c1*Lap(phi^2) - c2*phi^2'
            '{src}) - T*phit^2')
 
@@ -94,7 +94,7 @@ def _k3(m, P, pts):
 
 
 def _table(m, P):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(m, taylor_order=4)
     ft.expand()
     sub = {SR.var(k): v for k, v in P.items()}
@@ -312,7 +312,7 @@ _GOLDEN = {
 
 @pytest.mark.parametrize('name', sorted(_GOLDEN))
 def test_one_species_models_are_unchanged(name):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     m = _tracked(name).build() if name[0].isalpha() else _hand(name)
     ft = FieldTheory(m, taylor_order=4)
     ft.expand()
@@ -358,7 +358,7 @@ def test_one_loop_vs_simulator(c1, c2):
     cubic escape point -mu/c2).  dt = 0.0025: the ETD1 splitting bias of the
     nonlinear step is below the statistical error there (dt = 0.01 is ~15 %
     low).  Two loops are ~1 % of one loop here."""
-    from simulations.spatial_field_1d_sim import simulate
+    from daedalus.simulations.spatial_field_1d_sim import simulate
     mu, D, L, N = 2.0, 4.0, 20.0, 200
     dx = L / N
     xs = [0.0, 0.5, 1.0]

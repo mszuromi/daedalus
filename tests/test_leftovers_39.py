@@ -24,11 +24,11 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR, assumptions, var, sqrt, erf, exp, function, taylor   # noqa: E402
 
-import api.compute as AC                                             # noqa: E402
-import engine.core.field_theory as F                                 # noqa: E402
-from api.model import TemporalModelBuilder                           # noqa: E402
-from api.noise import Gaussian                                       # noqa: E402
-from api.sde import SDE, SDEError                                    # noqa: E402
+import daedalus.api.compute as AC                                             # noqa: E402
+import daedalus.engine.core.field_theory as F                                 # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                           # noqa: E402
+from daedalus.api.noise import Gaussian                                       # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                    # noqa: E402
 
 TAU = np.array([-1.0, 0.0, 0.7])
 
@@ -316,7 +316,7 @@ def test_dae_overflow_does_not_raise_keyerror(action):
     """``exp(300 x^2)`` overflows for the larger seeds; the warning used to be issued from a frame
     without ``__builtins__`` and raised ``KeyError('__import__')``.  The values are unchanged: a
     saturating expression is a valid number."""
-    from api._mean_field_dae import solve_mean_field_dae
+    from daedalus.api._mean_field_dae import solve_mean_field_dae
     model = _saturating_model()
     with warnings.catch_warnings():
         warnings.simplefilter(action)
@@ -393,7 +393,7 @@ def test_sde_population_named_pop_accepts_size_above_one():
 def test_scalar_mode_linear_stability_on_exp_of_the_field(rhs):
     """Not reproducible on main (the scalar field wrapper is unwrapped by the Sage math names):
     ``linear_stability`` of a population-less model with ``exp(field)``."""
-    from api._mean_field_dae import linear_stability, solve_mean_field_dae
+    from daedalus.api._mean_field_dae import linear_stability, solve_mean_field_dae
     m = (TemporalModelBuilder('s').physical_field('x').parameter('a', default=0.5, domain='positive')
          .stability_analysis(True).set_action_text('xt*((Dt + 1)*x)')
          .mf_residual(lhs='(Dt+1)*x', rhs=rhs).build())

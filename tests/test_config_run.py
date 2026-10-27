@@ -1,4 +1,4 @@
-"""Tests for the YAML entry point (``api/config_run.py``, ``daedalus run config.yaml``).
+"""Tests for the YAML entry point (``daedalus/api/config_run.py``, ``daedalus run config.yaml``).
 
 A: a run through the config reproduces ``compute_cumulants`` called directly
    (``np.array_equal``) for k = 2 (OU quartic, ell <= 1), k = 1, and a
@@ -23,9 +23,9 @@ sys.path.insert(0, os.path.join(ROOT, 'notebooks'))
 
 import yaml  # noqa: E402
 import daedalus as dd  # noqa: E402
-import api  # noqa: E402
-from api import config_run  # noqa: E402
-from api.config_run import ConfigError, load_config, parse_config, run_config  # noqa: E402
+import daedalus.api as api  # noqa: E402
+from daedalus.api import config_run  # noqa: E402
+from daedalus.api.config_run import ConfigError, load_config, parse_config, run_config  # noqa: E402
 
 
 def _write(tmp_path, text, name='cfg.yaml'):
@@ -285,7 +285,7 @@ def test_c_config_resolved_yaml_is_itself_a_valid_config(ou_k2_run):
 
 
 def test_c_model_path_resolves_against_the_config_directory(tmp_path):
-    src = os.path.join(ROOT, 'models', 'ou_quartic.model.py')
+    src = os.path.join(ROOT, 'daedalus', 'models', 'ou_quartic.model.py')
     sub = tmp_path / 'my_models'
     sub.mkdir()
     (sub / 'copy.model.py').write_text(open(src).read())

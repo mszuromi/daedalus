@@ -1,5 +1,5 @@
 """
-engine.integration.time_domain.subgraph
+daedalus.engine.integration.time_domain.subgraph
 ======================================
 Loop subgraph identification for Phase J kernel reduction.
 

@@ -1,5 +1,5 @@
 """
-api.model_compiler — text expressions → Sage lambdas.
+daedalus.api.model_compiler — text expressions → Sage lambdas.
 
 When a ``ModelBuilder`` is fed text expressions (via
 ``set_action_text``, ``define_function``, ``define_kernel``,
@@ -753,7 +753,7 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     # A bare field (scalar model, ``Conv(r, n)``) is a size-1 wrapper that
     # Sage's strict argument coercion would reject: unwrap it, exactly as
     # for user functions; indexed arguments (``n[j]``) are SR already.
-    from engine.core.convolution import Conv as _Conv
+    from daedalus.engine.core.convolution import Conv as _Conv
 
     def Conv(kernel, field):
         return _Conv(_unwrap_field_arg(kernel), _unwrap_field_arg(field))
@@ -767,7 +767,7 @@ def _build_namespace_for_eval(ns, *, field_names, param_names, kernel_names,
     # saddle-kill rules) are untouched.
     if (transfer_function_mode == 'action'
             and getattr(ns, '_operator_ir', False)):
-        from api.spatial_operator_ir import Lap as _Lap, Dt as _Dt, Dx as _Dx
+        from daedalus.api.spatial_operator_ir import Lap as _Lap, Dt as _Dt, Dx as _Dx
         # The action's field name resolves to a _FullPhysicalField
         # (saddle + fluctuation); unwrap it to its SR form before binding the
         # operator node, so ``Lap(phi)`` → ``Lap(phistar + dphi)``.
@@ -934,7 +934,7 @@ def _vertex_species(se, genmap, vertex, flucts, tildes):
     refused: one generator times further fields or generators (``φ̃·φ·∇²φ``),
     other than one response leg, an operator on a response field, or a
     composite base raised to a power (``φ̃·(∇²(φ²))²``)."""
-    from api.spatial_operator_ir import _is_add
+    from daedalus.api.spatial_operator_ir import _is_add
     flucts = [SR(f) for f in flucts]
     is_resp = [str(f) in {str(t) for t in tildes} for f in flucts]
     gens = [SR(g) for g in vertex]
@@ -1082,7 +1082,7 @@ def _lower_operator_ir_action(s, ns, naming_convention):
     ``ns._operator_ir_genmap = {gen: (base, op_chain)}`` for the propagator /
     vertex form-factor lowering (Phase 3).  Returns the rewritten action.
     """
-    from api.spatial_operator_ir import (
+    from daedalus.api.spatial_operator_ir import (
         apply_linearity, kill_means, to_derived_generators,
         classify_generators, GRADX_SYM)
     flucts = list(getattr(ns, '_all_field_sr_vars', []))
@@ -1302,7 +1302,7 @@ def make_action_lambda(action_text: str, *, field_names, param_names,
 
 
 # one copy
-from engine.core.field_theory import _iter_multi_indices  # noqa: E402
+from daedalus.engine.core.field_theory import _iter_multi_indices  # noqa: E402
 
 
 def _augment_saddle_renames(ns, functions, *,
@@ -1978,7 +1978,7 @@ def _delta_term_image(term, facs, deltas, t):
     """Image of a term ``c * dirac_delta(t)`` (with or without a
     ``heaviside(t)`` factor): the constant ``c``.  The delta of a causal
     kernel sits on the boundary and keeps its full weight, as in
-    ``api.sde.SDE._kernel_dc``; a factor depending on ``t`` is evaluated
+    ``daedalus.api.sde.SDE._kernel_dc``; a factor depending on ``t`` is evaluated
     at the delta (``t = 0``), the step counting as 1.  A delta at another
     time is a delay, not a local term."""
     import operator as _op
@@ -2125,7 +2125,7 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names,
                            — used directly (fast path).
       - ``'time_expr'``  : text expression in ``t`` and parameters
                            — Fourier-transformed symbolically via
-                           ``engine.core.field_theory.fourier_transform``
+                           ``daedalus.engine.core.field_theory.fourier_transform``
                            at build time.  This is the path the UI
                            uses when the user only specifies a
                            time-domain kernel.
@@ -2134,7 +2134,7 @@ def make_kernel_ft_image_lambda(kernel_specs: list[dict], *, param_names,
 
     Returns a lambda ``(ns, omega) -> {ns.<kname>: SR_expr_in_omega}``.
     """
-    from engine.core.field_theory import fourier_transform as _ft
+    from daedalus.engine.core.field_theory import fourier_transform as _ft
 
     def _compute_image(spec, eval_ns, omega, t_var, where, signs):
         """Either evaluate the user-supplied freq_image text or

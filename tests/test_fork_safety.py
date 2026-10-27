@@ -1,5 +1,5 @@
 """Unit tests for the shared fork-safety guard and kill switch
-(engine/fork_safety.py).
+(daedalus/engine/fork_safety.py).
 
 macOS never forks (``fork_unsafe``): forking after Cocoa/BLAS/ECL init has
 hard-crashed a Jupyter kernel AND the OS, and a Sage process is multithreaded
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-import engine.fork_safety as fs
-from engine.fork_safety import (fork_unsafe, fork_unsafe_in_notebook,
+import daedalus.engine.fork_safety as fs
+from daedalus.engine.fork_safety import (fork_unsafe, fork_unsafe_in_notebook,
                                 in_jupyter_kernel, parallel_disabled)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,15 +193,17 @@ def test_package_never_sets_the_objc_fork_safety_flag():
     guarded the forks it was meant for; it only leaked into every process
     exec'd later, where it turns the runtime's controlled abort into a hard
     crash (the June 2026 machine crashes)."""
-    hits = []
-    for sub in ('engine', 'api', 'simulations', 'tests', 'daedalus.py'):
+    hits, scanned = [], 0
+    for sub in ('daedalus', 'tests'):
         base = ROOT / sub
         files = [base] if base.is_file() else sorted(base.rglob('*.py'))
         for f in files:
             if f.resolve() == Path(__file__).resolve():
                 continue
+            scanned += 1
             if _SETS_OBJC.search(f.read_text(errors='replace')):
                 hits.append(str(f.relative_to(ROOT)))
+    assert scanned > 300, f'only {scanned} files scanned: has the package moved?'
     assert not hits, f'sets OBJC_DISABLE_INITIALIZE_FORK_SAFETY: {hits}'
     assert _SETS_OBJC.search("os.environ.setdefault(\n    'OBJC_DISABLE_"
                              "INITIALIZE_FORK_SAFETY', 'YES')")
@@ -240,7 +242,7 @@ def test_ecl_gc_in_a_forked_child_completes():
 
 
 def test_spatial_threads_gate_honours_the_kill_switch(monkeypatch):
-    from engine.integration.spatial.pipeline_bridge import _spatial_threads_gate
+    from daedalus.engine.integration.spatial.pipeline_bridge import _spatial_threads_gate
     monkeypatch.delenv(fs.PARALLEL_ENV, raising=False)
     assert _spatial_threads_gate(True, True, 4, 100) is True
     assert _spatial_threads_gate(True, False, 4, 100) is False     # L=1 only

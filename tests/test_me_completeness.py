@@ -1,15 +1,15 @@
 """
 tests/test_me_completeness.py
 =============================
-Item 54: matrix-exponential output completeness (``api/me_output.py``).
+Item 54: matrix-exponential output completeness (``daedalus/api/me_output.py``).
 
 * k >= 3 middle chambers: a swept leg between two other legs moves two
   segments (one grows, one shrinks); ``SubsetSS.me_chain`` returns the
-  chain and :class:`api.me_output.MEChainBlock` holds it as one Kronecker
+  chain and :class:`daedalus.api.me_output.MEChainBlock` holds it as one Kronecker
   triple.  Every chamber of every slice has triples; they equal the Phase J
   callables (``total_C_by_ell``) and ``dd.run``'s slices, and the mode list
   of a middle chamber reproduces the values.
-* the exact delayed tree (``api.delay``, k = 2): values, Laplace transforms
+* the exact delayed tree (``daedalus.api.delay``, k = 2): values, Laplace transforms
   (pairings) and spectrum without Pade or quadrature, checked against the
   closed-form spectrum of the scalar delayed OU process and an independent
   spectral quadrature of its Laplace transforms.
@@ -31,12 +31,12 @@ HERE = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(HERE, '..'))
 
 import daedalus as dd                                                # noqa: E402
-from api import compute_cumulants                                    # noqa: E402
-from api import me_output as ME                                      # noqa: E402
-from api.noise import Gaussian                                       # noqa: E402
-from api.sde import SDE                                              # noqa: E402
-from api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
-import engine.integration.time_domain.statespace as SS               # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api import me_output as ME                                      # noqa: E402
+from daedalus.api.noise import Gaussian                                       # noqa: E402
+from daedalus.api.sde import SDE                                              # noqa: E402
+from daedalus.api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS               # noqa: E402
 
 
 def _ss_models():

@@ -1,5 +1,5 @@
 """
-engine.integration.time_domain.propagator_td
+daedalus.engine.integration.time_domain.propagator_td
 ===========================================
 Time-domain retarded propagator utilities.
 
@@ -15,7 +15,7 @@ Conventions (fixed pipeline-wide)
 
    Under this convention, poles with Im(ω) > 0 yield decaying
    exponentials for t > 0 and growing exponentials for t < 0. The
-   causality filter in `engine.diagrams.causality` guarantees all
+   causality filter in `daedalus.engine.diagrams.causality` guarantees all
    `propagator_data['pole_vals']` have Im > 0 and thus parameterize the
    retarded sector.
 

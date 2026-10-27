@@ -1,5 +1,5 @@
 """
-models/quadratic_hawkes_alpha.model.py
+daedalus/models/quadratic_hawkes_alpha.model.py
 =========================================
 Nonlinear (quadratic) Hawkes process with an ALPHA-FUNCTION synaptic kernel.
 
@@ -24,7 +24,7 @@ nonlinearity enters through ``(exp(nt)-1)·φ(v)`` (the Hawkes/​point-process
 generating term), and the alpha kernel is a genuine non-Markovian convolution
 ``g * n`` handled by the pipeline's kernel machinery.
 """
-from api.model import TemporalModelBuilder
+from daedalus.api.model import TemporalModelBuilder
 
 
 def build():

@@ -31,18 +31,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 pytest.importorskip('sage.all')
 
-from api.model import ModelBuilder, SpatialModelBuilder          # noqa: E402
+from daedalus.api.model import ModelBuilder, SpatialModelBuilder          # noqa: E402
 
 
 # ── k=2 ±τ completion at two loops ─────────────────────────────────────────
 
 def _cubic_quartic_records(max_ell=2):
     from sage.all import SR
-    from api.compute import FieldTheory
-    from api._propagator import build_propagator
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
     b = (ModelBuilder('cq_conv', n_populations=0)
          .physical_field('p', spatial_dim=1)
@@ -79,13 +79,13 @@ def two_loop_records():
 
 def test_two_loop_rr_diagrams_without_leaf_swap_exist(two_loop_records):
     """The case the old leg-kind rule missed: {R,R} external legs, comp = 1."""
-    from engine.diagrams.symmetry import external_wick_compensation
+    from daedalus.engine.diagrams.symmetry import external_wick_compensation
     bad = [r for r in two_loop_records if r[0] == 2
            and sorted(e.kind for e in r[2].edges if e.external) == ['R', 'R']
            and external_wick_compensation(r[1]) == 1]
     assert len(bad) >= 1
     # one loop: the kind rule and the orbit index coincide
-    from engine.integration.spatial.full_integrator import _is_retarded_type
+    from daedalus.engine.integration.spatial.full_integrator import _is_retarded_type
     for ell, td, dd, _pv in two_loop_records:
         if ell <= 1:
             assert (external_wick_compensation(td) == 1) == \
@@ -97,8 +97,8 @@ def test_k2_completion_equals_general_k_mapping_sum(two_loop_records):
     field-respecting mappings ÷ comp (the Boltzmann-validated general-k
     architecture), for the comp = 1 {R,R} two-loop diagrams, at ±τ; and the
     single-field correlator is τ-even per diagram."""
-    from engine.diagrams.symmetry import external_wick_compensation
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.diagrams.symmetry import external_wick_compensation
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_correlator_x, diagram_correlator_pts,
         field_respecting_mappings)
     picked = [r for r in two_loop_records if r[0] == 2
@@ -129,7 +129,7 @@ def test_k2_completion_equals_general_k_mapping_sum(two_loop_records):
 def test_two_loop_correlator_needs_comp(two_loop_records):
     """Without comp the >= 2-loop k=2 completion refuses (the leg-kind
     fallback is exact only up to one loop)."""
-    from engine.integration.spatial.full_integrator import diagram_correlator
+    from daedalus.engine.integration.spatial.full_integrator import diagram_correlator
     dd, pv = next((r[2], r[3]) for r in two_loop_records if r[0] == 2)
     with pytest.raises(ValueError, match='external_wick_compensation'):
         diagram_correlator(dd, pv, 0.0, 0.5, 1.0, 1.0, spatial_dim=1,
@@ -177,7 +177,7 @@ def _lyapunov_cross_x(x, tau, i, j):
 @pytest.mark.parametrize('legs,i,j', [((('a', 1), ('b', 1)), 0, 1),
                                       ((('b', 1), ('a', 1)), 1, 0)])
 def test_coupled_tree_lag_convention(legs, i, j):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     fund = {'ma': _MA, 'mb': _MB, 'D': _DC, 'g': _G, 'h': _H,
             'Ta': _TA, 'Tb': _TB}
     xs = np.array([0.0, 0.5])
@@ -202,7 +202,7 @@ def test_spatial_total_c_is_the_returned_loop_grid():
     """d=1 φ⁴ (Allen–Cahn-type) at one loop: total_C(τ, x) == C_tau_x on the
     grid, total_C_by_ell = per-order increments, and at τ = 0 the result is
     the closed-form tadpole mass shift δμ ∂C₀/∂μ with δμ = 3λ C₀(0, 0)."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     mu, D, T, lam = 1.7, 0.8, 0.6, 0.04
     m = (ModelBuilder('ac_tc', n_populations=0)
          .physical_field('phi', spatial_dim=1)
@@ -247,7 +247,7 @@ def test_spatial_total_c_is_the_returned_loop_grid():
 
 def test_spatial_tree_total_c_off_grid_is_exact():
     """Single-field d=1 tree: off-grid points use the exact closed form."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     mu, D, T = 1.3, 0.7, 0.9
     m = (ModelBuilder('ou_tc', n_populations=0)
          .physical_field('phi', spatial_dim=1)

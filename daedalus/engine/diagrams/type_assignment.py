@@ -1,6 +1,6 @@
 """
-engine.diagrams.type_assignment
-===============================
+daedalus.engine.diagrams.type_assignment
+========================================
 Enumerate all valid field-type assignments on prediagram edges,
 vertices, and external legs.  Constraint-satisfaction engine.
 
@@ -134,7 +134,7 @@ def build_field_index_map(ring_var_names, n_tilde):
     phys_index : dict
         {(base, pop_idx): matrix_col} for physical fields.
     """
-    from engine.core.vertices import _parse_field_name
+    from daedalus.engine.core.vertices import _parse_field_name
 
     resp_index = {}
     phys_index = {}
@@ -400,7 +400,7 @@ def _leg_matchings(vertex_type, out_edges, in_edges):
     permutation ``range(N)`` would suggest.  Earlier versions of this
     function enumerated all N! index permutations and relied on the
     downstream ``deduplicate_typed_diagrams`` pass in
-    ``engine/diagrams/symmetry.py`` to discard the overcount.  That
+    ``daedalus/engine/diagrams/symmetry.py`` to discard the overcount.  That
     made the generation step wastefully large: typed-diagram counts
     blew up to ~15-20× the unique count before dedup, driving the
     ``enumerate_typed_diagrams`` wall time on cold runs.
@@ -408,7 +408,7 @@ def _leg_matchings(vertex_type, out_edges, in_edges):
     **Correctness under this change.**  The physics weight of a typed
     diagram is ``𝒮(Γ) × ∏_v coeff(v) × ∫(propagators)`` where
     ``𝒮(Γ) = ∏_v M_v`` is the ``combinatorial_factor`` from
-    ``engine/diagrams/symmetry.py::combinatorial_factor``.  ``M_v``
+    ``daedalus/engine/diagrams/symmetry.py::combinatorial_factor``.  ``M_v``
     is *exactly* the count of response-leg permutations at vertex ``v``
     that preserve the same typed diagram — i.e. the orbit size of
     identical-leg swaps.  So: old code generated ``𝒮(Γ)`` identical
@@ -711,9 +711,9 @@ def _joint_backtrack(prediagram, edges, ext_assignment, order, candidates,
 # is pickled, and ``TypedDiagram`` has explicit ``__getstate__`` /
 # ``__setstate__`` via ``__slots__`` for that purpose.
 #
-# Linux only: macOS never forks (``engine.fork_safety.fork_unsafe``; the
+# Linux only: macOS never forks (``daedalus.engine.fork_safety.fork_unsafe``; the
 # call runs serially there) and Windows has no fork -- same constraints as
-# ``engine/integration/time_domain/pipeline.py``'s ``total_C_batch``.
+# ``daedalus/engine/integration/time_domain/pipeline.py``'s ``total_C_batch``.
 
 _ENUM_WORKER_STATE = {}
 
@@ -785,7 +785,7 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     # Kill switch (DAEDALUS_PARALLEL=0), then the fork guard: macOS never
     # forks (a fork there has hard-crashed a Jupyter kernel and the OS), so
     # the enumeration runs serially with one warning per process.
-    from engine.fork_safety import (fork_unsafe, parallel_disabled,
+    from daedalus.engine.fork_safety import (fork_unsafe, parallel_disabled,
                                     warn_fork_fallback_once)
     if parallel and parallel_disabled():
         parallel = False
@@ -804,7 +804,7 @@ def enumerate_all(prediagrams, external_fields, vertex_types, source_types,
     # budget, or one outgrew its share).  Keeps 'prediagrams' order.
     results = []
     mask = _zero_mask(G_ft)
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         growth_guard)
     for i_pd, pd in enumerate(prediagrams):
         if i_pd % 64 == 0:
@@ -823,10 +823,10 @@ def _enumerate_all_forked(prediagrams, external_fields, vertex_types,
                           n_workers, start_method):
     """The fork-pool path of :func:`enumerate_all` (Linux): ``None`` when the
     workers would not fit the run's memory budget, or when one outgrew its
-    share (``engine.worker_budget``) -- the caller then works serially."""
+    share (``daedalus.engine.worker_budget``) -- the caller then works serially."""
     import multiprocessing as mp
     import os
-    from engine import worker_budget as _wb
+    from daedalus.engine import worker_budget as _wb
 
     n_w_cap = (n_workers if n_workers is not None
                else min(os.cpu_count() or 4, len(prediagrams)))

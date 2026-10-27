@@ -1,17 +1,17 @@
 """
-engine._spawn_worker
+daedalus.engine._spawn_worker
 ===================
 A Phase J worker PROCESS for parallel τ batches where fork is not allowed
-(macOS, Windows).  The parent (``engine.spawn_pool``) starts it as a fresh
-interpreter -- ``python -m engine._spawn_worker`` through ``subprocess``,
+(macOS, Windows).  The parent (``daedalus.engine.spawn_pool``) starts it as a fresh
+interpreter -- ``python -m daedalus.engine._spawn_worker`` through ``subprocess``,
 which execs at once: nothing of the parent's state (Cocoa, BLAS pools, ECL
 threads, a Jupyter kernel) is inherited, and the user's ``__main__`` is never
 re-imported (unlike ``multiprocessing``'s spawn).
 
 The worker never imports Sage.  It loads numpy, scipy and the Sage-free
 modules it evaluates with (``time_domain._light``, ``time_domain.statespace``,
-``api._realization``), with bare stand-ins for their parent packages
-(``engine.integration.time_domain`` and ``api``, whose ``__init__`` files
+``daedalus.api._realization``), with bare stand-ins for their parent packages
+(``daedalus.engine.integration.time_domain`` and ``api``, whose ``__init__`` files
 import Sage); see :func:`_bootstrap`.  A diagram task is the numeric state
 the parent already built (``statespace.diagram_payload``), so the worker's
 values are the same bytes as the parent's.
@@ -101,13 +101,13 @@ def _stub_package(name, path):
 
 def _bootstrap():
     """Make the evaluation modules importable without Sage (worker only)."""
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    import engine                                   # empty __init__
-    import engine.integration                       # empty __init__
-    _stub_package('engine.integration.time_domain',
-                  os.path.join(root, 'engine', 'integration', 'time_domain'))
-    _stub_package('api', os.path.join(root, 'api'))
-    from engine.integration.time_domain import statespace, _light
+    pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    import daedalus.engine                          # empty __init__
+    import daedalus.engine.integration              # empty __init__
+    _stub_package('daedalus.engine.integration.time_domain',
+                  os.path.join(pkg, 'engine', 'integration', 'time_domain'))
+    _stub_package('daedalus.api', os.path.join(pkg, 'api'))
+    from daedalus.engine.integration.time_domain import statespace, _light
     return statespace, _light
 
 

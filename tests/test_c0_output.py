@@ -1,7 +1,7 @@
 """
 tests/test_c0_output.py
 =======================
-C0 output (state-space stage S4, ``api/me_output.py``): the smooth part of a
+C0 output (state-space stage S4, ``daedalus/api/me_output.py``): the smooth part of a
 computed cumulant as matrix-exponential triples ``C(τ) = c e^{G|τ|} x0`` per
 loop order and side, the mode list derived from them, kernel pairings and
 the spectrum by resolvents, and the k >= 3 slices.
@@ -34,13 +34,13 @@ HERE = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(HERE, '..'))
 
 import daedalus as dd                                                # noqa: E402
-from api import compute_cumulants                                    # noqa: E402
-from api import me_output as ME                                      # noqa: E402
-from api import symbolic_out as so                                   # noqa: E402
-from api.cumulant import Cumulant                                    # noqa: E402
-from api.noise import Gaussian, Poisson                              # noqa: E402
-from api.sde import SDE                                              # noqa: E402
-import engine.integration.time_domain.statespace as SS               # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api import me_output as ME                                      # noqa: E402
+from daedalus.api import symbolic_out as so                                   # noqa: E402
+from daedalus.api.cumulant import Cumulant                                    # noqa: E402
+from daedalus.api.noise import Gaussian, Poisson                              # noqa: E402
+from daedalus.api.sde import SDE                                              # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS               # noqa: E402
 
 TAUS = np.linspace(-5.0, 5.0, 201)
 TT = TAUS.copy()     # C_tau's τ = 0 point: the exact Itô left limit (the triple's at_zero='-')
@@ -419,7 +419,7 @@ def test_pole_engine_is_never_silent(monkeypatch):
 
 
 def test_loaded_file_has_no_triples(tmp_path):
-    from api import save_npz, load_npz
+    from daedalus.api import save_npz, load_npz
     res = _cc(dd.load_model('ou_quartic')[0], [('dx', 1)] * 2, 0,
               taus=np.linspace(-3, 3, 7))
     p = save_npz(res, str(tmp_path / 'r.npz'))

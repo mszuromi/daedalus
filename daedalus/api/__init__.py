@@ -9,7 +9,7 @@ sanity checks.
 Core entry points
 -----------------
 
-  from api import compute_cumulants, generate_report
+  from daedalus.api import compute_cumulants, generate_report
 
   result = compute_cumulants(
       model            = HAWKES_MODEL,         # model dict
@@ -46,15 +46,15 @@ Shipped capabilities:
   - compute_cumulants — full pipeline up to and including Phase J
   - generate_report   — multi-page PDF with prediagrams + per-diagram values
   - model builder API (declarative model input) — TemporalModelBuilder /
-    SpatialModelBuilder in api/model.py; call .build() to produce a model
+    SpatialModelBuilder in daedalus/api/model.py; call .build() to produce a model
     dict consumable by compute_cumulants. This is the primary authoring path.
 """
-from api.compute     import compute_cumulants
-from api.report      import generate_report
-from api.save        import save_npz, save_csv, load_npz, params_slug, load_provenance
-from api.access      import MeanField, Parameters, normalize_external_fields
-from api._precompute import precompute
-from engine.errors   import DaedalusError
+from daedalus.api.compute     import compute_cumulants
+from daedalus.api.report      import generate_report
+from daedalus.api.save        import save_npz, save_csv, load_npz, params_slug, load_provenance
+from daedalus.api.access      import MeanField, Parameters, normalize_external_fields
+from daedalus.api._precompute import precompute
+from daedalus.engine.errors   import DaedalusError
 
 #: Daedalus version (keep in sync with pyproject.toml and daedalus.py;
 #: CITATION.cff describes the latest RELEASE and is bumped, with its

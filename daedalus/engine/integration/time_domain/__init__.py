@@ -1,5 +1,5 @@
 """
-engine.integration.time_domain
+daedalus.engine.integration.time_domain
 =============================
 Time-domain tree-level correlator evaluation.
 
@@ -8,9 +8,9 @@ explicit numerical quadrature of vertex-time integrals.  The pipeline
 works from:
 
   1. A list of typed diagrams (from the enumeration pipeline in
-     ``engine.diagrams``).
+     ``daedalus.engine.diagrams``).
   2. Their scalar prefactors (from ``classify_coefficient_factors``
-     in ``engine.diagrams.symmetry``).
+     in ``daedalus.engine.diagrams.symmetry``).
   3. The retarded propagator in pole-residue form: ``pole_vals``,
      ``C_mats``, ``D_delta`` (computed once from the kernel matrix
      ``K(ω)`` via eigenvalue decomposition).
@@ -62,21 +62,21 @@ Public API
 - ``pipeline.compute_correction_td``       — entry point / orchestrator
 """
 
-from engine.integration.time_domain.propagator_td import (
+from daedalus.engine.integration.time_domain.propagator_td import (
     build_G_t_matrix,
     G_t_entry,
     G_t_delta_coeff,
 )
-from engine.integration.time_domain.final_integral import (
+from daedalus.engine.integration.time_domain.final_integral import (
     integrate_diagram,
     integrate_tree_diagram,  # backward-compat alias of integrate_diagram
     _loop_number_from_graph,
     format_td_integral_latex,
 )
-from engine.integration.time_domain.pipeline import (
+from daedalus.engine.integration.time_domain.pipeline import (
     compute_correction_td,
 )
-from engine.integration.time_domain.subgraph import (
+from daedalus.engine.integration.time_domain.subgraph import (
     identify_loop_subgraphs,
 )
 

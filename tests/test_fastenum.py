@@ -1,8 +1,8 @@
 """
 tests/test_fastenum.py
 ======================
-The compiled hot loops (``engine/enumeration/_fastenum.pyx``, loaded by
-``engine.enumeration.fastenum`` through pyximport) must reproduce the pure
+The compiled hot loops (``daedalus/engine/enumeration/_fastenum.pyx``, loaded by
+``daedalus.engine.enumeration.fastenum`` through pyximport) must reproduce the pure
 Python enumeration exactly:
 
 * ``aux_cert`` is a complete isomorphism invariant of (di)multigraphs, in the
@@ -29,9 +29,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.enumeration import fastenum as F
-import engine.enumeration.loop_diagram_enumeration as L
-from engine.enumeration import prediagram_cache as pdc
+from daedalus.engine.enumeration import fastenum as F
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
+from daedalus.engine.enumeration import prediagram_cache as pdc
 
 pytestmark = pytest.mark.skipif(not F.available, reason=f'fastenum unavailable: {F.reason}')
 

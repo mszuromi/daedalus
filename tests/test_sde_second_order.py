@@ -1,5 +1,5 @@
 """Higher-order equations (automatic velocity embedding), pure integrators and the operator form of paper-style lines
-in the SDE front end (api/sde.py, api/sde_paper.py).
+in the SDE front end (daedalus/api/sde.py, daedalus/api/sde_paper.py).
 
 Linear models are checked against the exact stationary covariance from the Lyapunov equation
 A S + S A^T + B = 0 and C_ab(tau) = <a(0) b(tau)> = (expm(A tau) S)_ba: tree level is exact for them.
@@ -8,10 +8,10 @@ import numpy as np
 import pytest
 from scipy.linalg import expm, solve_continuous_lyapunov
 
-from api import compute_cumulants
-from api.noise import Gaussian
-from api.operators import TimeDerivative
-from api.sde import SDE, SDEError
+from daedalus.api import compute_cumulants
+from daedalus.api.noise import Gaussian
+from daedalus.api.operators import TimeDerivative
+from daedalus.api.sde import SDE, SDEError
 from tests import _sde_model_catalogue as cat
 from tests._sde_model_catalogue import digest
 

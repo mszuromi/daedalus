@@ -35,7 +35,7 @@ _REPO = os.path.join(os.path.dirname(__file__), '..')
 
 
 def _load_model(model_file: str):
-    path = os.path.join(_REPO, 'models', model_file)
+    path = os.path.join(_REPO, 'daedalus', 'models', model_file)
     spec = importlib.util.spec_from_file_location('m', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -43,8 +43,8 @@ def _load_model(model_file: str):
 
 
 def _build_prop(model):
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
     ft = FieldTheory(model, taylor_order=2)
     ft.expand()
     return build_propagator(ft, model, use_cache=False, verbose=False)
@@ -96,7 +96,7 @@ def test_g_tx_causal():
 
 # ── Phase 3: periodic boundary ────────────────────────────────────
 def test_pbc_propagator_is_image_sum():
-    from engine.integration.spatial.heat_kernel import image_sum
+    from daedalus.engine.integration.spatial.heat_kernel import image_sum
     prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.model.py'))
     assert prop['bc_mode'] == 'periodic'
     G = prop['G_tx'][(0, 0)]
@@ -122,7 +122,7 @@ def test_pbc_periodicity():
 
 
 def test_pbc_approaches_infinite_as_L_grows():
-    from engine.integration.spatial.heat_kernel import gaussian_heat_kernel
+    from daedalus.engine.integration.spatial.heat_kernel import gaussian_heat_kernel
     prop = _build_prop(_load_model('allen_cahn_1d_subcritical_pbc.model.py'))
     G = prop['G_tx'][(0, 0)]
     ginf = gaussian_heat_kernel(1.0, 0.0, 1.0, 1.0)
@@ -142,9 +142,9 @@ def test_pbc_approaches_infinite_as_L_grows():
     'allen_cahn_1d_subcritical_pbc.model.py',
 ])
 def test_precompute_builds_and_caches_spatial(model_file):
-    from api._precompute import precompute
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
+    from daedalus.api._precompute import precompute
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
     model = _load_model(model_file)
     out = precompute(model, force=True, verbose=False)
     assert out['propagator_built'] is True
@@ -170,7 +170,7 @@ def test_drift_heat_kernel_vs_analytic():
     """gaussian_heat_kernel with drift V=iv equals the analytic
     advection-diffusion Green's function, and V=0 is bit-identical to
     the pure heat kernel."""
-    from engine.integration.spatial.heat_kernel import gaussian_heat_kernel
+    from daedalus.engine.integration.spatial.heat_kernel import gaussian_heat_kernel
     A, B, v = 0.5, 1.0, 2.0
     maxerr = 0.0
     for t in (0.3, 1.0, 2.5):
@@ -190,7 +190,7 @@ def test_extract_mass_diffusion_drift():
     genuine-advection inverse propagator, and V=0 for a Laplacian-only
     (even) kernel."""
     from sage.all import SR, var, I
-    from engine.integration.spatial.heat_kernel import extract_mass_diffusion
+    from daedalus.engine.integration.spatial.heat_kernel import extract_mass_diffusion
     om = var('omega'); k = var('k'); lap = var('Laplacian'); gx = SR.var('GradX')
     A, B, v = 0.5, 1.0, 2.0
     Ae, Be, Ve = extract_mass_diffusion(I * om + A - B * lap + v * gx,
@@ -221,8 +221,8 @@ def test_burgers_compiles_with_saddle_drift():
 def test_burgers_kpz_vertex_modes():
     """The operator-IR lowering stashes the per-vertex form-factor mode:
     Burgers ∂_x(φ²) → 'composite', KPZ (∂_x h)² → 'perleg'."""
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
     for model_file, want_mode in (('burgers_1d.model.py', 'composite'),
                                     ('kpz_1d.model.py', 'perleg')):
         model = _load_model(model_file)

@@ -18,9 +18,9 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-import engine.integration.time_domain.final_integral as FI  # noqa: E402
-from api.compute import compute_cumulants  # noqa: E402
-from api.model import TemporalModelBuilder  # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI  # noqa: E402
+from daedalus.api.compute import compute_cumulants  # noqa: E402
+from daedalus.api.model import TemporalModelBuilder  # noqa: E402
 
 PARS = dict(lam=1 / 6, om=2 * math.pi / 48, sig=1 / math.sqrt(24),
             r=1 / 1.5, B=0.5)

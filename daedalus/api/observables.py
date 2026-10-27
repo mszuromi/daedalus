@@ -1,6 +1,6 @@
 """Cumulants of observables, functions of the fields (``SDE.observable``).
 
-An observable ``O = f(x)`` declared on an :class:`api.sde.SDE` is an external
+An observable ``O = f(x)`` declared on an :class:`daedalus.api.sde.SDE` is an external
 leg of :func:`api.compute_cumulants` (``external_fields=['rate']``, or
 ``('rate', u)`` for unit ``u`` of a population observable; field legs may
 be mixed in).  Its cumulants are the composite-operator expansion about the
@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['ObservableError', 'is_observable_call', 'observable_cumulants']
 
@@ -87,7 +87,7 @@ def _expansion(model, spec, leg, params, mf, field_units, where):
     """``(f*, {field leg: f_a}, {(a, b): f_ab})`` of one observable leg at
     the saddle; field legs are ``(natural name, unit)``."""
     from sage.all import SR
-    from api.noise import parse_expr
+    from daedalus.api.noise import parse_expr
     e = parse_expr(spec['inlined'], what=where)
     pop, unit = spec['population'], leg['unit']
     if pop is None and unit not in (None, 1):
@@ -133,7 +133,7 @@ def _expansion(model, spec, leg, params, mf, field_units, where):
 def observable_cumulants(model, call: dict) -> dict:
     """``compute_cumulants(**call)`` for a question whose external legs name
     observables (see the module docstring)."""
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     specs = model['observables']
     k, max_ell = int(call['k']), int(call.get('max_ell') or 0)
     legs = _legs(model, call['external_fields'])

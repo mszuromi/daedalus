@@ -1,5 +1,5 @@
 """
-engine.fork_safety
+daedalus.engine.fork_safety
 =================
 Canonical fork-safety guard and parallel kill switch, shared by every worker
 pool of the package (Phase J tau batches, type assignment, streaming

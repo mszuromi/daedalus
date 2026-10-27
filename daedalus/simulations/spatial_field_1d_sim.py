@@ -15,7 +15,7 @@ unbiased in the time step dt — unlike plain Euler-Maruyama, which
 inflates the fast (large-k) modes by O(dt·ω_max).  The nonlinear
 forcing ``-λφ³`` is added via the ETD1 integrating factor.
 
-Matches ``models/allen_cahn_1d_subcritical_pbc.model.py`` (and the
+Matches ``daedalus/models/allen_cahn_1d_subcritical_pbc.model.py`` (and the
 infinite-domain model in the large-L limit) with action
 ``phit·((Dt + μ - D·Laplacian)φ + λφ³) - T·phit²``.
 

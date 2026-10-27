@@ -12,7 +12,7 @@ stay accurate at any coupling. Both are off by default: without `resum=` no code
 | non-Gaussian | none ($\kappa_{k\ge3} = 0$), one exponential in $\tau$ | the loop orders' own: sunsets, multi-exponential $C(\tau)$ |
 | cost | one closure solve (milliseconds) after the expansion | about 25 runs of the loop pipeline at order $N$ (17 at $\tau = 0$ only) |
 
-Code: `api/hartree.py`, `api/resum.py`. Tests: `tests/test_hartree.py`, `tests/test_resum.py`. The tables below come from
+Code: `daedalus/api/hartree.py`, `daedalus/api/resum.py`. Tests: `tests/test_hartree.py`, `tests/test_resum.py`. The tables below come from
 `docs/resummation_validation.py` (`sage -python docs/resummation_validation.py`, about 5 minutes).
 
 ## Hartree: the self-consistent Gaussian

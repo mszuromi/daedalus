@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 
 pytest.importorskip('sage.all')
-from api.theory import TemporalTheoryBuilder          # noqa: E402
-import api.compute as AC                              # noqa: E402
+from daedalus.api.theory import TemporalTheoryBuilder          # noqa: E402
+import daedalus.api.compute as AC                              # noqa: E402
 import tests._ito_moments as im                       # noqa: E402
 
 T_STATIONARY = 150.0

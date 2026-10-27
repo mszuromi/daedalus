@@ -1,6 +1,6 @@
 """
-api.spectra
-===========
+daedalus.api.spectra
+====================
 Exact spectral and integrated outputs of a k = 2 result, without a lag
 grid: the power / cross spectrum ``S(ω)`` on a frequency grid,
 ``S(0)``, the integrated correlator ``∫_0^T C(τ) dτ`` for given windows ``T``
@@ -33,7 +33,7 @@ Conventions (k = 2)
 * ``S(0) = ∫ C dτ`` (the zero-frequency value, the diffusion constant of the
   time integral of ``x`` times 2 for an autocorrelation).
 * δ components.  A shot-noise spike ``w δ(τ − τ0)`` (``dd.cumulant``'s
-  :class:`~api.cumulant.DeltaComponent`) adds ``w e^{iωτ0}`` to ``S(ω)`` (the
+  :class:`~daedalus.api.cumulant.DeltaComponent`) adds ``w e^{iωτ0}`` to ``S(ω)`` (the
   flat floor ``w`` for ``τ0 = 0``).  The integrals count a spike at
   ``0 < τ0 <= T`` (``∫_0^T``) or ``-T <= τ0 < 0`` (``∫_{-T}^0``) fully; the
   spike AT ``τ = 0`` sits on the boundary of both windows and is in neither:
@@ -52,7 +52,7 @@ How they are computed
 ---------------------
 ``method='exact'`` (the default route of ``'auto'``): from the
 matrix-exponential triples of the state-space Phase J engine
-(:mod:`api.me_output`): per side ``C(u) = c e^{G u} x0``, ``u = |τ|``,
+(:mod:`daedalus.api.me_output`): per side ``C(u) = c e^{G u} x0``, ``u = |τ|``,
 
 * ``S(ω) = c_+ (−iω − G_+)^{-1} x0_+ + c_- (iω − G_-)^{-1} x0_-``, one
   triangular resolvent solve per block and frequency;
@@ -67,10 +67,10 @@ matrix-exponential triples of the state-space Phase J engine
 
 No pole, residue or quadrature is involved; the values agree with a fine
 quadrature of ``C_tau`` to round-off.  The exact delayed tree of a delay
-model (``api.delay``, ``tree='exact'``) has no triple but an exact Laplace
+model (``daedalus.api.delay``, ``tree='exact'``) has no triple but an exact Laplace
 transform: ``S(ω)`` and ``∫_0^∞`` stay exact, ``∫_0^T`` is computed by
 adaptive quadrature of the tree with its error estimate.  Padé loops
-(``api.delay``) are triples of the Padé-approximated model: exact for it,
+(``daedalus.api.delay``) are triples of the Padé-approximated model: exact for it,
 with the approximation error ``result['delay']['est_rel_error']``.
 
 ``method='quad'`` (and ``'auto'`` for a loop order without triples: a subset
@@ -79,10 +79,10 @@ deformation): adaptive QUADPACK quadrature of the Phase J callables
 (``quad`` on ``[0, ∞)``, on ``[0, T]`` up to ten correlation times and as
 ``∫_0^∞ − ∫_T^∞`` beyond, the Fourier-weight QAWF for ``S(ω ≠ 0)``), with the estimated absolute error of every value in
 ``error_by_ell`` / ``abs_error``; ``'auto'`` also issues an
-:class:`api.me_output.MEFallbackWarning` naming the orders and the reasons.
-``'exact'`` refuses (:class:`api.me_output.MEUnavailable`) instead.
+:class:`daedalus.api.me_output.MEFallbackWarning` naming the orders and the reasons.
+``'exact'`` refuses (:class:`daedalus.api.me_output.MEUnavailable`) instead.
 
-Refused (``ValueError`` before a run, :class:`api.me_output.MEUnavailable`
+Refused (``ValueError`` before a run, :class:`daedalus.api.me_output.MEUnavailable`
 after it): k ≠ 2, spatial models (``C(x, τ)``: no lag-axis triple),
 switch-on transients (``t_min``: not a function of the lag),
 ``discard=True`` / ``'auto'`` runs (their callables are released) and loaded
@@ -101,7 +101,7 @@ from typing import Any, Optional
 import numpy as np
 import scipy.linalg as sl
 
-from api._grids import is_real_number
+from daedalus.api._grids import is_real_number
 
 __all__ = ['spectra', 'resolve_spectra_options', 'SPECTRA_OPTIONS',
            'SpectraWarning']
@@ -167,7 +167,7 @@ def resolve_spectra_options(spec, name='spectra'):
     if bad:
         raise ValueError(f'{name}: unknown key(s) {bad}; the keys are '
                          f'{list(SPECTRA_OPTIONS)}.')
-    from api._grids import resolve_grid, require_finite
+    from daedalus.api._grids import resolve_grid, require_finite
     out = {}
     om = spec.get('omega')
     out['omega'] = (None if om is None else
@@ -239,7 +239,7 @@ def check_spectra_question(k, *, spatial=False, t_min=None, discard=False,
 def _decays(b):
     """True when every eigenvalue of the block's generator has a negative
     real part (the diagonal of its triangular form)."""
-    from api.me_output import MAX_BLOCK
+    from daedalus.api.me_output import MAX_BLOCK
     if b.constant:
         return False
     if b.n > MAX_BLOCK:
@@ -257,7 +257,7 @@ def _side_split(side):
     weight of its constant (non-decaying, ``u``-independent) blocks.
     Raises :class:`MEUnavailable` for a block with an eigenvalue of
     non-negative real part, or constant blocks that do not cancel."""
-    from api.me_output import MEUnavailable
+    from daedalus.api.me_output import MEUnavailable
     blocks, const, scale = [], 0j, 0.0
     for b in side.blocks:
         if b.constant:
@@ -281,7 +281,7 @@ def _side_split(side):
 def _laplace(side, zs):
     """``∫_0^∞ e^{−z u} C(u) du`` of one side for each ``z`` in ``zs``
     (``Re z >= 0``)."""
-    from api.me_output import ExactDelayTreeSide
+    from daedalus.api.me_output import ExactDelayTreeSide
     zs = np.atleast_1d(np.asarray(zs, dtype=complex))
     if isinstance(side, ExactDelayTreeSide):
         return np.array([side.laplace(z, 0) for z in zs], dtype=complex)
@@ -296,7 +296,7 @@ def _decay_rate(b):
     """``min(−Re λ)`` over the eigenvalues of a block's generator (the
     diagonal of its triangular form), or ``None`` when not decaying or
     unknown (a block beyond the dense forms)."""
-    from api.me_output import MAX_BLOCK
+    from daedalus.api.me_output import MAX_BLOCK
     if b.constant or b.n > MAX_BLOCK:
         return None
     r = -float(np.max(np.real(np.diag(b.tri()[0]))))
@@ -305,7 +305,7 @@ def _decay_rate(b):
 
 def _block_window(b, Ts):
     """``∫_0^T`` of one block for every ``T`` in ``Ts``."""
-    from api.me_output import MAX_BLOCK, MEUnavailable
+    from daedalus.api.me_output import MAX_BLOCK, MEUnavailable
     Ts = np.asarray(Ts, dtype=float)
     out = np.zeros(Ts.shape, dtype=complex)
     if b.weight == 0:
@@ -412,7 +412,7 @@ class _QuadSide:
                 and T > _DIRECT_SPANS * abs(I) / c0):
             return _quad_c(lambda u: self.C(sg * u), 0.0, T,
                            self._eabs(), epsrel, limit)
-        from api.me_output import MEUnavailable
+        from daedalus.api.me_output import MEUnavailable
         try:
             tail, et = _quad_c(lambda s: self.C(sg * (T + s)), 0.0, np.inf,
                                self._eabs(), epsrel, limit)
@@ -457,7 +457,7 @@ def _orders(result):
 
 
 def _refuse_result(result):
-    from api.me_output import MEUnavailable
+    from daedalus.api.me_output import MEUnavailable
     if not isinstance(result, dict) or 'config' not in result:
         raise TypeError('spectra needs a compute_cumulants / dd.run result '
                         'dict')
@@ -517,9 +517,9 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
         do not exist (a non-decaying ``C``) are NaN with the reason in
         ``notes``.
     """
-    from api.me_output import (MEUnavailable, MEFallbackWarning,
+    from daedalus.api.me_output import (MEUnavailable, MEFallbackWarning,
                                ExactDelayTreeSide)
-    from api.cumulant import Cumulant, _memo_C
+    from daedalus.api.cumulant import Cumulant, _memo_C
     _refuse_result(result)
     opts = resolve_spectra_options({'omega': omega, 'T': T, 'method': method,
                                     'epsabs': epsabs, 'epsrel': epsrel,
@@ -551,7 +551,7 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
         elif me.reasons.get(e) or e not in me.sides:
             quad_orders.append(e)
             why[e] = '; '.join(me.reasons.get(e) or ['no triple'])
-    from api.me_output import _exact_delay_tree
+    from daedalus.api.me_output import _exact_delay_tree
     if method == 'quad' and 0 in quad_orders and _exact_delay_tree(result):
         raise MEUnavailable(
             "spectra(method='quad'): the k = 2 tree is the exact delayed "
@@ -626,7 +626,7 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
                 if not inf_ok:
                     S = np.full(om.shape, nan)
                 elif isinstance(sp, ExactDelayTreeSide):
-                    from api.me_output import exact_delay_spectrum
+                    from daedalus.api.me_output import exact_delay_spectrum
                     S = exact_delay_spectrum(sp.tree, -om)
                 else:
                     S = _laplace(sp, -1j * om) + _laplace(sm, 1j * om)
@@ -729,7 +729,7 @@ def attach(result, opts):
     (``opts`` from :func:`resolve_spectra_options`).  A refusal at this
     stage (the run is kept) is recorded as ``{'status': 'refused',
     'reason': ...}`` with a :class:`SpectraWarning`."""
-    from api.me_output import MEUnavailable
+    from daedalus.api.me_output import MEUnavailable
     try:
         result['spectra'] = spectra(
             result, opts['omega'], opts['T'], method=opts['method'],
@@ -740,7 +740,7 @@ def attach(result, opts):
                              'conventions': CONVENTIONS}
         msg = (f"spectra could not be computed: {exc} -- see "
                f"result['spectra']")
-        from api.save import _ensure_warning_shown
+        from daedalus.api.save import _ensure_warning_shown
         _ensure_warning_shown(SpectraWarning, 'always', message=msg,
                               stacklevel=3)
         warnings.warn(msg, SpectraWarning, stacklevel=3)

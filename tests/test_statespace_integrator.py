@@ -3,8 +3,8 @@ tests/test_statespace_integrator.py
 ===================================
 State-space subset integrator for Phase J (S2; the default since S3,
 ``DAEDALUS_PHASE_J_ENGINE=poles`` switches it off): the downset sweep of
-``engine/integration/time_domain/statespace.py`` on S1's realization
-(``api/_realization.py``).  Inline public models only:
+``daedalus/engine/integration/time_domain/statespace.py`` on S1's realization
+(``daedalus/api/_realization.py``).  Inline public models only:
 
 * OU + cubic drift, k = 2, tree + one loop: closed form (Lyapunov + the exact
   first-order Hartree shift) and Phase J;
@@ -35,11 +35,11 @@ import mpmath as mp                                                   # noqa: E4
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                    # noqa: E402
-from api import _realization as RZ                                   # noqa: E402
-from api.model import TemporalModelBuilder                           # noqa: E402
-import engine.integration.time_domain.final_integral as FI           # noqa: E402
-import engine.integration.time_domain.statespace as SS               # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api import _realization as RZ                                   # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                           # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI           # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS               # noqa: E402
 
 ENV = SS.ENGINE_ENV
 
@@ -69,8 +69,8 @@ def _ss_counters():
 
 def ou_cubic():
     """x' = -mu x - eps x^3 + noise (variance 2 D)."""
-    from api.sde import SDE
-    from api.noise import Gaussian
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Gaussian
     return (SDE('ss_ou_cubic').parameter('mu', default=1.0)
             .parameter('eps', default=0.02).parameter('D', default=1.0)
             .field('x').drift('x', '-mu*x - eps*x^3')
@@ -94,8 +94,8 @@ def ou_colour(tc):
 
 def ou_erlang(n):
     """x' = -a x + c (g * x) - eps x^3 + noise, g an Erlang-n kernel."""
-    from api.sde import SDE
-    from api.noise import Gaussian
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Gaussian
     return (SDE(f'ss_ou_erlang{n}').parameter('a', default=1.0)
             .parameter('c', default=-2.0).parameter('d', default=1.0,
                                                     domain='positive')
@@ -109,7 +109,7 @@ _P_ALPHA = dict(a=1.0, b=0.3, h=0.5, tau=0.7, D=0.15)
 
 
 def _alpha_base(name, tau2):
-    from api.theory import TemporalTheoryBuilder
+    from daedalus.api.theory import TemporalTheoryBuilder
     b = (TemporalTheoryBuilder(name).population('E', size=1)
          .physical_field('x', population='E'))
     for k, v in dict(_P_ALPHA, tau2=tau2).items():

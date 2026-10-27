@@ -97,14 +97,14 @@ _OLD_NQUAD = pytest.mark.skipif(
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
-import engine.integration.time_domain.final_integral as FI       # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI       # noqa: E402
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 # The engine at this revision is the pre-M2b code (M2a, structural zeros).
 # A later Phase J milestone that adds a number-moving flag must set it to its
 # legacy value in the child of section G (or retire these comparisons).
 _PRE_M2B_REV = '16b5564'
-_FI_REL = 'engine/integration/time_domain/final_integral.py'
+_FI_REL = 'daedalus/engine/integration/time_domain/final_integral.py'
 
 
 def _counter(name):
@@ -1907,11 +1907,11 @@ def test_spike_reset_fallback_regions_match_the_exact_fan(hardened,
 def test_compute_cumulants_scopes_its_callables(hardened, private_cwd,
                                                 fresh_warning_state):
     """The callables ``compute_cumulants`` returns open an
-    ``nquad_warning_scope`` per call (``api.compute._phase_j_scoped``):
+    ``nquad_warning_scope`` per call (``daedalus.api.compute._phase_j_scoped``):
     every region of one call is aggregated into one warning.  A cheap model
     (no fallback) shows the wrapping; direct calls show the aggregation."""
-    from api import compute_cumulants
-    from api.compute import _phase_j_scoped
+    from daedalus.api import compute_cumulants
+    from daedalus.api.compute import _phase_j_scoped
     from tests.tools import phase_j_zoo_baseline as Z
     import daedalus as dd
     model, _ = dd.load_model('ou_quartic')
@@ -1939,7 +1939,7 @@ def test_compute_cumulants_aggregates_its_tau_grid(hardened, private_cwd,
     grouped diagrams), reported by ONE warning with those counts.  (Without
     the scope the first region warned at once, alone: '1 integration
     region(s) of 1 diagram(s)'.)"""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     from tests.tools import phase_j_zoo_baseline as Z
     import daedalus as dd
     model, _ = dd.load_model('single_population_spike_reset_test')
@@ -1970,7 +1970,7 @@ def test_public_callables_aggregate_the_warnings(hardened, private_cwd,
     fallback regions over dozens of typed diagrams (before: one warning per
     diagram), reported by ONE warning with their counts; a second call (or
     the master ``total_C``) adds none."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     from tests.tools import phase_j_zoo_baseline as Z
     import daedalus as dd
     model, _ = dd.load_model('single_population_spike_reset_test')
@@ -2028,7 +2028,7 @@ def pre_m2b_fi():
     src = _git_source(_FI_REL, _PRE_M2B_REV)
     mod = types.ModuleType('_pre_m2b_final_integral')
     mod.__file__ = FI.__file__
-    mod.__package__ = 'engine.integration.time_domain'
+    mod.__package__ = 'daedalus.engine.integration.time_domain'
     exec(compile(src, FI.__file__, 'exec'), mod.__dict__)
     assert not hasattr(mod, 'NQUAD_HARDENED')
     return mod
@@ -2084,7 +2084,7 @@ def test_old_routines_are_the_pre_m2b_engine_on_hand_built_regions(
 def _typed(edges, legs, n_vertices=4):
     """A TypedDiagram with the given edge types and external legs (the
     prediagram only needs ``vertices()``)."""
-    from engine.diagrams.type_assignment import TypedDiagram
+    from daedalus.engine.diagrams.type_assignment import TypedDiagram
     D = types.SimpleNamespace(vertices=lambda: list(range(n_vertices)))
     return TypedDiagram((D, None, (), ()), {}, dict(edges), dict(legs), {})
 

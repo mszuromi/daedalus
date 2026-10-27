@@ -1,5 +1,5 @@
 r"""
-Simulator for SDE front-end models with point processes (:meth:`api.sde.SDE.point_process`)
+Simulator for SDE front-end models with point processes (:meth:`daedalus.api.sde.SDE.point_process`)
 ==========================================================================================
 
 Time-discretised (step ``dt``), vectorised over ``n_paths`` independent
@@ -43,7 +43,7 @@ import math
 import re
 
 import numpy as np
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['simulate', 'cross_covariance', 'mean_rate', 'PPSimulationError']
 
@@ -251,7 +251,7 @@ def _param_values(sde, params):
 
 def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0,
              record=None, max_bytes=None):
-    """Simulate ``sde`` (an :class:`api.sde.SDE` with point processes, drifts and
+    """Simulate ``sde`` (an :class:`daedalus.api.sde.SDE` with point processes, drifts and
     Gaussian sources).  Returns ``{'counts': {name: (n_bins, size, n_paths)},
     'fields': {name: (n_bins, size, n_paths)}, 'bin': bin, 'dt': dt, ...}``:
     spike counts per bin of width ``bin`` (default ``dt``) and continuous fields
@@ -259,9 +259,9 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
     allowed (default: ``PHASE_J_MEM_BUDGET_GB``, else the memory guards' default
     budget, ``default_mem_budget``; ``off`` there means no limit);
     a larger one raises ``MemoryError`` before anything is allocated."""
-    from api.noise import expr_to_text
+    from daedalus.api.noise import expr_to_text
     from sage.all import SR
-    from api.sde import SDEError
+    from daedalus.api.sde import SDEError
     sde._derive()                                   # validates; declares composites
     # Sage-preparsed literals (a notebook's Integer / RealNumber) as Python
     # numbers: numpy's seeding and round() do not take them
@@ -363,8 +363,8 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
                         compiled(sde._index(pp['size']), f'<size {f}>'))
     # continuous fields: lhs = a*Dt*x + b*x, rhs (+ Gaussian sources)
     from sage.all import SR
-    from api.sde import _DT
-    from api.noise import parse_expr
+    from daedalus.api.sde import _DT
+    from daedalus.api.noise import parse_expr
     drift = {}
     for f in conts:
         eq = sde._eqs[f]
@@ -461,7 +461,7 @@ def simulate(sde, *, T, dt, n_paths, burn_in=50.0, bin=None, params=None, seed=0
     if max_bytes is None:
         # the Phase J budget rule: PHASE_J_MEM_BUDGET_GB, else the default
         # (``off`` / ``none`` / ``inf`` / ``unlimited``: no limit)
-        from engine.integration.time_domain.final_integral import mem_budget
+        from daedalus.engine.integration.time_domain.final_integral import mem_budget
         max_bytes, rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
     else:
         rule = f'max_bytes={float(max_bytes):g}'
@@ -557,7 +557,7 @@ def _flow_spec(sde, couples, compiled):
     ``c`` is affine in the fields with a constant Jacobian, the compiled
     Jacobian entries ``d c_f / d x_g`` (closed-form flow), else ``None``
     (the flow is integrated)."""
-    from api.noise import expr_to_text
+    from daedalus.api.noise import expr_to_text
     fl = list(couples)
     cs = {f: sde._parse(str(c), f'coefficient of {f}') for f, c in couples.items()}
     J = [[cs[f].diff(sde._sym(g)) for g in fl] for f in fl]

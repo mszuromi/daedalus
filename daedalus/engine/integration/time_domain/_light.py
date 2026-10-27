@@ -1,5 +1,5 @@
 """
-engine.integration.time_domain._light
+daedalus.engine.integration.time_domain._light
 ====================================
 The Sage-free pieces of Phase J that the state-space route evaluates with:
 the runtime counters (``_RUNTIME_COUNTERS`` and the thread / worker overlay,
@@ -8,13 +8,13 @@ the runtime counters (``_RUNTIME_COUNTERS`` and the thread / worker overlay,
 permutation sum of one diagram (:func:`diagram_sum`).
 
 ``final_integral`` re-exports every name (one object, one source of truth);
-a spawned Phase J worker (``engine._spawn_worker``) imports this module,
+a spawned Phase J worker (``daedalus.engine._spawn_worker``) imports this module,
 ``statespace``, numpy and scipy only -- never Sage.  So this module may
 import nothing but the standard library.
 """
 from collections import namedtuple
 
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 
 class PhaseJResourceError(DaedalusError, MemoryError):
@@ -248,7 +248,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     'setup_lazy_sr_built': 0,
     'setup_lazy_display_deferred': 0,
     'setup_lazy_display_built': 0,
-    # L5 (``engine.diagrams.symmetry``): automorphism-order memo
+    # L5 (``daedalus.engine.diagrams.symmetry``): automorphism-order memo
     # hits / misses / table clears, and the ``external_wick_compensation``
     # calls skipped because the diagram has a single Wick mapping.
     'setup_aut_memo_hits': 0,
@@ -422,7 +422,7 @@ _RUNTIME_COUNTERS = _CounterDict({
     # worst estimated-error / accepted-error ratio, and the subsets above 1.
     'dd_err_ratio_max': 0.0,
     'dd_ill_conditioned': 0,
-    # D2 (G6 of ``api.analyze``): the summed absolute rounding-error
+    # D2 (G6 of ``daedalus.api.analyze``): the summed absolute rounding-error
     # estimates (``COND_ERR_FACTOR`` x the expansion's magnitude) of the
     # box-free subset sums and of the answered DBM closed forms, for the
     # total-relative accuracy bound at the ``compute_cumulants`` level.

@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.spectral_propagator
-==============================================
+daedalus.engine.integration.spatial.spectral_propagator
+=======================================================
 Step 1 of the Dyson–Duhamel integration (``docs/dyson_duhamel_integration_plan.md``):
 the **spectral coupled-field reference propagator** ``G₀`` for the new
 ``SpatialModelBuilder`` machinery.  Self-contained numeric core — NOT yet wired into

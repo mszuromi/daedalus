@@ -3,7 +3,7 @@
 * ``_onenorm_powers``: d_1, d_2 exact; d_p (p > 2) the submultiplicative
   bound, an UPPER bound of the true ``||A^p||_1^{1/p}`` (what the Taylor
   fragment needs) and never above ``||A||_1``;
-* ``from api import compute_cumulants`` imports neither matplotlib.pyplot,
+* ``from daedalus.api import compute_cumulants`` imports neither matplotlib.pyplot,
   numba nor IPython (they are imported on use).
 """
 import os
@@ -15,7 +15,7 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-from engine.integration.time_domain import statespace as SS
+from daedalus.engine.integration.time_domain import statespace as SS
 
 
 @pytest.mark.parametrize('n', [1, 5, 40])
@@ -38,7 +38,7 @@ def test_onenorm_powers_are_upper_bounds(n):
 
 def test_api_import_is_lazy():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    code = ('import sys; from api import compute_cumulants; '
+    code = ('import sys; from daedalus.api import compute_cumulants; '
             "print(sorted(m for m in ('matplotlib.pyplot', 'numba', 'IPython')"
             ' if m in sys.modules))')
     out = subprocess.run([sys.executable, '-c', code], cwd=root,

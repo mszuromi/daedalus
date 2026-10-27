@@ -90,9 +90,9 @@ def precompute(model: dict, *, force: bool = False,
 
     try:
         # Imports inside the function so module import is cheap.
-        from engine.core.field_theory import FieldTheory
-        from api._propagator import build_propagator
-        from api import _expand_cache as _ec
+        from daedalus.engine.core.field_theory import FieldTheory
+        from daedalus.api._propagator import build_propagator
+        from daedalus.api import _expand_cache as _ec
     except ImportError as e:
         _log(f'[precompute] FATAL: cannot import api modules ({e!r})')
         out['mf_check'] = f'IMPORT_FAILED: {e}'
@@ -207,6 +207,6 @@ def _build_fundamental_defaults(model: dict) -> dict:
 def _solve_mf_at_saddle(model: dict, fundamental: dict, ft) -> dict:
     """The saddle values ``{<saddle>: [vals]}`` of the model's mean-field
     solve (the one multi-root solver, root 0)."""
-    from api._mean_field import solve_mean_field
+    from daedalus.api._mean_field import solve_mean_field
     result = solve_mean_field(ft, model, fundamental, verbose=False)
     return result.get('mf_values', {})

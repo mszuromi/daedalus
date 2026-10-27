@@ -3,14 +3,14 @@ State-space realization of the propagator without roots
 ========================================================
 
 ``realize(prop, num_params)`` turns the propagator stage's Fourier kernel
-``K_ft`` (``api/_propagator.py``: rows = response fields, columns = physical
+``K_ft`` (``daedalus/api/_propagator.py``: rows = response fields, columns = physical
 fields, symbolic in ``omega``) into a state-space quadruple
 
     G(s) = K(s)^{-1} = C (s I - A)^{-1} B + D,          s = i omega,
     G(t) = Theta(t) C e^{A t} B + D delta(t),
 
 without computing an eigenvalue or a numerical polynomial root.  The
-state-space Phase J route (``engine/integration/time_domain/statespace.py``,
+state-space Phase J route (``daedalus/engine/integration/time_domain/statespace.py``,
 the default engine) integrates with it; the pole engine
 (``DAEDALUS_PHASE_J_ENGINE=poles``) does not use it.
 
@@ -175,7 +175,7 @@ from typing import Any, Optional
 
 import numpy as np
 import scipy.linalg as sl
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = [
     'Realization', 'EntryRealization', 'RealizationRefused', 'realize',
@@ -496,7 +496,7 @@ def _clear_consumer_caches():
     """Drop the state-space route's realization cache (keyed by the model and
     the parameters, not by the tolerance), if that module is loaded."""
     import sys
-    ss = sys.modules.get('engine.integration.time_domain.statespace')
+    ss = sys.modules.get('daedalus.engine.integration.time_domain.statespace')
     if ss is not None:
         ss._clear_caches()
 
@@ -512,7 +512,7 @@ class truncation_scope:
     tolerance, so a change of the tolerance in effect clears that cache (on
     entry and on exit); a change of ``DAEDALUS_REALIZATION_TRUNCATION``
     after realizations were built does not (set it before the run, or clear
-    ``engine.integration.time_domain.statespace._clear_caches()``)."""
+    ``daedalus.engine.integration.time_domain.statespace._clear_caches()``)."""
 
     def __init__(self, tol):
         self.tol = None if tol is None else float(tol)
@@ -1879,7 +1879,7 @@ def realize_kernel(att, num_params=None, *, balance=True, truncation=None,
     all-pass Pade (n, n) image of a bare delay), with ``d`` in the
     realization; a polynomial part of degree >= 1 is refused as before.
 
-    ``att``: a ``ConvVertexType`` kernel attachment (``engine/core/
+    ``att``: a ``ConvVertexType`` kernel attachment (``daedalus/engine/core/
     vertices.py``) with ``kernel_ft_fn`` (``omega -> g^(omega)``, the
     codebase's ``g^(omega) = int g(t) e^{-i omega t} dt``) or ``kernel_td_fn``
     (``tau -> g(tau)``, Heaviside stripped; its Laplace transform is taken

@@ -18,14 +18,14 @@ import pytest
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                            # noqa: E402
-import engine.fork_safety as fs                                  # noqa: E402
-from api.compute import compute_cumulants                        # noqa: E402
-from engine.integration.time_domain import final_integral as FI  # noqa: E402
-from engine.integration.time_domain import pipeline as P         # noqa: E402
+import daedalus.engine.fork_safety as fs                                  # noqa: E402
+from daedalus.api.compute import compute_cumulants                        # noqa: E402
+from daedalus.engine.integration.time_domain import final_integral as FI  # noqa: E402
+from daedalus.engine.integration.time_domain import pipeline as P         # noqa: E402
 
 LINUX_FORK_ONLY = pytest.mark.skipif(
     sys.platform == 'darwin',
-    reason='macOS never forks (engine.fork_safety); Linux CI covers fork')
+    reason='macOS never forks (daedalus.engine.fork_safety); Linux CI covers fork')
 
 POINTS = [(0.0, t) for t in (-2.31, -0.7, 0.0, 0.43, 1.9, 3.3)]
 
@@ -143,7 +143,7 @@ def test_kill_switch_and_unknown_method(td, every_diagram_threads,
 
 
 def test_switch_on_scope_stays_serial(td, every_diagram_threads):
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine.integration.time_domain import statespace as SS
     fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
     with SS.switch_on_scope(-5.0):
         assert P._fan_out(fns, POINTS, True, 4, 'threads') is None
@@ -224,14 +224,14 @@ def test_explicit_fork_is_still_forked_where_allowed(td, monkeypatch):
     assert called == [2]
 
 
-# ── S2: spawned Sage-free workers (engine.spawn_pool) ──────────────────────
+# ── S2: spawned Sage-free workers (daedalus.engine.spawn_pool) ──────────────────────
 
 def test_payload_values_in_process_equal_the_contribution(td):
     """The numeric task a worker receives gives the contribution's bytes
     (same diagram_sum, same subset evaluation) -- checked in this process,
     after a pickle round trip of the payload."""
     import pickle
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine.integration.time_domain import statespace as SS
     fns = [g['contribution'] for g in td['groups'] if g.get('contribution')]
     for fn in fns[:6]:
         pl = SS.diagram_payload(fn)
@@ -255,7 +255,7 @@ def test_spawn_bit_identical_counters_merged_no_sage(td, n_workers,
     serial = td['total_C_batch'](pts, parallel=False)
     d_serial = {k: v - a.get(k, 0) for k, v in ints().items()
                 if v - a.get(k, 0) and not k.startswith('parallel_')}
-    from engine import spawn_pool as SP
+    from daedalus.engine import spawn_pool as SP
     seen = []
     real_map = SP.SpawnPool.map
 
@@ -280,8 +280,8 @@ def test_spawn_refused_or_lost_diagrams_are_evaluated_here(td, monkeypatch):
     """A diagram a worker cannot evaluate (here: a NaN prefactor, refused
     as non-finite), and every task of a worker that died, come back as
     'lost'; the batch evaluates them in this process."""
-    from engine import spawn_pool as SP
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine import spawn_pool as SP
+    from daedalus.engine.integration.time_domain import statespace as SS
     allf = [g['contribution'] for g in td['groups'] if g.get('contribution')]
     # diagrams with an evaluable subset (some have none: value 0)
     fns = [f for f in allf
@@ -307,7 +307,7 @@ def test_spawn_refused_or_lost_diagrams_are_evaluated_here(td, monkeypatch):
 
 
 def test_spawn_pool_close_leaves_no_process():
-    from engine import spawn_pool as SP
+    from daedalus.engine import spawn_pool as SP
     pool = SP.SpawnPool(2, {})
     procs = [w.proc for w in pool.workers]
     pool.close()
@@ -333,7 +333,7 @@ def test_spawn_is_opt_in_inside_a_kernel(monkeypatch):
 def test_auto_spawn_needs_enough_predicted_work(td, monkeypatch):
     """Automatic mode times a sample here; below ``SPAWN_MIN_SECONDS`` no
     worker starts and every diagram is evaluated here."""
-    from engine import spawn_pool as SP
+    from daedalus.engine import spawn_pool as SP
 
     def boom(*a, **k):
         raise AssertionError('a worker pool started')
@@ -347,10 +347,10 @@ def test_auto_spawn_needs_enough_predicted_work(td, monkeypatch):
     assert _bytes(vals) == _bytes(want)
 
 
-# ── S4: per-worker memory caps (engine.worker_budget) ──────────────────────
+# ── S4: per-worker memory caps (daedalus.engine.worker_budget) ──────────────────────
 
 def test_workers_that_fit_and_share(monkeypatch):
-    from engine import worker_budget as WB
+    from daedalus.engine import worker_budget as WB
     monkeypatch.setattr(WB, 'budget_left', lambda: (None, 'off'))
     assert WB.workers_that_fit(6, 10**9) == (6, None)
     monkeypatch.setattr(WB, 'budget_left', lambda: (10 * 2**20, 'test'))
@@ -363,7 +363,7 @@ def test_workers_that_fit_and_share(monkeypatch):
 
 
 def test_footprint_watch_reports_each_worker_once(monkeypatch):
-    from engine import worker_budget as WB
+    from daedalus.engine import worker_budget as WB
     sizes = {11: 5, 12: 50, 13: 70}
     monkeypatch.setattr(WB, 'pid_footprint_bytes', lambda pid: sizes[pid])
     hits = []
@@ -376,8 +376,8 @@ def test_footprint_watch_reports_each_worker_once(monkeypatch):
 
 
 def test_spawn_workers_that_do_not_fit_run_serially(td, monkeypatch):
-    from engine import spawn_pool as SP
-    from engine import worker_budget as WB
+    from daedalus.engine import spawn_pool as SP
+    from daedalus.engine import worker_budget as WB
 
     def boom(*a, **k):
         raise AssertionError('a worker pool started')
@@ -394,7 +394,7 @@ def test_spawn_worker_over_its_share_is_killed_and_redone_here(td,
     """A share far below any worker's footprint: the watch kills workers as
     they run; whatever they had not returned is evaluated here.  The batch
     is still the serial bytes."""
-    from engine import worker_budget as WB
+    from daedalus.engine import worker_budget as WB
     monkeypatch.setattr(WB, 'POLL_SECONDS', 0.01)
     monkeypatch.setattr(WB, 'workers_that_fit',
                         lambda n, per, counter=None: (2, 1))
@@ -408,7 +408,7 @@ def test_spawn_worker_over_its_share_is_killed_and_redone_here(td,
 @LINUX_FORK_ONLY
 def test_fork_pools_that_do_not_fit_run_serially(td, monkeypatch):
     import multiprocessing as mp
-    from engine import worker_budget as WB
+    from daedalus.engine import worker_budget as WB
     monkeypatch.setattr(WB, 'budget_left', lambda: (1, 'test'))
 
     def boom(*a, **k):
@@ -429,7 +429,7 @@ def test_spawn_needs_plain_times_and_settles_settings(td):
 
 
 def test_auto_spawn_start_failure_falls_back(td, monkeypatch):
-    from engine import spawn_pool as SP
+    from daedalus.engine import spawn_pool as SP
 
     def broken(*a, **k):
         raise SP.SpawnWorkerError('no interpreter')

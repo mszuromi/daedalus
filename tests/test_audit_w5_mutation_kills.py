@@ -3,13 +3,13 @@
 Mutation testing of the numerical core left lines whose result can change with no test
 noticing.  Each test below pins one of them against an independent value:
 
-  * Laurent residues at repeated roots (``api._pole_clusters._laurent_residue``): double and
+  * Laurent residues at repeated roots (``daedalus.api._pole_clusters._laurent_residue``): double and
     triple pole residues against the closed-form 1/(lambda - rho) coefficients;
   * the cancellation factor ``kappa`` of a pole cluster (``_kappa``): decoupled close poles do not
     cancel (kappa = 1 exactly);
   * the Taylor degree selection of the state-space exponential (``_taylor_params``, Al-Mohy &
     Higham: max(d_p, d_{p+1})): a stiff non-normal matrix against the 50-digit exponential;
-  * the exact delayed tree (``api._delay_exact``): a rational non-delayed part K0 with a nontrivial
+  * the exact delayed tree (``daedalus.api._delay_exact``): a rational non-delayed part K0 with a nontrivial
     denominator and a dynamic delayed kernel K1 against an independent spectral integral, and the
     route actually taken ('exact', not the Pade fallback);
   * the neutral-system guard of the exact delayed tree (D0 D1 != 0 is refused).
@@ -21,17 +21,17 @@ import numpy as np
 import pytest
 import scipy.linalg as sl
 
-import api.noise as N
-from api.compute import compute_cumulants
-from api.delay import Kernel
-from api.sde import SDE
+import daedalus.api.noise as N
+from daedalus.api.compute import compute_cumulants
+from daedalus.api.delay import Kernel
+from daedalus.api.sde import SDE
 
 
 # ----------------------------------------------------------------------------- pole clusters
 
 def _fracfield_matrix(entries_lam, nf):
     """A ``Frac(QQ[i][omega])`` propagator from entries given as functions of lambda = i omega
-    (the convention of ``api._pole_clusters``: ``p(omega) -> p(-i lambda)``), with the common
+    (the convention of ``daedalus.api._pole_clusters``: ``p(omega) -> p(-i lambda)``), with the common
     denominator."""
     from sage.all import CyclotomicField, PolynomialRing, matrix
     CF = CyclotomicField(4)
@@ -62,7 +62,7 @@ def test_laurent_residues_at_double_and_triple_poles():
     G_xw a triple root at lambda = -a.  The 1/(lambda + a) coefficients are
     d/dl (l + b)^-1 = -1/(b - a)^2 and (1/2) d^2/dl^2 (l + b)^-1 = 1/(b - a)^3."""
     from sage.all import QQ
-    from api import _pole_clusters as PC
+    from daedalus.api import _pole_clusters as PC
     a, b = QQ(1) / 2, QQ(2)
     E = [[None] * 4 for _ in range(4)]
     E[0][0] = lambda l: 1 / (l + a)
@@ -84,7 +84,7 @@ def test_decoupled_close_poles_do_not_cancel():
     """G = diag(-3/(lambda + a), 1/(lambda + a + delta)): the two close poles never meet in one
     entry, so nothing cancels and the cluster's cancellation factor is exactly 1."""
     from sage.all import QQ
-    from api import _pole_clusters as PC
+    from daedalus.api import _pole_clusters as PC
     a, delta = QQ(1), QQ(1) / 1000
     E = [[lambda l: -3 / (l + a), None], [None, lambda l: 1 / (l + a + delta)]]
     G, Q = _fracfield_matrix(E, 2)
@@ -97,7 +97,7 @@ def test_close_poles_in_one_entry_cancel_by_the_known_factor():
     """G = 1/((lambda + a)(lambda + a + delta)): residues +-1/delta cancel.  With s the cluster's
     scale, kappa = sum|C| / max_r |sum C ((lambda_k - c)/s)^r| = (2/delta) / (1/s) = 2 s / delta."""
     from sage.all import QQ
-    from api import _pole_clusters as PC
+    from daedalus.api import _pole_clusters as PC
     a, delta = QQ(1), QQ(1) / 1000
     G, Q = _fracfield_matrix([[lambda l: 1 / ((l + a) * (l + a + delta))]], 1)
     an = PC.analyze(G, Q, 1)
@@ -114,7 +114,7 @@ def test_taylor_action_on_a_stiff_non_normal_matrix(t):
     alpha_p = max(d_p, d_{p+1}), d_p = ||A^p||^{1/p}.  Here (a rate-1.9e3 decay fed from a
     zero-rate state, off-diagonal 254) a selection from d_p alone loses two to three digits.
     Reference: the 50-digit matrix exponential."""
-    from engine.integration.time_domain import statespace as S
+    from daedalus.engine.integration.time_domain import statespace as S
     A = np.array([[0.0, 0.0], [254.0, -1927.0]])
     x = np.array([1.12, -0.9])
     mu = float(np.trace(A)) / 2
@@ -173,7 +173,7 @@ def test_exact_delayed_tree_refuses_an_instantaneous_path_through_the_delay():
     """y = x + c y(t - d) + noise (algebraic y with a delayed self-term): D0 D1 != 0, a neutral
     system, which the exact tree does not cover."""
     from sage.all import SR, I, exp, matrix
-    from api._delay_exact import ExactTreeUnavailable, delayed_state_space
+    from daedalus.api._delay_exact import ExactTreeUnavailable, delayed_state_space
     omega = SR.var('omega')
     K = matrix(SR, [[I * omega + SR(3) / 2, 0], [-1, 1 - SR(2) / 5 * exp(-I * omega * SR(4) / 5)]])
     with pytest.raises(ExactTreeUnavailable, match='D0 D1'):

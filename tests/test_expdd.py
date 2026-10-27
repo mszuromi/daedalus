@@ -1,4 +1,4 @@
-"""M6: the divided-difference kernels of ``engine/integration/time_domain/expdd.py``.
+"""M6: the divided-difference kernels of ``daedalus/engine/integration/time_domain/expdd.py``.
 
 Accuracy is measured against mpmath at 80 digits (``mp.expm`` of the
 lower-bidiagonal matrix, whose ``(n, 0)`` entry is ``exp[z_0..z_n]``), with
@@ -33,7 +33,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.integration.time_domain.expdd as X
+import daedalus.engine.integration.time_domain.expdd as X
 
 ROOT = os.path.join(os.path.dirname(__file__), '..')
 SEED = int(os.environ.get('DAEDALUS_EXPDD_TEST_SEED', '0'))

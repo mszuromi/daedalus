@@ -28,9 +28,9 @@ import pytest
 sage = pytest.importorskip('sage.all')
 from sage.all import SR, I, matrix, exp, sqrt, assume, forget
 
-import engine.core.field_theory as F
-import api._propagator as P
-from api.model import TemporalTheoryBuilder
+import daedalus.engine.core.field_theory as F
+import daedalus.api._propagator as P
+from daedalus.api.model import TemporalTheoryBuilder
 from tests._cputime import CpuClock  # noqa: E402
 
 _J = [(0, 1, 1.0), (1, 2, -0.8), (0, 2, -0.5)]
@@ -163,7 +163,7 @@ def test_sr_inverse_is_sage_inverse():
 
 def test_three_unit_network_cold_build_and_lyapunov():
     import scipy.linalg as sla
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     model, xs, A, B = _network(3)
     clock = CpuClock()                        # CPU seconds, Maxima child included
     ft = F.FieldTheory(model, taylor_order=3)
@@ -186,7 +186,7 @@ def test_three_unit_network_cold_build_and_lyapunov():
 def test_numpy_scalar_reprs_in_action_text():
     """``f'{x!r}'`` of a numpy >= 2 scalar is ``np.float64(0.25)``: the
     action text reads it as the number (it raised a NameError on ``np``)."""
-    from api.model_compiler import _normalize_expr_text
+    from daedalus.api.model_compiler import _normalize_expr_text
     assert (_normalize_expr_text('np.float64(0.5)*x - numpy.int64(3) + '
                                  'np.float64(-3e-05)')
             == '(0.5)*x - (3) + (-3e-05)')
@@ -243,7 +243,7 @@ def test_symbolic_coefficient_network_one_loop_timed():
     """Two units, symbolic indexed coefficients, k = 1 one loop: 474.7 s and
     5.3 GB before (the symbolic inverse block and the per-diagram source
     zero tests in Maxima); ~18 s now.  Same mean as the numeric network."""
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     kw = dict(k=1, max_ell=1, tau_grid=np.array([0.0]), parallel=False,
               verbose=False, use_cache=False)
     clock = CpuClock()

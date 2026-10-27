@@ -20,11 +20,11 @@ from tests.phase_j_refactor_fixtures._configs import FixtureConfig
 
 
 def _load_model(model_file: str):
-    """Load a models/<file> via importlib and return the model dict."""
+    """Load a daedalus/models/<file> via importlib and return the model dict."""
     repo_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..', '..')
     )
-    full_path = os.path.join(repo_root, 'models', model_file)
+    full_path = os.path.join(repo_root, 'daedalus', 'models', model_file)
     spec = importlib.util.spec_from_file_location(
         f'_phase_j_fixture_model_{os.path.basename(model_file)}',
         full_path,
@@ -52,7 +52,7 @@ def evaluate(config: FixtureConfig) -> dict[str, Any]:
     """
     # Local import so pytest collection doesn't pay the pipeline import
     # cost when a config can be resolved purely from _configs.py.
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     model = _load_model(config.model_file)
 

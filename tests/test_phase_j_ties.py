@@ -87,12 +87,12 @@ sys.path.insert(0, os.path.abspath(
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', 'notebooks')))
 
-import api                                                  # noqa: E402
+import daedalus.api as api                                                  # noqa: E402
 import daedalus as dd                                       # noqa: E402
-from api import compute_cumulants                           # noqa: E402
-from api.compute import _ITO_EPS                            # noqa: E402
-from api.model import TemporalModelBuilder                  # noqa: E402
-import engine.integration.time_domain.final_integral as FI  # noqa: E402
+from daedalus.api import compute_cumulants                           # noqa: E402
+from daedalus.api.compute import _ITO_EPS                            # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                  # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI  # noqa: E402
 
 _RTOL_ORACLE = 1e-9      # plan §4.4, oracle comparisons
 _RTOL_TIE = 1e-11        # exact tie vs Richardson one-sided limit

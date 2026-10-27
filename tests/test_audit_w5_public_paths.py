@@ -15,11 +15,11 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
-import api.noise as N
-import api.symbolic_out as so
-from api import me_output as ME
-from api.compute import compute_cumulants
-from api.cumulant import Cumulant
+import daedalus.api.noise as N
+import daedalus.api.symbolic_out as so
+from daedalus.api import me_output as ME
+from daedalus.api.compute import compute_cumulants
+from daedalus.api.cumulant import Cumulant
 
 
 # ----------------------------------------------------------------------------- prediagram_mappings
@@ -140,8 +140,8 @@ def test_simulated_variance_of_a_delayed_kernel_sde_is_the_exact_tree():
     ring buffer delays the filter input by d.  The stationary variance of 4000 paths (dt = 0.01,
     Euler bias ~ a dt / 2) matches the exact tree to 2 %; without the delay it is 15 % lower."""
     from tests.test_audit_w5_mutation_kills import DK, _delayed_kernel_model, _spectral_reference
-    from api.delay import Kernel
-    from api.sde import SDE
+    from daedalus.api.delay import Kernel
+    from daedalus.api.sde import SDE
     s = SDE('w5 delayed kernel sim')
     for k, v in DK.items():
         s = s.parameter(k, default=v, **({'domain': 'positive'} if k in ('tk', 'd', 'm', 'D') else {}))

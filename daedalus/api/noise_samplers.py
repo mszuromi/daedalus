@@ -1,4 +1,4 @@
-"""Samplers for the noise library (:mod:`api.noise`).
+"""Samplers for the noise library (:mod:`daedalus.api.noise`).
 
 ``source.sample(dt, size, rng, values=None)`` draws ``size`` i.i.d. increments
 of the Levy process over a step ``dt``; ``jump.sample(rng, size, values=None)``
@@ -35,8 +35,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from api import noise as N
-from api.noise import NoiseError, _numeric
+from daedalus.api import noise as N
+from daedalus.api.noise import NoiseError, _numeric
 
 __all__ = ['sample_source', 'sample_jump', 'simulate_ou_paths',
            'euler_ou_cumulant', 'CGMY_EPS', 'MEIXNER_GRID']

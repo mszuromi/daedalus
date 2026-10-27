@@ -1,11 +1,11 @@
 """
-api.covariance — the k = 2 covariance matrix of a list of fields in one call,
+daedalus.api.covariance — the k = 2 covariance matrix of a list of fields in one call,
 and its parameter derivatives.
 
 ``covariance_matrix(model, fields, max_ell, tau_grid=...)`` returns
 ``Sigma[n, i, j] = C_ij(tau_n) = <dx_i(0) dx_j(tau_n)>`` for every pair of
 ``fields``, per loop order and in total.  It runs ``compute_cumulants`` once
-per pair inside :func:`api.compute.stage_memo`, so the stages that depend on
+per pair inside :func:`daedalus.api.compute.stage_memo`, so the stages that depend on
 the parameter point only -- the expansion, the propagator, the mean field and
 the poles / residues -- run once for the whole matrix; the diagrams of each
 pair (one external-leg typing) are enumerated, classified and evaluated once.
@@ -46,7 +46,7 @@ import warnings
 
 import numpy as np
 
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 #: relative step of the difference stencil (``h = STEP * |theta|``, or STEP
 #: itself at ``theta = 0``): the fourth-order truncation is ~STEP^4 and the
@@ -74,7 +74,7 @@ _REFUSED = {
     't_min': 'switch-on transients are not supported',
     'times': 'switch-on transients are not supported',
     'initial_covariance': 'switch-on transients are not supported',
-    'spectra': 'call api.spectra on a kept entry (keep_entries=True)',
+    'spectra': 'call daedalus.api.spectra on a kept entry (keep_entries=True)',
     'output_npz': 'save the entries one by one (keep_entries=True)',
     'output_csv': 'save the entries one by one (keep_entries=True)',
     'origin_leaf_idx': 'the matrix is C_ij(tau) = <dx_i(0) dx_j(tau)>',
@@ -242,7 +242,7 @@ def _plan(n_fields, grid, pairs):
 
 def _matrix_pass(model, legs, max_ell, params, grid, pairs, keep_entries,
                  verbose, options, want_ns=False):
-    from api.compute import compute_cumulants, stage_memo
+    from daedalus.api.compute import compute_cumulants, stage_memo
     n = len(legs)
     runs, refl = _plan(n, grid, pairs)
     sigma = np.zeros((len(grid), n, n), dtype=complex)
@@ -306,8 +306,8 @@ def _matrix_pass(model, legs, max_ell, params, grid, pairs, keep_entries,
 
 def _saddle_residual(model, values, ns):
     """``(state_vars, slices, R, keys)`` of the mean-field system at the
-    parameter values ``values`` (``api._mean_field_dae``'s own residual)."""
-    from api import _mean_field_dae as D
+    parameter values ``values`` (``daedalus.api._mean_field_dae``'s own residual)."""
+    from daedalus.api import _mean_field_dae as D
     if model.get('equations'):
         sv = D._state_variables(model)
         sl = D._state_slices(sv)
@@ -588,8 +588,8 @@ def covariance_matrix(model, fields=None, max_ell=0, *, parameters=None,
         the fourth-order one, plus a round-off floor ``ROUNDOFF max|Sigma| /
         h``; ``dmf``: the implicit-function derivative of the saddles).
     """
-    from api.compute import as_model_dict
-    from api._grids import resolve_grid
+    from daedalus.api.compute import as_model_dict
+    from daedalus.api._grids import resolve_grid
     model = as_model_dict(model)
     for key in options:
         if key in _REFUSED:
@@ -603,7 +603,7 @@ def covariance_matrix(model, fields=None, max_ell=0, *, parameters=None,
         raise ValueError(f"pairs must be 'upper' or 'all'; got {pairs!r}")
     if parameters is None:
         parameters = fundamental
-    from api.access import resolve_external_fields
+    from daedalus.api.access import resolve_external_fields
     legs = _legs(default_fields(model) if fields is None
                  else resolve_external_fields(model, list(fields)))
     grid = resolve_grid(tau_grid, 'tau_grid')

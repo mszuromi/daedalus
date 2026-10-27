@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.spatial_correlator
-=============================================
+daedalus.engine.integration.spatial.spatial_correlator
+======================================================
 Tree-level (Gaussian) spatial two-point correlator ``C(x, τ)`` for
 v1 spatial field theories.
 
@@ -37,7 +37,7 @@ import math
 import numpy as np
 from sage.all import SR
 
-from engine.integration.spatial.heat_kernel import (
+from daedalus.engine.integration.spatial.heat_kernel import (
     SpatialPropagatorError, erf_time_integral, gaussian_heat_kernel,
 )
 
@@ -55,7 +55,7 @@ def _noise_value(coeff, sub, exp_vec):
     except (TypeError, ValueError):
         left = sorted(str(v) for v in val.free_variables())
         if {'Laplacian', 'GradX'} & set(left):
-            from engine.integration.spatial import CONSERVED_NOISE_WHY
+            from daedalus.engine.integration.spatial import CONSERVED_NOISE_WHY
             raise SpatialPropagatorError(
                 f'noise coefficient {coeff} (monomial exponents {tuple(exp_vec)}) '
                 f'depends on the momentum (an operator in the response-field '
@@ -347,8 +347,8 @@ def compute_spatial_correlator_tree(ft, model, prop, num_params,
     # a multi-population field's population 2 is its own column (the old
     # name-only match with the digits stripped returned column 0 for every
     # population; an unknown leg fell back to column 0 silently).
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.pipeline_bridge import _legs_to_phys_idx
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.pipeline_bridge import _legs_to_phys_idx
     _, _pidx = build_field_index_map(list(ring_names), int(n_tilde))
     _keys = _legs_to_phys_idx(list(external_fields), _pidx)
     fi = int(_pidx[_keys[0]])

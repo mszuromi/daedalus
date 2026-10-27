@@ -1,5 +1,5 @@
 """
-simulations/coupled_rd_1d_sim.py
+daedalus/simulations/coupled_rd_1d_sim.py
 ===========================
 N-species coupled stochastic reaction-diffusion Langevin simulator on a
 1D ring (periodic boundary) + the exact linear "box correlator" oracle.
@@ -13,7 +13,7 @@ spacing dx = L/n_x):
     d_t phi_i = -sum_j M_ij phi_j + D_i d_x^2 phi_i - g_i phi_i^3 + xi_i,
     <xi_i(x,t) xi_j(x',t')> = Nnoise_ij delta(x-x') delta(t-t').
 
-Conventions match ``simulations/spatial_field_1d_sim.py`` (the scalar 1D
+Conventions match ``daedalus/simulations/spatial_field_1d_sim.py`` (the scalar 1D
 oracle): finite-difference Laplacian on the ring, spatial white noise
 discretized as ``delta(x-x') -> delta_mm'/dx`` so each Euler step adds
 ``chol(Nnoise) @ randn(N, n_x) * sqrt(dt/dx)``, and estimators are
@@ -149,7 +149,7 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
         C_ij(x_lag, tau_lag) = <phi_i(x, t) phi_j(x + x_lag, t + tau_lag)>
 
     (the package convention kappa(phi_i(0), phi_j(tau)), as
-    ``api.cumulant``, ``pp_simulate.cross_covariance`` and
+    ``daedalus.api.cumulant``, ``pp_simulate.cross_covariance`` and
     ``delay_sde_sim.autocovariance``; before Oct 2026 this simulator and its
     oracle used the transpose)
 
@@ -248,7 +248,7 @@ def simulate_coupled_rd_1d(M, D, Nnoise, g=None, L=20.0, n_x=128, dt=2e-3,
     # ``off`` there means no limit)
     need = 24 * n_rec * n_rep * n_f * n_x
     if max_bytes is None:
-        from engine.integration.time_domain.final_integral import mem_budget
+        from daedalus.engine.integration.time_domain.final_integral import mem_budget
         max_bytes, rule = mem_budget('PHASE_J_MEM_BUDGET_GB')
     else:
         rule = f'max_bytes={float(max_bytes):g}'

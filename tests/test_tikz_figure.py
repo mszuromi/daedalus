@@ -8,8 +8,8 @@ must say so, or it misrepresents the expansion.
 
 import pytest
 
-import engine.enumeration.loop_diagram_enumeration as L
-from engine.diagrams.tikz_figure import (
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
+from daedalus.engine.diagrams.tikz_figure import (
     diagrams_to_figure, diagrams_to_standalone, legend_table,
 )
 
@@ -53,7 +53,7 @@ def test_caption_and_label_are_optional(pds):
 
 def test_array_suppresses_edge_labels_by_default(pds):
     """An array is structural; a lone diagram is pedagogical."""
-    from engine.diagrams.tikz_export import to_tikz_feynman
+    from daedalus.engine.diagrams.tikz_export import to_tikz_feynman
     assert 'edge label' not in diagrams_to_figure(pds[:2])
     assert 'edge label' in to_tikz_feynman(pds[0])
     assert 'edge label' in diagrams_to_figure(pds[:2], propagator_label='G')
@@ -143,7 +143,7 @@ def test_export_tikz_writes_standalone_for_tex_path(tmp_path, pds):
 def test_symbol_map_is_shared_across_the_figure():
     """v_1 must mean the same factor in every panel, and the key must list
     every factor the figure uses -- not just the first panel's."""
-    from engine.diagrams.tikz_export import vertex_symbol_map
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map
 
     class _C:
         def __init__(self, t): self.t = t
@@ -167,7 +167,7 @@ def test_symbol_map_is_shared_across_the_figure():
 
 
 def test_legend_lists_styles_and_symbols(pds):
-    from engine.diagrams.tikz_figure import legend_table
+    from daedalus.engine.diagrams.tikz_figure import legend_table
     tex = legend_table(pds[0], vertex_symbols={r'-D': r'v_{1}'})
     assert 'tabular' in tex
     assert r'v_{1}' in tex and '-D' in tex
@@ -175,7 +175,7 @@ def test_legend_lists_styles_and_symbols(pds):
 
 def test_pages_output_is_not_a_float(pds):
     """A complete set must flow across pages; a figure float cannot break."""
-    from engine.diagrams.tikz_figure import diagrams_to_pages
+    from daedalus.engine.diagrams.tikz_figure import diagrams_to_pages
     tex = diagrams_to_pages(pds, ncol=2, caption='All of them.')
     assert r'\begin{figure}' not in tex, 'must not be a float'
     assert r'\captionof{figure}' in tex, 'caption without a float'
@@ -183,7 +183,7 @@ def test_pages_output_is_not_a_float(pds):
 
 
 def test_pages_draws_everything_with_no_truncation(pds):
-    from engine.diagrams.tikz_figure import diagrams_to_pages
+    from daedalus.engine.diagrams.tikz_figure import diagrams_to_pages
     tex = diagrams_to_pages(pds)
     assert 'omitted' not in tex
     assert tex.count(r'\begin{tikzpicture}') == len(pds)
@@ -192,8 +192,8 @@ def test_pages_draws_everything_with_no_truncation(pds):
 def test_legend_lists_sources_and_interactions_with_expressions(pds):
     """Both kinds of vertex appear on the drawings, so both must be in the
     key -- a symbol the key omits is unreadable."""
-    from engine.diagrams.tikz_figure import legend_table
-    from engine.core.vertices import SourceType, VertexType
+    from daedalus.engine.diagrams.tikz_figure import legend_table
+    from daedalus.engine.core.vertices import SourceType, VertexType
 
     class _TD:
         prediagram = None
@@ -211,9 +211,9 @@ def test_legend_lists_sources_and_interactions_with_expressions(pds):
 
 def test_pages_share_one_map_across_sources_and_interactions():
     """kappa_2 and v_1 must mean the same factor in every panel."""
-    from engine.diagrams.tikz_figure import diagrams_to_pages
-    from engine.core.vertices import SourceType, VertexType
-    import engine.enumeration.loop_diagram_enumeration as L
+    from daedalus.engine.diagrams.tikz_figure import diagrams_to_pages
+    from daedalus.engine.core.vertices import SourceType, VertexType
+    import daedalus.engine.enumeration.loop_diagram_enumeration as L
 
     pd = L.enumerate_all(2, 1, verbose=False)[2][0]
     D, G, leaves, internal = pd
@@ -249,7 +249,7 @@ def test_the_key_describes_the_whole_figure_not_one_panel():
     drawing with nothing in the key to explain it.  Passing the figure-wide
     style map fixes both halves at once.
     """
-    from engine.diagrams.tikz_export import edge_style_map
+    from daedalus.engine.diagrams.tikz_export import edge_style_map
 
     class _Styled:
         def __init__(self, *pairs):

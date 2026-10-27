@@ -30,9 +30,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import api.compute as AC
+import daedalus.api.compute as AC
 import daedalus as dd
-import engine.integration.time_domain.final_integral as FI
+import daedalus.engine.integration.time_domain.final_integral as FI
 from sage.all import QQ, SR, pi, solve as sage_solve
 
 from tests.test_phase_j_setup_fastpath import _delta_values, _pair_tree

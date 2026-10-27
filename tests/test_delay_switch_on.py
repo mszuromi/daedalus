@@ -1,7 +1,7 @@
 """Switch-on transients (``t_min``) of a model with a delay kernel.
 
 The fluctuations and the history of every delayed field are zero before ``t_min``.  The exact delayed tree
-(``api._delay_exact``) is the stationary covariance, so a transient takes the Pade approximant for the tree too: the
+(``daedalus.api._delay_exact``) is the stationary covariance, so a transient takes the Pade approximant for the tree too: the
 loops and the tree converge together as the order grows, with the slower rate of the first delay after ``t_min``
 (measured: 7e-3, 2e-3, 2e-4 relative at n = 4, 8, 16 for tau < d).  The order controller reports that honestly
 (``target_met``, ``status``).  References: the closed-form Ornstein-Uhlenbeck transient inside the first delay (the
@@ -15,9 +15,9 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-from api import compute_cumulants                                      # noqa: E402
-from api.delay import DelayOrderWarning                                # noqa: E402
-from api._delay_exact import ExactTree                                 # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api.delay import DelayOrderWarning                                # noqa: E402
+from daedalus.api._delay_exact import ExactTree                                 # noqa: E402
 from tests.test_delay_kernels import A_, D_, _exact_ou, _ou           # noqa: E402
 
 EXT = [('x', 1), ('x', 1)]
@@ -77,7 +77,7 @@ def test_a_loose_target_is_met_by_the_search():
 
 
 def test_initial_covariance_with_a_delay_is_refused_by_name():
-    from engine.integration.time_domain.statespace import SwitchOnUnsupported
+    from daedalus.engine.integration.time_domain.statespace import SwitchOnUnsupported
     m = _ou('delay switch-on c0', d=D_DELAY)
     with pytest.raises(SwitchOnUnsupported, match='initial_covariance is not available'):
         _run(m, [[0.4, 0.4]], initial_covariance=np.array([[0.1]]))

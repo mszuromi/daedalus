@@ -3,7 +3,7 @@ Gaussian jitter of an exogenous input: ``Kernel.gaussian(sigma, tol=...)``.
 
 The Gaussian density is acausal; on an exogenous stationary input it is
 replaced by a rational fit of the density shifted by ``T`` with the shift
-dropped (``api._gaussian_fit``), which changes no stationary statistic of the
+dropped (``daedalus.api._gaussian_fit``), which changes no stationary statistic of the
 network.  Checked here against references that use the TRUE Gaussian:
 
 * the fit itself: L1 error (independent quadrature), image and spectral
@@ -35,11 +35,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from scipy.integrate import quad                                    # noqa: E402
 from scipy.special import log_ndtr, roots_legendre                  # noqa: E402
 
-from api import compute_cumulants                                   # noqa: E402
-from api._gaussian_fit import gaussian_fit                          # noqa: E402
-from api.delay import Kernel                                        # noqa: E402
-from api.noise import Gaussian, Poisson                             # noqa: E402
-from api.sde import SDE, SDEError                                   # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api._gaussian_fit import gaussian_fit                          # noqa: E402
+from daedalus.api.delay import Kernel                                        # noqa: E402
+from daedalus.api.noise import Gaussian, Poisson                             # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                   # noqa: E402
 
 TAU, TAUX, LAM, P, W = 1.0, 0.5, 2.0, 0.7, 1.3
 KW = dict(parallel=False, verbose=False, use_cache=False)
@@ -296,7 +296,7 @@ def test_refuses_observing_the_input_and_switch_on_runs():
 
 
 def test_declaration_scope():
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     with pytest.raises(ValueError, match='SDE front end'):
         TemporalModelBuilder('b').define_kernel('g', kernel=Kernel.gaussian('sigma'))
     with pytest.raises(SDEError, match='is indexed'):
@@ -312,7 +312,7 @@ def test_declaration_scope():
 
 
 def test_a_gaussian_time_kernel_is_refused_with_a_pointer():
-    from api.analyze import AnalyzerError
+    from daedalus.api.analyze import AnalyzerError
     s = (SDE('acausal gaussian').parameter('lam', default=1.0, domain='positive')
          .parameter('sigma', default=0.5, domain='positive')
          .define_kernel('g', time_expr='exp(-t^2/(2*sigma^2))/sqrt(2*pi*sigma^2)')
@@ -349,7 +349,7 @@ def test_refuses_the_bypasses_of_the_exogeneity_check():
 
 def test_modular_kalman_falls_back_on_a_denominator_divisible_by_its_prime():
     from sage.all import QQ, matrix
-    from api import _realization as R
+    from daedalus.api import _realization as R
     A = matrix(QQ, [[1, QQ(1) / R._KRYLOV_PRIME], [0, 2]])
     B = matrix(QQ, [[1], [1]])
     assert R._controllable_part_modular(A, B) is None

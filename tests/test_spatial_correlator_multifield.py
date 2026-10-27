@@ -25,8 +25,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.model import ModelBuilder
-from api import compute_cumulants
+from daedalus.api.model import ModelBuilder
+from daedalus.api import compute_cumulants
 
 
 def _closed_equal_time(x, mu, D, T):
@@ -229,7 +229,7 @@ def test_mixed_dim0_field_spatial_request_raises_clean():
     """Requesting the SPATIAL correlator of a time-only (dim=0) field
     must raise a CLEAR SpatialPropagatorError (its heat-kernel block has
     B=0 diffusion), not a bare ZeroDivisionError from 1/sqrt(4*pi*B)."""
-    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
     model = _mixed_dim_model()
     with pytest.raises(SpatialPropagatorError, match='time-only'):
         compute_cumulants(
@@ -269,7 +269,7 @@ def test_negative_diffusion_raises_anti_diffusive_error():
     """A wrong-sign Laplacian ("+ D*Laplacian") makes B<0 (anti-diffusion).
     The error must identify it as anti-diffusive / ill-posed and hint at the
     sign — NOT mislabel it as a zero-diffusion time-only (dim=0) field."""
-    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
     model = (
         ModelBuilder('neg diffusion', n_populations=0)
         .physical_field('phi', spatial_dim=1)
@@ -279,7 +279,7 @@ def test_negative_diffusion_raises_anti_diffusive_error():
         .set_action_text('phit*((Dt + mu + D*Laplacian)*phi) - T*phit^2')
         .mf_residual(lhs='(Dt + mu + D*Laplacian)*phi', rhs='0')
         .boundary('infinite').initial('stationary').build())
-    from api.analyze import AnalyzerError
+    from daedalus.api.analyze import AnalyzerError
     kw = dict(model=model, k=2, max_ell=0,
               fundamental={'mu': 1.0, 'D': 1.0, 'T': 1.0},
               external_fields=[('phi', 1), ('phi', 2)],

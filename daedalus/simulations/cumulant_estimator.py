@@ -1,5 +1,5 @@
 """
-simulations/cumulant_estimator.py
+daedalus/simulations/cumulant_estimator.py
 ============================
 Estimator for lagged factorial-cumulant slices of binned point-process
 (spike train) data.

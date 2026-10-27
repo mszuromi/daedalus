@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engine.integration.time_domain import statespace as SS  # noqa: E402
+from daedalus.engine.integration.time_domain import statespace as SS  # noqa: E402
 
 
 def _matrix(n, seed=3):
@@ -51,7 +51,7 @@ def test_exact_range_is_the_true_norm_and_p_bounds_are_upper_bounds():
 # ``expr.subs({a: 1.1, b: 2.3, c: 3.7})`` on ``a*b*c`` multiplies the floats in an order
 # derived from per-process symbol hashes: the last bit of the Phase J prefactors (and so of
 # every cumulant) differed from one process to the next (1-4 ulp), whatever PYTHONHASHSEED.
-# engine.core.detnum.numeric_subs evaluates in a canonical order instead.
+# daedalus.engine.core.detnum.numeric_subs evaluates in a canonical order instead.
 
 import subprocess                                   # noqa: E402
 import textwrap                                     # noqa: E402
@@ -77,7 +77,7 @@ def _collect(procs):
 def test_numeric_subs_unit_values():
     import math
     from sage.all import SR, var, exp
-    from engine.core.detnum import numeric_subs
+    from daedalus.engine.core.detnum import numeric_subs
     a, b, c, d = var('a b c d')
     vals = {a: 1.1, b: 2.3, c: 3.7, d: 0.31}
     exact = {k: SR(str(v)) for k, v in vals.items()}       # the decimal values, exactly
@@ -96,7 +96,7 @@ def test_numeric_subs_unit_values():
 def test_numeric_subs_is_identical_across_processes():
     code = """
         from sage.all import var
-        from engine.core.detnum import numeric_subs
+        from daedalus.engine.core.detnum import numeric_subs
         a1, a2, v, w, x = var('a1 a2 v w x')
         vals = {a1: 2.5, a2: 3.7, v: 3.0733, w: 0.1129, x: 1.7e-3}
         out = [numeric_subs(-a1 * a2 * v, vals), numeric_subs(a1 * a2 * v * w * x, vals),
@@ -114,7 +114,7 @@ def test_a_loop_cumulant_is_byte_identical_across_processes():
         import warnings; warnings.simplefilter('ignore')
         import numpy as np
         import daedalus as dd
-        from api import compute_cumulants
+        from daedalus.api import compute_cumulants
         m, mod = dd.load_model('single_population_spike_reset_test')
         r = compute_cumulants(m, k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
             parameters={'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
@@ -134,9 +134,9 @@ def test_the_dedup_representative_does_not_depend_on_pythonhashseed():
     code = """
         import warnings; warnings.simplefilter('ignore')
         import numpy as np
-        from api import compute_cumulants
-        from api.noise import Gaussian
-        from api.sde import SDE
+        from daedalus.api import compute_cumulants
+        from daedalus.api.noise import Gaussian
+        from daedalus.api.sde import SDE
         m = (SDE('seedtwin').parameter('mu', default=1.0, domain='positive')
              .parameter('nu', default=2.0, domain='positive').parameter('c', default=0.5)
              .parameter('eps', default=0.1).parameter('D', default=1.0, domain='positive')

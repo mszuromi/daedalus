@@ -52,7 +52,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
-import engine.integration.time_domain.final_integral as FI       # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI       # noqa: E402
 
 VARIANTS = ('plan', 'noplan')
 RTOL = 1e-13
@@ -314,8 +314,8 @@ def _hand_built_prop():
 
 def _colored_noise_td():
     from sage.all import SR, DiGraph, exp
-    from engine.core.vertices import NoiseSourceType
-    from engine.diagrams.type_assignment import TypedDiagram
+    from daedalus.engine.core.vertices import NoiseSourceType
+    from daedalus.engine.diagrams.type_assignment import TypedDiagram
     D = DiGraph(multiedges=True, loops=False)
     D.add_edge(2, 0, 'a')
     D.add_edge(2, 1, 'b')
@@ -336,8 +336,8 @@ def _colored_noise_td():
 
 def _conv_vertex_td():
     from sage.all import SR, DiGraph, exp
-    from engine.core.vertices import ConvVertexType, SourceType
-    from engine.diagrams.type_assignment import TypedDiagram
+    from daedalus.engine.core.vertices import ConvVertexType, SourceType
+    from daedalus.engine.diagrams.type_assignment import TypedDiagram
     D = DiGraph(multiedges=True, loops=False)
     D.add_edge(2, 0, 'a')
     D.add_edge(3, 2, 'b')
@@ -681,7 +681,7 @@ def test_causal_chambers_unchanged():
     """``spatial/causal_chambers`` reuses ``_CausalPoset`` and
     ``_enumerate_linear_extensions``: pin its chamber enumeration on the
     diagrams of ``tests/test_causal_chambers.py`` (M1 must not change it)."""
-    from engine.integration.spatial.causal_chambers import causal_chambers
+    from daedalus.engine.integration.spatial.causal_chambers import causal_chambers
     assert causal_chambers(2, []) == [(0, 1), (1, 0)]
     assert causal_chambers(3, []) == [
         (0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)]
@@ -702,7 +702,7 @@ def test_causal_chambers_unchanged():
 # ═══════════════════════════════════════════════════════════════════════
 
 _ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), 'engine', 'integration', 'time_domain')
+    os.path.abspath(__file__))), 'daedalus', 'engine', 'integration', 'time_domain')
 
 # Every comparison of a constant-row value (a name ``c_eff*`` or ``c_f``)
 # with 0 in the Phase J integrators, by enclosing function.  Anything not
@@ -801,7 +801,7 @@ def _spike1(model, k, max_ell, tau_grid=(0.0, 3.0)):
            os.environ.get('DAEDALUS_PHASE_J_ENGINE', ''),
            os.environ.get('DAEDALUS_TAU0', ''))
     if key not in _E2E:
-        from api import compute_cumulants
+        from daedalus.api import compute_cumulants
         FI._reset_runtime_counters()
         res = compute_cumulants(
             model, k=k, max_ell=max_ell,
@@ -971,7 +971,7 @@ def test_ou_quartic_near_ties_reach_no_constant_row(private_cwd,
     bit-identical values here.)"""
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     import daedalus as dd
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     model, _ = dd.load_model('ou_quartic')
     res = compute_cumulants(model, k=4, max_ell=1,
                             external_fields=[('dx', 1)] * 4,
@@ -1001,7 +1001,7 @@ _LD_PARAMS = {'Em': [0.8, 0.78], 'tau': [10.0, 9.0],
 @pytest.fixture(scope='module')
 def ld_cross_k3(private_cwd):
     import daedalus as dd
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     model, _ = dd.load_model('single_population_linear_delta_spikes_test')
     res = compute_cumulants(model, k=3, max_ell=0,
                             external_fields=[('n', 1), ('n', 2), ('n', 1)],
@@ -1057,7 +1057,7 @@ def test_cross_field_tie_takes_the_tie_order_side(
 @pytest.fixture(scope='module')
 def ld_k3_orders(private_cwd):
     import daedalus as dd
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     model, _ = dd.load_model('single_population_linear_delta_spikes_test')
     out = {}
     for ext in ([('n', 1), ('n', 2), ('n', 1)], [('n', 1), ('n', 1), ('n', 2)],

@@ -1,5 +1,5 @@
 """
-api.compute — single-call entry point for the full MSR-JD pipeline.
+daedalus.api.compute — single-call entry point for the full MSR-JD pipeline.
 
 Wraps the notebook flow (cells 1–28 of hawkes_td_*.ipynb) into a
 function that takes a model dict + parameter dict + run config, runs
@@ -20,28 +20,28 @@ import numpy as np
 from sage.all import SR
 
 # engine internals
-from engine.core.field_theory import FieldTheory
-from engine.core.vertices import (
+from daedalus.engine.core.field_theory import FieldTheory
+from daedalus.engine.core.vertices import (
     extract_vertex_types, extract_source_types, NoiseSourceType,
 )
-from engine.diagrams.type_assignment import build_field_index_map
-from engine.diagrams.symmetry import classify_coefficient_factors
-from engine.integration.time_domain.pipeline import (
+from daedalus.engine.diagrams.type_assignment import build_field_index_map
+from daedalus.engine.diagrams.symmetry import classify_coefficient_factors
+from daedalus.engine.integration.time_domain.pipeline import (
     compute_correction_td,
     DiscardedDiagramsError,          # noqa: F401  (re-exported: daedalus)
 )
 
 # Pipeline-package helpers
-from api._propagator import build_propagator, compute_poles_and_residues
-from api._mean_field import solve_mean_field
-from api._mean_field_dae import linear_stability
-from api._diagrams  import enumerate_unique_diagrams
-from engine.enumeration import prediagram_cache as _pd_cache
-from api.save       import _phase_j_convention, _phase_j_flags
-from api.access     import (
+from daedalus.api._propagator import build_propagator, compute_poles_and_residues
+from daedalus.api._mean_field import solve_mean_field
+from daedalus.api._mean_field_dae import linear_stability
+from daedalus.api._diagrams  import enumerate_unique_diagrams
+from daedalus.engine.enumeration import prediagram_cache as _pd_cache
+from daedalus.api.save       import _phase_j_convention, _phase_j_flags
+from daedalus.api.access     import (
     MeanField, Parameters, normalize_external_fields, resolve_external_fields,
 )
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 # Itô equal-time regularizer (magnitude).  Our SDEs use the Itô convention, which
 # is LEFT-continuous (Θ(0)=Θ(0⁻)); the equal-time *observable* is therefore the
@@ -76,7 +76,7 @@ _CUMULANT_TRUNCATION_WARNED = set()
 
 def _tau0_mode():
     """'exact' or 'nudge' (``DAEDALUS_TAU0``; see ``_TAU0_MODES``)."""
-    from engine import _env
+    from daedalus.engine import _env
     return _env.choice('DAEDALUS_TAU0', _TAU0_MODES, 'exact')
 
 
@@ -125,7 +125,7 @@ def _phase_j_warning_scope():
     one warning per model, source and loop order, with counts), or a null
     context for an engine without it."""
     import contextlib
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     scope = getattr(_fi, 'nquad_warning_scope', None)
     return scope() if scope is not None else contextlib.nullcontext()
 
@@ -154,11 +154,11 @@ def _ss_route_prediction(prop, num_params, vertex_types):
     ``bypass_deformation``: the run is covered by the state-space route and
     the propagator has a pole-cluster deformation, which then is not run
     (the route uses no poles or residues)."""
-    from engine import _env
+    from daedalus.engine import _env
     if _env.phase_j_engine() == 'poles':
         return {'engine': 'poles', 'covers_run': False,
                 'reason': 'engine_poles', 'bypass_deformation': False}
-    from engine.integration.time_domain import statespace as _ssm
+    from daedalus.engine.integration.time_domain import statespace as _ssm
     pred = _ssm.run_route(prop, num_params, vertex_types)
     pred['bypass_deformation'] = bool(
         pred['covers_run'] and prop.get('pole_deformation') is not None)
@@ -171,7 +171,7 @@ def _pole_cluster_preamble(prop, max_ell, ss_route=None):
     the state-space route covers the run (``ss_route['covers_run']``) the
     poles are not used: status ``'bypassed'`` (the pole engine's status in
     ``status_poles``), no warning."""
-    from api import _pole_clusters as _pc
+    from daedalus.api import _pole_clusters as _pc
     pc = prop.get('pole_clusters')
     if not pc:
         return None
@@ -206,7 +206,7 @@ class PhaseJIncompleteWarning(UserWarning):
     (``result['phase_j_incomplete']`` names them and the reason)."""
 
 
-from engine.integration.time_domain.final_integral import (  # noqa: E402
+from daedalus.engine.integration.time_domain.final_integral import (  # noqa: E402
     PhaseJResourceError, growth_scoped as _growth_scoped)
 
 
@@ -289,7 +289,7 @@ def _marcus_mgf_degree(rec, vals):
     (Widder), so it exists at ``s`` while no base changes sign or vanishes on
     ``[0, s]``."""
     from sage.all import CDF, fast_callable, log
-    from api.noise import THETA, parse_expr
+    from daedalus.api.noise import THETA, parse_expr
     U = SR.var('u__mgf')
     bases = [parse_expr(b) for b in rec.get('mgf_bases') or []]
     if not bases:
@@ -353,7 +353,7 @@ def _marcus_precheck(model, par, k, max_ell):
     sources whose slopes and law read only scalar parameters (the rest are
     checked at the saddle, after the run)."""
     series = model.get('marcus_series') if isinstance(model, dict) else None
-    from api.noise import parse_expr
+    from daedalus.api.noise import parse_expr
     for name, rec in (series or {}).items():
         if rec.get('route') != 'exact':
             continue
@@ -388,7 +388,7 @@ def _marcus_truncation(model, result, k, max_ell):
     series = model.get('marcus_series') if isinstance(model, dict) else None
     if not series or not isinstance(result, dict):
         return None
-    from api.noise import parse_expr
+    from daedalus.api.noise import parse_expr
     mf = result.get('mf_values') or {}
     par = dict((result.get('config') or {}).get('fundamental') or {})
     out = []
@@ -441,7 +441,7 @@ def _rational_literals(text):
 
 def _marcus_exact_row(row, name, rec, mf, par, i, k, max_ell):
     from sage.all import ComplexField, RealField
-    from api.noise import parse_expr
+    from daedalus.api.noise import parse_expr
     coefs = {key: parse_expr(t) for key, t in rec['coefficients'].items()}
     # the 212-bit reference reads the decimal literals as exact rationals (a
     # 53-bit literal would cap the reference at 53 bits)
@@ -484,7 +484,7 @@ def _marcus_exact_row(row, name, rec, mf, par, i, k, max_ell):
 
 def _marcus_series_row(row, rec, mf, par, i, k, max_ell):
     from sage.all import CDF, PolynomialRing
-    from api.noise import parse_expr
+    from daedalus.api.noise import parse_expr
     resp = [SR.var(f'{r}__i') for r in rec['responses']]
     kept = parse_expr(rec['kept'])
     nxt = None if rec.get('next') is None else parse_expr(rec['next'])
@@ -653,7 +653,7 @@ def _entry_int(name, v):
 
 def as_model_dict(model):
     """The model dict of ``model``: a dict passes; an unbuilt builder (an
-    ``api.sde.SDE`` or a ``ModelBuilder``/``TemporalModelBuilder``, anything
+    ``daedalus.api.sde.SDE`` or a ``ModelBuilder``/``TemporalModelBuilder``, anything
     with a ``build()``) is built, as ``dd.run`` does.  Anything else is a
     ``TypeError`` that says what was given."""
     if isinstance(model, dict):
@@ -665,7 +665,7 @@ def as_model_dict(model):
             return built
     raise TypeError(
         f'model must be a model dict (the result of .build()) or a builder '
-        f'with a build() method (api.sde.SDE, ModelBuilder); got '
+        f'with a build() method (daedalus.api.sde.SDE, ModelBuilder); got '
         f'{type(model).__name__}.')
 
 
@@ -725,7 +725,7 @@ def _combine_phase_j(results, nodes):
     """One ell's Phase J results of the deformation nodes, combined: the
     callables, the per-diagram contributions and the delta records are the
     node-weighted sums; ``pole_deformation_nodes`` lists the nodes."""
-    from api import _pole_clusters as _pc
+    from daedalus.api import _pole_clusters as _pc
     if all(r is None for r in results):
         return None
     out = dict(results[0])
@@ -832,7 +832,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
     segment working set (``held_bytes``) is compared with the budget
     instead of the sum; ``'auto'`` turns it on exactly when the sum is over
     the budget and that fits.  ``est['discard']`` says whether it is on."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     if not hasattr(_fi, 'estimate_modesum_plans'):
         return None             # an A/B harness running an older engine
     deform = prop.get('pole_deformation')
@@ -840,7 +840,7 @@ def _phase_j_memory_preflight(diagram_records, propagator_data, num_params,
         deform = None
     ss_est = None
     if ss_route is not None and ss_route.get('covers_run'):
-        from engine.integration.time_domain import statespace as _ssm
+        from daedalus.engine.integration.time_domain import statespace as _ssm
         n_perm = math.factorial(max(1, int(k)))
 
         def ss_est(td, has_delta):
@@ -966,8 +966,8 @@ def _phase_j_ss_bypass(phase_j_pass, propagator_data, engine_report):
     the memory charged by this pass is taken back).  The pass's propagator
     data carry ``ss_no_pole_fallback``, so a fallback raises: in this pass
     (caught here) and when the returned callables are evaluated later."""
-    from engine.integration.time_domain import final_integral as _fi
-    from engine.integration.time_domain import statespace as _ssm
+    from daedalus.engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import statespace as _ssm
     C = _ssm._counters()
     before = (C.get('ss_subsets_declined', 0), C.get('ss_fallback_evals', 0))
     # a failed bypass leaves no trace in the run's counters (its pass is
@@ -1028,12 +1028,12 @@ def _phase_j_ss_bypass(phase_j_pass, propagator_data, engine_report):
 def _phase_j_deformed(phase_j_pass, propagator_data, deform, diagram_records,
                       num_params, tau_points, report):
     """Phase J for a propagator with resolved pole clusters: one pass per
-    deformation node (``api._pole_clusters.PoleDeformation``), combined by
+    deformation node (``daedalus.api._pole_clusters.PoleDeformation``), combined by
     the trapezoid rule on the unit circle; ``report`` gets the node count
     and the accuracy estimate (discrete Fourier tail, relative to the
     largest |C| on the grid), and a warning is issued above
     ``ACCURACY_WARN``."""
-    from api import _pole_clusters as _pc
+    from daedalus.api import _pole_clusters as _pc
     symmetric = deform.real_system and _real_inputs(num_params,
                                                     diagram_records)
     nodes = deform.nodes(symmetric)
@@ -1153,13 +1153,13 @@ def _print_action_sectors(ft):
 
 class _PipelineState:
     """The pipeline objects after the mean-field stage, handed to the
-    chosen backend's ``run`` (``api.routing``).  Plain attributes."""
+    chosen backend's ``run`` (``daedalus.api.routing``).  Plain attributes."""
 
     def __init__(self, **kw):
         self.__dict__.update(kw)
 
 
-# ── shared stages across calls (api.covariance) ─────────────────────────────
+# ── shared stages across calls (daedalus.api.covariance) ─────────────────────────────
 # Inside ``stage_memo()`` the parameter-point stages of compute_cumulants --
 # the expansion [1], the propagator [2], the mean field [3] and the poles and
 # residues [4] -- run once per (model, parameter point, options) and later
@@ -1249,7 +1249,7 @@ def stage_memo():
 def _preflight_default() -> bool:
     """``DAEDALUS_PREFLIGHT`` (read at call time): ``0``/``off``/``false``
     turns the analyzer gates off; default on; any other value raises."""
-    from engine import _env
+    from daedalus.engine import _env
     return _env.flag('DAEDALUS_PREFLIGHT', True)
 
 
@@ -1261,7 +1261,7 @@ def _make_preflight(preflight, model, k, max_ell, external_fields_user,
         preflight = _preflight_default()
     if not preflight:
         return None
-    from api.analyze import Preflight, Question
+    from daedalus.api.analyze import Preflight, Question
     q = Question(k=k, max_ell=max_ell,
                  external_fields=tuple(tuple(e) for e in external_fields_user),
                  parameters=dict(fundamental) if fundamental else None,
@@ -1285,8 +1285,8 @@ _SUM_COUNTERS = ('dd_err_abs_sum', 'dbm_err_abs_sum', 'ss_err_abs_sum',
 
 def _counter_snapshot():
     """The Phase J counters and worker-state identities before a run."""
-    from engine.integration.time_domain import final_integral as _fi
-    from engine.integration.time_domain import pipeline as _pl
+    from daedalus.engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import pipeline as _pl
     c = _fi._RUNTIME_COUNTERS
     snap = {k_: v for k_, v in c.items() if not isinstance(v, dict)}
     # the state-space route's counters by reason (dicts)
@@ -1312,8 +1312,8 @@ def _counter_delta(token):
     ``max(before, run)``); ``complete`` is False when work went to forked
     workers whose counters stayed in the children (the Phase J batch now
     returns its workers' counters)."""
-    from engine.integration.time_domain import final_integral as _fi
-    from engine.integration.time_domain import pipeline as _pl
+    from daedalus.engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import pipeline as _pl
     snap, (maxes, sums), workers = token
     c = _fi._RUNTIME_COUNTERS
     out = {}
@@ -1346,12 +1346,12 @@ class PhaseJEngineFallbackWarning(UserWarning):
 
 def _realization_check(prop, num_params):
     """The state-space realization's a posteriori check
-    (``api._realization``: run when the rounded realization is graded or
+    (``daedalus.api._realization``: run when the rounded realization is graded or
     not numerically Hurwitz) for the analyzer's G6 accuracy estimate:
     ``{'checked', 'err_rel', 'graded', 'bad_margin'}``, or ``None`` when the
     route has no realization of this model."""
     try:
-        from engine.integration.time_domain import statespace as _ssr
+        from daedalus.engine.integration.time_domain import statespace as _ssr
         ok, _why = _ssr.model_route(prop, num_params)   # engine on, Itô rule
         if not ok:
             return None
@@ -1431,7 +1431,7 @@ def _engine_census(result, counters):
         pc['status'] = pc.get('status_poles', pc['status'])
         pc['reason'] = pc.get('reason_poles', pc.get('reason'))
     if rep['fallback_evals']:
-        from api.save import _ensure_warning_shown
+        from daedalus.api.save import _ensure_warning_shown
         _msg = (f'Phase J: the state-space route fell back on the pole route '
                 f'for {rep["fallback_subsets"]} subset(s) '
                 f'({rep["fallback_evals"]} evaluation(s); reasons '
@@ -1479,7 +1479,7 @@ def _attach_jitter(result, model):
     if rep is None:
         return
     from dataclasses import replace
-    from api import analyze as _an
+    from daedalus.api import analyze as _an
     entries = tuple(
         _an.LedgerEntry(
             kind='approximation', name=f'jitter:{n}',
@@ -1500,7 +1500,7 @@ def _attach_jitter(result, model):
 def _attach_provenance(result, route, pf):
     """The route and the analyzer report on the result (``result['route']``,
     ``result['analysis']``; ``config['route']`` / ``config['assumptions']``
-    for ``api.save``)."""
+    for ``daedalus.api.save``)."""
     rep = pf.report() if pf is not None else None
     result['route'] = route.as_dict()
     result['analysis'] = rep
@@ -1535,7 +1535,7 @@ def _switch_on_request(model, k, max_ell, t_min, times, initial_covariance,
     if not math.isfinite(t0):
         raise ValueError(f't_min must be finite (omit it for the stationary '
                          f'state), got {t_min!r}')
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine.integration.time_domain import statespace as _ss
     if spatial:
         raise NotImplementedError(
             'switch-on transients (t_min) are implemented for temporal '
@@ -1616,7 +1616,7 @@ def _switch_on_callable(fn, t_min):
     """A per-ell (or total) callable of absolute external times, evaluated
     inside ``statespace.switch_on_scope(t_min)`` (no Itô nudge: the
     state-space route applies the tie rule to equal times exactly)."""
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine.integration.time_domain import statespace as _ss
 
     def at(*ext_time_values):
         with _ss.switch_on_scope(t_min):
@@ -1637,7 +1637,7 @@ def _initial_state_term(so, propagator_data, num_params, external_fields,
     C0 = so['initial_covariance']
     if C0 is None:
         return None
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine.integration.time_domain import statespace as _ss
     ops, why = _ss.realization_for(propagator_data, num_params)
     if ops is None:
         raise _ss.SwitchOnUnsupported(
@@ -1712,7 +1712,7 @@ def _ledger_switch_on(preflight, so):
 def _switch_on_check(result, failures, model_name):
     """A switch-on run is never partial: an unevaluated diagram, or δ
     components (whose weights are not yet derived for a transient), raise."""
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine.integration.time_domain import statespace as _ss
     if failures:
         raise PhaseJIncompleteError(
             'switch-on run (t_min): ' + _phase_j_failure_message(
@@ -1757,17 +1757,17 @@ def compute_cumulants(
     mf_dae_n_starts: int = 64,
     mf_dae_seed_box: dict | None = None,
     verbose: bool = True,
-    policy=None,                     # api.analyze.Policy (or dict): strict / consents / downgrade
+    policy=None,                     # daedalus.api.analyze.Policy (or dict): strict / consents / downgrade
     preflight: bool = None,          # the analyzer gates (default on; DAEDALUS_PREFLIGHT=0 turns them off)
-    backend: str = None,             # an explicit backend name (api.routing); None = the router picks
+    backend: str = None,             # an explicit backend name (daedalus.api.routing); None = the router picks
     accuracy: float = None,          # target relative accuracy (G6 threshold; default 1e-10)
     t_min: float = None,             # switch-on transients: fluctuations start at 0 at this absolute time
     times=None,                      # with t_min: absolute external times, (n, k) or (n,) (every leg at t)
     initial_covariance=None,         # with t_min (k=2, tree): covariance of the fluctuations at t_min
-    delay: dict = None,              # delay kernels (api.delay): order / tol / n_start / n_max / wall_max / tree
+    delay: dict = None,              # delay kernels (daedalus.api.delay): order / tol / n_start / n_max / wall_max / tree
     discard=False,                   # evaluate each diagram on the grid, then release it (True / 'auto')
     points=None,                     # k>=3 temporal: the (n, k) external-time tuples the result is read at
-    spectra=None,                    # k=2: exact S(omega), S(0), int_0^T C, tau_c (api.spectra)
+    spectra=None,                    # k=2: exact S(omega), S(0), int_0^T C, tau_c (daedalus.api.spectra)
 ) -> dict[str, Any]:
     """
     Compute the k-point cumulant slice for ``model`` at the given
@@ -1776,7 +1776,7 @@ def compute_cumulants(
     Parameters
     ----------
     model : dict
-        The model dict (``builder.build()``; an unbuilt ``api.sde.SDE`` or
+        The model dict (``builder.build()``; an unbuilt ``daedalus.api.sde.SDE`` or
         builder is built for you).  Must declare:
         ``response_fields``, ``physical_fields``, ``parameters``,
         ``kernels``, ``operators``, ``functions``, ``mf_substitutions``,
@@ -1808,7 +1808,7 @@ def compute_cumulants(
         directly (``res['moment']``).  A leg may also name an observable of
         the model (``SDE.observable``; ``('rate', u)`` for a unit of a
         population observable): its composite-operator expansion over the
-        field legs (:mod:`api.observables`, ``result['observable']``).
+        field legs (:mod:`daedalus.api.observables`, ``result['observable']``).
     tau_max, tau_step : float
         τ-grid extent and spacing for the Phase J slice evaluation.
     taylor_order : int or None
@@ -1835,12 +1835,12 @@ def compute_cumulants(
         Which canonical position to pin to t=0 for the slice (default 0).
     output_npz : str or None
         If given, save the result to this ``.npz`` path via
-        ``api.save.save_npz``.  See that module for the schema —
+        ``daedalus.api.save.save_npz``.  See that module for the schema —
         per-loop-order curves (``C_tree``, ``C_1_loop``, ...,
         ``C_total``), adaptive mean-field arrays, parameter keys.
     output_csv : str or None
         If given, save a wide-format CSV companion to ``output_npz``
-        via ``api.save.save_csv`` (parameter / mean-field
+        via ``daedalus.api.save.save_csv`` (parameter / mean-field
         metadata as comment lines, then a τ-grid table).
     use_cache : bool
         Whether to reuse cached symbolic propagator (per ``(model, taylor)``)
@@ -1851,7 +1851,7 @@ def compute_cumulants(
         a temporal run takes its prediagrams from the eager enumerator, as
         before the streaming enumerator existed (``DAEDALUS_PREDIAGRAM_EAGER=0``
         selects the faster streaming one; see
-        ``engine.enumeration.prediagram_cache.TEMPORAL_CACHE_OFF_STREAMS``).
+        ``daedalus.engine.enumeration.prediagram_cache.TEMPORAL_CACHE_OFF_STREAMS``).
         Cache on and cache off can use different labelled representatives of
         the same diagrams (in a different ``result['diagrams']`` order):
         totals then agree to rounding, or to the ``scipy.nquad`` fallback's
@@ -1908,7 +1908,7 @@ def compute_cumulants(
         ``result['C_points_by_ell']`` hold the values at ``result['points']``.
     spectra : None, True or dict
         k = 2 temporal stationary runs: the exact spectral and integrated
-        outputs in ``result['spectra']`` (:mod:`api.spectra`), computed from
+        outputs in ``result['spectra']`` (:mod:`daedalus.api.spectra`), computed from
         the state-space triples after the run, per loop order and in total:
         the spectrum ``S(omega) = int C(tau) exp(+i omega tau) dtau`` (δ
         components included, no ``1/2pi``) on ``omega``, ``S(0)``, the
@@ -1927,28 +1927,28 @@ def compute_cumulants(
         models, ``t_min``, and ``discard`` other than False; a refusal after
         the run (``method='exact'`` for an order without triples, ...)
         keeps the result and records ``{'status': 'refused', 'reason':
-        ...}`` with a :class:`api.spectra.SpectraWarning`; a ``C`` that does
+        ...}`` with a :class:`daedalus.api.spectra.SpectraWarning`; a ``C`` that does
         not decay has NaN for ``S`` and the integrals to infinity (reason in
-        ``notes``).  Conventions: ``api.spectra``.
+        ``notes``).  Conventions: ``daedalus.api.spectra``.
     verbose : bool
         Print progress messages.
-    policy : api.analyze.Policy, dict or None
+    policy : daedalus.api.analyze.Policy, dict or None
         What the model analyzer may accept without asking: ``mode``
         (``'permissive'`` default, ``'strict'`` makes warnings errors),
         consents (``allow_taylor_truncation``, ``allow_markov_embedding``,
         ``allow_numeric_fallback``), ``interpretation``, ``assertions`` and
         ``downgrade`` (error codes accepted as warnings).
     preflight : bool or None
-        Run the analyzer gates (``api.analyze.Preflight``) at the stage
+        Run the analyzer gates (``daedalus.api.analyze.Preflight``) at the stage
         boundaries: G0/G1 before the expansion, G1 after it, G3 (class)
         after the propagator, G2/G4 after the mean field, G3 (poles) after
         the residues, all before the diagram enumeration; any ``error``
-        finding raises :class:`api.analyze.AnalyzerError` (a
+        finding raises :class:`daedalus.api.analyze.AnalyzerError` (a
         ``ValueError``) with its code and remedy.  ``None``: on, unless the
         environment sets ``DAEDALUS_PREFLIGHT=0``.  The gates read the
         pipeline's own objects and change no number.
     backend : str or None
-        Force one registered backend (``api.routing.backends()``); it must
+        Force one registered backend (``daedalus.api.routing.backends()``); it must
         still apply.  ``None``: the first applicable one.
     accuracy : float or None
         Target relative accuracy for the G6 total-relative accuracy check
@@ -1962,7 +1962,7 @@ def compute_cumulants(
         (the state is the saddle exactly at ``t_min``), so every vertex-time
         integral has the lower bound ``t_min`` and the cumulant is a function
         of the absolute external times.  Computed on the state-space Phase J
-        route only (``engine.integration.time_domain.statespace``: a finite
+        route only (``daedalus.engine.integration.time_domain.statespace``: a finite
         first segment from the empty state); a model or subset it does not
         take, ``DAEDALUS_PHASE_J_ENGINE=poles``, spatial models and
         ``output_npz``/``output_csv`` raise.  As ``t_min ->
@@ -2000,7 +2000,7 @@ def compute_cumulants(
         is the full nonlinear relaxation, a time-dependent saddle.)
     delay : dict or None
         Options for models with delay kernels (``exp(-i omega d)`` factors in
-        a kernel image; see :mod:`api.delay`): ``order`` (``'auto'`` or a
+        a kernel image; see :mod:`daedalus.api.delay`): ``order`` (``'auto'`` or a
         fixed Pade order ``n``), ``tol`` (target relative accuracy of the
         observable, default ``1e-8``), ``n_start`` / ``n_max`` (doubling search,
         default 4 / 16), ``wall_max`` (cap in s on the predicted wall time of
@@ -2030,10 +2030,10 @@ def compute_cumulants(
                              grid eval; ``C_tau == sum(values())``
         'tau_grid'        : ndarray of τ values
         'mf_values'       : raw {internal_name: [v_pop1, ...]}, adaptive
-        'mf'              : :class:`api.access.MeanField` accessor —
+        'mf'              : :class:`daedalus.api.access.MeanField` accessor —
                              ``mf['v', 1]`` returns ``v*_1``,
                              ``mf['n']`` returns the whole nstar vector
-        'params'          : :class:`api.access.Parameters` accessor —
+        'params'          : :class:`daedalus.api.access.Parameters` accessor —
                              ``params['E', 1]``, ``params['w', 1, 2]``,
                              ``params['tau']`` (1-based indexing)
         'num_params'      : {SR symbol: float}
@@ -2045,7 +2045,7 @@ def compute_cumulants(
         'kernel_groups'   : list of dicts as fed to compute_correction_td
         'phase_j_by_ell'  : {ell: td_result dict}
         'spectra'         : (only with ``spectra=``) the dict of
-                             :func:`api.spectra.spectra`: ``omega``, ``S``,
+                             :func:`daedalus.api.spectra.spectra`: ``omega``, ``S``,
                              ``S_by_ell``, ``S0``, ``T``, ``integral``,
                              ``integral_neg``, ``integral_inf``,
                              ``integral_inf_neg``, ``delta0``, ``C0``,
@@ -2063,9 +2063,9 @@ def compute_cumulants(
                              raises :class:`PhaseJIncompleteError`)
         'phase_j_incomplete' : {ell: [{'diagram', 'n_diagrams', 'reason'}]}
                              of those diagrams (``{}`` when complete)
-        'route'           : the routing record (``api.routing.Route.
+        'route'           : the routing record (``daedalus.api.routing.Route.
                              as_dict``: backend, rejected backends)
-        'analysis'        : the :class:`api.analyze.ModelReport` of the
+        'analysis'        : the :class:`daedalus.api.analyze.ModelReport` of the
                              gates (traits, findings, assumptions ledger,
                              G6 run diagnostics); ``None`` with
                              ``preflight=False``
@@ -2076,7 +2076,7 @@ def compute_cumulants(
                              internal form (e.g. ``[('dn', 1)]``), and
                              ``phase_j_convention`` records the Phase J
                              equal-time rule the numbers were computed
-                             with (``api.save`` stamps saved files with
+                             with (``daedalus.api.save`` stamps saved files with
                              it), ``route`` the backend name and
                              ``assumptions`` the ledger (saved too).
 
@@ -2125,7 +2125,7 @@ def compute_cumulants(
         'spatial_info'    : driver diagnostics (μ, D, per-ell, eig, …)
         'k', 'max_ell', 'mf'
 
-    COVARIANCE MATRIX (``api.covariance.covariance_matrix``,
+    COVARIANCE MATRIX (``daedalus.api.covariance.covariance_matrix``,
     ``dd.covariance_matrix``, ``dd.Config(covariance=...)``): one call per
     pair of fields inside :func:`stage_memo`, returning its own dict:
         'Sigma'           : complex ``(n_tau, N, N)``,
@@ -2153,8 +2153,8 @@ def compute_cumulants(
     model = as_model_dict(model)         # an SDE / builder is built here
     if model.get('observables') and external_fields is not None:
         # legs that name observables (SDE.observable): their composite-operator
-        # expansion over the field legs (api.observables)
-        import api.observables as _obs
+        # expansion over the field legs (daedalus.api.observables)
+        import daedalus.api.observables as _obs
         if _obs.is_observable_call(model, external_fields):
             return _obs.observable_cumulants(model, dict(locals()))
         del _obs                         # (locals() is the delay route's call below)
@@ -2167,12 +2167,12 @@ def compute_cumulants(
             'numbers and is what runs); drop the argument',
             FutureWarning, stacklevel=2)
         use_grouped_phase_j = False
-    # the call as given (a model with delay kernels is handed to api.delay,
+    # the call as given (a model with delay kernels is handed to daedalus.api.delay,
     # which re-enters compute_cumulants with Pade-approximated copies)
     _delay_call = dict(locals())
     # a misspelled DAEDALUS_PHASE_J_ENGINE fails here, not at the
     # first Phase J subset after the enumeration
-    from engine.integration.time_domain import statespace as _ss_env
+    from daedalus.engine.integration.time_domain import statespace as _ss_env
     _ss_env.engine_requested()
     _ss_env.fallback_enabled()      # (validated before the run too)
     # Accept the canonical names the dd.Config layer uses (``parameters`` /
@@ -2252,7 +2252,7 @@ def compute_cumulants(
     elif not (isinstance(discard, str) and discard == 'auto'):
         raise ValueError(f"discard={discard!r}: expected False, True or "
                          f"'auto'")
-    from api import spectra as _spectra_mod
+    from daedalus.api import spectra as _spectra_mod
     _spectra_opts = _spectra_mod.resolve_spectra_options(spectra)
     if _spectra_opts is not None:
         _spectra_mod.check_spectra_question(
@@ -2285,8 +2285,8 @@ def compute_cumulants(
                                     for row in _pa))
     # one rule for every entry point (dd.Config, YAML, here): an
     # (lo, hi, n) tuple is a range, a list/array is literal points, and a
-    # 3-element integer-count list is refused (api._grids)
-    from api._grids import resolve_grid
+    # 3-element integer-count list is refused (daedalus.api._grids)
+    from daedalus.api._grids import resolve_grid
     tau_grid = resolve_grid(tau_grid, 'tau_grid')
     spatial_grid = resolve_grid(spatial_grid, 'spatial_grid')
     _nso = model.get('noise_series_order') if isinstance(model, dict) else None
@@ -2324,8 +2324,8 @@ def compute_cumulants(
             # order, so noise vertices above it are absent (a formal truncation,
             # not an error); one warning per model, source and process
             _CUMULANT_TRUNCATION_WARNED.add(_key)
-            from api.noise import CumulantTruncationWarning
-            from api.save import _ensure_warning_shown
+            from daedalus.api.noise import CumulantTruncationWarning
+            from daedalus.api.save import _ensure_warning_shown
             _msg = (f"noise source {_src!r} (Cumulants) declares cumulants up to order "
                     f"{int(_top)}; k = {k}, max_ell = {max_ell} can use noise vertices "
                     f"up to order {k + 2 * max_ell}, and those above order {int(_top)} "
@@ -2334,7 +2334,7 @@ def compute_cumulants(
                                   message=_msg, stacklevel=2)
             warnings.warn(_msg, CumulantTruncationWarning, stacklevel=2)
     if backend is not None:
-        from api import routing as _routing_check
+        from daedalus.api import routing as _routing_check
         if backend not in {b.name for b in _routing_check.backends()}:
             raise ValueError(
                 f'backend={backend!r} is not registered; known: '
@@ -2409,7 +2409,7 @@ def compute_cumulants(
         phase_walls[label] = dt
         print(f'      [{label}] done in {dt:.2f}s')
 
-    # ── 0. Model analyzer gates (api.analyze; G0/G1 before the expansion) ──
+    # ── 0. Model analyzer gates (daedalus.api.analyze; G0/G1 before the expansion) ──
     _pf = _make_preflight(preflight, model, k, max_ell, external_fields_user,
                           fundamental, fixed_point_index, policy, accuracy,
                           taylor_order)
@@ -2422,7 +2422,7 @@ def compute_cumulants(
     # bigrade-classified action dict) at each previously-computed
     # taylor_order; we accept any cached order >= the requested one
     # and downgrade-filter to total degree <= target.
-    # inside ``stage_memo()`` (api.covariance): stages [1]-[4] of an earlier
+    # inside ``stage_memo()`` (daedalus.api.covariance): stages [1]-[4] of an earlier
     # call at this parameter point, reused as built
     _memo = _STAGE_MEMO.get()
     _memo_key = (None if _memo is None or spatial_points is not None
@@ -2440,7 +2440,7 @@ def compute_cumulants(
           else _shared['ft'])
     try:
         if _shared is None:
-            from api import _expand_cache as _ec
+            from daedalus.api import _expand_cache as _ec
             cache_hit = False
             if use_cache:
                 cached_order = _ec.find_best_cached_order(model, taylor_order)
@@ -2474,18 +2474,18 @@ def compute_cumulants(
     if _pf is not None:
         _pf.expanded(ft)                  # G1: species, unpaired fields
 
-    # ── 1b. Delay kernels: exp(-i omega d) in a kernel image (api.delay) ──
+    # ── 1b. Delay kernels: exp(-i omega d) in a kernel image (daedalus.api.delay) ──
     if not model.get('_delay_pade') and model.get('kernel_ft_image') is not None:
-        from api import delay as _delay
+        from daedalus.api import delay as _delay
         _delays = _delay.kernel_delays(model, ft._ns)
         if _delays and switch_on is not None and switch_on['initial_covariance'] is not None:
             # (the Pade realization of a delay is not a first-order model whose
             # response at 0+ is the identity, which initial_covariance needs;
             # and the history of the delayed fields before t_min is not defined)
-            from engine.integration.time_domain import statespace as _ss_dl
+            from daedalus.engine.integration.time_domain import statespace as _ss_dl
             raise _ss_dl.SwitchOnUnsupported(
                 'delay_kernels', 'initial_covariance is not available for models with '
-                'delay kernels (api.delay): the history of the delayed fields before t_min '
+                'delay kernels (daedalus.api.delay): the history of the delayed fields before t_min '
                 'is zero, and the Pade realization of a delay is not a first-order model '
                 'with the identity response at 0+; drop initial_covariance (the '
                 'fluctuations start at zero)')
@@ -2539,7 +2539,7 @@ def compute_cumulants(
     else:
         # the analyzer (G2_UNSTABLE_SADDLE) is off: an unstable selection is
         # refused here by name, not later as a pole-free propagator
-        from api._mean_field_dae import refuse_unstable_saddle
+        from daedalus.api._mean_field_dae import refuse_unstable_saddle
         refuse_unstable_saddle(model, fundamental, mf)
 
     # ── 3.5 Spatial short-circuit ─────────────────────────────────
@@ -2556,11 +2556,11 @@ def compute_cumulants(
             'declares spatial_dim>=1); it is ignored and the temporal C(τ) is '
             'returned.', stacklevel=2)
 
-    # ── Routing (api.routing): the first registered backend that applies.
+    # ── Routing (daedalus.api.routing): the first registered backend that applies.
     # The built-in table reproduces the dispatch of 0.2.0 exactly (spatial
     # short-circuit, per-diagram Phase J) and raises the same
     # errors when nothing applies.
-    from api import routing as _routing
+    from daedalus.api import routing as _routing
     _request = _routing.RouteRequest(
         model_name=model.get('name', '<unnamed>'),
         spatial=bool(model.get('spatial')),
@@ -2632,7 +2632,7 @@ def compute_cumulants(
             _w = max(_over, key=lambda r: r['relative'])
             _msg = (_marcus_detail(_w) + f" (threshold {MARCUS_TRUNCATION_RTOL:g}); "
                     + _marcus_remedy(_w) + " -- see result['marcus_truncation'].")
-            from api.save import _ensure_warning_shown
+            from daedalus.api.save import _ensure_warning_shown
             _ensure_warning_shown(MarcusTruncationWarning, 'always',
                                   message=_msg, stacklevel=2)
             warnings.warn(_msg, MarcusTruncationWarning, stacklevel=2)
@@ -2659,7 +2659,7 @@ def compute_cumulants(
                                         failures=_failures)
         # visible under ``sage -python`` / the Sage kernel too, whose
         # launcher sets PYTHONWARNINGS=ignore
-        from api.save import _ensure_warning_shown
+        from daedalus.api.save import _ensure_warning_shown
         _ensure_warning_shown(PhaseJIncompleteWarning, 'always',
                               message=_msg, stacklevel=2)
         warnings.warn(_msg, PhaseJIncompleteWarning, stacklevel=2)
@@ -2671,7 +2671,7 @@ def compute_cumulants(
             for r in _sp_acc) + ' -- see result["spatial_accuracy"].')
         if _policy_is_strict(policy):
             raise SpatialAccuracyError(_msg, result=result)
-        from api.save import _ensure_warning_shown
+        from daedalus.api.save import _ensure_warning_shown
         _ensure_warning_shown(SpatialAccuracyWarning, 'always',
                               message=_msg, stacklevel=2)
         warnings.warn(_msg, SpatialAccuracyWarning, stacklevel=2)
@@ -2683,7 +2683,7 @@ def compute_cumulants(
 
 
 def _run_spatial(state):
-    """Backend ``spatial_integrator`` (``api.routing``): the full-diagram
+    """Backend ``spatial_integrator`` (``daedalus.api.routing``): the full-diagram
     momentum integrator.  ``state``: the pipeline objects after the
     mean-field stage (``_PipelineState``); the applicability checks
     (k = 2 needs ``spatial_grid``, k != 2 ``spatial_points``, ``max_ell <=
@@ -2700,15 +2700,15 @@ def _run_spatial(state):
         state.fundamental, state.naming_convention, state.phase_time,
         state.t_phase)
     import numpy as _np
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         compute_spatial_correlator_via_pipeline,
     )
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         free_two_point,
     )
     if k != 2:
         # ── general-k spatial path: explicit evaluation events ──
-        from engine.integration.spatial.pipeline_bridge import (
+        from daedalus.engine.integration.spatial.pipeline_bridge import (
             compute_spatial_kpoint,
         )
         try:
@@ -2720,11 +2720,11 @@ def _run_spatial(state):
                 raise
             # ── COUPLED multi-field theory at k>=3: the spectral-
             # assignment driver (scalar diffusion, plain vertices).
-            from engine.integration.spatial.heat_kernel import (
+            from daedalus.engine.integration.spatial.heat_kernel import (
                 reaction_diffusion_matrices)
-            from engine.integration.spatial.pipeline_bridge import (
+            from daedalus.engine.integration.spatial.pipeline_bridge import (
                 compute_coupled_kpoint, _norm_sr)
-            from engine.integration.spatial.spectral_propagator import (
+            from daedalus.engine.integration.spatial.spectral_propagator import (
                 split_reference_diffusion)
             _ns = ft._ns
             _Msr, _Dsr, _Vsr = reaction_diffusion_matrices(
@@ -2787,7 +2787,7 @@ def _run_spatial(state):
     # ret+adv), weighted by the enumeration 𝒮(Γ) — no shortcut, no diagram
     # dropped (the internal design notes (not distributed)).
     if max_ell >= 1:
-        from engine.integration.spatial.pipeline_bridge import (
+        from daedalus.engine.integration.spatial.pipeline_bridge import (
             compute_spatial_correlator_generic,
         )
         # Spatial parallelism is THREAD-based (no fork → safe in Jupyter/macOS;
@@ -2854,7 +2854,7 @@ def _run_spatial(state):
             if it.size and ix.size:
                 return complex(table[int(it[0]), int(ix[0])])
             if exact_tree:
-                from engine.integration.spatial.spatial_correlator import (
+                from daedalus.engine.integration.spatial.spatial_correlator import (
                     free_two_point_d, free_two_point_box)
                 val = 0j
                 xq = xq - _v_drift * tau
@@ -2927,7 +2927,7 @@ def _run_spatial(state):
 
 
 def _run_phase_j_per_diagram(state):
-    """Backend ``phase_j_per_diagram`` (``api.routing``)."""
+    """Backend ``phase_j_per_diagram`` (``daedalus.api.routing``)."""
     return _run_phase_j(state)
 
 
@@ -2966,13 +2966,13 @@ def _run_phase_j(state):
     switch_on = getattr(state, 'switch_on', None)
     if switch_on is not None:
         if not ss_route.get('covers_run'):
-            from engine.integration.time_domain import statespace as _ss_so
+            from daedalus.engine.integration.time_domain import statespace as _ss_so
             raise _ss_so.SwitchOnUnsupported(
                 ss_route.get('reason') or 'not_covered',
                 'the run-level prediction of the state-space route')
         _ledger_switch_on(state.preflight, switch_on)
     if state.preflight is not None:
-        # G3 pole statistics (api.analyze); informational when the
+        # G3 pole statistics (daedalus.api.analyze); informational when the
         # state-space route covers the run
         state.preflight.poles(prop, ss_route=ss_route)
 
@@ -3099,7 +3099,7 @@ def _run_phase_j(state):
     # the memory pre-pass, before any modesum plan is built.  The
     # budget is read ONCE for the run (its default depends on what
     # the process holds), so the pre-pass and the running guard agree.
-    from engine.integration.time_domain import final_integral as _fi_b
+    from daedalus.engine.integration.time_domain import final_integral as _fi_b
     _run_budget = (_fi_b.run_budget() if hasattr(_fi_b, 'run_budget')
                    else _fi_b.mem_budget('PHASE_J_MEM_BUDGET_GB')
                    if hasattr(_fi_b, 'mem_budget') else None)
@@ -3189,7 +3189,7 @@ def _run_phase_j(state):
     # the sum across ells.  One pass runs every ell on ``pdata``;
     # near-degenerate or repeated poles (``prop['pole_deformation']``)
     # average passes over a deformation of the propagator
-    # (``api._pole_clusters``).
+    # (``daedalus.api._pole_clusters``).
     def _phase_j_pass(pdata):
         phase_j_by_ell  = {}
         total_C_by_ell  = {}
@@ -3271,7 +3271,7 @@ def _run_phase_j(state):
         else 'bypassed' if ss_route['bypass_deformation'] else 'used'))
     engine_report['realization_check'] = _realization_check(prop, num_params)
     # the running guard: every plan of this run counts against one budget
-    from engine.integration.time_domain import final_integral as _fi_mem
+    from daedalus.engine.integration.time_domain import final_integral as _fi_mem
     import contextlib as _ctx
     _scope = (_fi_mem.phase_j_memory_scope(
         what=f"{model.get('name', '<unnamed>')} k={k} max_ell={max_ell}",
@@ -3280,7 +3280,7 @@ def _run_phase_j(state):
         if hasattr(_fi_mem, 'phase_j_memory_scope')       # older engine: A/B
         else _ctx.nullcontext())
     if switch_on is not None:
-        from engine.integration.time_domain import statespace as _ss_so
+        from daedalus.engine.integration.time_domain import statespace as _ss_so
         _so_scope = _ss_so.switch_on_scope(switch_on['t_min'])
     else:
         _so_scope = _ctx.nullcontext()
@@ -3295,7 +3295,7 @@ def _run_phase_j(state):
                                            engine_report)
             if _bypassed is None and switch_on is not None:
                 # the deformation averages pole-engine passes
-                from engine.integration.time_domain import statespace as _ssd
+                from daedalus.engine.integration.time_domain import statespace as _ssd
                 raise _ssd.SwitchOnUnsupported(
                     'pole_deformation', engine_report.get('bypass_failed'))
         if _bypassed is not None:
@@ -3420,7 +3420,7 @@ def _run_phase_j(state):
     #      pre-date the declarative API.
     npop = len(ft._ns.pop)
 
-    from api.naming import saddle_names
+    from daedalus.api.naming import saddle_names
     mf_param_names: list[str] = saddle_names(model)
 
     # Map each MF param name to the range of local indices it owns.
@@ -3493,7 +3493,7 @@ def _run_phase_j(state):
         'kernel_groups':   kernel_groups,
         'phase_j_by_ell':  phase_j_by_ell,
         'phase_walls':     phase_walls,  # dict[label → seconds], None if not verbose
-        # near-degenerate / repeated poles (api._pole_clusters): None when no
+        # near-degenerate / repeated poles (daedalus.api._pole_clusters): None when no
         # two poles are close, else the cluster report (status, accuracy)
         'pole_clusters':   pole_cluster_report,
         'config': {
@@ -3564,9 +3564,9 @@ def _standard_tail(state, result, output_npz, output_csv):
     verbose, phase_walls = state.verbose, state.phase_walls
     k, max_ell = state.k, state.max_ell
     all_unique, tau_grid = state.all_unique, state.tau_grid_eval
-    # ── Optional NPZ / CSV save (api.save handles the schema) ─
+    # ── Optional NPZ / CSV save (daedalus.api.save handles the schema) ─
     if output_npz or output_csv:
-        from api.save import save_npz, save_csv
+        from daedalus.api.save import save_npz, save_csv
         if output_npz:
             save_npz(result, output_npz)
             if verbose:

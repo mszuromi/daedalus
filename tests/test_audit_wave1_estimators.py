@@ -2,7 +2,7 @@
 tests/test_audit_wave1_estimators.py
 ====================================
 Regression tests for the Oct 2026 audit's fix wave 1, simulation
-estimators used for validation (``simulations.cumulant_estimator``).
+estimators used for validation (``daedalus.simulations.cumulant_estimator``).
 
 Reference: a Cox process whose intensity is a Gaussian OU process.  Its
 factorial cumulant densities are the intensity's cumulants: C2(tau) =
@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from simulations.cumulant_estimator import (                           # noqa: E402
+from daedalus.simulations.cumulant_estimator import (                           # noqa: E402
     compute_kpoint_slice, compute_kpoint_slice_direct, estimate_kpoint_slices)
 
 LAM0, SIG, TC, DT, NB, L = 50.0, 10.0, 0.2, 0.01, 2_000_000, 20

@@ -3,7 +3,7 @@
 * L1  a numerically-zero prefactor returns before any setup;
 * L2  model-level data built once per ``compute_correction_td`` call;
 * L3  SR objects built on demand;
-* L5  shared automorphism work (``engine.diagrams.symmetry``).
+* L5  shared automorphism work (``daedalus.engine.diagrams.symmetry``).
 
 Every lever is always on: their switches (``USE_SETUP_ZERO_EXIT``,
 ``USE_SETUP_PROP_TD``, ``USE_SETUP_LAZY_SR``, ``symmetry.USE_AUT_MEMO``, the
@@ -36,14 +36,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import daedalus as dd
-import api.compute as AC
-import engine.integration.time_domain.final_integral as FI
-import engine.integration.time_domain.pipeline as PL
+import daedalus.api.compute as AC
+import daedalus.engine.integration.time_domain.final_integral as FI
+import daedalus.engine.integration.time_domain.pipeline as PL
 
 _TAUS = np.linspace(0.0, 3.0, 7)
 _P2 = [(0.0, 0.7), (0.0, 1.9), (0.0, -1.1)]
 _P4 = [(0.0, 0.3, 0.6, 0.9), (0.0, 0.5, 0.4, 0.7)]
-import engine.diagrams.symmetry as SYM
+import daedalus.engine.diagrams.symmetry as SYM
 _LH_PARAMS = {'E': [0.78, 0.81], 'w': [[0.30, 0.25], [0.30, 0.35]],
               'tau': 10.0, 'a': 1.0, 'tau_g': 2.5}
 
@@ -148,7 +148,7 @@ def test_l1_fires_and_two_runs_agree(key, k, ell):
 
 def _two_field_ou():
     """A plain two-field coupled OU with quartic terms, inline."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (TemporalModelBuilder('two-field OU quartic (test)', n_populations=0)
             .physical_field('x', indexed=True)
             .physical_field('y', indexed=True)
@@ -185,7 +185,7 @@ def test_l1_never_exits_for_a_noise_or_conv_vertex(captured_ou):
     decision is tested on a real zero-prefactor diagram with such a vertex
     added.)"""
     import types
-    from engine.core.vertices import ConvVertexType, NoiseSourceType
+    from daedalus.engine.core.vertices import ConvVertexType, NoiseSourceType
     c = _zero_diagram(captured_ou)
     td, pd = c['typed_diagram'], c['propagator_data']
     leaves = list(td.prediagram[2])
@@ -404,10 +404,10 @@ def test_l2_two_successive_calls_are_independent_calls(monkeypatch):
     against the lever off, bit for bit.)"""
     from sage.all import SR
     import tests.test_spatial_pipeline_bridge as T
-    from engine.integration.spatial import pipeline_bridge as PB
-    from api._propagator import build_propagator
-    from engine.core.field_theory import FieldTheory
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial import pipeline_bridge as PB
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
     params = {'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0}
     model = T._load('allen_cahn_1d_subcritical_infinite')
     ft = FieldTheory(model, taylor_order=4)
@@ -460,8 +460,8 @@ def _pair_tree(n_legs=3):
     part AND a smooth part, so the delta-subset enumeration, the shot-noise
     branch (with smooth edges left over) and the continuous branch all run."""
     from sage.all import DiGraph
-    from engine.core.vertices import SourceType
-    from engine.diagrams.type_assignment import TypedDiagram
+    from daedalus.engine.core.vertices import SourceType
+    from daedalus.engine.diagrams.type_assignment import TypedDiagram
     from tests.test_time_domain import _propagator_data_instantaneous_pair
     pd = _propagator_data_instantaneous_pair()
     st = SourceType(FI.SR(1), [('nt', 1)] * n_legs, (n_legs, 0))

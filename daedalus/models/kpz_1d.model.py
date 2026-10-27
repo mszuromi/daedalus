@@ -16,10 +16,10 @@ a composite ``∂_x(h²)``.  So the loop form factor is ``mode='perleg'``:
 ``ℓ·(q−ℓ)`` dot-product KPZ signature (renormalizes the diffusion ``ν=D``).
 This is genuinely ``(∂φ)² ≠ ∂(φ²)`` — the distinguishing case from Burgers.
 
-Companion: ``models/burgers_1d.model.py`` (the *composite* ``∂_x(φ²)``
+Companion: ``daedalus/models/burgers_1d.model.py`` (the *composite* ``∂_x(φ²)``
 sibling).
 """
-from api.model import SpatialModelBuilder
+from daedalus.api.model import SpatialModelBuilder
 
 
 def build():

@@ -1,5 +1,5 @@
 """
-api.model_serialize — emit a ``.model.py`` file from a form-
+daedalus.api.model_serialize — emit a ``.model.py`` file from a form-
 state spec dict.
 
 The model-input UI collects user input as a flat dict; this module
@@ -10,7 +10,7 @@ the file as a Python module).
 Output file shape::
 
     \"\"\"<docstring>\"\"\"
-    from api.model import ModelBuilder
+    from daedalus.api.model import ModelBuilder
 
 
     def build():
@@ -411,7 +411,7 @@ def render_model_file(spec: dict) -> str:
 
     out = []
     out.append('\n'.join(docstring_lines))
-    out.append(f'from api.model import {builder_cls}')
+    out.append(f'from daedalus.api.model import {builder_cls}')
     out.append('')
     out.append('')
     out.append('def build():')
@@ -661,7 +661,7 @@ def load_spec_from_file(path: str) -> dict:
         # Markovianize-preprocessor builder-level toggle from
         # ``.markovianize(bool)``; default ON.  Stays True until the
         # parser hits an explicit ``.markovianize(False)`` call.  See
-        # ``api/colored_to_markovian.py`` and
+        # ``daedalus/api/colored_to_markovian.py`` and
         # ``docs/correlated_noise_capabilities.md`` §1.5.
         'markovianize_default': True,
         # Operator-IR action toggle from ``.operator_ir(bool)``; default
@@ -970,12 +970,12 @@ _KERNEL_BUILDERS = ('delay', 'exponential', 'alpha', 'gamma', 'image')
 
 
 def _eval_kernel_node(node, path):
-    """The :class:`api.delay.Kernel` a ``kernel=`` argument of
+    """The :class:`daedalus.api.delay.Kernel` a ``kernel=`` argument of
     ``define_kernel`` builds (``Kernel.delay('d') * Kernel.exponential(...)``),
     rebuilt from the syntax tree -- nothing in the file is executed: only
     ``Kernel.<delay|exponential|alpha|gamma|image>(<literals>)`` calls joined
     by ``*`` are accepted."""
-    from api.delay import Kernel
+    from daedalus.api.delay import Kernel
 
     def build(n):
         if isinstance(n, ast.BinOp) and isinstance(n.op, ast.Mult):

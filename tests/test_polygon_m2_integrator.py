@@ -25,7 +25,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.integration.time_domain.final_integral import (
+from daedalus.engine.integration.time_domain.final_integral import (
     EdgeModeSum,
     _enumerate_pole_tuples,
     _integrate_2d_polygon_modesum,

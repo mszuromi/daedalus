@@ -1,5 +1,5 @@
 """
-engine.worker_budget
+daedalus.engine.worker_budget
 ===================
 Memory caps for every worker pool, on top of the run's memory
 budget and growth baseline (``final_integral.run_growth_scope`` /
@@ -36,7 +36,7 @@ def pid_footprint_bytes(pid):
     if sys.platform == 'darwin':
         try:
             import ctypes
-            from engine.integration.time_domain.final_integral import \
+            from daedalus.engine.integration.time_domain.final_integral import \
                 _libproc
             buf = ctypes.create_string_buffer(512)
             if _libproc().proc_pid_rusage(int(pid), 2, buf) != 0:
@@ -60,7 +60,7 @@ def budget_left():
     """``(bytes left or None, rule)``: the running budget minus the growth
     of this process since the run's ``run_growth_scope`` began (outside a
     scope: the budget minus nothing).  ``None``: no limit."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     budget, rule = FI.run_budget()
     if budget is None:
         return None, rule
@@ -86,7 +86,7 @@ def workers_that_fit(n, per_worker, counter=None):
     fit = int(left // max(1, int(per_worker)))
     n_fit = max(1, min(n, fit))
     if n_fit < n and counter:
-        from engine.integration.time_domain import final_integral as FI
+        from daedalus.engine.integration.time_domain import final_integral as FI
         FI._RUNTIME_COUNTERS[counter] = FI._RUNTIME_COUNTERS.get(counter, 0) + 1
     return n_fit, left // n_fit
 
@@ -124,7 +124,7 @@ class FootprintWatch:
             if self.share is not None and fp > self.share \
                     and pid not in self.over:
                 self.over[pid] = fp
-                from engine.integration.time_domain import final_integral as FI
+                from daedalus.engine.integration.time_domain import final_integral as FI
                 FI._RUNTIME_COUNTERS[self.counter] = (
                     FI._RUNTIME_COUNTERS.get(self.counter, 0) + 1)
                 try:

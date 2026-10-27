@@ -24,8 +24,8 @@ from tests.oracles.symbolic import (
     loop_kernel_signature,
     group_diagrams_by_kernel,
 )
-from engine.diagrams.type_assignment import TypedDiagram
-from engine.core.vertices import VertexType, SourceType
+from daedalus.engine.diagrams.type_assignment import TypedDiagram
+from daedalus.engine.core.vertices import VertexType, SourceType
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

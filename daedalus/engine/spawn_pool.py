@@ -1,11 +1,11 @@
 """
-engine.spawn_pool
+daedalus.engine.spawn_pool
 ================
-Parent side of the spawned Phase J workers (``engine._spawn_worker``): a
+Parent side of the spawned Phase J workers (``daedalus.engine._spawn_worker``): a
 small pool of fresh interpreters for the platforms where fork is not
 allowed (macOS never forks; Windows cannot).
 
-* Each worker is ``python -m engine._spawn_worker`` started with
+* Each worker is ``python -m daedalus.engine._spawn_worker`` started with
   ``subprocess`` (exec at once, no ``__main__`` re-import) in its own session
   (a Ctrl-C in the parent's terminal or kernel does not reach it; the parent
   stops it), with ``OPENBLAS_NUM_THREADS`` / ``OMP_NUM_THREADS`` /
@@ -28,13 +28,15 @@ import sys
 import threading
 import time
 
-from engine._spawn_worker import SharedPickler, read_frame, write_frame
-from engine.errors import DaedalusError
+from daedalus.engine._spawn_worker import SharedPickler, read_frame, write_frame
+from daedalus.engine.errors import DaedalusError
 
 #: Environment of every worker: one BLAS / OpenMP thread each.
 WORKER_ENV = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1',
               'MKL_NUM_THREADS': '1', 'VECLIB_MAXIMUM_THREADS': '1'}
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+#: The directory holding the ``daedalus`` package (the checkout root, or
+#: site-packages): the worker's cwd and the head of its ``PYTHONPATH``.
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class SpawnWorkerError(DaedalusError, RuntimeError):
@@ -49,7 +51,7 @@ def _popen(env):
         kw['creationflags'] = getattr(subprocess,
                                       'CREATE_NEW_PROCESS_GROUP', 0)
     return subprocess.Popen(
-        [sys.executable, '-m', 'engine._spawn_worker'],
+        [sys.executable, '-m', 'daedalus.engine._spawn_worker'],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=None,
         env=env, cwd=_ROOT, close_fds=True, **kw)
 
@@ -91,7 +93,7 @@ class _Worker:
 
 class SpawnPool:
     """``n`` spawned workers sharing ``shared`` (``{id: obj}``), set up with
-    ``settings`` (``engine._spawn_worker``: the parent's budget, module
+    ``settings`` (``daedalus.engine._spawn_worker``: the parent's budget, module
     settings)."""
 
     def __init__(self, n, shared, settings=None):

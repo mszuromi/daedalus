@@ -1,6 +1,6 @@
 """
-api.cumulant_plot
-=================
+daedalus.api.cumulant_plot
+==========================
 Plots of a cumulant with its shot-noise δ components (Feature B):
 ``dd.plot_cumulant(result, show_delta=True, delta_style='arrow'|'bin')``.
 
@@ -37,7 +37,7 @@ def plot_cumulant_delta(result, cfg=None, model=None, sim=None,
     δ components; returns the Matplotlib ``Figure``.  See the module
     docstring for the two styles and the k = 3 layout."""
     import matplotlib.pyplot as plt
-    from api.cumulant import Cumulant
+    from daedalus.api.cumulant import Cumulant
     if delta_style not in ('arrow', 'bin'):
         raise ValueError(f"delta_style must be 'arrow' or 'bin', not "
                          f"{delta_style!r}")
@@ -110,7 +110,7 @@ def _plot_k2(c, sim, style, ax, title, cfg):
 
 
 def _bin_deposit(tau, weights):
-    from api.cumulant import _bin_deposits
+    from daedalus.api.cumulant import _bin_deposits
     out = np.zeros(tau.shape, dtype=complex)
     for loc, w in weights.items():
         for i, f in _bin_deposits(tau, loc):

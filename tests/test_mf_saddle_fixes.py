@@ -23,9 +23,9 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-import api.compute as AC                                            # noqa: E402
-from api.noise import Gaussian, Poisson                             # noqa: E402
-from api.sde import SDE                                             # noqa: E402
+import daedalus.api.compute as AC                                            # noqa: E402
+from daedalus.api.noise import Gaussian, Poisson                             # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
 
 TAU = np.array([-0.8, 0.0, 0.5, 1.3])
 NN = [('n', 1), ('n', 1)]
@@ -124,7 +124,7 @@ def test_indexed_kernel_with_per_entry_integrals_equals_normalised_twin():
 def test_normalised_kernel_expansion_is_unchanged():
     """``Conv(K, constant)`` with a normalised kernel: the reduction returns the constant itself
     (no ``1*`` factor), so the expanded action is the one built without the integrals."""
-    from engine.core.convolution import reduce_conv_in_action, Conv, KernelDCGains
+    from daedalus.engine.core.convolution import reduce_conv_in_action, Conv, KernelDCGains
     from sage.all import SR, var
     g, ns_, dn = var('g52 nstar52 dn52')
 
@@ -144,7 +144,7 @@ def test_kernel_integral_through_a_removable_singularity():
     """A boxcar ``(1 - exp(-2 I omega))/(2 I omega)`` and ``2 sin(3 omega)/(3 omega)`` are 0/0 at
     omega = 0 but integrate to 1 and 2; a pole (``1/(I omega)``) is refused.  The hook runs only for
     an expression that holds a kernel symbol."""
-    from engine.core.convolution import KernelDCGains
+    from daedalus.engine.core.convolution import KernelDCGains
     from sage.all import SR, I, exp, sin, var
     g, h, k = var('g52b h52b k52b')
 
@@ -169,7 +169,7 @@ def test_kernel_integral_through_a_removable_singularity():
 
 def _builder_pp(freq, mf_rate):
     """The point process written by hand: ``n ~ Poisson(exp(-1 + 0.1*Conv(K, n)))``."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (TemporalModelBuilder('pp52b').physical_field('n')
             .define_kernel('K', freq_image=freq)
             .set_action_text('nt*n - (exp(nt) - 1)*exp(-1 + 0.1*Conv(K, n))')
@@ -193,7 +193,7 @@ def test_kernel_without_finite_integral_is_refused_by_name():
 
 def _hawkes(population, mf_v, mf_n, fn=False):
     """n ~ Poisson(a exp(Em + c v)), (tau Dt + 1) v = w n; the saddle by ``set_mf_equation``."""
-    from api.theory import TemporalTheoryBuilder
+    from daedalus.api.theory import TemporalTheoryBuilder
     b = TemporalTheoryBuilder('hawkes52')
     kw, ix = {}, ''
     if population:
@@ -281,7 +281,7 @@ def test_negative_root_of_an_undeclared_field_is_selectable():
     """Undeclared domain: the default seeds cover x >= 0 (the historical box) and the mirrored seeds
     x <= 0; every root they reach is selectable (audit W6: which negative roots were selectable
     depended on the field's units).  Stability analysis off: the stable roots first, ascending."""
-    from api._mean_field_dae import solve_mean_field_dae
+    from daedalus.api._mean_field_dae import solve_mean_field_dae
     with warnings.catch_warnings():
         warnings.simplefilter('error', UserWarning)
         r = solve_mean_field_dae(_bistable(), {}, fixed_point_index=0)
@@ -294,7 +294,7 @@ def test_negative_root_of_an_undeclared_field_is_selectable():
 def test_declared_real_domain_reaches_the_negative_root():
     with warnings.catch_warnings():
         warnings.simplefilter('error', UserWarning)
-        from api._mean_field_dae import solve_mean_field_dae
+        from daedalus.api._mean_field_dae import solve_mean_field_dae
         r = solve_mean_field_dae(_bistable('real'), {}, fixed_point_index=0)
     assert r['mf_values']['xstar'][0] == pytest.approx(-1.0, abs=1e-12)
     assert r['mf_unsearched_roots'] == []
@@ -312,7 +312,7 @@ def _linear_hawkes(pin):
     import importlib.util
     import os
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        'models', 'linear_hawkes.model.py')
+                        'daedalus', 'models', 'linear_hawkes.model.py')
     spec = importlib.util.spec_from_file_location('lh_mf52', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -325,7 +325,7 @@ def _linear_hawkes(pin):
 
 
 def test_analyzer_does_not_merge_a_saddle_default_into_given_parameters():
-    from api.analyze import analyze
+    from daedalus.api.analyze import analyze
     saddles = []
     for pin in (False, True):
         m, params = _linear_hawkes(pin)
@@ -337,7 +337,7 @@ def test_analyzer_does_not_merge_a_saddle_default_into_given_parameters():
 
 
 def test_analyzer_partial_parameters_wording_matches_compute_cumulants():
-    from api.analyze import analyze
+    from daedalus.api.analyze import analyze
     m = (SDE('nd52').parameter('a', default=1.0).parameter('D').field('x').drift('x', '-a*x + 0.1')
          .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
     r = analyze(m, question={'parameters': {'a': 2.0}})

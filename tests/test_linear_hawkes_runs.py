@@ -5,7 +5,7 @@ It used to load but fail on run with ``MF sector does not vanish at saddle`` —
 the MF saddle-sector check could not verify numerically because ``E``/``w`` had
 no per-parameter ``default=`` (only ``DEFAULT_FUNDAMENTAL`` did), so the verifier
 fell back to all-ones (no real saddle) and the numerical residual came back N/A.
-Adding the defaults (models/linear_hawkes.model.py) fixes it.  This guards
+Adding the defaults (daedalus/models/linear_hawkes.model.py) fixes it.  This guards
 against re-dropping them.
 """
 import os

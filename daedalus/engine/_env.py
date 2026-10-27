@@ -1,6 +1,6 @@
 """
-engine._env
-===========
+daedalus.engine._env
+====================
 One parser for the package's environment switches (the
 values were parsed seven different ways at 32 sites, garbage silently meant
 "on" at some and "off" at others, and the two memory budgets gave ``0``
@@ -133,7 +133,7 @@ def retired(name, note, environ=None):
         return False
     if name not in _RETIRED_SEEN:
         _RETIRED_SEEN.add(name)
-        from engine._warn_helpers import ensure_warning_shown
+        from daedalus.engine._warn_helpers import ensure_warning_shown
         msg = f'{name} is retired and ignored: {note}'
         ensure_warning_shown(FutureWarning, message=msg)
         warnings.warn(msg, FutureWarning, stacklevel=3)

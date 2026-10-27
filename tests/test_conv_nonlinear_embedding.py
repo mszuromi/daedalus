@@ -23,9 +23,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                   # noqa: E402
-from api.noise import Poisson                                       # noqa: E402
-from api.sde import SDE, SDEError                                   # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api.noise import Poisson                                       # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                   # noqa: E402
 
 KW = dict(parallel=False, verbose=False, use_cache=False)
 IMG = {'single': '1/(1 + I*omega*s{n})',

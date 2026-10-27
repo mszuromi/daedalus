@@ -2,7 +2,7 @@
 tests/test_hartree_inputs.py
 ============================
 Exogenous input fields in the Gaussian closure and the screened series
-(``api/hartree.py``): a point process, or a noise source exposed with
+(``daedalus/api/hartree.py``): a point process, or a noise source exposed with
 ``as_field=``, is a field without dynamics (``n = noise``).  The closure
 replaces it by its drive -- its rate as a mean (and, if the rate depends on
 the fields, as a drift) and its second cumulant as white noise -- feeding the
@@ -34,10 +34,10 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
 import daedalus as dd  # noqa: E402
-from api.delay import Kernel  # noqa: E402
-from api.hartree import hartree, HartreeUnsupported  # noqa: E402
-from api.noise import Gaussian, Poisson  # noqa: E402
-from api.sde import SDE  # noqa: E402
+from daedalus.api.delay import Kernel  # noqa: E402
+from daedalus.api.hartree import hartree, HartreeUnsupported  # noqa: E402
+from daedalus.api.noise import Gaussian, Poisson  # noqa: E402
+from daedalus.api.sde import SDE  # noqa: E402
 
 TAU = np.array([0.0, 0.5, 1.0])
 P = dict(ts=0.5, lam=2.0, p=0.7, w=1.3, mu=1.0, eps=0.4, a=2.0, D=0.4)

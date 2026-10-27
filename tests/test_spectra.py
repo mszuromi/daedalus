@@ -2,7 +2,7 @@
 tests/test_spectra.py
 =====================
 Item 70 (G6): exact spectral and integrated outputs of k = 2 results
-(``api/spectra.py``; ``compute_cumulants(spectra=...)``, ``dd.Config(spectra=)``,
+(``daedalus/api/spectra.py``; ``compute_cumulants(spectra=...)``, ``dd.Config(spectra=)``,
 ``dd.spectra(result, ...)``, YAML ``question.spectra``).
 
 * OU: the exact Lorentzian ``S = 2D / (ω² + μ²)``, ``∫_0^T C``, ``τ_c = 1/μ``;
@@ -36,12 +36,12 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'notebooks'))
 
 import daedalus as dd                                                # noqa: E402
-from api import compute_cumulants                                    # noqa: E402
-from api import me_output as ME                                      # noqa: E402
-from api import spectra as SP                                        # noqa: E402
-from api.noise import Gaussian, Poisson                              # noqa: E402
-from api.sde import SDE                                              # noqa: E402
-import engine.integration.time_domain.statespace as SS               # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api import me_output as ME                                      # noqa: E402
+from daedalus.api import spectra as SP                                        # noqa: E402
+from daedalus.api.noise import Gaussian, Poisson                              # noqa: E402
+from daedalus.api.sde import SDE                                              # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS               # noqa: E402
 
 OM = np.array([-3.0, -0.4, 0.0, 0.25, 1.0, 6.0])
 TS = np.array([0.0, 1e-3, 0.3, 1.0, 4.0, 25.0])
@@ -553,8 +553,8 @@ def test_delay_model_exact_tree_and_pade_loops():
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_save_npz_and_yaml_config(tmp_path):
-    from api.save import save_npz, load_npz
-    from api.config_run import run_config, load_config
+    from daedalus.api.save import save_npz, load_npz
+    from daedalus.api.config_run import run_config, load_config
     res = _cc(dd.load_model('ou_quartic')[0], [('dx', 1)] * 2, 1,
               {'omega': OM, 'T': TS})
     p = save_npz(res, str(tmp_path / 'r.npz'))
@@ -590,7 +590,7 @@ def test_save_npz_and_yaml_config(tmp_path):
     bad = tmp_path / 'b.yaml'
     bad.write_text('model: ou_quartic\nquestion:\n  spectra: {omega: [1.0],'
                    ' window: 3}\n')
-    from api.config_run import ConfigError
+    from daedalus.api.config_run import ConfigError
     with pytest.raises(ConfigError, match='line 3'):
         load_config(str(bad))
 

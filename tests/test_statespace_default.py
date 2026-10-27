@@ -2,7 +2,7 @@
 tests/test_statespace_default.py
 ================================
 S3: the state-space Phase J route is the DEFAULT engine
-(``engine/integration/time_domain/statespace.py``);
+(``daedalus/engine/integration/time_domain/statespace.py``);
 ``DAEDALUS_PHASE_J_ENGINE=poles`` switches back to the pole engine.  Inline
 public models only:
 
@@ -36,11 +36,11 @@ pytest.importorskip('sage.all')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                    # noqa: E402
-from api.compute import PhaseJEngineFallbackWarning                   # noqa: E402
-from api.model import TemporalModelBuilder                           # noqa: E402
-import engine.integration.time_domain.final_integral as FI           # noqa: E402
-import engine.integration.time_domain.statespace as SS               # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api.compute import PhaseJEngineFallbackWarning                   # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                           # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI           # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS               # noqa: E402
 
 ENV = SS.ENGINE_ENV
 TAUS = [0.0, 0.5, 2.0]
@@ -70,8 +70,8 @@ def _arr(res, ell):
 # ── models (inline, public) ─────────────────────────────────────────────
 
 def ou_cubic():
-    from api.sde import SDE
-    from api.noise import Gaussian
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Gaussian
     return (SDE('s3_ou_cubic').parameter('mu', default=1.0)
             .parameter('eps', default=0.02).parameter('D', default=1.0)
             .field('x').drift('x', '-mu*x - eps*x^3')
@@ -96,8 +96,8 @@ def ou_colour(tc):
 
 def ou_erlang(n):
     """x' = -a x + c (g * x) - eps x^3 + noise, g an Erlang-n kernel."""
-    from api.sde import SDE
-    from api.noise import Gaussian
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Gaussian
     return (SDE(f's3_ou_erlang{n}').parameter('a', default=1.0)
             .parameter('c', default=-2.0).parameter('d', default=1.0,
                                                     domain='positive')
@@ -112,7 +112,7 @@ _P_ALPHA = dict(a=1.0, b=0.3, h=0.5, tau=0.7, D=0.15)
 
 
 def _alpha_base(name, tau2):
-    from api.theory import TemporalTheoryBuilder
+    from daedalus.api.theory import TemporalTheoryBuilder
     b = (TemporalTheoryBuilder(name).population('E', size=1)
          .physical_field('x', population='E'))
     for k, v in dict(_P_ALPHA, tau2=tau2).items():
@@ -336,7 +336,7 @@ def _unresolved_clusters(monkeypatch):
     fails for non-rationalizable parameters or on its time budget), so the
     deformation cannot be built.  (Before audit W7 these tests switched the
     deformation off, ``DAEDALUS_POLE_CLUSTERS=0``.)"""
-    from api import _propagator as PR
+    from daedalus.api import _propagator as PR
     monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield',
                         lambda *a, **kw: (None, None, None))
 
@@ -371,8 +371,8 @@ def test_total_c_batch_batches_the_grid():
 
 def test_kernel_refusals_are_named():
     from sage.all import SR, I, exp, heaviside, dirac_delta
-    from api._realization import RealizationRefused, realize_kernel
-    from engine.core.vertices import KernelTimeImage
+    from daedalus.api._realization import RealizationRefused, realize_kernel
+    from daedalus.engine.core.vertices import KernelTimeImage
     w, t = SR.var('s3om'), SR.var('s3tt')
     cases = [
         ({'kernel_ft_fn': KernelTimeImage((1 + I * w / 2) / (1 + I * w), w)},
@@ -401,8 +401,8 @@ def test_graded_dressed_line_impulse():
     import types
     import mpmath as mp
     from sage.all import SR, I
-    from api import _realization as RZ
-    from engine.core.vertices import KernelTimeImage
+    from daedalus.api import _realization as RZ
+    from daedalus.engine.core.vertices import KernelTimeImage
     w = SR.var('s3om2')
     att = {'symbol': 'g', 'kernel_ft_fn': KernelTimeImage(
         1 / (1 + I * w * SR(7) / 10) ** 2, w)}
@@ -470,7 +470,7 @@ def test_partial_coverage_is_reported_and_strict_keeps_g3(monkeypatch):
     # strict policy: an unresolved cluster stops the run before Phase J, as
     # on the pole engine (the levels are not lowered under strict)
     _unresolved_clusters(monkeypatch)
-    from api.analyze import AnalyzerError
+    from daedalus.api.analyze import AnalyzerError
     with pytest.raises(AnalyzerError):
         _cc(ou_colour(1 / (1 + 1e-4)), 2, 1, X2, policy={'mode': 'strict'})
 

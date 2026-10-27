@@ -1,5 +1,5 @@
 """
-models/reaction_diffusion_quadratic_1d.model.py
+daedalus/models/reaction_diffusion_quadratic_1d.model.py
 ==================================================
 1D reaction–diffusion field with a QUADRATIC nonlinearity — the minimal
 model whose 1-loop self-energy is a genuine momentum-dependent **bubble**
@@ -21,7 +21,7 @@ Subcritical / stable fixed point: φ* = 0 (the other root φ* = −μ/g is
 unstable); we expand around φ* = 0.
 """
 
-from api.model import SpatialModelBuilder
+from daedalus.api.model import SpatialModelBuilder
 
 
 def build():

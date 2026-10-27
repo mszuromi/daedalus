@@ -11,7 +11,7 @@ The two-field sibling of ``ou_quartic``: a cross correlator <x y> and a
 two-mode propagator, so loop diagrams carry two distinct rates (the
 chain-simplex path of Phase J).
 """
-from api.model import TemporalModelBuilder
+from daedalus.api.model import TemporalModelBuilder
 
 
 def build():

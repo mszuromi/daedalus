@@ -1,4 +1,4 @@
-"""Paper-style equations for the SDE front end: :meth:`api.sde.SDE.sde`.
+"""Paper-style equations for the SDE front end: :meth:`daedalus.api.sde.SDE.sde`.
 
 One equation per line (or per ``;``), written as in a paper::
 
@@ -29,14 +29,14 @@ Each side is read into the existing declarations, nothing else:
   right side per unit time, a noise term as ``c dW/dt`` (``c dN(rate)/dt``,
   ``c dX_name/dt``): ``(tau*Dt + 1)*v = E + sum(w[i,j]*v[j] for j in pop) +
   s dW/dt`` or ``(m*Dt^2 + gamma*Dt + k)*x = sqrt(2*gamma*T) dW/dt`` (a
-  higher-order lhs is embedded, see :meth:`api.sde.SDE.equation`).  The
+  higher-order lhs is embedded, see :meth:`daedalus.api.sde.SDE.equation`).  The
   left side acts on one field; the deterministic terms are the rhs of
-  :meth:`~api.sde.SDE.equation` (a population sum is fine here).
+  :meth:`~daedalus.api.sde.SDE.equation` (a population sum is fine here).
 
 So ``m.sde('dx = (-mu*x) dt + sqrt(2*D) dW')`` is
 ``m.field('x').drift('x', '-mu*x').noise('W_x', Gaussian(var=1),
 into={'x': 'sqrt(2*D)'}, interpretation='ito')``, byte for byte.  A malformed
-line raises :class:`api.sde.SDEError` with a caret under the failing
+line raises :class:`daedalus.api.sde.SDEError` with a caret under the failing
 character.
 """
 from __future__ import annotations
@@ -45,7 +45,7 @@ import re
 from collections import OrderedDict
 from typing import Optional
 
-from api.noise import (Gaussian, NoiseSource, Poisson, expr_to_text,
+from daedalus.api.noise import (Gaussian, NoiseSource, Poisson, expr_to_text,
                        expression_syntax_problem, format_caret_error)
 
 __all__ = ['parse_paper', 'apply_paper', 'paper_text']
@@ -243,7 +243,7 @@ def parse_paper(text: str, fields, SDEError, context: Optional[dict] = None):
                         'factor by a space or "*", e.g. (-mu*x) dt or sqrt(2*D) dW')
                 if re.search(r'\b(\w+)\s*\(\s*dW(_\w+)?\s*\)', body):
                     # an operator on the increment (lap(dW), div(dW)): conserved noise
-                    from engine.integration.spatial import CONSERVED_NOISE_WHY
+                    from daedalus.engine.integration.spatial import CONSERVED_NOISE_WHY
                     hint = CONSERVED_NOISE_WHY
                 raise _err(SDEError, line, at + len(body) - 1 if body else at,
                            f'the term {body!r} of d{field} has no differential', hint)
@@ -331,7 +331,7 @@ def apply_paper(sde, text: str, noises: Optional[dict] = None):
     """Declare what ``text`` says on the builder ``sde`` (see the module
     docstring): fields not yet declared, one equation per field, one noise
     source per process with its couplings and interpretation."""
-    from api.sde import SDEError
+    from daedalus.api.sde import SDEError
     if sde._interp != 'ito':
         raise SDEError(f"sde(): the model has interpretation({sde._interp!r}); paper-style "
                        f"terms carry their own (a plain dW is Ito, ∘dW Stratonovich, ∘dN "
@@ -340,7 +340,7 @@ def apply_paper(sde, text: str, noises: Optional[dict] = None):
     noises = dict(noises or {})
     for k, v in noises.items():
         if not isinstance(v, NoiseSource):
-            raise SDEError(f'sde(noises={{{k!r}: ...}}): give a noise source from api.noise '
+            raise SDEError(f'sde(noises={{{k!r}: ...}}): give a noise source from daedalus.api.noise '
                            f'(Gaussian, Poisson, CompoundPoisson, ...); got {type(v).__name__}.')
     known = (set(sde._param_names) | set(sde._function_names) | set(sde._kernels)
              | set(sde._operators) | {p['name'] for p in sde._pops})
@@ -413,12 +413,12 @@ def apply_paper(sde, text: str, noises: Optional[dict] = None):
 
 
 def paper_text(sde) -> str:
-    """The equations of ``sde`` written as :meth:`api.sde.SDE.sde` reads them
+    """The equations of ``sde`` written as :meth:`daedalus.api.sde.SDE.sde` reads them
     (``a*Dt*x = rhs`` as ``a*dx = (rhs) dt + ...``, any other lhs, a
     higher-order one included, in the operator form; sources coupled by
     ``into=``, Gaussian sources of variance 1, Poisson sources of size 1, or
     sources named in the returned text's ``noises``): ``(text, noises)``."""
-    from api.sde import SDEError, _DT
+    from daedalus.api.sde import SDEError, _DT
     lines, noises = [], {}
     dt = (sde._time_names() or ['Dt'])[0]
     for name, s in sde._sources.items():

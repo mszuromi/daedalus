@@ -7,9 +7,9 @@ order in the time derivative** ``Dt`` — every term carries at most one
 factor of ``Dt``.  Everything downstream bakes that in:
 
 * the mean-field linearization pencil ``(A, B)`` in
-  :mod:`api._mean_field_dae` splits the residual into the part at
+  :mod:`daedalus.api._mean_field_dae` splits the residual into the part at
   ``Dt = 0`` (``B``) and ``∂/∂Dt`` at ``Dt = 0`` (``A``);
-* the propagator kernel in :mod:`api._propagator` maps
+* the propagator kernel in :mod:`daedalus.api._propagator` maps
   ``c0 + c1·Dt  →  c0·δ(t) + c1·δ′(t)``.
 
 A term of ``Dt``-degree ≥ 2 falls through BOTH: it is killed by
@@ -33,7 +33,7 @@ Public API
     Same check swept over every monomial of a bigrade-classified action.
 """
 from __future__ import annotations
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = [
     'NonlinearDtError',

@@ -76,9 +76,9 @@ def test_typed_wrapper_refuses_lists_it_cannot_keep_aligned(flat_ok, mult_ok):
 # ── Bindings ─────────────────────────────────────────────────────────────────
 
 def test_switch_patches_every_binding_and_undoes_cleanly(monkeypatch):
-    import api._diagrams as dg
-    import api.compute as compute
-    from engine.enumeration import prediagram_cache as pdc
+    import daedalus.api._diagrams as dg
+    import daedalus.api.compute as compute
+    from daedalus.engine.enumeration import prediagram_cache as pdc
 
     before = (pdc.load_prediagrams, dg.enumerate_unique_diagrams,
               compute.enumerate_unique_diagrams)
@@ -101,8 +101,8 @@ def test_switch_patches_every_binding_and_undoes_cleanly(monkeypatch):
             undo = {(mod.__name__, name): value
                     for mod, name, value in unwrapped_order_patches()}
             assert undo == {
-                ('api._diagrams', 'enumerate_unique_diagrams'): real_enum,
-                ('api.compute', 'enumerate_unique_diagrams'): real_enum}
+                ('daedalus.api._diagrams', 'enumerate_unique_diagrams'): real_enum,
+                ('daedalus.api.compute', 'enumerate_unique_diagrams'): real_enum}
         assert (pdc.load_prediagrams, dg.enumerate_unique_diagrams) == \
             (shuffled_load, shuffled_enum)
     assert (pdc.load_prediagrams, dg.enumerate_unique_diagrams,
@@ -134,9 +134,9 @@ def _typed_lists(monkeypatch):
     prediagram the diagram came from.  ``compute_cumulants`` is stopped right
     after the enumeration, through whatever bindings are installed."""
     import daedalus as dd
-    import api._diagrams as dg
-    import api.compute as compute
-    from api.compute import compute_cumulants
+    import daedalus.api._diagrams as dg
+    import daedalus.api.compute as compute
+    from daedalus.api.compute import compute_cumulants
 
     cur = compute.enumerate_unique_diagrams
     seen = []
@@ -193,7 +193,7 @@ def test_switch_reorders_typed_diagrams_within_a_prediagram(unswitched,
     multiplicities 1, 2 and 4.  The prediagram shuffle alone keeps every
     block's internal order; the switch changes it, keeps each multiplicity
     with its diagram, and ``reverse`` reverses each loop order exactly."""
-    from engine.enumeration import prediagram_cache as pdc
+    from daedalus.engine.enumeration import prediagram_cache as pdc
 
     plain = _typed_lists(monkeypatch)
     assert len(plain[1]) > len({b for _, _, b in plain[1]}) > 1

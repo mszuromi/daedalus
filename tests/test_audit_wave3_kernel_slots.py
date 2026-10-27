@@ -35,9 +35,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                       # noqa: E402
-from api.model import TemporalModelBuilder              # noqa: E402
-from engine.core.vertices import ConvVertexType         # noqa: E402
+from daedalus.api import compute_cumulants                       # noqa: E402
+from daedalus.api.model import TemporalModelBuilder              # noqa: E402
+from daedalus.engine.core.vertices import ConvVertexType         # noqa: E402
 
 TAU = np.array([0.0, 0.7, 2.5])
 
@@ -122,7 +122,7 @@ def test_kernel_on_two_fields_matches_the_markov_twin(order):
 def test_single_field_kernel_keeps_one_symbol():
     """A kernel that convolves one field only is not aliased (its sectors
     and numbers are those of before)."""
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     b = TemporalModelBuilder('w3c one-field kernel')
     b.population('P', size=1)
     b.physical_field('x', population='P')
@@ -146,8 +146,8 @@ def test_shared_kernel_through_the_caches(tmp_path, monkeypatch):
     written before them is stale."""
     import glob
     from sage.all import load as sage_load
-    from api import _expand_cache as EC
-    from engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as EC
+    from daedalus.engine.core.field_theory import FieldTheory
     monkeypatch.chdir(tmp_path)
     ext = [('y', 1), ('y', 1)]
 
@@ -180,8 +180,8 @@ def test_shared_kernel_through_the_caches(tmp_path, monkeypatch):
 # --- GEN-09 (the README's Hawkes example) -----------------------------------
 
 def _hawkes(shared, name):
-    from api.sde import SDE
-    from api.delay import Kernel
+    from daedalus.api.sde import SDE
+    from daedalus.api.delay import Kernel
     m = (SDE(name).population('E', size=2)
          .parameter('a', default=[1.0, 1.0], indexed_by=['E'])
          .parameter('Em', default=[-1.5, -1.5], indexed_by=['E'])

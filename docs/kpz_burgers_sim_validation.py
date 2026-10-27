@@ -40,7 +40,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _load_sim():
-    p = os.path.join(_REPO, 'models', 'spatial_field_1d_sim.py')
+    p = os.path.join(_REPO, 'daedalus', 'simulations', 'spatial_field_1d_sim.py')
     spec = importlib.util.spec_from_file_location('sim', p)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)

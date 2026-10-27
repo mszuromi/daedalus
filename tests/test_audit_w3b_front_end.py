@@ -36,10 +36,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from scipy.linalg import expm, solve_continuous_lyapunov               # noqa: E402
 
-from api import compute_cumulants                                      # noqa: E402
-from api.model import TemporalModelBuilder                             # noqa: E402
-from api.noise import Gaussian                                         # noqa: E402
-from api.sde import SDE                                                # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                             # noqa: E402
+from daedalus.api.noise import Gaussian                                         # noqa: E402
+from daedalus.api.sde import SDE                                                # noqa: E402
 
 TAUS = [0.0, 0.5, 1.3]
 REPO = os.path.join(os.path.dirname(__file__), '..')
@@ -320,8 +320,8 @@ def _load_file(path):
 
 
 def test_round_trip_keeps_physical_field_domain_and_saddle(tmp_path):
-    from api.model_serialize import load_spec_from_file, render_model_file
-    src = os.path.join(REPO, 'models', 'ou_quartic_double_well.model.py')
+    from daedalus.api.model_serialize import load_spec_from_file, render_model_file
+    src = os.path.join(REPO, 'daedalus', 'models', 'ou_quartic_double_well.model.py')
     spec = load_spec_from_file(src)
     assert [f.get('domain') for f in spec['physical_fields']] == ['real']
     out = tmp_path / 'rt.model.py'
@@ -342,11 +342,11 @@ def test_round_trip_keeps_physical_field_domain_and_saddle(tmp_path):
 
 
 def test_round_trip_field_switches_and_kernel_expressions(tmp_path):
-    from api.model_serialize import load_spec_from_file, render_model_file
+    from daedalus.api.model_serialize import load_spec_from_file, render_model_file
     src = tmp_path / 'sw.model.py'
     src.write_text(
-        'from api.model import TemporalModelBuilder\n'
-        'from api.delay import Kernel\n\n\n'
+        'from daedalus.api.model import TemporalModelBuilder\n'
+        'from daedalus.api.delay import Kernel\n\n\n'
         'def build():\n'
         '    return (\n'
         "        TemporalModelBuilder('switches', n_populations=1)\n"
@@ -374,10 +374,10 @@ def test_round_trip_field_switches_and_kernel_expressions(tmp_path):
 
 
 def test_loader_reports_keywords_it_cannot_carry(tmp_path):
-    from api.model_serialize import load_spec_from_file
+    from daedalus.api.model_serialize import load_spec_from_file
     src = tmp_path / 'odd.model.py'
     src.write_text(
-        'from api.model import TemporalModelBuilder\n\n\n'
+        'from daedalus.api.model import TemporalModelBuilder\n\n\n'
         'def build():\n'
         '    return (\n'
         "        TemporalModelBuilder('odd', n_populations=1)\n"
@@ -393,14 +393,14 @@ def test_loader_reports_keywords_it_cannot_carry(tmp_path):
 
 
 def test_loader_never_executes_kernel_expressions(tmp_path):
-    from api.model_serialize import load_spec_from_file
+    from daedalus.api.model_serialize import load_spec_from_file
     marker = tmp_path / 'executed.txt'
     src = tmp_path / 'esc.model.py'
     payload = ("Kernel.image(Kernel.__init__.__globals__['__builtins__']['open']"
                f"({str(marker)!r}, 'w').write('x') or '1')")
     src.write_text(
-        'from api.model import TemporalModelBuilder\n'
-        'from api.delay import Kernel\n\n\n'
+        'from daedalus.api.model import TemporalModelBuilder\n'
+        'from daedalus.api.delay import Kernel\n\n\n'
         'def build():\n'
         '    return (\n'
         "        TemporalModelBuilder('esc', n_populations=1)\n"
@@ -415,10 +415,10 @@ def test_loader_never_executes_kernel_expressions(tmp_path):
 
 
 def test_loader_warns_on_a_non_literal_cgf_kernel(tmp_path):
-    from api.model_serialize import load_spec_from_file
+    from daedalus.api.model_serialize import load_spec_from_file
     src = tmp_path / 'cgf.model.py'
     src.write_text(
-        'from api.model import TemporalModelBuilder\n'
+        'from daedalus.api.model import TemporalModelBuilder\n'
         "KSTR = 'exp(-abs(tau))'\n\n\n"
         'def build():\n'
         '    return (\n'
@@ -462,8 +462,8 @@ def test_delay_controller_k3_is_unit_invariant():
 
 
 def test_delay_target_missed_is_marked(monkeypatch):
-    import api.compute as _ac
-    from engine.integration.time_domain.final_integral import PhaseJResourceError
+    import daedalus.api.compute as _ac
+    from daedalus.engine.integration.time_domain.final_integral import PhaseJResourceError
     real = _ac.compute_cumulants
 
     def refuse_order_8(model, **kw):

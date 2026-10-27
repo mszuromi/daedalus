@@ -5,7 +5,7 @@ independent numerical cross-check — ``compute_cumulants`` does NOT use this mo
 
 tests.oracles.loop_parametric
 =============================
-Test-only reference (was ``engine.integration.spatial.loop_parametric``; moved out of
+Test-only reference (was ``daedalus.engine.integration.spatial.loop_parametric``; moved out of
 the library in audit W7: no production module imports it).
 
 Momentum-FIRST parametric loop integration for spatial (heat-kernel) field

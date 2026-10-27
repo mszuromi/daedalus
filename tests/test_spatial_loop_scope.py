@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 pytest.importorskip('sage.all')
 
-from api.model import ModelBuilder, SpatialModelBuilder          # noqa: E402
+from daedalus.api.model import ModelBuilder, SpatialModelBuilder          # noqa: E402
 
 _MUA, _MUB, _D, _C, _TA, _TB = 1.1, 3.0, 0.6, 0.4, 0.8, 0.9
 
@@ -56,7 +56,7 @@ _FUND = {'mua': _MUA, 'mub': _MUB, 'D': _D, 'c': _C, 'Ta': _TA, 'Tb': _TB}
 
 
 def test_loop_edges_of_another_field_get_their_own_mass():
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     xs = np.array([0.0, 0.7])
     th = compute_cumulants(model=_noise_mixed(), fundamental=_FUND,
                            external_fields=[('a', 1), ('a', 1)], k=2,
@@ -80,9 +80,9 @@ def test_loop_edges_of_another_field_get_their_own_mass():
 
 
 def test_kpoint_refuses_foreign_field_edges_with_routing_message():
-    from api.compute import FieldTheory
-    from api._propagator import build_propagator
-    from engine.integration.spatial.pipeline_bridge import compute_spatial_kpoint
+    from daedalus.api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.integration.spatial.pipeline_bridge import compute_spatial_kpoint
     m = _noise_mixed()
     ft = FieldTheory(m, taylor_order=6)
     ft.expand()
@@ -95,7 +95,7 @@ def test_kpoint_refuses_foreign_field_edges_with_routing_message():
 
 
 def test_periodic_loops_refuse():
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     m = (ModelBuilder('ac_pbc_scope', n_populations=0)
          .physical_field('phi', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
@@ -128,8 +128,8 @@ def test_periodic_loops_refuse():
 # ── k-point driver: leg labels and liveness ─────────────────────────────────
 
 def _quad_rd(T):
-    from api.compute import FieldTheory
-    from api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
     b = (ModelBuilder('rd_quad_scope', n_populations=0)
          .physical_field('p', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
@@ -150,7 +150,7 @@ def test_kpoint_leg_labels_and_unit_scale():
     ('p', 1)×3 (they used to enumerate nothing → exact 0), and the value
     scales exactly as T² when T → 1e-8·T (an absolute 1e-14 prefactor cut
     used to return 0 there)."""
-    from engine.integration.spatial.pipeline_bridge import compute_spatial_kpoint
+    from daedalus.engine.integration.spatial.pipeline_bridge import compute_spatial_kpoint
     pts = np.array([[[0.3, 0.2], [-0.4, 0.5]]])
     ft, b, prop, npar = _quad_rd(1.0)
     v1, _ = compute_spatial_kpoint(ft, b, prop, npar, [('p', 1)] * 3, pts,
@@ -170,9 +170,9 @@ def test_kpoint_leg_labels_and_unit_scale():
 def test_noise_extractors_refuse_unresolved_entries():
     """A noise coefficient that does not reduce to a number raises in both
     extractors (it used to be dropped to 0 silently, changing C)."""
-    from api.compute import FieldTheory
-    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.api.compute import FieldTheory
+    from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         extract_noise_coefficients, extract_noise_matrix)
     m = _noise_mixed()
     ft = FieldTheory(m, taylor_order=4)
@@ -191,7 +191,7 @@ def test_noise_extractors_refuse_unresolved_entries():
 # ── UV power counting (d >= 2) ──────────────────────────────────────────────
 
 def _cs(edges, internal, n_loops):
-    from engine.integration.spatial.diagram_descriptor import (
+    from daedalus.engine.integration.spatial.diagram_descriptor import (
         CEdge, CStackDiagram)
     return CStackDiagram(internal_vertices=tuple(internal),
                          external_legs=(0, 1),
@@ -219,7 +219,7 @@ def _sunset():
 
 
 def test_uv_power_counting():
-    from engine.integration.spatial.full_integrator import uv_divergent_subgraphs
+    from daedalus.engine.integration.spatial.full_integrator import uv_divergent_subgraphs
     for dd, d_min in ((_tadpole(), 2), (_bubble(), 4), (_sunset(), 3)):
         for d in (1, 2, 3, 4):
             assert bool(uv_divergent_subgraphs(dd, d)) == (d >= d_min), (dd, d)
@@ -229,7 +229,7 @@ def test_uv_divergent_tadpole_refused_and_bubble_converges():
     """The refused case really has no continuum limit (the tadpole value grows
     with n_s at d=2, the old silent behaviour reproduced by the bare rule) and
     the kept case converges (the d=2 bubble is stable under n_s doubling)."""
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_kinematic, SpatialUVDivergenceError)
     et = {0: 0.0, 1: 0.0}
     for d in (2, 3):
@@ -248,7 +248,7 @@ def test_empty_causal_interval_contributes_zero():
     """A vertex whose leaf bounds leave no room (after leaf 0, before a later
     vertex that must precede leaf 1 at the same time) contributes exactly 0
     (pins the empty-interval clamp of the split time grid)."""
-    from engine.integration.spatial.full_integrator import diagram_kinematic
+    from daedalus.engine.integration.spatial.full_integrator import diagram_kinematic
     assert diagram_kinematic(_bubble(), [0.3], {0: 0.0, 1: 0.0}, 1.0, 1.0,
                              spatial_dim=1) == 0.0
     assert diagram_kinematic(_bubble(), [0.3], {0: 0.0, 1: -0.5}, 1.0, 1.0,
@@ -258,7 +258,7 @@ def test_empty_causal_interval_contributes_zero():
 def test_coupled_spectral_kinematic_memory_guard(monkeypatch):
     """The coupled spectral kinematic refuses a chamber over the memory
     budget (it allocated (P x assignments) arrays unguarded)."""
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_kinematic_spectral, spectral_rows, SpatialMemoryBudgetError)
     dd = _bubble()
     n_rows = len(spectral_rows(dd))

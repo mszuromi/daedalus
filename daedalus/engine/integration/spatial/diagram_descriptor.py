@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.diagram_descriptor
-=============================================
+daedalus.engine.integration.spatial.diagram_descriptor
+======================================================
 Backend C — **Phase 1 of the generic spatial loop pipeline**
 (the internal design notes (not distributed)): map an enumerated typed diagram onto
 the C-stack's representation — internal interaction vertices (integrated times),
@@ -39,8 +39,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from engine.core.vertices import SourceType, VertexType
-from engine.integration.spatial.momentum_routing import route_momenta
+from daedalus.engine.core.vertices import SourceType, VertexType
+from daedalus.engine.integration.spatial.momentum_routing import route_momenta
 
 
 @dataclass(frozen=True)

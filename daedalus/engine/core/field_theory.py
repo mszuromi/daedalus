@@ -13,7 +13,7 @@ using PolynomialRing(SR, ...) exponent vectors.
 Usage
 -----
     load('field_theory_sage.py')
-    load('simulations/hawkes_sage.py')
+    load('daedalus/simulations/hawkes_sage.py')
 
     ft = FieldTheory(HAWKES_MODEL, taylor_order=4)
     ft.expand()
@@ -28,7 +28,7 @@ from sage.all import (
     SR, PolynomialRing, factorial, QQ, latex,
     diff, function, exp, dirac_delta, heaviside, integrate, oo, I, pi, taylor
 )
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 
 def fourier_transform(f, t, s):
@@ -250,7 +250,7 @@ def _expand_legacy_requested() -> bool:
     """Always ``False``: ``DAEDALUS_EXPAND_LEGACY`` (the 0.2.1 expansion, one
     multivariate ``taylor()`` of the whole action, which dropped degree-3
     terms) is retired; setting it only warns."""
-    from engine import _env
+    from daedalus.engine import _env
     _env.retired(_EXPAND_LEGACY_ENV,
                  'the per-atom truncated Taylor expansion is the only route')
     return False
@@ -1183,7 +1183,7 @@ def _collect_bigrade(poly, n_tilde: int) -> dict:
 
 
 #: Relative tolerance of the mean-field sector checks (expand time, and the
-#: selected root in ``api._mean_field_dae._check_selected_root``): a wrong
+#: selected root in ``daedalus.api._mean_field_dae._check_selected_root``): a wrong
 #: equation leaves a residual of the size of its own terms, a converged
 #: saddle ~1e-16 of it.  (Was an absolute 1e-9 at expand time: valid models
 #: in large field units or fast time units were refused --.)
@@ -1414,11 +1414,11 @@ def _verify_and_zero_mf_sector(by_tp, mf_subs, spec_subs, ns, R, model,
 
 
 def kernel_dc_gains_of(ns, model):
-    """The model's kernel integrals (:class:`engine.core.convolution.
+    """The model's kernel integrals (:class:`daedalus.engine.core.convolution.
     KernelDCGains`), made once per namespace and kept on it as
     ``ns._kernel_dc_gains`` (the mean-field check and the solvers read the
     same object)."""
-    from engine.core.convolution import KernelDCGains
+    from daedalus.engine.core.convolution import KernelDCGains
     gains = getattr(ns, '_kernel_dc_gains', None)
     if gains is None:
         gains = KernelDCGains(ns, model)
@@ -1475,7 +1475,7 @@ def _mf_saddle_values(ns, model):
     # the one multi-root solver (``.equation`` rows or saddle equations);
     # a failure is recorded, not swallowed: the sector check names it
     try:
-        from api._mean_field import solve_mean_field
+        from daedalus.api._mean_field import solve_mean_field
         ft_proxy = _MFProxyForSolver(
             ns, model, taylor_order=getattr(ns, '_taylor_order', 4))
         mf = solve_mean_field(ft_proxy, model, fundamental, verbose=False)
@@ -1556,7 +1556,7 @@ class FieldTheory:
     Parameters
     ----------
     model : dict
-        Model specification dict (see simulations/hawkes_sage.py).
+        Model specification dict (see daedalus/simulations/hawkes_sage.py).
     taylor_order : int
         Truncation order for all Taylor expansions.
     """
@@ -1612,7 +1612,7 @@ class FieldTheory:
         #    vstar·nstar + vstar·g·dn + dv·nstar + dv·g·dn
         # The naïve ``Conv(g, n) → g·n`` flatten gives the wrong
         # ``g·nstar`` bilinear coefficient on the dv side.
-        from engine.core.convolution import reduce_conv_in_action
+        from daedalus.engine.core.convolution import reduce_conv_in_action
         dc_gains = kernel_dc_gains_of(ns, self.model)
         S_alias = None
         self._vertex_alias_by_tp = None
@@ -1779,12 +1779,12 @@ class FieldTheory:
     def check_first_order_in_dt(self) -> None:
         """Reject an action with any term of ``Dt``-degree ≥ 2.
 
-        Raises :class:`engine.core.dt_order.NonlinearDtError` (a
+        Raises :class:`daedalus.engine.core.dt_order.NonlinearDtError` (a
         ``ValueError``).  Called at the end of :meth:`expand`, and again
         by the expand-cache loader so a bundle written before this guard
         existed cannot sneak a second-order action back in.
         """
-        from engine.core.dt_order import check_action_first_order_in_dt
+        from daedalus.engine.core.dt_order import check_action_first_order_in_dt
         ns = self._ns
         if ns is None or self._by_tp is None:
             return
@@ -1946,7 +1946,7 @@ class FieldTheory:
         ns._entity_axis_sizes = _entity_axis_sizes
 
         # ---- Field variables as SR symbols ----
-        from engine.core.vertices import field_symbol_name
+        from daedalus.engine.core.vertices import field_symbol_name
         tilde_sr_vars: list = []
         phys_sr_vars:  list = []
         tilde_names:   list = []

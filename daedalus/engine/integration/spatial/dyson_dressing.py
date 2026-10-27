@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.dyson_dressing
-=========================================
+daedalus.engine.integration.spatial.dyson_dressing
+==================================================
 Dyson–Duhamel dressing for UNEQUAL diffusion (paper Appendix B §B.24–B.30;
 ``docs/dyson_duhamel_integration_plan.md`` steps D-2/D-3).
 
@@ -30,7 +30,7 @@ requires the residual ratio ``‖𝒟̂‖/D₀ < 1`` (geometric in ``N`` at lar
 exact at ``q=0`` where the insertion vanishes).
 
 Exact oracle for validation: ``C(q,τ)=expm(−A(q)τ)·Σ(q)``, ``A(q)=M+𝒟q²``,
-``A Σ + Σ Aᵀ = N`` (``simulations/coupled_rd_1d_sim.coupled_box_correlator`` — itself
+``A Σ + Σ Aᵀ = N`` (``daedalus/simulations/coupled_rd_1d_sim.coupled_box_correlator`` — itself
 pinned against the unequal-D Langevin simulation).
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ import itertools
 
 import numpy as np
 
-from engine.integration.spatial.spectral_propagator import (
+from daedalus.engine.integration.spatial.spectral_propagator import (
     spectral_projectors, _opitz_bidiagonal,
 )
 
@@ -235,7 +235,7 @@ def dressed_tree_C_x(xs, tau, M, Dhat, D0, N, order, legs, spatial_dim=1,
     at = abs(float(tau))
     ii, jj = (j, i) if tau >= 0 else (i, j)
     if d >= 2 and at == 0.0 and np.any(xs == 0.0):
-        from engine.integration.spatial.heat_kernel import (
+        from daedalus.engine.integration.spatial.heat_kernel import (
             SpatialPropagatorError)
         raise SpatialPropagatorError(
             f'equal-point (x=0, tau=0) dressed tree correlator is '

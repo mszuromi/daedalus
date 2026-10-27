@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.pipeline_bridge
-==========================================
+daedalus.engine.integration.spatial.pipeline_bridge
+===================================================
 The "symbolic-in-q bridge" (spatial Phase 5, Stage A production) — route a
 Tier-1 spatial model through the SHARED diagram pipeline in the mixed
 ``(t, k)`` representation, then do the external ``q → x`` Fourier transform
@@ -49,8 +49,8 @@ import os
 import numpy as np
 from sage.all import SR
 
-from engine.integration.spatial.heat_kernel import SpatialPropagatorError
-from engine.integration.spatial.spatial_correlator import (
+from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
+from daedalus.engine.integration.spatial.spatial_correlator import (
     extract_noise_coefficients, free_two_point,
 )
 
@@ -79,7 +79,7 @@ def _field_index(prop, leg):
     (:func:`_legs_to_phys_idx`), so the POPULATION survives: on a
     multi-population field ``('dp', 2)`` is column 1, never column 0.  Raises
     :class:`SpatialPropagatorError` for a leg that names no physical field."""
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
     _, phys_idx = build_field_index_map(list(prop['ring_gen_names']),
                                         int(prop['nf']))
     return int(phys_idx[_legs_to_phys_idx([leg], phys_idx)[0]])
@@ -248,7 +248,7 @@ def _drift_boost(ft, prop, num_params):
     K_ft = prop.get('K_ft')
     if K_ft is None or not any(SR(e).has(grad) for e in K_ft.list()):
         return None
-    from engine.integration.spatial.heat_kernel import (
+    from daedalus.engine.integration.spatial.heat_kernel import (
         reaction_diffusion_matrices)
     k_var = SR.var('k')
     M_sr, D_sr, V_sr = reaction_diffusion_matrices(
@@ -417,7 +417,7 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
 
     Returns ``{ell: [(typed_diagram, scalar_prefactor), ...]}`` for
     ``compute_correction_td``.  Uses the exact entry points
-    ``api/compute.py`` uses (the SAME ``enumerate_unique_diagrams`` /
+    ``daedalus/api/compute.py`` uses (the SAME ``enumerate_unique_diagrams`` /
     ``classify_coefficient_factors`` the time-only path runs), so this is the
     real shared diagram machinery — lazy-imported to avoid any import cycle.
 
@@ -430,10 +430,10 @@ def build_pipeline_records(ft, model, prop, external_fields, max_ell=0, k=2,
     the eager one), never from a cache file.  The record order and labelling
     are that source's, so consumers pick records by structure, not position.
     """
-    from engine.core.vertices import extract_vertex_types, extract_source_types
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.diagrams.symmetry import classify_coefficient_factors
-    from api._diagrams import enumerate_unique_diagrams
+    from daedalus.engine.core.vertices import extract_vertex_types, extract_source_types
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.symmetry import classify_coefficient_factors
+    from daedalus.api._diagrams import enumerate_unique_diagrams
 
     vtypes = extract_vertex_types(ft)
     stypes = extract_source_types(ft)
@@ -476,8 +476,8 @@ def pipeline_C_q_tau(prop, records, external_fields, base_np_sr, qval, taus,
     Mutates ``prop``'s pole/residue cache (re-solved per q), exactly as the
     spike and ``compute.py`` do.
     """
-    from api._propagator import compute_poles_and_residues
-    from engine.integration.time_domain.pipeline import compute_correction_td
+    from daedalus.api._propagator import compute_poles_and_residues
+    from daedalus.engine.integration.time_domain.pipeline import compute_correction_td
 
     Lap = SR.var('Laplacian')
     nps = dict(base_np_sr)
@@ -570,7 +570,7 @@ def compute_spatial_correlator_via_pipeline(
 
     # Translate external legs to VALID phys_idx keys for the pipeline
     # enumeration (both auto-correlation legs land on the single field key).
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
     ring_var_names = list(ft._ns._ring_var_names)
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
     ext_int = _legs_to_phys_idx(external_fields, phys_idx)
@@ -654,7 +654,7 @@ def compute_spatial_correlator_via_pipeline(
         # estimate at τ≠0) — no q-grid, no cutoff; a periodic box is its
         # converged image sum.  The equal point x=τ=0 is UV-divergent for d≥2
         # and refuses.
-        from engine.integration.spatial.spatial_correlator import (
+        from daedalus.engine.integration.spatial.spatial_correlator import (
             free_two_point_d, free_two_point_box)
         _periodic = bc_mode == 'periodic' and L
         for it, tau in enumerate(tau_grid):
@@ -690,11 +690,11 @@ def compute_coupled_tree_correlator(
     Returns ``(C, info)`` mirroring :func:`compute_spatial_correlator_via_pipeline`
     (``C`` is ``[len(tau_grid), len(spatial_grid)]`` for the external pair).
     """
-    from engine.integration.spatial.heat_kernel import (
+    from daedalus.engine.integration.spatial.heat_kernel import (
         reaction_diffusion_matrices, SpatialPropagatorError)
-    from engine.integration.spatial.spectral_propagator import (
+    from daedalus.engine.integration.spatial.spectral_propagator import (
         build_reference, coupled_two_point)
-    from engine.integration.spatial.spatial_correlator import extract_noise_matrix
+    from daedalus.engine.integration.spatial.spatial_correlator import extract_noise_matrix
 
     K_ft = prop.get('K_ft')
     if K_ft is None:
@@ -768,7 +768,7 @@ def compute_coupled_tree_correlator(
     # (name, population) keys (the 'd'-prefixed fluctuation names
     # compute_cumulants passes and the natural names both resolve; a wrong or
     # ambiguous leg raises — a wrong index computes a different C_ij).
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
     _, _pidx = build_field_index_map(list(prop['ring_gen_names']),
                                      int(prop['nf']))
 
@@ -811,7 +811,7 @@ def compute_coupled_tree_correlator(
     # C_ij(τ) = ⟨φ_i(0) φ_j(τ)⟩ = ⟨φ_j(τ) φ_i(0)⟩ = matrix[j, i].
     if dyson_order is not None:
         # dressed (unequal-𝒟) q-space 2-point, truncated at the policy order
-        from engine.integration.spatial.dyson_dressing import dressed_tree_C
+        from daedalus.engine.integration.spatial.dyson_dressing import dressed_tree_C
 
         def _Cq(q, tau):
             return dressed_tree_C(q, tau, M, ref.Dhat, ref.D0, N,
@@ -827,7 +827,7 @@ def compute_coupled_tree_correlator(
         # dressed (unequal-𝒟) tree: the exact Laguerre–Gaussian q→x transform
         # of every Dyson term + an adaptive, error-checked s-integral (no
         # q-grid, no q_cut, no fixed mode count; dyson_dressing)
-        from engine.integration.spatial.dyson_dressing import dressed_tree_C_x
+        from daedalus.engine.integration.spatial.dyson_dressing import dressed_tree_C_x
         _Lb = float(L) if (bc_mode == 'periodic' and L) else None
         for it, tau in enumerate(taus):
             C[it, :] = dressed_tree_C_x(xs, tau, M, ref.Dhat, ref.D0, N,
@@ -839,7 +839,7 @@ def compute_coupled_tree_correlator(
         # case, the Dyson-dressed case, and any external (i,j).  Infinite domain
         # → the continuous radial/Hankel ``radial_inverse_ft``; periodic cubic
         # box → the discrete-momentum ``periodic_inverse_ft`` (lattice sum).
-        from engine.integration.spatial.spatial_correlator import (
+        from daedalus.engine.integration.spatial.spatial_correlator import (
             radial_inverse_ft, periodic_inverse_ft)
         _periodic = bc_mode == 'periodic' and L
         qg = np.linspace(q_cut / (4 * n_q), q_cut, n_q)
@@ -873,14 +873,14 @@ def compute_coupled_tree_correlator(
         # C_ij(τ) = ⟨φ_i(0)φ_j(τ)⟩ reads entry [j, i] at τ ≥ 0 and [i, j] at
         # τ < 0.  free_two_point handles complex μ_d (the
         # erf/mpmath path); conjugate (α,β)↔(β,α)* pairs make the sum real.
-        from engine.integration.spatial.spectral_propagator import (
+        from daedalus.engine.integration.spatial.spectral_propagator import (
             spectral_projectors as _spectral_projectors)
         eig, proj = _spectral_projectors(ref.M)
         nf = len(eig)
         PNP = {(a_, b_): proj[a_] @ np.asarray(N, float) @ proj[b_].T
                for a_ in range(nf) for b_ in range(nf)}
         _f2p_cache = {}
-        from engine.integration.spatial.spatial_correlator import (
+        from daedalus.engine.integration.spatial.spatial_correlator import (
             free_two_point_d, free_two_point_box)
         _per = bc_mode == 'periodic' and L
 
@@ -926,7 +926,7 @@ def _diagram_is_bubble(td):
     q-independent.  Topology-agnostic: catches BOTH the φ̃φ² 2-vertex tadpole
     (with a ``k=0`` connecting line) and the φ³ 1-vertex self-loop tadpole.
     """
-    from engine.integration.spatial.momentum_routing import route_momenta
+    from daedalus.engine.integration.spatial.momentum_routing import route_momenta
     import sympy as _sp
     for v in route_momenta(td).edge_k2().values():
         e = _sp.expand(v)
@@ -979,7 +979,7 @@ def diagram_form_factor(td, vertex_terms, mode=None, d=1):
     validated φ̃φ² ``Σ_R`` bubble → ``q₀²(q₀−ℓ₀)²``, L=2 vs brute ``∫dℓ₀dℓ₁``
     1e-14."""
     import sympy as _sp
-    from engine.integration.spatial.momentum_routing import route_momenta
+    from daedalus.engine.integration.spatial.momentum_routing import route_momenta
     if isinstance(vertex_terms, tuple):           # backward-compat single chain
         vertex_terms = [{'weight': 1, 'n_phys': None, 'chain': vertex_terms,
                          'mode': mode or 'composite'}]
@@ -1385,7 +1385,7 @@ def _mc_class_seed(td, base=1234):
     position-derived seed made the estimate depend on it.  ``crc32`` keeps
     the seed the same in every process (Python's ``hash`` is salted)."""
     import zlib
-    from engine.diagrams.symmetry import diagram_signature
+    from daedalus.engine.diagrams.symmetry import diagram_signature
     return base + zlib.crc32(repr(diagram_signature(td)).encode())
 
 
@@ -1468,7 +1468,7 @@ def _pf_labels(masses, mel, eig_scale):
     log-derivative Bell expansion (g^{(p)}/g over set
     partitions of h^{(q)} = −Σ m_l(−1)^{q−1}(q−1)!/(s+μ_l)^q)."""
     from math import factorial as _fct
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         _set_partitions)
     _tol = float(eig_scale) * (2.220446049250313e-16
                                ** (1.0 / (len(masses) + 1)))
@@ -1546,12 +1546,12 @@ def compute_coupled_loop_correlator(
     """
     import itertools
 
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.diagrams.symmetry import external_wick_compensation
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.diagrams.symmetry import external_wick_compensation
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_kinematic_spectral, spectral_rows, k2_leaf_time_assignments)
-    from engine.integration.spatial.spectral_propagator import spectral_projectors
+    from daedalus.engine.integration.spatial.spectral_propagator import spectral_projectors
 
     M = np.asarray(tree_info['M'], dtype=float)
     Dhat = np.asarray(tree_info['Dhat'], dtype=float)
@@ -1808,7 +1808,7 @@ def _spatial_threads_gate(parallel, heavy, n_workers, n_tasks):
     threads: ``parallel``, not turned off by ``DAEDALUS_PARALLEL=0``, a
     loop-order >= 2 diagram present (threads pay only there, ~2.5x; L=1 is
     dispatch-bound, 0.7x), more than one worker and enough tasks."""
-    from engine.fork_safety import parallel_disabled
+    from daedalus.engine.fork_safety import parallel_disabled
     if not parallel or parallel_disabled():
         return False
     return bool(heavy) and n_workers > 1 and n_tasks >= max(8, 2 * n_workers)
@@ -1837,9 +1837,9 @@ def compute_spatial_correlator_generic(
     ``⟨φ²⟩₀`` is UV-sensitive (the finite Schwinger cutoff sets the scale).
     Returns ``(C1_tau_x, info)``.
     """
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.diagrams.symmetry import external_wick_compensation
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.diagrams.symmetry import external_wick_compensation
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_correlator, diagram_correlator_x)
 
     # a constant drift: exact Galilean boost (one drift-free run per τ)
@@ -1851,7 +1851,7 @@ def compute_spatial_correlator_generic(
         per_tau_kw=lambda i: {} if i == 0 else {'verbose': False})
     if _bst is not None:
         return _bst
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         eqtime_ledger_reset, eqtime_ledger_collect)
     eqtime_ledger_reset()
     if verbose:
@@ -1913,7 +1913,7 @@ def compute_spatial_correlator_generic(
             'quadrature. Expect long runtimes; consider a coarser q-grid (n_q).',
             stacklevel=2)
 
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
     ring_var_names = list(ft._ns._ring_var_names)
     _, phys_idx = build_field_index_map(ring_var_names, ft._n_tilde)
     ext_int = _legs_to_phys_idx(external_fields, phys_idx)
@@ -2095,14 +2095,14 @@ def compute_spatial_correlator_generic(
     # unset: the RAM-aware default of the Phase J guard (at most 6 GB, less
     # on a small machine: final_integral.default_mem_budget); an explicit
     # value is used as given (one parser: full_integrator._spatial_mem_budget)
-    from engine.integration.spatial.full_integrator import _spatial_mem_budget
+    from daedalus.engine.integration.spatial.full_integrator import _spatial_mem_budget
     _b, _budget_rule = _spatial_mem_budget()
     _budget_gb = _b / 1e9
     _peak_gb, _worst = 0.0, None
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         time_grid_split_factor, external_times_2pt, chamber_peak_bytes)
     _tau_m = float(np.max(np.abs(taus))) if len(taus) else 0.0
-    from engine.integration.spatial.full_integrator import eqtime_eligible
+    from daedalus.engine.integration.spatial.full_integrator import eqtime_eligible
     for _dd, _pv, _ff, _el, _nt, _ns, _cp in live_g:
         if (_tau_m == 0.0 and _use_x_path
                 and eqtime_eligible(_dd, _ff, _integrator)):
@@ -2234,7 +2234,7 @@ def compute_spatial_correlator_generic(
                     for ix, x in enumerate(xg):
                         add[it, ix] = np.trapezoid(np.cos(qg * float(x)) * col, qg) / math.pi
             else:
-                from engine.integration.spatial.spatial_correlator import radial_inverse_ft
+                from daedalus.engine.integration.spatial.spatial_correlator import radial_inverse_ft
                 for it in range(len(taus)):
                     add[it, :] = radial_inverse_ft(qg, dC_qt[:, it], xg, d)
             return add
@@ -2247,7 +2247,7 @@ def compute_spatial_correlator_generic(
     # resolves only algebraically (~n^-2; percent level at the default grid,
     # at every tau).  Measure it: the derivative records again at a 0.7x
     # coarser grid; the spread goes to info['derivative_accuracy'] and the
-    # result is marked approximate (api.compute).
+    # result is marked approximate (daedalus.api.compute).
     deriv_acc = None
     _ff_recs = [rec for rec in live_g if rec[2] is not None
                 and not getattr(rec[2], 'identically_zero', False)]
@@ -2376,9 +2376,9 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     """
     import numpy as _np
     from sage.all import SR as _SR
-    from engine.diagrams.symmetry import external_wick_compensation
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.diagrams.symmetry import external_wick_compensation
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_correlator_pts, field_respecting_mappings)
 
     k = len(external_fields)
@@ -2420,7 +2420,7 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
 
     # legs → phys_idx keys (as every other driver: a label like ('p', 2) on
     # a single-population field is not a key and would enumerate nothing)
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
     _, _pidx = build_field_index_map(list(ft._ns._ring_var_names),
                                      ft._n_tilde)
     _ext = _legs_to_phys_idx(list(external_fields), _pidx)
@@ -2428,7 +2428,7 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
                                 max_ell=max_ell, k=k, verbose=verbose)
     # every edge must carry the field of the certified mode (else the
     # single (mu0, D0) is wrong for it); the message routes the caller to
-    # the coupled k-point driver (api.compute catches 'single-field')
+    # the coupled k-point driver (daedalus.api.compute catches 'single-field')
     _fi = {int(_pidx[f]) for f in _ext}
     _n_fields = int(prop.get('nf') or 1)
     if len(_fi) != 1 or any(
@@ -2460,7 +2460,7 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     _vterms = [{'weight': _num_w(t['weight']), 'n_phys': t['n_phys'],
                 'fields': t.get('fields'), 'chain': t['chain'], 'mode': t['mode']}
                for t in _vt_sym]
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         eqtime_ledger_reset, eqtime_ledger_collect)
     eqtime_ledger_reset()
     per_ell = {}
@@ -2509,7 +2509,7 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
                     **kw)
                 acc[idxs] += v
                 if _deriv:
-                    # the derivative loop's grid accuracy (api.compute marks
+                    # the derivative loop's grid accuracy (daedalus.api.compute marks
                     # the result approximate): the same diagram 0.7x coarser
                     kwc = dict(kw)
                     kwc['n_t'] = max(6, int(round(0.7 * kw.get('n_t', 22))))
@@ -2680,12 +2680,12 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
     """
     import itertools
 
-    from engine.diagrams.symmetry import external_wick_compensation
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.diagrams.symmetry import external_wick_compensation
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_kinematic_spectral, spectral_rows, field_respecting_mappings)
-    from engine.integration.spatial.spectral_propagator import (
+    from daedalus.engine.integration.spatial.spectral_propagator import (
         spectral_projectors)
 
     M = np.asarray(tree_info['M'], dtype=float)

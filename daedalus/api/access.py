@@ -1,5 +1,5 @@
 """
-api.access — natural-name accessors for compute_cumulants results.
+daedalus.api.access — natural-name accessors for compute_cumulants results.
 
 Hides the MSR-JD internal naming (``dn`` for fluctuations, ``nstar``
 for saddle values, etc.) behind the model's declared user-facing
@@ -119,7 +119,7 @@ def resolve_external_fields(model: dict, external_fields) -> list:
     obs = model.get('observables') or {}
     for e in external_fields:
         if not isinstance(e, str) or e in obs:
-            out.append(e)                 # (an observable leg: api.observables)
+            out.append(e)                 # (an observable leg: daedalus.api.observables)
             continue
         info = _field_units(model, e)
         if info is not None and info[0] > 1:

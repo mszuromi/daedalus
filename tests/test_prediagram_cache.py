@@ -15,7 +15,7 @@ Two things are asserted here, and the difference between them is the point:
   cache format --- reproduces the v2 total exactly, so the residual is IEEE
   rounding in a leaf-ordered integrand assembly and not a v2 artefact.
 
-See ``engine/enumeration/prediagram_cache.py`` for the full argument.
+See ``daedalus/engine/enumeration/prediagram_cache.py`` for the full argument.
 """
 import os
 import pickle
@@ -29,8 +29,8 @@ sys.path.insert(0, os.path.abspath(
 pytest.importorskip('sage.all')
 
 from sage.all import SR                                          # noqa: E402
-import engine.enumeration.loop_diagram_enumeration as L          # noqa: E402
-from engine.enumeration import prediagram_cache as pdc           # noqa: E402
+import daedalus.engine.enumeration.loop_diagram_enumeration as L          # noqa: E402
+from daedalus.engine.enumeration import prediagram_cache as pdc           # noqa: E402
 
 CACHE = 'saved_prediagrams'
 
@@ -193,7 +193,7 @@ def test_use_cache_false_eager_knob_is_verbatim(tmp_path, fmt_auto,
     """``stream=False``, or ``DAEDALUS_PREDIAGRAM_EAGER=1`` (the rollback
     knob) whatever ``stream`` says, gives the eager enumerator's records
     verbatim: same order, same labels, no disk."""
-    from engine.enumeration.loop_diagram_enumeration import enumerate_all
+    from daedalus.engine.enumeration.loop_diagram_enumeration import enumerate_all
     eager = [_record_key(r) for r in enumerate_all(k=2, ell=1,
                                                    verbose=False)[2]]
     root = str(tmp_path)
@@ -246,7 +246,7 @@ def test_use_cache_false_never_forks_inside_a_notebook_kernel(
     serial run.  The guard is simulated; any process pool is a failure."""
     import concurrent.futures
 
-    import engine.fork_safety as fs
+    import daedalus.engine.fork_safety as fs
 
     def _no_pool(*a, **kw):
         raise AssertionError('a process pool was started in a notebook kernel')
@@ -271,7 +271,7 @@ def test_use_cache_false_memoises_the_certs_not_the_records(
     is the orientation checker, which every installation can run; the
     certificate backend is varied too where the compiled extension exists
     (without it only the 'sage' backend runs)."""
-    from engine.enumeration import fastenum
+    from daedalus.engine.enumeration import fastenum
     calls = []
     real = pdc.stream_prediagram_certs
 
@@ -382,10 +382,10 @@ def _ou_quartic_curves(monkeypatch, max_ell, taus, eager):
 
     import numpy as np
 
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
 
     spec = importlib.util.spec_from_file_location(
-        'ou_quartic_model', 'models/ou_quartic.model.py')
+        'ou_quartic_model', 'daedalus/models/ou_quartic.model.py')
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     model = mod.build()
@@ -447,7 +447,7 @@ def _sources_seen(monkeypatch, run):
 def _temporal_run():
     import numpy as np
 
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     import daedalus as dd
     model, _ = dd.load_model('ou_quartic')
     compute_cumulants(model, k=2, max_ell=1, external_fields=[('dx', 1)] * 2,
@@ -458,7 +458,7 @@ def _temporal_run():
 def _spatial_run():
     import numpy as np
 
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     import daedalus as dd
     # d=1: the d=2 model's one loop has a tadpole, UV-divergent at d>=2
     # (refused since audit wave 2)
@@ -519,7 +519,7 @@ def test_temporal_streamed_totals_match_eager_on_a_fallback_model(
     import numpy as np
 
     import daedalus as dd
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     from tests.tools import phase_j_zoo_baseline as zoo
 
     model, _ = dd.load_model(model_name)
@@ -565,11 +565,11 @@ def test_shipped_v2_file_is_picked_up():
 
 def _ctx(k, max_ell, name):
     """OU quartic as a text-driven model, plus everything typing needs."""
-    from engine.core.field_theory import FieldTheory
-    from engine.core.vertices import extract_source_types, extract_vertex_types
-    from engine.diagrams.type_assignment import build_field_index_map
-    from api._propagator import build_propagator, compute_poles_and_residues
-    from api.model import TemporalModelBuilder
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.vertices import extract_source_types, extract_vertex_types
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.api._propagator import build_propagator, compute_poles_and_residues
+    from daedalus.api.model import TemporalModelBuilder
 
     eps = 0.05
     model = (TemporalModelBuilder(name).physical_field('x')
@@ -595,12 +595,12 @@ def _ctx(k, max_ell, name):
 
 def _stages(ctx, records):
     """prediagrams -> typed -> causal -> unique, plus the label-free invariants."""
-    from engine.diagrams.causality import filter_causal
-    from engine.diagrams.symmetry import (combinatorial_factor,
+    from daedalus.engine.diagrams.causality import filter_causal
+    from daedalus.engine.diagrams.symmetry import (combinatorial_factor,
                                           deduplicate_with_multiplicities,
                                           diagram_signature,
                                           external_wick_compensation)
-    from engine.diagrams.type_assignment import enumerate_all as typed_all
+    from daedalus.engine.diagrams.type_assignment import enumerate_all as typed_all
 
     typed = typed_all(records, ctx['ext'], ctx['vtypes'], ctx['stypes'],
                       G_ft=ctx['prop']['G_ft'], resp_index=ctx['resp_idx'],
@@ -618,8 +618,8 @@ def _stages(ctx, records):
 
 
 def _total(ctx, unique, taus):
-    from engine.diagrams.symmetry import classify_coefficient_factors
-    from engine.integration.time_domain.final_integral import integrate_diagram
+    from daedalus.engine.diagrams.symmetry import classify_coefficient_factors
+    from daedalus.engine.integration.time_domain.final_integral import integrate_diagram
 
     k = ctx['k']
     pdic = {key: ctx['prop'][key] for key in (
@@ -739,7 +739,7 @@ def test_leaf_swap_reproduces_the_v2_total_bit_for_bit(tmp_path, monkeypatch):
 
 def test_compute_cumulants_agrees_through_the_real_wiring(tmp_path,
                                                           monkeypatch):
-    """The A/B above bypasses ``api._diagrams``; this one goes through it.
+    """The A/B above bypasses ``daedalus.api._diagrams``; this one goes through it.
 
     ``compute_cumulants`` -> ``enumerate_unique_diagrams`` ->
     ``load_prediagrams`` is the path a user actually takes, and its
@@ -752,11 +752,11 @@ def test_compute_cumulants_agrees_through_the_real_wiring(tmp_path,
 
     import numpy as np
 
-    import api._diagrams as diagrams_mod
-    from api.compute import compute_cumulants
+    import daedalus.api._diagrams as diagrams_mod
+    from daedalus.api.compute import compute_cumulants
 
     spec = importlib.util.spec_from_file_location(
-        'ou_quartic_model', 'models/ou_quartic.model.py')
+        'ou_quartic_model', 'daedalus/models/ou_quartic.model.py')
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     model = mod.build()

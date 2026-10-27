@@ -1,4 +1,4 @@
-"""Noise-source library for the SDE front-end (:mod:`api.sde`).
+"""Noise-source library for the SDE front-end (:mod:`daedalus.api.sde`).
 
 Every noise source is specified by ONE primitive: its per-unit-time
 conditional cumulant generating function (CGF) ``K(theta; x)``,
@@ -38,7 +38,7 @@ from typing import Iterable, Optional, Sequence
 
 from sage.all import SR, Integer, exp, log, sqrt, function, sage_eval
 from sage.all import gamma as _gamma, cos as _cos, matrix as _matrix
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = [
     'NoiseError', 'NoiseSource', 'CumulantTruncationWarning',
@@ -465,13 +465,13 @@ class NoiseSource:
     def _require(self, name, ok, why):
         _require(type(self).__name__, self.params[name], name, ok, why)
 
-    # -- sampling (api.noise_samplers) -------------------------------------
+    # -- sampling (daedalus.api.noise_samplers) -------------------------------------
     def sample(self, dt, size, rng, values=None):
         """``size`` i.i.d. increments of the process over a step ``dt``
         (exact where a closed-form representation is known; see
-        :mod:`api.noise_samplers`).  ``values`` binds field-dependent
+        :mod:`daedalus.api.noise_samplers`).  ``values`` binds field-dependent
         parameters (name -> float or array of length ``size``)."""
-        from api.noise_samplers import sample_source
+        from daedalus.api.noise_samplers import sample_source
         return sample_source(self, dt, size, rng, values)
 
     # -- the primitive -----------------------------------------------------
@@ -609,8 +609,8 @@ class Gaussian(NoiseSource):
     ``lap(u^3)`` vertex, which it refuses as well.
 
     ``kernel=`` makes it coloured: the white noise of intensity ``var``
-    filtered by a causal kernel ``h`` (an :class:`api.delay.Kernel`:
-    ``from api.delay import Kernel``, ``Gaussian(var, kernel=Kernel.exponential('tau'))``; ``Kernel.alpha('tau')``,
+    filtered by a causal kernel ``h`` (an :class:`daedalus.api.delay.Kernel`:
+    ``from daedalus.api.delay import Kernel``, ``Gaussian(var, kernel=Kernel.exponential('tau'))``; ``Kernel.alpha('tau')``,
     ``Kernel.gamma(n, 'mean')`` or ``Kernel.image(text)`` with a rational
     image), ``eta = h * xi``, so ``<eta(t) eta(t')> = var (h * h~)(t - t')``
     and the integral of the covariance is ``var |H(0)|^2`` (``var`` for a
@@ -626,16 +626,16 @@ class Gaussian(NoiseSource):
     def __init__(self, var, mean=0, *, space=None, kernel=None):
         if space not in (None, 'white'):
             if space == 'conserved':
-                from engine.integration.spatial import CONSERVED_NOISE_WHY
+                from daedalus.engine.integration.spatial import CONSERVED_NOISE_WHY
                 raise NoiseError(f"Gaussian(space='conserved'): {CONSERVED_NOISE_WHY}.  "
                                  f"Use space='white'.")
             raise NoiseError(f"Gaussian(space={space!r}): use space='white' (space-time white "
                              f"noise of an SPDE) or omit it (time-only noise).")
         self.space = space
         if kernel is not None:
-            from api.delay import Kernel
+            from daedalus.api.delay import Kernel
             if not isinstance(kernel, Kernel):
-                raise NoiseError(f'Gaussian(kernel=...): give an api.delay.Kernel (e.g. '
+                raise NoiseError(f'Gaussian(kernel=...): give an daedalus.api.delay.Kernel (e.g. '
                                  f"Kernel.exponential('tau')); got {type(kernel).__name__}.")
             if kernel.delay is not None:
                 raise NoiseError('Gaussian(kernel=...): a delayed kernel has no Markov embedding '
@@ -798,7 +798,7 @@ class Cumulants(NoiseSource):
         if int(m) <= self._order or getattr(self, '_truncation_warned', False):
             return
         self._truncation_warned = True
-        from engine._warn_helpers import ensure_warning_shown
+        from daedalus.engine._warn_helpers import ensure_warning_shown
         _msg = (f'{self!r}: cumulant order {int(m)} requested{where}, but only '
                 f'cumulants up to order {self._order} are declared; the higher '
                 f'cumulants are taken as 0. Give more kappas if they are not zero.')
@@ -873,8 +873,8 @@ class JumpDistribution:
         _require(type(self).__name__, self.params[name], name, ok, why)
 
     def sample(self, rng, size, values=None):
-        """``size`` i.i.d. draws of the jump size (:mod:`api.noise_samplers`)."""
-        from api.noise_samplers import sample_jump
+        """``size`` i.i.d. draws of the jump size (:mod:`daedalus.api.noise_samplers`)."""
+        from daedalus.api.noise_samplers import sample_jump
         return sample_jump(self, rng, size, values)
 
     def mgf(self, theta=None):
@@ -1028,7 +1028,7 @@ class CompoundPoisson(NoiseSource):
         if not isinstance(jump, JumpDistribution):
             raise NoiseError(
                 f'CompoundPoisson: jump must be a jump distribution (an '
-                f'api.noise.JumpDistribution such as Dirac, Exponential, Gamma, '
+                f'daedalus.api.noise.JumpDistribution such as Dirac, Exponential, Gamma, '
                 f'Geometric, PhaseType, ...), got {type(jump).__name__}.')
         self.jump = jump
         self.regular = jump.regular
@@ -1074,7 +1074,7 @@ class CompoundPoisson(NoiseSource):
 # ═══ Round 2: finite-moment Levy sources, jump laws, composites ═══
 #
 # Every class below is a per-unit-time CGF like the rest of the module and
-# has an exact (or documented-approximate) sampler in api.noise_samplers.
+# has an exact (or documented-approximate) sampler in daedalus.api.noise_samplers.
 
 def _pos(x):
     return x > 0
@@ -1613,10 +1613,10 @@ def kou_jump_diffusion(drift, sigma, rate, p, eta_up, eta_down):
 def levy_driven_ou(source, rate='mu', *, field='x', name='Levy-driven OU',
                    rate_default=1.0):
     """Barndorff-Nielsen-Shephard Levy-driven OU, ``d x = -rate*x dt + d L``
-    with ``L`` the Levy process ``source`` (an unbuilt :class:`api.sde.SDE`;
+    with ``L`` the Levy process ``source`` (an unbuilt :class:`daedalus.api.sde.SDE`;
     add parameters of ``source`` with ``.parameter``).  Stationary
     cumulants of ``x`` are ``kappa_n(source)/(n*rate)``."""
-    from api.sde import SDE
+    from daedalus.api.sde import SDE
     s = SDE(name)
     s.parameter(rate, default=rate_default, domain='positive')
     s.field(field)

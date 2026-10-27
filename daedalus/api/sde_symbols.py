@@ -1,10 +1,10 @@
-"""Declared names as Sage symbols for the SDE front end (:mod:`api.sde`).
+"""Declared names as Sage symbols for the SDE front end (:mod:`daedalus.api.sde`).
 
-Each declaration of :class:`api.sde.SDE` that introduces a name
-(:meth:`~api.sde.SDE.field`, :meth:`~api.sde.SDE.parameter`,
-:meth:`~api.sde.SDE.operator`, :meth:`~api.sde.SDE.define_function`,
-:meth:`~api.sde.SDE.define_kernel`, :meth:`~api.sde.SDE.population`,
-:meth:`~api.sde.SDE.point_process`, and :meth:`~api.sde.SDE.noise` with
+Each declaration of :class:`daedalus.api.sde.SDE` that introduces a name
+(:meth:`~daedalus.api.sde.SDE.field`, :meth:`~daedalus.api.sde.SDE.parameter`,
+:meth:`~daedalus.api.sde.SDE.operator`, :meth:`~daedalus.api.sde.SDE.define_function`,
+:meth:`~daedalus.api.sde.SDE.define_kernel`, :meth:`~daedalus.api.sde.SDE.population`,
+:meth:`~daedalus.api.sde.SDE.point_process`, and :meth:`~daedalus.api.sde.SDE.noise` with
 ``as_field=``) returns a :class:`Symbol`: the Sage symbol of that name, so
 expressions can be written as Sage objects::
 
@@ -19,7 +19,7 @@ it returns what the builder returns.  Arithmetic gives plain Sage
 expressions; a call (``lap(u)``, ``phi(v)``, ``x(t - d)``) is the call of
 that name, ``x[i]`` / ``w[i, j]`` its indexed form.  Every method that takes
 an expression accepts a string or a Sage expression; a Sage expression is
-written as text with :func:`api.noise.expr_to_text` (Sage's order of terms)
+written as text with :func:`daedalus.api.noise.expr_to_text` (Sage's order of terms)
 and read like that string.  Strings keep working unchanged, byte for byte.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from __future__ import annotations
 from sage.all import SR, function
 from sage.symbolic.expression import Expression
 
-from api.noise import expr_to_text
+from daedalus.api.noise import expr_to_text
 
 __all__ = ['Symbol', 'Conv', 'as_text', 'as_name']
 
@@ -52,14 +52,14 @@ class Symbol(Expression):
 
     # the two builder methods whose names Sage expressions also have
     def operator(self, *args, **kw):
-        """The builder's :meth:`api.sde.SDE.operator` when called with
+        """The builder's :meth:`daedalus.api.sde.SDE.operator` when called with
         arguments; without, Sage's ``Expression.operator()``."""
         if args or kw:
             return self._sde.operator(*args, **kw)
         return Expression.operator(self)
 
     def show(self):
-        """The builder's :meth:`api.sde.SDE.show` (the derived action)."""
+        """The builder's :meth:`daedalus.api.sde.SDE.show` (the derived action)."""
         return self._sde.show()
 
     def __call__(self, *args):

@@ -1,6 +1,6 @@
-"""Declared differential operators for the SDE / SPDE front end (:mod:`api.sde`).
+"""Declared differential operators for the SDE / SPDE front end (:mod:`daedalus.api.sde`).
 
-An :class:`api.sde.SDE` model names the operators its equations use::
+An :class:`daedalus.api.sde.SDE` model names the operators its equations use::
 
     m = SDE('Allen-Cahn', space=1)
     m.operator('lap', Laplacian())
@@ -27,7 +27,7 @@ it.  The front end translates the user's names into the engine's own symbols:
 * ``v1_symbol``: the inert multiplicative symbol of the plain action form
   (``Dt``, ``Laplacian``), used where the operator acts linearly on one field;
 * ``ir_call``: the argument-binding call of the spatial operator IR
-  (``Dt(.)``, ``Lap(.)``, :mod:`api.spatial_operator_ir`), used when an
+  (``Dt(.)``, ``Lap(.)``, :mod:`daedalus.api.spatial_operator_ir`), used when an
   operator acts on a nonlinear expression (a derivative vertex such as
   ``lap(u^2)``).
 

@@ -1,6 +1,6 @@
 """
-engine.diagrams.filter
-======================
+daedalus.engine.diagrams.filter
+===============================
 Remove prediagrams whose vertex degree signatures cannot be matched
 by any vertex or source type in the model.  Fast set-membership check
 that avoids the expensive type-assignment step for impossible prediagrams.
@@ -57,7 +57,7 @@ def filter_prediagrams(prediagrams, vertex_types, source_types):
     n_discarded : int
         Number of prediagrams removed.
     """
-    from engine.core.vertices import available_degrees
+    from daedalus.engine.core.vertices import available_degrees
     int_degs, src_degs = available_degrees(vertex_types, source_types)
 
     kept = []

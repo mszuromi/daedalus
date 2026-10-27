@@ -2,7 +2,7 @@
 
 The spatial integrator takes momentum-independent noise only (one constant noise vertex per correlation line), and the
 Model B dynamics conserved noise belongs to also need the ``k^4`` propagator and the ``lap(u^3)`` vertex, which the
-spatial pipeline refuses.  Each entry point names that reason (``engine.integration.spatial.CONSERVED_NOISE_WHY``):
+spatial pipeline refuses.  Each entry point names that reason (``daedalus.engine.integration.spatial.CONSERVED_NOISE_WHY``):
 ``Gaussian(space='conserved')`` (also from a YAML ``sde:`` block), an operator in a noise coefficient, ``div(eta)``, an
 operator on a response field in ``extra_action``, ``lap(dW)`` in a paper-style equation, and a hand-written action whose
 response-field quadratic term holds a Laplacian (the engine's noise extractor, every spatial driver).
@@ -16,15 +16,15 @@ pytest.importorskip('sage.all')
 
 from sage.all import SR                                                 # noqa: E402
 
-from api import compute_cumulants                                      # noqa: E402
-from api.config_run import ConfigError                                 # noqa: E402
-from api.noise import Gaussian, NoiseError                             # noqa: E402
-from api.operators import Laplacian                                    # noqa: E402
-from api.sde import SDE, SDEError                                      # noqa: E402
-from engine.errors import DaedalusError                                # noqa: E402
-from engine.integration.spatial import CONSERVED_NOISE_WHY            # noqa: E402
-from engine.integration.spatial.heat_kernel import SpatialPropagatorError   # noqa: E402
-from engine.integration.spatial.spatial_correlator import _noise_value      # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api.config_run import ConfigError                                 # noqa: E402
+from daedalus.api.noise import Gaussian, NoiseError                             # noqa: E402
+from daedalus.api.operators import Laplacian                                    # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                      # noqa: E402
+from daedalus.engine.errors import DaedalusError                                # noqa: E402
+from daedalus.engine.integration.spatial import CONSERVED_NOISE_WHY            # noqa: E402
+from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError   # noqa: E402
+from daedalus.engine.integration.spatial.spatial_correlator import _noise_value      # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RHS = '-mu*phi + D*lap(phi)'
@@ -85,7 +85,7 @@ def test_div_in_a_temporal_model_keeps_the_plain_hint():
 
 def test_operator_in_a_temporal_noise_coefficient_keeps_the_plain_hint():
     with pytest.raises(SDEError) as e:
-        (SDE('t').operator('D_t', __import__('api.operators', fromlist=['TimeDerivative']).TimeDerivative())
+        (SDE('t').operator('D_t', __import__('daedalus.api.operators', fromlist=['TimeDerivative']).TimeDerivative())
          .field('x').equation('x', 'D_t(x)', '-x').noise('xi', Gaussian(var=1), into={'x': 'D_t'}).build())
     assert WHY not in str(e.value) and "move the operator to the equation's lhs/rhs" in str(e.value)
 
@@ -111,7 +111,7 @@ def test_noise_extractor_names_a_momentum_dependent_noise():
 
 def _hand_written_conserved():
     """The tracked Allen-Cahn model with its noise term ``-T phit^2`` replaced by ``T phit Laplacian phit``."""
-    src = open(os.path.join(ROOT, 'models', 'allen_cahn_1d_subcritical_infinite.model.py')).read()
+    src = open(os.path.join(ROOT, 'daedalus', 'models', 'allen_cahn_1d_subcritical_infinite.model.py')).read()
     new = src.replace("lam*phi^3) - T*phit^2'", "lam*phi^3) + T*phit*Laplacian*phit'")
     assert new != src
     ns = {'__name__': 'conserved_hand_written'}

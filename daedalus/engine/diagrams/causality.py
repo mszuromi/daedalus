@@ -1,6 +1,6 @@
 """
-engine.diagrams.causality
-=========================
+daedalus.engine.diagrams.causality
+==================================
 Retarded propagator consistency and pole-structure compatibility
 checks for typed diagrams.
 

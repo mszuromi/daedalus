@@ -23,11 +23,11 @@ import pytest
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                    # noqa: E402
-from api import compute_cumulants                        # noqa: E402
-from api.noise import Gaussian                           # noqa: E402
-from api.sde import SDE                                  # noqa: E402
-from engine.integration.time_domain import final_integral as FI   # noqa: E402
-from engine.integration.time_domain import pipeline as PL         # noqa: E402
+from daedalus.api import compute_cumulants                        # noqa: E402
+from daedalus.api.noise import Gaussian                           # noqa: E402
+from daedalus.api.sde import SDE                                  # noqa: E402
+from daedalus.engine.integration.time_domain import final_integral as FI   # noqa: E402
+from daedalus.engine.integration.time_domain import pipeline as PL         # noqa: E402
 
 POINTS = [(0.0, 0.0, 0.0), (0.0, 0.3, 1.1), (0.0, 1.1, 0.3),
           (0.0, -0.4, 0.0)]
@@ -238,7 +238,7 @@ def test_auto_stays_off_without_pressure():
 
 def test_delay_auto_order_unchanged_by_discard():
     """The delay order controller estimates its error at fixed sample points
-    (``api.delay._observable``); a discard run carries them along, so it
+    (``daedalus.api.delay._observable``); a discard run carries them along, so it
     picks the same order and gives the same values."""
     m = (SDE('discard kpoint delay').parameter('a', default=1.0)
          .parameter('c', default=-2.0)
@@ -288,7 +288,7 @@ def test_discard_per_diagram_identical_at_scale():
 def test_slice_failure_still_reported(monkeypatch, disc):
     """A k >= 3 slice whose points cannot be computed is reported as with
     discard=False: the result is incomplete, warns, and has no moment."""
-    from api.compute import PhaseJIncompleteWarning
+    from daedalus.api.compute import PhaseJIncompleteWarning
 
     def boom(*a, **kw):
         raise RuntimeError('slice evaluation failed')

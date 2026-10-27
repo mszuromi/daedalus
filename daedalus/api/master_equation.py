@@ -1,4 +1,4 @@
-"""api.master_equation -- exact master-equation oracle for lattice jump processes.
+"""daedalus.api.master_equation -- exact master-equation oracle for lattice jump processes.
 
 A continuous-time Markov chain on a (truncated) box of the integer lattice
 ``Z^d`` is described by a list of *transitions* ``(rate, jump)``: at state
@@ -66,7 +66,7 @@ jump process, ``3 lambda / (2 mu)`` for the diffusion).
 Bridge to the SDE front end
 ---------------------------
 With string rates, :meth:`MasterEquation.to_sde` builds the SDE-front-end
-model whose noise is one state-dependent :class:`api.noise.Poisson` source of
+model whose noise is one state-dependent :class:`daedalus.api.noise.Poisson` source of
 size ``h`` per transition (``kind='jump'``) or the Gaussian diffusion of the
 same two moments (``kind='diffusion'``), and
 :meth:`MasterEquation.compare_with_daedalus` runs ``compute_cumulants`` on it
@@ -105,7 +105,7 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 from scipy.sparse.csgraph import connected_components
 
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = [
     'master_equation', 'MasterEquation', 'Transition',
@@ -1002,15 +1002,15 @@ class MasterEquation:
     def to_sde(self, name='jump process', *, kind='jump', domain='real'):
         """The SDE-front-end builder for this process.
 
-        ``kind='jump'``: one :class:`api.noise.Poisson` source per transition
+        ``kind='jump'``: one :class:`daedalus.api.noise.Poisson` source per transition
         (rate ``r(x)``, size ``h``) coupled to field ``i`` with coefficient
         ``jump_i``, zero drift.  ``kind='diffusion'``: drift ``a(x)`` and one
         Gaussian source of variance ``h^2 r(x)`` per transition (the
         Kramers-Moyal SDE).  Parameters are the entries of ``params`` plus
         ``h`` (declared with ``domain``; ``'positive'`` where the value is
         positive and ``domain='real'`` is given)."""
-        from api.sde import SDE
-        from api.noise import Poisson, Gaussian
+        from daedalus.api.sde import SDE
+        from daedalus.api.noise import Poisson, Gaussian
         if kind not in ('jump', 'diffusion'):
             raise MasterEquationError("kind must be 'jump' or 'diffusion'.")
         rates = self._string_rates()
@@ -1060,7 +1060,7 @@ class MasterEquation:
         pars = dict(self.params)
         pars['h'] = self.h
         if 'h' not in (parameters or {}):
-            from api.naming import free_parameter_names
+            from daedalus.api.naming import free_parameter_names
             if 'h' not in set(free_parameter_names(model)):
                 pars.pop('h')               # a model written in the system size has no 'h'
         pars.update(parameters or {})

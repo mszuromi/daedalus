@@ -1,7 +1,7 @@
 """
 tests/test_type_assignment.py
 =============================
-Tests for engine.diagrams.type_assignment — Build Phase E.
+Tests for daedalus.engine.diagrams.type_assignment — Build Phase E.
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -16,8 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph, matrix
 
-from engine.core.vertices import VertexType, SourceType
-from engine.diagrams.type_assignment import (
+from daedalus.engine.core.vertices import VertexType, SourceType
+from daedalus.engine.diagrams.type_assignment import (
     TypedDiagram, build_field_index_map,
     enumerate_typed_diagrams, enumerate_all,
 )
@@ -241,14 +241,14 @@ def test_no_valid_assignments():
 # These pin the behavior of `_leg_matchings` after the 2026-04-23
 # switch from full-factorial permutations to canonical-multiset
 # permutations.  See the enumeration-speedup branch docstring in
-# `engine/diagrams/type_assignment.py::_leg_matchings` for the
+# `daedalus/engine/diagrams/type_assignment.py::_leg_matchings` for the
 # correctness argument.
 
 def test_leg_matchings_all_distinct_legs():
     """Distinct legs: multiset count == factorial count == R! × P!.
     Skipping duplicates is a no-op when there ARE no duplicates, so
     this case must yield the same count as before the change."""
-    from engine.diagrams.type_assignment import _leg_matchings
+    from daedalus.engine.diagrams.type_assignment import _leg_matchings
 
     # 2 distinct response legs, 2 distinct physical legs
     vt = VertexType(
@@ -277,7 +277,7 @@ def test_leg_matchings_all_distinct_legs():
 def test_leg_matchings_duplicate_response_legs():
     """With two identical response legs, old code would yield 2!=2
     orderings that are physically identical; canonical code yields 1."""
-    from engine.diagrams.type_assignment import _leg_matchings
+    from daedalus.engine.diagrams.type_assignment import _leg_matchings
 
     # Two identical response legs, one physical leg
     vt = VertexType(
@@ -300,7 +300,7 @@ def test_leg_matchings_duplicate_response_legs():
 
 def test_leg_matchings_mixed_multiset():
     """Mixed multiset R=[A,A,B], P=[C]:  3!/2! × 1 = 3 orderings."""
-    from engine.diagrams.type_assignment import _leg_matchings
+    from daedalus.engine.diagrams.type_assignment import _leg_matchings
 
     vt = VertexType(
         SR(1),
@@ -333,7 +333,7 @@ def test_leg_matchings_mixed_multiset():
 def test_leg_matchings_empty_legs():
     """Empty leg lists should yield exactly one (empty, empty) pair
     — the degenerate case where the vertex has no legs on one side."""
-    from engine.diagrams.type_assignment import _leg_matchings
+    from daedalus.engine.diagrams.type_assignment import _leg_matchings
 
     # Source type: response legs only (no physical_legs attribute)
     st = SourceType(SR(1), [('nt', 1), ('nt', 1)], (2, 0))
@@ -360,8 +360,8 @@ def test_enumerate_typed_duplicate_leg_vertex_no_redundant_generation():
     fixture because the leg orbit is the only source of overgeneration
     once the external-field permutations are handled by
     ``_distinct_permutations``."""
-    from engine.diagrams.type_assignment import enumerate_typed_diagrams
-    from engine.diagrams.symmetry import deduplicate_typed_diagrams
+    from daedalus.engine.diagrams.type_assignment import enumerate_typed_diagrams
+    from daedalus.engine.diagrams.symmetry import deduplicate_typed_diagrams
 
     # k=2 star tree: 1 source vertex with 2 out-edges to 2 leaves.
     # Source vertex has 2 response legs of the SAME field type, so
@@ -392,7 +392,7 @@ def test_enumerate_typed_duplicate_leg_vertex_no_redundant_generation():
 
 
 @pytest.mark.skipif(sys.platform == 'darwin',
-                    reason='macOS never forks (engine.fork_safety); Linux CI '
+                    reason='macOS never forks (daedalus.engine.fork_safety); Linux CI '
                            'covers the fork path')
 def test_enumerate_all_parallel_matches_serial():
     """Parallel (fork-ProcessPool) per-prediagram enumeration must
@@ -408,8 +408,8 @@ def test_enumerate_all_parallel_matches_serial():
     The fork must not touch ``OBJC_DISABLE_INITIALIZE_FORK_SAFETY`` (the
     package never sets it).
     """
-    from engine.diagrams.type_assignment import enumerate_all
-    from engine.diagrams.symmetry import diagram_signature
+    from daedalus.engine.diagrams.type_assignment import enumerate_all
+    from daedalus.engine.diagrams.symmetry import diagram_signature
     import os
     objc_before = os.environ.get('OBJC_DISABLE_INITIALIZE_FORK_SAFETY')
 
@@ -461,8 +461,8 @@ def test_enumerate_all_guard_falls_back_to_serial(monkeypatch):
     ``enumerate_all(parallel=True)`` must degrade to SERIAL — never fork —
     and still return the serial result.  Pins the fix for the
     previously-unguarded type-assignment fork."""
-    from engine.diagrams.type_assignment import enumerate_all
-    import engine.fork_safety as fs
+    from daedalus.engine.diagrams.type_assignment import enumerate_all
+    import daedalus.engine.fork_safety as fs
     import multiprocessing as mp
 
     # Same non-trivial fixture as test_enumerate_all_parallel_matches_serial.
@@ -507,8 +507,8 @@ def test_enumerate_typed_distinct_legs_regression():
     """Regression: when all legs are distinct, the canonical change
     must produce the EXACT same set of typed diagrams as the old
     factorial-based code.  No diagrams lost, no new spurious ones."""
-    from engine.diagrams.type_assignment import enumerate_typed_diagrams
-    from engine.diagrams.symmetry import (
+    from daedalus.engine.diagrams.type_assignment import enumerate_typed_diagrams
+    from daedalus.engine.diagrams.symmetry import (
         deduplicate_typed_diagrams, diagram_signature,
     )
 

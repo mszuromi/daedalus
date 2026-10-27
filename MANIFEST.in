@@ -1,0 +1,13 @@
+# The sdist carries the package and its metadata only; the notebooks, docs, tests and the
+# checkout's deprecated forwarding packages (api/, engine/, simulations/) stay in the repository.
+include LICENSE README.md CHANGELOG.md CITATION.cff
+prune api
+prune engine
+prune simulations
+prune notebooks
+prune docs
+prune tests
+prune scratch
+prune changelog.d
+prune .github
+global-exclude *.py[cod] __pycache__ .DS_Store *.bak* *.so

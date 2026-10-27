@@ -21,7 +21,7 @@ import random
 
 def signature_key(td):
     """Sort key of a typed diagram: its ``diagram_signature`` as a string."""
-    from engine.diagrams.symmetry import diagram_signature
+    from daedalus.engine.diagrams.symmetry import diagram_signature
     return str(diagram_signature(td))
 
 
@@ -85,7 +85,7 @@ def cstack_structure(td):
     the sorted kinds of the self-loop edges (tadpoles), and ``external`` the
     sorted kinds of the external-leg edges.
     """
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
     d = diagram_to_cstack(td)
     pairs = {}
     for e in d.edges:
@@ -126,7 +126,7 @@ RC_BUBBLE_CHAIN = has_structure([('C', 'R'), ('C', 'R'), ('C',)], (),
 #
 # Two lists carry the order to every consumer: the prediagram records
 # (``prediagram_cache.load_prediagrams``) and, per loop order, the unique typed
-# diagrams with their multiplicities (``api._diagrams.enumerate_unique_diagrams``,
+# diagrams with their multiplicities (``daedalus.api._diagrams.enumerate_unique_diagrams``,
 # whose list holds one block of typed diagrams per prediagram).  Reordering
 # the prediagram records only permutes those blocks; the typed level is what
 # reorders the diagrams of one prediagram among themselves, which is most of
@@ -177,7 +177,7 @@ def shuffled_load_prediagrams(orig, mode='shuffle', seed=0):
 
 
 def shuffled_enumerate_unique_diagrams(orig, mode='shuffle', seed=0):
-    """Wrap ``api._diagrams.enumerate_unique_diagrams`` so each loop order's
+    """Wrap ``daedalus.api._diagrams.enumerate_unique_diagrams`` so each loop order's
     typed diagrams come back reordered, their multiplicities with them.
 
     Applies to fresh enumerations and typed-diagram cache hits alike, and
@@ -224,12 +224,12 @@ def _bindings(owner, name):
 
 def _targets():
     """``[(module, name), ...]`` that carry the two lists' order: the loader
-    and every binding of ``enumerate_unique_diagrams`` (``api.compute``
+    and every binding of ``enumerate_unique_diagrams`` (``daedalus.api.compute``
     imports it by name; it is imported here first, so its binding is
     patched now rather than captured from a patched module later)."""
-    import api._diagrams as dg
-    import api.compute  # noqa: F401
-    from engine.enumeration import prediagram_cache as pdc
+    import daedalus.api._diagrams as dg
+    import daedalus.api.compute  # noqa: F401
+    from daedalus.engine.enumeration import prediagram_cache as pdc
     return [(pdc, 'load_prediagrams')] + _bindings(
         dg, 'enumerate_unique_diagrams')
 

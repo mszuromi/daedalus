@@ -12,7 +12,7 @@ For a kernel matrix with ONE delay,
 this module computes that covariance exactly (up to rounding), without the
 Pade approximation the loops use.
 
-Realization.  ``G0 = K0^{-1} = C0 (sI - A0)^{-1} B0 + D0`` (``api._realization``,
+Realization.  ``G0 = K0^{-1} = C0 (sI - A0)^{-1} B0 + D0`` (``daedalus.api._realization``,
 exact over QQ then rounded once) and ``K1 = C1 (sI - A1)^{-1} B1 + D1`` (one
 chain per entry).  With ``w(t) = u(t - d)``, ``K u = y`` reads
 ``u = G0 (y - K1 w)``.  When ``D0 D1 = 0`` (no instantaneous path through
@@ -55,7 +55,7 @@ import math
 
 import numpy as np
 import scipy.linalg as sl
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['ExactTree', 'ExactTreeUnavailable', 'delayed_state_space',
            'DelayedStateSpace']
@@ -77,7 +77,7 @@ class DelayedStateSpace:
 def _split_entries(K_ft, omega, num_params):
     """``(K0, K1, d)``: SR matrices with ``K = K0 + K1 exp(-i omega d)``."""
     from sage.all import SR, matrix, exp
-    from api.delay import delay_factors, _exp_delay
+    from daedalus.api.delay import delay_factors, _exp_delay
     nf = K_ft.nrows()
     E = SR.var('_delayE_')
     dval = None
@@ -130,7 +130,7 @@ def _split_entries(K_ft, omega, num_params):
 def _realize_K1(K1, omega):
     """``(A1, B1, C1, D1)`` of the rational matrix ``K1(s)`` (a chain per entry;
     ``B1``: states x nf (input = delayed fields), ``C1``: nf x states)."""
-    from api import _realization as R
+    from daedalus.api import _realization as R
     nf = K1.nrows()
     entries, F, P, fname = R._entries_to_field(K1, omega, {})
     cplx = fname != 'QQ'
@@ -162,7 +162,7 @@ def _realize_K1(K1, omega):
 
 def delayed_state_space(K_ft, omega, num_params, N):
     """The ``DelayedStateSpace`` of ``K_ft`` at the parameter point."""
-    from api._realization import realize_K, RealizationRefused
+    from daedalus.api._realization import realize_K, RealizationRefused
     K0, K1, d = _split_entries(K_ft, omega, num_params)
     try:
         r0 = realize_K(K0, omega, {})
@@ -343,9 +343,9 @@ class ExactTree:
 
     @classmethod
     def _from_context(cls, ctx, external_fields, tau_max):
-        from api.analyze import _noise_matrix
-        from api.access import normalize_external_fields
-        from engine.diagrams.type_assignment import build_field_index_map
+        from daedalus.api.analyze import _noise_matrix
+        from daedalus.api.access import normalize_external_fields
+        from daedalus.engine.diagrams.type_assignment import build_field_index_map
         if ctx is None or ctx.K_ft is None or ctx.num_params is None or ctx.sectors is None:
             raise ExactTreeUnavailable('the analyzer did not reach the linear operator '
                                        'and the saddle')
@@ -515,7 +515,7 @@ class ExactTree:
         ``t0``, leg 1 at ``t1``, ``tau = t1 - t0``; equal times are evaluated
         at the pipeline's Ito left limit: exactly (default), or at
         ``tau = -_ITO_EPS`` under DAEDALUS_TAU0=nudge)."""
-        from api.compute import _tau0_lag
+        from daedalus.api.compute import _tau0_lag
         lag = _tau0_lag()
 
         def f(t0, t1):

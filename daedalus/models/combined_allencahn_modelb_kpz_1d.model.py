@@ -23,11 +23,11 @@ UV-dominated (it can go negative) and needs renormalisation; the single-vertex
 limits (g only, κ only, λ only) are each finite and physical.  The simulation
 runs the full SPDE regardless — that is the clean object to look at.
 
-Companions: ``models/kpz_1d.model.py`` (per-leg gradient only),
-``models/reaction_diffusion_conserved_1d.model.py`` (Model B / composite ∇²
-only), ``models/allen_cahn_1d_subcritical_infinite.model.py`` (φ³ only).
+Companions: ``daedalus/models/kpz_1d.model.py`` (per-leg gradient only),
+``daedalus/models/reaction_diffusion_conserved_1d.model.py`` (Model B / composite ∇²
+only), ``daedalus/models/allen_cahn_1d_subcritical_infinite.model.py`` (φ³ only).
 """
-from api.model import ModelBuilder
+from daedalus.api.model import ModelBuilder
 
 
 def build():

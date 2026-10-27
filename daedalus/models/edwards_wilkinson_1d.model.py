@@ -14,7 +14,7 @@ field) so the correlator is normalizable.  Serves as a second
 independent check of the spatial machinery (no φ³, distinct from
 Allen-Cahn).
 """
-from api.model import SpatialModelBuilder
+from daedalus.api.model import SpatialModelBuilder
 
 
 def build():

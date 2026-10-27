@@ -74,7 +74,7 @@ def cheb_integral(y, T):
 
 def main():
     import daedalus as dd
-    from api.resum import ResumWarning
+    from daedalus.api.resum import ResumWarning
     warnings.simplefilter('ignore', ResumWarning)
     model, mod = dd.load_model('ou_quartic')
     mu = D = 1.0

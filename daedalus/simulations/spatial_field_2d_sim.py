@@ -10,7 +10,7 @@ Integrates
 with the linear + noise part propagated EXACTLY per Fourier mode (an
 Ornstein-Uhlenbeck update — no dt bias), the nonlinear forcing via the ETD1
 integrating factor.  Modeled on the validated 1D sim
-(``simulations/spatial_field_1d_sim.py``).
+(``daedalus/simulations/spatial_field_1d_sim.py``).
 
 Noise normalization (d-general): the stationary per-mode variance is
 ``⟨|φ̂_k|²⟩ = T N^{2d}/(L^d ω_k)`` (here d=2), so the equal-time structure factor

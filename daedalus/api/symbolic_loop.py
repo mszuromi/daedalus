@@ -2,7 +2,7 @@ r"""
 Symbolic loop corrections as rational functions (stage C3)
 ==========================================================
 
-On the state-space route (``engine/integration/time_domain/statespace.py``)
+On the state-space route (``daedalus/engine/integration/time_domain/statespace.py``)
 the stationary part of every Phase J subset integral is a composition of
 linear solves: the states of the downsets of the subset's causal poset solve
 ``(-M_J) X_J = Σ_v F_v X_{J∖v}``, ``M_J`` a Kronecker sum of propagator
@@ -40,7 +40,7 @@ How
    form (``d`` monic over ``F``): minimal, since ``r/d`` is reduced, and exact
    through repeated roots of ``d``.  ``D`` is the δ(t) coefficient (the
    pipeline's ``D_delta``).  This replaces the realization's construction
-   (``api._realization``: exact factorization of ``d`` into a cascade of
+   (``daedalus.api._realization``: exact factorization of ``d`` into a cascade of
    rate / Schwarz blocks, Kalman reduction, balancing): those steps serve the
    floating-point conditioning of the state-space integrator, are irrelevant in exact arithmetic,
    and factoring over ``QQ(params)`` is not needed; the realization's exact conversion of
@@ -127,7 +127,7 @@ Conventions
   surface) are not included, as in ``C_tau``; δ parts of the propagator
   inside a subset (its δ edges) are.
 * Pairing (k = 2): ``∫ L(s) C(s) ds`` with ``C(τ) = κ(x_1(0), x_2(τ))`` and a
-  C2 :class:`api.symbolic_out.PairingKernel` (terms ``coeff · s^q e^{rate s}`` on
+  C2 :class:`daedalus.api.symbolic_out.PairingKernel` (terms ``coeff · s^q e^{rate s}`` on
   side 'positive' / 'negative'), no contact term (the C0 output's
   ``contact='exclude'``).
 * τ != 0: ``C(τ)`` itself needs ``e^{G τ}``, i.e. the eigen data of the
@@ -156,7 +156,7 @@ non-local noise cumulant); ``offset_row`` / ``offset_slot`` / ``ext_ext_row``
 axis); ``degenerate_reference``; ``saddle_mismatch`` / ``saddle_unsolved``;
 ``prefactor_mismatch``; ``unbound_symbol``; ``no_reference``;
 ``failed_diagram``; ``truncated_reference`` (a ``result=`` whose
-realization is balanced-truncated, ``api._realization``: it is within the
+realization is balanced-truncated, ``daedalus.api._realization``: it is within the
 truncation tolerance of the exact pipeline, not within ``CHECK_RTOL``; the
 reference computed here runs with exact realizations).  Bad arguments (unknown saddle mode or names, a
 ``result=`` for another request, loop orders not computed, a growing kernel,
@@ -171,7 +171,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
 import numpy as np
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['SymbolicLoopRefused', 'SaddleWarning', 'SymbolicPropagator',
            'SymbolicCumulant',
@@ -399,7 +399,7 @@ def _red(x):
 
 
 def _exact(v):
-    from api._realization import _exact_number
+    from daedalus.api._realization import _exact_number
     return _exact_number(v, allow_complex=False)
 
 
@@ -492,7 +492,7 @@ def symbolic_propagator(K_ft, omega, fld: _Field, subs: dict):
     every entry (module docstring, step 2).  ``subs``: {SR symbol: exact SR
     number} for the parameters that are not symbolic."""
     S = _sage()
-    from api._realization import _exactify, _spatial_symbol
+    from daedalus.api._realization import _exactify, _spatial_symbol
     nf = K_ft.nrows()
     if K_ft.ncols() != nf:
         raise SymbolicLoopRefused('singular_pencil', 'K_ft is not square')
@@ -1035,11 +1035,11 @@ class SymbolicCumulant:
         return expression_size(self._x(ell))
 
     def sympy(self, ell=None):
-        from api.symbolic_out import to_sympy
+        from daedalus.api.symbolic_out import to_sympy
         return to_sympy(self.expression(ell))
 
     def latex(self, ell=None):
-        from api.symbolic_out import to_latex
+        from daedalus.api.symbolic_out import to_latex
         return to_latex(self.expression(ell))
 
     def to_json(self, ell=None):
@@ -1238,13 +1238,13 @@ class SymbolicTriple:
         return lp + lm
 
     def modes(self, ell, reference=None, **kw):
-        """``C(τ)`` symbolically: C2's :func:`api.symbolic_out.tree_modes`
+        """``C(τ)`` symbolically: C2's :func:`daedalus.api.symbolic_out.tree_modes`
         on :meth:`spectrum` (poles of degree >= 3 as ``RootOf``, the
         half-plane split and distinctness stated as ``assumptions``, checked
         at the reference point by default).  Practical for small triples
         only (the denominator degree is the triple's state count before
         cancellation)."""
-        from api.symbolic_out import tree_modes
+        from daedalus.api.symbolic_out import tree_modes
         S = _sage()
         om = S.SR.var('omega_c3' if 'omega' in self.names else 'omega')
         ref = dict(self.reference) if reference is None else dict(reference)
@@ -1331,7 +1331,7 @@ def _saddle_names(model, num_params):
     any value derived from them (a formal function at the saddle, a Taylor
     coefficient ``phi{k}_i``), which move with the saddle and are never a
     free parameter."""
-    from api.naming import is_parameter_symbol
+    from daedalus.api.naming import is_parameter_symbol
     return [str(k) for k in num_params
             if not is_parameter_symbol(str(k), model)]
 
@@ -1355,7 +1355,7 @@ class _Setup:
                  symbols, saddle, result, kernel, kernel_values, verbose,
                  max_block=None, max_symbols=None):
         S = _sage()
-        from api import compute_cumulants
+        from daedalus.api import compute_cumulants
         t_start = time.perf_counter()
         self.t_start = t_start
         if result is None:
@@ -1370,7 +1370,7 @@ class _Setup:
                 parameters = full
             # the exact realizations (no balanced truncation): the
             # replay below is exact, and checks the reference to CHECK_RTOL
-            from api._realization import truncation_scope
+            from daedalus.api._realization import truncation_scope
             with truncation_scope(0):
                 result = compute_cumulants(
                     model, k=k, max_ell=max_ell, external_fields=external_fields,
@@ -1540,7 +1540,7 @@ class _Setup:
         """``(index, field prefactor, integrate_diagram output)`` of the
         diagrams of one loop order with a nonzero prefactor."""
         S = _sage()
-        from engine.integration.time_domain import final_integral as FI
+        from daedalus.engine.integration.time_domain import final_integral as FI
         recs = [r for r in self.result['diagrams'] if int(r['ell']) == int(ell)]
         for di, rec in enumerate(recs):
             e = S.SR(rec['combined_prefactor']).subs(self.subs)
@@ -1590,7 +1590,7 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
                       verbose=False) -> SymbolicCumulant:
     """Equal-time cumulant (``kernel=None``; any k) or the k = 2 kernel
     pairing ``∫ L(s) C(s) ds`` (``kernel``: a C2
-    :class:`api.symbolic_out.PairingKernel`), per loop order, as rational
+    :class:`daedalus.api.symbolic_out.PairingKernel`), per loop order, as rational
     functions of the parameters (module docstring).
 
     ``parameters``: the reference values (model defaults otherwise);
@@ -1606,8 +1606,8 @@ def symbolic_cumulant(model, k=2, max_ell=1, *, external_fields,
     reference point (``SymbolicCumulant.check``, raises beyond
     ``CHECK_RTOL``); ``max_block`` / ``max_symbols``: the size limits
     (defaults ``MAX_BLOCK`` / ``MAX_SYMBOLS``; beyond them ``too_large``)."""
-    from engine.integration.time_domain import final_integral as FI
-    from api.compute import as_model_dict
+    from daedalus.engine.integration.time_domain import final_integral as FI
+    from daedalus.api.compute import as_model_dict
     model = as_model_dict(model)
     if kernel is not None and int(k) != 2:
         raise SymbolicLoopRefused('k_unsupported',
@@ -1680,7 +1680,7 @@ def symbolic_triple(model, max_ell=1, *, external_fields, parameters=None,
     (:class:`SymbolicTriple`; arguments as :func:`symbolic_cumulant`).
     ``reference_check``: :meth:`SymbolicTriple.check` (C(0⁻) and C(±1)
     against the pipeline's Phase J callables at the reference point)."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     st = _Setup(model, 2, max_ell, external_fields, parameters, symbols,
                 saddle, result, None, None, verbose, max_block, max_symbols)
     ells = _check_ells(ells, max_ell, st)
@@ -1770,7 +1770,7 @@ def _refuse_truncated_reference(result):
     realization is balanced-truncated under the tolerance in effect:
     its numbers are within that tolerance of the exact pipeline, which the
     1e-12 checks would report as a mismatch."""
-    from api._realization import truncation_tol, try_realize
+    from daedalus.api._realization import truncation_tol, try_realize
     # the result's own record first: it includes the truncated dressed lines,
     # which a fresh realization (below) has not built yet
     own = (((result.get('phase_j_engine') or {}).get('realization_check')
@@ -1849,7 +1849,7 @@ def _saddle_moves(model, result, sad, sym):
     solve fails).  A jump to another root counts as moving."""
     import re
     try:
-        from api.symbolic_out import _expanded_theory, _solve_mean_field
+        from daedalus.api.symbolic_out import _expanded_theory, _solve_mean_field
         cfg = result.get('config') or {}
         fund = dict(cfg.get('fundamental') or {})
         if not fund:
@@ -1905,7 +1905,7 @@ def _pipeline_values(st, ells, kernel):
                              if pj else 0j)
         return out
     try:
-        from api.cumulant import Cumulant
+        from daedalus.api.cumulant import Cumulant
         c = Cumulant.from_result(st.result)
         vals = {a: float(b) for a, b in st.kvals.items()}
         for ell in ells:

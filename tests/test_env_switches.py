@@ -1,5 +1,5 @@
 """
-The one environment-switch parser (``engine._env``, audit W7 RED-05) and the
+The one environment-switch parser (``daedalus.engine._env``, audit W7 RED-05) and the
 retired switches (RED-02).
 """
 import math
@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine import _env as E                                    # noqa: E402
+from daedalus.engine import _env as E                                    # noqa: E402
 
 
 @pytest.mark.parametrize('raw,want', [
@@ -86,7 +86,7 @@ def test_retired_warns_once_and_reports_set():
 # ── the converted readers (RED-05) ──────────────────────────────────────────
 
 def test_one_engine_parser(monkeypatch):
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine.integration.time_domain import statespace as SS
     for raw, want in (('', 'statespace'), ('default', 'statespace'),
                       (' StateSpace ', 'statespace'), ('poles', 'poles')):
         assert E.phase_j_engine({'DAEDALUS_PHASE_J_ENGINE': raw}) == want
@@ -94,8 +94,8 @@ def test_one_engine_parser(monkeypatch):
             want == 'statespace')
     # every reader refuses a typo (four of five used to read it as default)
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'pole')
-    from api import compute as C
-    from engine.integration.time_domain import pipeline as P
+    from daedalus.api import compute as C
+    from daedalus.engine.integration.time_domain import pipeline as P
     with pytest.raises(ValueError, match='DAEDALUS_PHASE_J_ENGINE'):
         C._ss_route_prediction({}, {}, ())
     with pytest.raises(ValueError, match='DAEDALUS_PHASE_J_ENGINE'):
@@ -105,8 +105,8 @@ def test_one_engine_parser(monkeypatch):
 
 
 def test_fallback_preflight_tau0_are_validated(monkeypatch):
-    from engine.integration.time_domain import statespace as SS
-    from api import compute as C
+    from daedalus.engine.integration.time_domain import statespace as SS
+    from daedalus.api import compute as C
     assert SS.fallback_enabled({}) is True
     assert SS.fallback_enabled({'DAEDALUS_PHASE_J_SS_FALLBACK': 'off'}) is False
     with pytest.raises(ValueError, match='DAEDALUS_PHASE_J_SS_FALLBACK'):
@@ -125,14 +125,14 @@ def test_spatial_budget_refuses_zero_and_negative(monkeypatch, raw):
     """``SPATIAL_MEM_BUDGET_GB=0`` used to refuse every spatial loop and
     ``off`` raised; now 0 / negative raise naming the switch and ``off`` is
     no limit, as for ``PHASE_J_MEM_BUDGET_GB``."""
-    from engine.integration.spatial import full_integrator as F
+    from daedalus.engine.integration.spatial import full_integrator as F
     monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', raw)
     with pytest.raises(ValueError, match='SPATIAL_MEM_BUDGET_GB'):
         F._spatial_mem_budget()
 
 
 def test_spatial_budget_off_and_explicit(monkeypatch):
-    from engine.integration.spatial import full_integrator as F
+    from daedalus.engine.integration.spatial import full_integrator as F
     monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', 'off')
     assert F._spatial_mem_budget()[0] == math.inf
     monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', '2.5')
@@ -150,12 +150,12 @@ def _import_in_child(env, code):
 
 def test_cert_backend_typo_raises_at_import():
     r = _import_in_child({'DAEDALUS_CERT_BACKEND': 'nauty'},
-                         'import engine.enumeration.loop_diagram_enumeration')
+                         'import daedalus.engine.enumeration.loop_diagram_enumeration')
     assert r.returncode != 0 and 'DAEDALUS_CERT_BACKEND' in r.stderr
 
 
 def test_retired_enumeration_switches_only_warn():
-    code = ('import engine.enumeration.loop_diagram_enumeration as L; '
+    code = ('import daedalus.engine.enumeration.loop_diagram_enumeration as L; '
             'print(L.EDGE_GENERATOR, L.ORIENTATION_CHECKER, '
             'L.DELTA_ORBIT_DEDUP)')
     r = _import_in_child({'DAEDALUS_EDGE_GENERATOR': 'multiset',

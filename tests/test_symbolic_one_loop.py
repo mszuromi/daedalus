@@ -1,7 +1,7 @@
 """
 tests/test_symbolic_one_loop.py
 ===============================
-Stage C3 (``api/symbolic_loop.py``): equal-time cumulants and kernel
+Stage C3 (``daedalus/api/symbolic_loop.py``): equal-time cumulants and kernel
 pairings at loop level as RATIONAL functions of the parameters, from the
 state-space stationary sweep over ``F = QQ(params)``.
 
@@ -34,13 +34,13 @@ sys.path.insert(0, os.path.join(HERE, '..'))
 
 import daedalus as dd                                                # noqa: E402
 from sage.all import QQ, SR, factorial, var                          # noqa: E402
-from api import compute_cumulants                                    # noqa: E402
-from api import symbolic_loop as SL                                  # noqa: E402
-from api.cumulant import Cumulant                                    # noqa: E402
-from api.noise import Poisson                                        # noqa: E402
-from api.sde import SDE                                              # noqa: E402
-from api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
-import engine.integration.time_domain.statespace as SS               # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api import symbolic_loop as SL                                  # noqa: E402
+from daedalus.api.cumulant import Cumulant                                    # noqa: E402
+from daedalus.api.noise import Poisson                                        # noqa: E402
+from daedalus.api.sde import SDE                                              # noqa: E402
+from daedalus.api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS               # noqa: E402
 
 
 def _load(fname, modname):
@@ -319,7 +319,7 @@ def test_refusals_by_name():
 
 
 def test_exports():
-    from api import symbolic_out as so
+    from daedalus.api import symbolic_out as so
     for name in ('symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
                  'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning'):
         assert getattr(dd, name) is getattr(SL, name), name
@@ -330,7 +330,7 @@ def test_exports():
 def _two_field_correlated():
     """x' = -mu1 x - eps1 x^3 + J1 y + xi, y' = -mu2 y - eps2 y^3 + J2 x +
     eta, white noises with correlation rho (amplitude sqrt(D1 D2))."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     b = TemporalModelBuilder('c3 two coupled fields, correlated noise')
     b.population('P', size=1)
     b.physical_field('x', population='P').physical_field('y', population='P')
@@ -417,7 +417,7 @@ def test_mixed_fields_orient_the_lag_axis():
 
 
 def _driven_quartic():
-    from api.noise import Gaussian
+    from daedalus.api.noise import Gaussian
     return (SDE('c3 driven OU quartic').parameter('h', default=0.5)
             .parameter('mu', default=1.0).parameter('eps', default=0.1)
             .parameter('D', default=0.2).field('x')
@@ -502,7 +502,7 @@ def test_arguments_are_never_silently_ignored(ouq_model):
 def _hidden_field(g):
     """z = x + (g - 1/10) w: at g = 1/10 the w part of z vanishes, and a
     reference there would lose it."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     b = TemporalModelBuilder(f'c3 hidden field {g}')
     b.population('P', size=1)
     for f in ('x', 'w', 'z'):

@@ -7,7 +7,7 @@ Throwaway test model: scalar quartic Langevin in MSR-JD form.
 Single field x (size=1), single response field xt.  Used to
 exercise the 1×1 K_ft path in the propagator + Phase J integrator.
 """
-from api.model import TemporalModelBuilder
+from daedalus.api.model import TemporalModelBuilder
 
 
 def build():

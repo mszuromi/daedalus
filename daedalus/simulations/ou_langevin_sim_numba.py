@@ -7,7 +7,7 @@ no spike events, no synaptic filters — just a continuous stochastic ODE
 
 Output shape matches the Hawkes ``voltage_bins`` convention
 (``np.ndarray (npop=1, n_bins)``) so the same downstream cumulant
-estimator ``simulations.cumulant_estimator.compute_kpoint_slice`` can be
+estimator ``daedalus.simulations.cumulant_estimator.compute_kpoint_slice`` can be
 used with ``field_types=['dv', 'dv', ...]``.
 """
 import numpy as np
@@ -24,7 +24,7 @@ def sim_ou_quartic_numba(n_steps, dt_sim,
 
         dx/dt = -mu·x - eps·x³ + √(2D)·η(t),     ⟨η η⟩ = δ(t − t')
 
-    matching the action in ``models/ou_quartic_double_well.model.py``:
+    matching the action in ``daedalus/models/ou_quartic_double_well.model.py``:
 
         S = ∫ dt  xt·((Dt + mu)·x + eps·x³) - D·xt²
 
@@ -97,7 +97,7 @@ def sim_ou_quartic_colored_numba(n_steps, dt_sim,
                                   bin_size_steps, n_bins, seed):
     """
     Scalar quartic Langevin driven by COLORED Gaussian noise.
-    Matches the κ² block in ``models/ou_quartic_colored.model.py``.
+    Matches the κ² block in ``daedalus/models/ou_quartic_colored.model.py``.
 
     System
     ------
@@ -185,7 +185,7 @@ def sim_ou_sextic_numba(n_steps, dt_sim,
 
         dx/dt = -mu·x - eps·x³ - gamma·x⁵ + √(2D)·η(t)
 
-    matching the action in ``models/ou_sextic.model.py``:
+    matching the action in ``daedalus/models/ou_sextic.model.py``:
 
         S = ∫ dt  xt·((Dt+mu)·x + eps·x³ + gamma·x⁵) - D·xt²
 
@@ -248,7 +248,7 @@ def sim_ou_quartic_two_dim_color_corr_numba(
     """
     Coupled-quartic 2D Langevin driven by COLORED, CROSS-CORRELATED
     Gaussian noise.  Matches the κ² block in
-    ``models/ou_quartic_two_dim_color_corr.model.py``.
+    ``daedalus/models/ou_quartic_two_dim_color_corr.model.py``.
 
     System
     ------

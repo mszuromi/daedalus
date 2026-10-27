@@ -6,7 +6,7 @@ transfer function.  Useful as a comparison reference (the linear
 case has a closed-form mean-field solution, so it doubles as a
 sanity check on the saddle solver).
 """
-from api.model import TemporalModelBuilder
+from daedalus.api.model import TemporalModelBuilder
 
 
 def build():

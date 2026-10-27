@@ -19,9 +19,9 @@ produces a *bilinear* cross-term ``μ_drift·φ̃·∂_x(δφ)`` whose coefficie
 ``∝ φ*`` vanishes at ``φ*=0`` — handled by the drift-generalized heat kernel
 (``extract_mass_diffusion`` returns mass μ, diffusion D, drift V→0).
 
-Companion: ``models/kpz_1d.model.py`` (the *per-leg* ``(∂_xφ)²`` sibling).
+Companion: ``daedalus/models/kpz_1d.model.py`` (the *per-leg* ``(∂_xφ)²`` sibling).
 """
-from api.model import SpatialModelBuilder
+from daedalus.api.model import SpatialModelBuilder
 
 
 def build():

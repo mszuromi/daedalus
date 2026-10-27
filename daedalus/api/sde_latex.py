@@ -1,5 +1,5 @@
-"""LaTeX for an :class:`api.sde.SDE`: the SDE as written, the noise sources, the
-derived action and the mean-field equations (:meth:`api.sde.SDE.latex`).
+"""LaTeX for an :class:`daedalus.api.sde.SDE`: the SDE as written, the noise sources, the
+derived action and the mean-field equations (:meth:`daedalus.api.sde.SDE.latex`).
 
 Strings only: nothing is compiled.  Expressions go through Sage's ``latex()``
 on symbols whose names are fixed here (``_ltx_p_<name>`` for parameters,
@@ -22,7 +22,7 @@ import zlib
 
 from sage.all import SR, latex, sage_eval, function
 
-from api.noise import _MATH_FUNCS, _SAGE_PRINTED_CALLS, _flatten_indices, expr_to_text
+from daedalus.api.noise import _MATH_FUNCS, _SAGE_PRINTED_CALLS, _flatten_indices, expr_to_text
 
 __all__ = ['render_latex']
 
@@ -330,7 +330,7 @@ def _block(rows) -> str:
 
 def render_latex(sde) -> dict:
     """``{'sde', 'noise', 'action', 'mean_field'}`` of ``sde`` as LaTeX strings."""
-    from api.sde import _DT
+    from daedalus.api.sde import _DT
     d = sde._derive()
     ts = _Typesetter(sde, d)
     idx = (lambda t: t) if ts.trivial else sde._index

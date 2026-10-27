@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.enumeration.loop_diagram_enumeration as L
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
 
 # Table I of the paper (prediagrams, counted up to isomorphism)
 TABLE = {(2, 1): 9, (3, 1): 80, (4, 1): 755, (2, 2): 283, (1, 3): 434}

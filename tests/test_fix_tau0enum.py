@@ -31,9 +31,9 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', 'notebooks')))
 
 import daedalus as dd                       # noqa: E402
-from api import compute_cumulants           # noqa: E402
-from api.compute import _ITO_EPS            # noqa: E402
-from engine.enumeration.loop_diagram_enumeration import (  # noqa: E402
+from daedalus.api import compute_cumulants           # noqa: E402
+from daedalus.api.compute import _ITO_EPS            # noqa: E402
+from daedalus.engine.enumeration.loop_diagram_enumeration import (  # noqa: E402
     generate_trees_with_constraints,
 )
 

@@ -1,5 +1,5 @@
 """
-engine.core.convolution
+daedalus.engine.core.convolution
 ======================
 Formal convolution operator for time-domain field theory.
 
@@ -58,7 +58,7 @@ from __future__ import annotations
 
 from sage.all import function as _sr_function
 
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 
 class NonlinearConvError(DaedalusError, ValueError):
@@ -499,7 +499,7 @@ def reduce_conv_in_action(expr, fluct_vars, normalized=True, taylor_order=None,
                     f'Conv({g}, ...) convolves a nonlinear function of the fields (its '
                     f'term {n_arg} at the saddle): the kernel route cannot integrate it '
                     f'(every leg of the product sits at the same earlier time).  The SDE '
-                    f'front end (api.sde.SDE) embeds such a Conv automatically as auxiliary '
+                    f'front end (daedalus.api.sde.SDE) embeds such a Conv automatically as auxiliary '
                     f'linear fields; in a hand-written action, write the filter as '
                     f'auxiliary linear fields (Markov embedding).')
         if attachments_out is not None and attached_flucts:

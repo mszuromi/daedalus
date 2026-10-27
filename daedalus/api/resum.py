@@ -1,9 +1,9 @@
 """
-api.resum
-=========
+daedalus.api.resum
+==================
 Opt-in resummations of the loop series (``dd.Config(resum=...)``):
 
-* ``'hartree'``: the self-consistent Gaussian (:mod:`api.hartree`), the sum
+* ``'hartree'``: the self-consistent Gaussian (:mod:`daedalus.api.hartree`), the sum
   of every cactus diagram.  Bounded at any coupling; Gaussian (``κ_k = 0`` for
   ``k >= 3``) and a single matrix exponential in ``τ``.
 * ``'screened'``: the existing loop orders re-expanded around a variational
@@ -64,7 +64,7 @@ maximum relative to ``max |C_N|`` (``resummation['spread_last_two']``).
 In the OU quartic tests it is conservative (7–280x the true error at equal
 time from ``g = 0.01`` to ``1000``); it is not a bound.
 
-Kernels and hard delays: the Hartree closure embeds them (``api.hartree``:
+Kernels and hard delays: the Hartree closure embeds them (``daedalus.api.hartree``:
 rational kernels exactly, delays through their Pade approximant), the trial
 propagator is its block on the model's own fields, and the loop orders run
 the loop path's kernel / delay routes (the options of ``Config.delay``).
@@ -412,7 +412,7 @@ def _run_pairs(model_ct, values, s, pairs, max_ell, params, tau, run_kw,
     for ``k = 1``) at trial position ``s``: a list of ``{ell: array}`` (one
     per tuple), and the spectra by ell of the first.  A run that is not
     ``'ok'`` is recorded in ``log``."""
-    from api.compute import compute_cumulants, stage_memo
+    from daedalus.api.compute import compute_cumulants, stage_memo
     par = dict(params)
     par.update(values(s))
     out, spec = [], None
@@ -433,7 +433,7 @@ def _run_pairs(model_ct, values, s, pairs, max_ell, params, tau, run_kw,
 
 def _run_cov(model_ct, values, s, cov, max_ell, params, tau, run_kw,
              log=None):
-    from api.covariance import covariance_matrix
+    from daedalus.api.covariance import covariance_matrix
     par = dict(params)
     par.update(values(s))
     kw = {k: v for k, v in run_kw.items() if k != 'verbose'}
@@ -538,8 +538,8 @@ def screened(model, max_ell, parameters=None, *, external_fields,
     holds the screened spectral values by order; with ``covariance``, the
     ``covariance_matrix`` layout with ``Sigma_by_order``.
     """
-    from api.compute import compute_cumulants, as_model_dict
-    from api.hartree import hartree, refusal_reason, HartreeUnsupported
+    from daedalus.api.compute import compute_cumulants, as_model_dict
+    from daedalus.api.hartree import hartree, refusal_reason, HartreeUnsupported
     opts = resolve_resum_options(dict({'method': 'screened'},
                                       **(options or {})))
     model = as_model_dict(model)
@@ -581,7 +581,7 @@ def screened(model, max_ell, parameters=None, *, external_fields,
 
     # the plain loop series (the comparison, the result's metadata, the gates)
     if covariance is not None:
-        from api.covariance import covariance_matrix
+        from daedalus.api.covariance import covariance_matrix
         base = covariance_matrix(
             model, covariance.get('fields'), N, parameters=params,
             pairs=covariance.get('pairs', 'upper'), tau_grid=tau,

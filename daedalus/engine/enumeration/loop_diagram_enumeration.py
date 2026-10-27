@@ -430,7 +430,7 @@ def check_topology_constraints(G, k, ell=None):
 # generator's independent references (tests set this attribute).  The env
 # switch ``DAEDALUS_EDGE_GENERATOR`` is retired (it only warns).
 
-from engine import _env
+from daedalus.engine import _env
 _env.retired('DAEDALUS_EDGE_GENERATOR',
              "the 'canonical' generator is the only route; the 'degree_first' "
              "and 'multiset' generators remain as test references")
@@ -801,7 +801,7 @@ def process_tree_multiset(args):
     return local_candidates
 
 
-# Certificate backend.  'fast' = engine.enumeration.fastenum.cert: nauty's
+# Certificate backend.  'fast' = daedalus.engine.enumeration.fastenum.cert: nauty's
 # densenauty on a coloured subdivision encoding (~4-6 us) when Sage's bundled
 # libnauty links, else Sage's search_tree on a DenseGraph (~30 us); 'sage' =
 # canonical_label() of the multigraph (~100 us).  All are complete isomorphism
@@ -809,7 +809,7 @@ def process_tree_multiset(args):
 # for the same class: compare certificate sets across backends only via
 # prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND = fast | sage
 # overrides (any other value raises: 'nauty' used to mean 'sage' silently).
-from engine.enumeration import fastenum as _fe
+from daedalus.engine.enumeration import fastenum as _fe
 CERT_BACKEND = _env.choice('DAEDALUS_CERT_BACKEND', ('fast', 'sage'),
                            'fast' if _fe.available else 'sage')
 if CERT_BACKEND == 'fast' and not _fe.available:
@@ -909,7 +909,7 @@ def _remove_isomorphic_undirected(candidates):
 
 def _threads_allowed(n_threads):
     """``n_threads``, or 1 under ``DAEDALUS_PARALLEL=0`` (the kill switch)."""
-    from engine.fork_safety import parallel_disabled
+    from daedalus.engine.fork_safety import parallel_disabled
     return 1 if n_threads != 1 and parallel_disabled() else n_threads
 
 
@@ -1412,7 +1412,7 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
     notebook), so the guard degrades to serial there rather than to threads;
     ``DAEDALUS_PARALLEL=0`` makes it serial everywhere.
     """
-    from engine.fork_safety import (fork_unsafe, parallel_disabled,
+    from daedalus.engine.fork_safety import (fork_unsafe, parallel_disabled,
                                     warn_fork_fallback_once)
     if n_procs != 1 and parallel_disabled():
         n_procs = 1
@@ -1437,7 +1437,7 @@ def _map_unordered(fn, items, n_procs, verbose=False, label=''):
     import multiprocessing as mp
     import threading
     from concurrent.futures import ProcessPoolExecutor
-    from engine import worker_budget as _wb
+    from daedalus.engine import worker_budget as _wb
     n_fit, share = _wb.workers_that_fit(n_procs, _wb.FORK_WORKER_FLOOR,
                                         'parallel_workers_capped_by_budget')
     if n_fit < 2:

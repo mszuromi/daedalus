@@ -14,7 +14,7 @@ separately) builds the generalized-eigenvalue problem at a given root
 using the same equation parsing infrastructure here.
 
 This module is INTENTIONALLY decoupled from
-``api/_mean_field.py`` — the legacy iteration solver still runs
+``daedalus/api/_mean_field.py`` — the legacy iteration solver still runs
 for models without ``.mf_residual(...)`` declarations.  Routing happens
 in ``compute_cumulants`` (step d).
 """
@@ -28,8 +28,8 @@ import math
 import numpy as np
 from scipy.optimize import root as _scipy_root
 
-from engine.core.dt_order import NonlinearDtError
-from engine.errors import DaedalusError
+from daedalus.engine.core.dt_order import NonlinearDtError
+from daedalus.engine.errors import DaedalusError
 
 # Residual value where an equation cannot be evaluated (overflow, log of a
 # negative number, ...).  Far above any physical residual in any units (the
@@ -67,7 +67,7 @@ def _theta(x):
 
 
 # One table for every function the expression parser accepts in a drift /
-# right-hand side (``api.noise._MATH_FUNCS``: exp log sqrt sin cos tan tanh
+# right-hand side (``daedalus.api.noise._MATH_FUNCS``: exp log sqrt sin cos tan tanh
 # sinh cosh arctan heaviside erf abs; gamma / factorial are in _SPECIAL_NS)
 # plus ``sign`` (the action validator's built-in, Sage ``sgn``).  The numpy
 # namespace of the saddle solve and the Sage namespace of the linearization
@@ -343,7 +343,7 @@ def _numpy_params(model: dict, fundamental: dict) -> dict:
     expressions like ``w[i,j]`` (2-D indexing) and ``Em[i]`` (1-D) work
     under plain Python ``eval``.
     """
-    from api._mean_field import complete_parameters
+    from daedalus.api._mean_field import complete_parameters
     fundamental = complete_parameters(model, fundamental,
                                      'mean-field DAE solve', strict=False)
     out = {}
@@ -374,8 +374,8 @@ def _kernel_values(model: dict, fundamental: dict, ns=None) -> dict:
     if not specs:
         return {}
     from sage.all import SR
-    from engine.core.field_theory import FieldTheory, kernel_dc_gains_of
-    from api._mean_field import complete_parameters
+    from daedalus.engine.core.field_theory import FieldTheory, kernel_dc_gains_of
+    from daedalus.api._mean_field import complete_parameters
     if ns is None:
         ns = FieldTheory(model)._build_namespace()[0]
     gains = kernel_dc_gains_of(ns, model)
@@ -1197,9 +1197,9 @@ def _dedup_roots(roots: list, rtol=1e-6, atol=0.0, errs=None) -> list:
 def _saddle_keys(model, state_vars) -> dict:
     """``{state variable: saddle parameter name}`` for the ``.equation``
     form (its state variables are the physical fields): the field's
-    declared saddle (``api.naming.saddle_for_field``), else
+    declared saddle (``daedalus.api.naming.saddle_for_field``), else
     ``<field>star``, the name ``physical_field`` gives it."""
-    from api.naming import saddle_for_field
+    from daedalus.api.naming import saddle_for_field
     return {var: (saddle_for_field(model, var) or f'{var}star')
             for var, _, _ in state_vars}
 
@@ -1241,7 +1241,7 @@ def _pop_sizes(model, ns=None) -> dict:
 def _saddle_arrays(model, ns) -> dict:
     """``{saddle name: [SR symbol per population index]}`` for the declared
     saddles (``mean_field=True``) the namespace carries."""
-    from api.naming import saddle_names
+    from daedalus.api.naming import saddle_names
     out = {}
     for name in saddle_names(model):
         arr = getattr(ns, name, None)
@@ -1302,8 +1302,8 @@ def _saddle_system(model, fundamental, ns, reduced=False):
     cannot be reduced."""
     from sage.all import SR
     from sage.symbolic.operators import add_vararg
-    from api._mean_field import _kernel_saddle_subs, complete_parameters
-    from api.naming import field_for_saddle
+    from daedalus.api._mean_field import _kernel_saddle_subs, complete_parameters
+    from daedalus.api.naming import field_for_saddle
 
     fundamental = complete_parameters(model, fundamental,
                                      'mean-field solve', strict=False)
@@ -1473,7 +1473,7 @@ def solve_mean_field_dae(
     -------
     dict with keys:
         ``'mf_values'`` — selected root as ``{<saddle>: [vals]}`` (the
-            saddle parameter of each state variable, ``api.naming``).
+            saddle parameter of each state variable, ``daedalus.api.naming``).
         ``'mf_all_roots'`` — full sorted list of distinct roots, each
             a dict shaped like ``mf_values``.
         ``'mf_index_used'`` — int, actual index used (after clamping).
@@ -1872,7 +1872,7 @@ def _pure_integrator_rows(model, expanded) -> list:
     test, ``ModelBuilder._lhs_vanishes_at_dt0``; an LHS such as
     ``(Dt + mu)*x`` is not one even where mu = 0).  Rows follow
     ``expanded`` (each equation once per population index)."""
-    from api.model import ModelBuilder
+    from daedalus.api.model import ModelBuilder
     rows, k = [], 0
     for eq in model.get('equations', []):
         pop = eq['population']
@@ -1965,7 +1965,7 @@ def _check_equation_first_order_in_dt(resid, Dt_sym, model, eq, eq_no,
     """Raise ``NonlinearDtError`` if one declared equation is nonlinear
     in ``Dt``, naming the equation, its population slot, and the field(s)
     the offending term acts on."""
-    from engine.core.dt_order import (check_first_order_in_dt,
+    from daedalus.engine.core.dt_order import (check_first_order_in_dt,
                                       dt_degree_exceeds_one)
 
     # Fast path: this runs once per scalar residual, so the per-field
@@ -2143,7 +2143,7 @@ def linear_stability(
     # A bare size-1 field (scalar mode: ``erf(x)``, ``sign(x)``) arrives as a
     # ``_FieldScalar``, which Sage's strict argument coercion refuses; unwrap
     # it for every function (a no-op for an SR argument).
-    from api.model_compiler import _unwrap_builtin
+    from daedalus.api.model_compiler import _unwrap_builtin
     sage_math_ns = {k: (v if k == 'pi' else _unwrap_builtin(v))
                     for k, v in sage_math_ns.items()}
     sage_special_ns = {k: (v if k == 'e' else _unwrap_builtin(v))
@@ -2184,7 +2184,7 @@ def linear_stability(
     # arithmetic works in the symbolic eval too (mirroring the
     # ``_FieldScalar`` wrapping in ``model_compiler``).  Multi-
     # position lists stay raw — the user must use ``[i]`` access.
-    from api.model_compiler import _FieldScalar
+    from daedalus.api.model_compiler import _FieldScalar
     sym_per_var_eval = {
         var: (_FieldScalar(arr) if len(arr) == 1 else arr)
         for var, arr in sym_per_var.items()
@@ -2366,7 +2366,7 @@ def _check_selected_root(ft, model, num_params, index_used, mf_values,
     mean-field action sector (``ft._mf_sector_raw``: the (0,0), (1,0), (0,1)
     coefficients before the saddle substitution) visibly non-zero, by the
     relative rule shared with the expand-time check
-    (:func:`engine.core.field_theory.mf_sector_residual`): a residual above
+    (:func:`daedalus.engine.core.field_theory.mf_sector_residual`): a residual above
     ``MF_SECTOR_RTOL * sum of |terms|`` plus the residual the saddle's own
     error estimates ``errs`` (``{symbol: error}``) explain.  (The former
     absolute floor ``1e-7`` passed a wrong equation in small units.)  A
@@ -2375,7 +2375,7 @@ def _check_selected_root(ft, model, num_params, index_used, mf_values,
     raw = getattr(ft, '_mf_sector_raw', None)
     if not raw:
         return
-    from engine.core.field_theory import (MF_SECTOR_ULPS, kernel_dc_gains_of,
+    from daedalus.engine.core.field_theory import (MF_SECTOR_ULPS, kernel_dc_gains_of,
                                           mf_sector_residual)
     from sage.all import SR
     gains = kernel_dc_gains_of(ft._ns, model)
@@ -2434,7 +2434,7 @@ def solve_mean_field_dae_compat(
         rtol: float = 1e-6,
         atol: float = 0.0,
 ) -> dict:
-    """The mean-field solve of every model (``api._mean_field.
+    """The mean-field solve of every model (``daedalus.api._mean_field.
     solve_mean_field`` is its front door): :func:`solve_mean_field_dae` on
     the model's ``.equation`` rows or its ``.set_mf_equation`` saddle
     equations, the selected root checked against the action's mean-field
@@ -2472,7 +2472,7 @@ def solve_mean_field_dae_compat(
             print(f'    root[{i}]: {r}{tag}')
 
     # 2. Parameter values on the namespace's SR symbols.
-    from api._mean_field import complete_parameters
+    from daedalus.api._mean_field import complete_parameters
     fundamental = complete_parameters(model, fundamental,
                                      'mean-field solve', strict=False)
     param_subs = _param_subs(model, fundamental, _pop_sizes(model, ft._ns))
@@ -2503,7 +2503,7 @@ def solve_mean_field_dae_compat(
     # the saddle, ``phi0_i -> nstar_i``) evaluated at the solved saddle.
     if not model.get('equations'):
         mf_bg = model.get('mf_bg_conditions', lambda ns: {})(ft._ns)
-        from api._mean_field import _kernel_saddle_subs
+        from daedalus.api._mean_field import _kernel_saddle_subs
         rest = [k for k in mf_bg if k not in num_params]
         ksubs = _kernel_saddle_subs(ft._ns, model,
                                     _kernel_symbols(model, ft._ns),

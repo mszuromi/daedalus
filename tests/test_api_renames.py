@@ -12,10 +12,10 @@ import pytest
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                                  # noqa: E402
-from api.model import ModelBuilder                                     # noqa: E402
-from api.noise import (Gaussian, Meixner, NormalInverseGaussian,       # noqa: E402
+from daedalus.api.model import ModelBuilder                                     # noqa: E402
+from daedalus.api.noise import (Gaussian, Meixner, NormalInverseGaussian,       # noqa: E402
                        NoiseError, VarianceGamma)
-from api.sde import SDE                                                # noqa: E402
+from daedalus.api.sde import SDE                                                # noqa: E402
 
 
 def _dep(fn):
@@ -29,8 +29,8 @@ def _dep(fn):
 # ── 1. Kernel ────────────────────────────────────────────────────────────
 
 def test_dd_kernel_is_the_shape_builder_and_the_pairing_alias_is_gone():
-    import api.delay as D
-    import api.symbolic_out as so
+    import daedalus.api.delay as D
+    import daedalus.api.symbolic_out as so
     assert dd.Kernel is D.Kernel and dd.PairingKernel is so.PairingKernel
     assert not hasattr(so, 'Kernel') and 'Kernel' not in so.__all__
     assert dd.Kernel.exponential('tau') is not None
@@ -57,7 +57,7 @@ def test_equation_is_a_deprecated_alias_of_mf_residual():
 def test_tracked_models_build_the_same_with_the_old_spelling():
     """The tracked model files use mf_residual now: their text with the old spelling builds the same model."""
     import importlib.util
-    root = os.path.join(os.path.dirname(__file__), '..', 'models')
+    root = os.path.join(os.path.dirname(__file__), '..', 'daedalus', 'models')
     n = 0
     for path in sorted(glob.glob(os.path.join(root, '*.model.py'))):
         text = open(path).read()
@@ -78,9 +78,9 @@ def test_tracked_models_build_the_same_with_the_old_spelling():
 
 
 def test_model_file_text_round_trips_with_either_spelling():
-    from api.model_serialize import load_spec_from_file, render_model_file
+    from daedalus.api.model_serialize import load_spec_from_file, render_model_file
     import tempfile
-    src = ("from api.model import ModelBuilder\n\n\ndef build():\n    return (ModelBuilder('rt mf')\n"
+    src = ("from daedalus.api.model import ModelBuilder\n\n\ndef build():\n    return (ModelBuilder('rt mf')\n"
            "        .physical_field('x')\n        .parameter('mu', default=1.0, domain='positive')\n"
            "        .{m}(lhs='(Dt + mu)*x', rhs='1.0')\n        .set_action_text('xt*(Dt(x) + mu*x - 1.0) - 0.1*xt^2')\n"
            "        .build())\n")
@@ -106,7 +106,7 @@ def test_point_process_size_is_a_deprecated_alias_of_jump_size():
     assert w_new == [] and len(w_old) == 1 and 'jump_size' in w_old[0]
     assert new['spec_signature'] == old['spec_signature']
     assert _pp()['spec_signature'] == _pp(jump_size='1')['spec_signature']
-    from api.sde import SDEError
+    from daedalus.api.sde import SDEError
     with pytest.raises(SDEError, match='jump_size= only'):
         _pp(size='J', jump_size='J')
 
@@ -154,7 +154,7 @@ def test_location_keyword_is_loc_and_the_old_one_warns_once(cls, args, old, new)
 
 
 def test_yaml_noise_blocks_accept_the_old_keys_with_a_warning():
-    from api.config_run import _noise_object
+    from daedalus.api.config_run import _noise_object
     desc = {'type': 'NormalInverseGaussian', 'alpha': 2, 'beta': 0.5, 'delta': 1.2, 'mu': 0.1, 'into': 'x'}
     old, w = _dep(lambda: _noise_object(dict(desc)))
     new, w2 = _dep(lambda: _noise_object({**{k: v for k, v in desc.items() if k != 'mu'}, 'loc': 0.1}))

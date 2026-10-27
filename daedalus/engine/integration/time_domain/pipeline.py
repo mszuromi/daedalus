@@ -1,5 +1,5 @@
 """
-engine.integration.time_domain.pipeline
+daedalus.engine.integration.time_domain.pipeline
 ======================================
 Time-domain correlator evaluation (tree and loop diagrams).
 
@@ -36,12 +36,12 @@ This is enforced by the canonical time remapping in
 from sage.all import SR
 
 
-from engine.integration.time_domain.final_integral import (
+from daedalus.engine.integration.time_domain.final_integral import (
     integrate_diagram,
     PropagatorTD,
     _loop_number_from_graph,
 )
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -67,9 +67,9 @@ from engine.errors import DaedalusError
 #   main thread evaluates those meanwhile.  Largest blocks first.
 # * **spawn** (every platform, the automatic choice for batches that take a
 #   few seconds, outside a Jupyter kernel): Sage-free interpreters fed the
-#   diagrams' numeric state (``engine.spawn_pool``).
+#   diagrams' numeric state (``daedalus.engine.spawn_pool``).
 # * **fork** (Linux only, ONLY with ``start_method='fork'``;
-#   ``engine.fork_safety.fork_unsafe``).  The workers
+#   ``daedalus.engine.fork_safety.fork_unsafe``).  The workers
 #   inherit the per-diagram closures (nested functions that ``pickle``
 #   cannot serialise) through ``_FANOUT``; each returns its diagrams' values
 #   and its ``_RUNTIME_COUNTERS`` delta.  Used when the batch has enough
@@ -103,27 +103,27 @@ SPAWN_KERNEL_ENV = 'DAEDALUS_SPAWN_IN_KERNEL'
 
 #: Fork workers' view of the batch (set before the pool forks).
 _FANOUT = {}
-#: Kept for ``api.compute._counter_snapshot`` (identity check); the fork
+#: Kept for ``daedalus.api.compute._counter_snapshot`` (identity check); the fork
 #: workers now return their counters, so it no longer changes.
 _WORKER_STATE = {}
 
 
 def _fork_unsafe(start_method):
     """Return True iff this batch must not fork: ``fork`` on macOS
-    (:func:`engine.fork_safety.fork_unsafe`, one source of truth)."""
-    from engine.fork_safety import fork_unsafe
+    (:func:`daedalus.engine.fork_safety.fork_unsafe`, one source of truth)."""
+    from daedalus.engine.fork_safety import fork_unsafe
     return fork_unsafe(start_method)
 
 
 def _parallel_off():
     """``DAEDALUS_PARALLEL=0``: every batch serial, silently."""
-    from engine.fork_safety import parallel_disabled
+    from daedalus.engine.fork_safety import parallel_disabled
     return parallel_disabled()
 
 
 def _warn_fork_guard_once():
     """The fork -> serial fallback warning, once per process."""
-    from engine.fork_safety import warn_fork_fallback_once
+    from daedalus.engine.fork_safety import warn_fork_fallback_once
     warn_fork_fallback_once('Phase J parallel batch')
 
 
@@ -146,7 +146,7 @@ def _eval_diagram(fn, tau_list):
 
 
 def _thread_task(fn, tau_list):
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     with _fi.counter_delta() as cd:
         vals = _eval_diagram(fn, tau_list)
     return vals, cd.delta
@@ -154,7 +154,7 @@ def _thread_task(fn, tau_list):
 
 def _fork_task(chunk):
     """Fork worker: the diagrams ``chunk`` (indices) on the batch's grid."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     fns, tau_list = _FANOUT['fns'], _FANOUT['tau_list']
     with _fi.counter_delta() as cd:
         out = [(d, _eval_diagram(fns[d], tau_list)) for d in chunk]
@@ -162,10 +162,10 @@ def _fork_task(chunk):
 
 
 def _switch_on_now():
-    from engine import _env
+    from daedalus.engine import _env
     if _env.phase_j_engine() == 'poles':
         return False
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine.integration.time_domain import statespace as _ss
     return _ss.switch_on_active()
 
 
@@ -211,7 +211,7 @@ def _fan_out(fns, tau_list, parallel, n_workers, start_method):
     if n_t >= 2:
         # a thread's own memory is its segment work (the states are
         # shared and already charged): a few vectors of the largest block
-        from engine import worker_budget as _wb
+        from daedalus.engine import worker_budget as _wb
         n_t, _share = _wb.workers_that_fit(
             n_t, 2**20 + 64 * max(blocks[d] for d in heavy),
             'parallel_workers_capped_by_budget')
@@ -241,8 +241,8 @@ def _spawn_allowed(start_method, fork_ok):
         return True
     if start_method is not None or fork_ok:
         return False
-    from engine import _env
-    from engine.fork_safety import in_jupyter_kernel
+    from daedalus.engine import _env
+    from daedalus.engine.fork_safety import in_jupyter_kernel
     return (not in_jupyter_kernel()) or _env.flag(SPAWN_KERNEL_ENV, False)
 
 
@@ -277,16 +277,16 @@ def _spawn_settings():
     """What a spawned worker takes over from this process: the running
     Phase J budget (its segment checks then decide as here) and the module
     settings of ``statespace`` / ``_light``."""
-    from engine import _spawn_worker as _sw
-    from engine.integration.time_domain import _light
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine import _spawn_worker as _sw
+    from daedalus.engine.integration.time_domain import _light
+    from daedalus.engine.integration.time_domain import statespace as _ss
     return {'budget': tuple(_ss.budget_view()),
             'statespace': _sw.module_settings(_ss),
             'light': _sw.module_settings(_light)}
 
 
 def _spawn_fan_out(fns, tau_list, n_w, explicit, vals):
-    """Spawned-worker fan-out (``engine.spawn_pool``) into ``vals``: every
+    """Spawned-worker fan-out (``daedalus.engine.spawn_pool``) into ``vals``: every
     diagram whose numeric task can leave this process
     (``statespace.diagram_payload``) goes to the pool; the rest, and any
     diagram a worker could not evaluate, are evaluated here.  Automatic mode
@@ -298,10 +298,10 @@ def _spawn_fan_out(fns, tau_list, n_w, explicit, vals):
     falls back."""
     import threading
     import time
-    from engine import spawn_pool as _sp
-    from engine import worker_budget as _wb
-    from engine.integration.time_domain import final_integral as _fi
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine import spawn_pool as _sp
+    from daedalus.engine import worker_budget as _wb
+    from daedalus.engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import statespace as _ss
     n = len(fns)
     if not _plain_times(tau_list):
         return False
@@ -394,7 +394,7 @@ def _spawn_fan_out(fns, tau_list, n_w, explicit, vals):
 
 def _thread_fan_out(fns, tau_list, heavy, blocks, n_t, vals):
     from concurrent.futures import ThreadPoolExecutor
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     heavy_set = set(heavy)
     ex = ThreadPoolExecutor(max_workers=n_t,
                             thread_name_prefix='daedalus-phase-j')
@@ -416,11 +416,11 @@ def _thread_fan_out(fns, tau_list, heavy, blocks, n_t, vals):
 
 def _fork_fan_out(fns, tau_list, n_w):
     import multiprocessing as mp
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     n = len(fns)
     size = max(1, -(-n // (4 * n_w)))
     chunks = [list(range(a, min(n, a + size))) for a in range(0, n, size)]
-    from engine import worker_budget as _wb
+    from daedalus.engine import worker_budget as _wb
     n_fit, share = _wb.workers_that_fit(n_w, _wb.FORK_WORKER_FLOOR,
                                         'parallel_workers_capped_by_budget')
     if n_fit < 2:
@@ -455,10 +455,10 @@ def _ss_grid(points):
     imported).  Only the serial evaluation paths use it (a forked worker
     would evaluate the whole grid for its share of it)."""
     import contextlib
-    from engine import _env
+    from daedalus.engine import _env
     if _env.phase_j_engine() == 'poles':
         return contextlib.nullcontext()
-    from engine.integration.time_domain import statespace as _ss
+    from daedalus.engine.integration.time_domain import statespace as _ss
     return _ss.tau_grid_prefetch(points)
 
 
@@ -469,7 +469,7 @@ def _workers_within_budget(n_w):
     has charged ``used`` bytes holds up to ``(1 + n_w) x used`` with ``n_w``
     workers.  Outside a ``phase_j_memory_scope``, without a budget or with
     nothing charged: ``n_w`` unchanged.  ``<= 1``: run serially."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
     if lock is None:
         return n_w
@@ -493,7 +493,7 @@ def _worker_budget_init(share):
     (each worker builds its own lazily built states and charges them to its
     own copy of the total; with the full budget each, n workers could
     together use n times it)."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
     if lock is None or share is None:
         return
@@ -506,7 +506,7 @@ def _worker_share(n_w):
     """``(initializer, initargs)`` giving each of ``n_w`` forked workers an
     equal share of the running budget's remainder (no limit: no
     initializer)."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     lock = getattr(_fi, '_PLAN_MEM_LOCK', None)
     if lock is None:
         return {}
@@ -537,7 +537,7 @@ def _discarded_callable(idx):
 
 def _mem_mark():
     """The running budget's charge counters now (``_mem_release``)."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     with _fi._PLAN_MEM_LOCK:
         m = _fi._PLAN_MEM
         return (m['active'] > 0, m['used'], m['tuples'], m['plans'])
@@ -547,7 +547,7 @@ def _mem_release(mark, refund=True):
     """The bytes charged since ``mark`` (one diagram's plans and stationary
     states); with ``refund`` they are taken back from the running total
     (the diagram's closure has been dropped)."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     scoped, used0, tuples0, plans0 = mark
     with _fi._PLAN_MEM_LOCK:
         m = _fi._PLAN_MEM
@@ -562,7 +562,7 @@ def _mem_release(mark, refund=True):
 def _mem_delta(mark):
     """``(bytes, tuples, plans)`` charged to the running budget since
     ``mark`` (zeros outside a scope)."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     scoped, used0, tuples0, plans0 = mark
     with _fi._PLAN_MEM_LOCK:
         m = _fi._PLAN_MEM
@@ -575,7 +575,7 @@ def _mem_delta(mark):
 def _mem_refund(mark, charge):
     """Take ``charge`` (``_mem_delta``) back from the running total: the
     charge of a diagram released after other diagrams were charged."""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     with _fi._PLAN_MEM_LOCK:
         m = _fi._PLAN_MEM
         if not mark[0] or m['active'] <= 0:
@@ -588,7 +588,7 @@ def _mem_refund(mark, charge):
 def _growth_over(fraction):
     """Has the running ``compute_cumulants`` grown by more than ``fraction``
     of its budget (``final_integral.run_growth``)?"""
-    from engine.integration.time_domain import final_integral as _fi
+    from daedalus.engine.integration.time_domain import final_integral as _fi
     rg = getattr(_fi, 'run_growth', None)
     if rg is None:
         return False
@@ -706,17 +706,17 @@ def compute_correction_td(
             'jordan_incomplete'):
         # a repeated pole: the stored residues miss the t exp(lambda t)
         # terms; compute_cumulants averages deformed propagators instead
-        # (api._pole_clusters)
+        # (daedalus.api._pole_clusters)
         raise ValueError(
             'propagator_data has a repeated pole (a Jordan block): its '
             'pole_vals / C_mats do not represent the propagator.  Use '
-            'compute_cumulants, which resolves it (api._pole_clusters), or '
+            'compute_cumulants, which resolves it (daedalus.api._pole_clusters), or '
             'pass the propagator of a deformation node.')
     if on_divergence is not None:
-        from engine.integration.time_domain.final_integral import (
+        from daedalus.engine.integration.time_domain.final_integral import (
             _divergence_policy)
         _divergence_policy(on_divergence)               # validate early
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _warn_retired_env)
     _warn_retired_env()
     if kernel_groups is not None:
@@ -777,7 +777,7 @@ def compute_correction_td(
         else:
             discard_info['refunded'] += 1
 
-    from engine.integration.time_domain import final_integral as _fi_g
+    from daedalus.engine.integration.time_domain import final_integral as _fi_g
     _growth = getattr(_fi_g, 'growth_guard', None)
     for idx, (td, pf) in enumerate(zip(typed_diagrams, prefactors)):
         loop_number = _loop_number_from_graph(td)
@@ -899,7 +899,7 @@ def compute_correction_td(
     if discarding:
         # no callable is left to use the cached realizations' resolvent
         # data: release it (charged to nobody once the diagrams are gone)
-        from engine.integration.time_domain import statespace as _ss
+        from daedalus.engine.integration.time_domain import statespace as _ss
         _ss.release_solve_data()
         # the same sums as below, from the kept values, in diagram order
         _at = {}

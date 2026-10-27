@@ -1,7 +1,7 @@
 """Audit W7: the retired Phase J rollback and setup switches.
 
 Each retired environment variable, when set, warns ONCE per process
-(``FutureWarning``, through ``engine._env.retired``) and is otherwise
+(``FutureWarning``, through ``daedalus.engine._env.retired``) and is otherwise
 ignored: a child process with every one of them set to its old non-default
 value gives the numbers of this process, where none is set.  The retired
 module attributes are gone.
@@ -19,9 +19,9 @@ pytest.importorskip('sage.all')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.integration.time_domain.final_integral as FI   # noqa: E402
-import engine.diagrams.symmetry as SYM                       # noqa: E402
-import api._pole_clusters as PC                              # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI   # noqa: E402
+import daedalus.engine.diagrams.symmetry as SYM                       # noqa: E402
+import daedalus.api._pole_clusters as PC                              # noqa: E402
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -73,9 +73,9 @@ _PROBE = textwrap.dedent(r'''
     warnings.simplefilter('always')
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
-        import engine.integration.time_domain.final_integral as FI
-        import engine.diagrams.symmetry as SYM
-        import api._pole_clusters as PC
+        import daedalus.engine.integration.time_domain.final_integral as FI
+        import daedalus.engine.diagrams.symmetry as SYM
+        import daedalus.api._pole_clusters as PC
     msgs = [str(w.message) for w in rec if issubclass(w.category,
                                                      FutureWarning)]
 
@@ -103,7 +103,7 @@ _PROBE = textwrap.dedent(r'''
     os.environ['DAEDALUS_PHASE_J_ENGINE'] = 'poles'
     import numpy as np
     import daedalus as dd
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     os.chdir(sys.argv[2])
     model, _ = dd.load_model('ou_quartic')
     res = compute_cumulants(model, k=2, max_ell=1,
@@ -184,8 +184,8 @@ def test_a_retired_switch_set_after_import_warns_at_the_next_pass(monkeypatch):
     """The retired readers ran at call time, so a switch set after import
     (a notebook ``os.environ[...] = ...``) warns at the next Phase J pass;
     fast (no computation: an empty diagram list)."""
-    from engine import _env
-    from engine.integration.time_domain.pipeline import compute_correction_td
+    from daedalus.engine import _env
+    from daedalus.engine.integration.time_domain.pipeline import compute_correction_td
     names = [n for n, _ in FI._RETIRED_PHASE_J_ENV] + [
         'DAEDALUS_SETUP_AUT_MEMO', 'DAEDALUS_POLE_CLUSTERS']
     for n in names:

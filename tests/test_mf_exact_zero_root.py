@@ -29,10 +29,10 @@ from scipy.linalg import expm, solve_continuous_lyapunov
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                                 # noqa: E402
-from api import _mean_field_dae as MF                                 # noqa: E402
-from api.model import TemporalModelBuilder                            # noqa: E402
-from api.noise import Poisson                                         # noqa: E402
-from api.sde import SDE                                               # noqa: E402
+from daedalus.api import _mean_field_dae as MF                                 # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                            # noqa: E402
+from daedalus.api.noise import Poisson                                         # noqa: E402
+from daedalus.api.sde import SDE                                               # noqa: E402
 
 _NAMES = ['a1', 'c1', 'g1', 'a2', 'c2', 'g2', 's', 'k11', 'k12']
 _R = 0.2
@@ -205,7 +205,7 @@ def test_a_shifted_root_with_large_cancelling_terms():
 # ── through the solver: a zero next to a nonzero field, and no tail roots ──
 
 def _solve(drifts, params, stability=False):
-    from api.noise import Gaussian
+    from daedalus.api.noise import Gaussian
     m = SDE('mf probe')
     for p in params:
         m = m.parameter(p, default=1.0)

@@ -1,5 +1,5 @@
 """
-api.model — declarative model input (the primary authoring path).
+daedalus.api.model — declarative model input (the primary authoring path).
 
 The MSR-JD model dict (the example ``HAWKES_MODEL`` structure) carries
 several Sage-aware lambdas (action, mf_bg_conditions, kernel_ft_image,
@@ -16,7 +16,7 @@ produce a dict consumable directly by ``api.compute_cumulants``.
 
 Typical use::
 
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
 
     model = (TemporalModelBuilder("My model")
              .physical_field("x", description="...")
@@ -30,7 +30,7 @@ Typical use::
 Response fields (``xt`` above) are introduced automatically from the
 action text; you only declare the physical fields and parameters.
 
-Reusable actions live in ``api.model_templates`` (e.g. ``HawkesAction``)
+Reusable actions live in ``daedalus.api.model_templates`` (e.g. ``HawkesAction``)
 and are applied via ``.use_action_template(...)`` instead of
 ``.set_action_text(...)``.  For unusual models that no string or
 template covers, the lambda hooks (``.set_action(...)`` etc.) remain
@@ -382,10 +382,10 @@ class _TemporalMethods:
             ``time_expr`` / ``freq_image`` (the hard delay ``delta(t - d)``
             when neither is given).  ``compute_cumulants`` approximates the
             delay by Pade (n, n) with an automatic order and records it
-            (:mod:`api.delay`).  A ``time_expr`` shifted by a delay
+            (:mod:`daedalus.api.delay`).  A ``time_expr`` shifted by a delay
             (``dirac_delta(t - d)``, ``heaviside(t - d)*exp(-(t - d)/tau)/tau``)
             is recognised the same way.
-        kernel : api.delay.Kernel, optional
+        kernel : daedalus.api.delay.Kernel, optional
             ``Kernel.delay('d')``, ``Kernel.exponential('tau')``,
             ``Kernel.gamma(n, 'mean')``, ``Kernel.image('...')`` and their
             products, instead of ``freq_image`` / ``delay``.
@@ -402,12 +402,12 @@ class _TemporalMethods:
                 # front end checks (the builder's action text cannot be)
                 raise ValueError(f"define_kernel({name!r}): Kernel.gaussian (a jitter of "
                                  f"an exogenous input) is declared with the SDE front end "
-                                 f"(api.sde.SDE.define_kernel), which checks that the "
+                                 f"(daedalus.api.sde.SDE.define_kernel), which checks that the "
                                  f"input is exogenous.")
             freq_image = kernel.freq_image
             delay = kernel.delay
         if time_expr is not None and delay is None:
-            from api.delay import split_shifted_time_expr
+            from daedalus.api.delay import split_shifted_time_expr
             sh = split_shifted_time_expr(str(time_expr))
             if sh is not None:
                 delay, time_expr = sh
@@ -775,7 +775,7 @@ class _BaseModelBuilder:
         # Text-driven declarations (used by the UI and by
         # ``define_function`` / ``set_action_text`` / etc.).  When any
         # of these are populated, ``build()`` compiles them to lambdas
-        # via ``api.model_compiler``, overriding the lambda hooks
+        # via ``daedalus.api.model_compiler``, overriding the lambda hooks
         # above.  Empty by default → existing template-based flow runs
         # unchanged.
         self._function_specs:   list[dict] = []
@@ -804,7 +804,7 @@ class _BaseModelBuilder:
         # via ``.stability_analysis(True)``.
         self._stability_analysis: bool = False
         # Whether ``build()`` invokes the colored-noise → Markovian-
-        # embedding preprocessor (``api.colored_to_markovian``)
+        # embedding preprocessor (``daedalus.api.colored_to_markovian``)
         # on this builder before compiling text declarations.  Default
         # ON: every CGF row that matches the v1 single-Lorentzian
         # template ``c·exp(-|tau|/tauc)`` is rewritten as a white-
@@ -1024,7 +1024,7 @@ class _BaseModelBuilder:
     # ── Text-driven model declaration (UI-friendly) ──────────────
     # Each method below stores a Sage-syntax text string.  At
     # ``.build()`` time the strings are compiled to Python lambdas via
-    # ``api.model_compiler`` and dropped into the model dict.
+    # ``daedalus.api.model_compiler`` and dropped into the model dict.
     # Calling any of these overrides the corresponding lambda hook.
 
     def define_function(self, name: str, args: list[str],
@@ -1118,7 +1118,7 @@ class _BaseModelBuilder:
         symbols (``Dt*phi``, ``D*Laplacian*phi``).
 
         When on, the action is parsed into the operator IR
-        (``api.spatial_operator_ir``) and lowered to derived ring
+        (``daedalus.api.spatial_operator_ir``) and lowered to derived ring
         generators (the ``u=δφ, v=∇²δφ`` representation) before expansion, so
         derivative-inside-nonlinearity vertices and per-leg momentum form
         factors are represented exactly.  Default OFF — every existing model is
@@ -1280,7 +1280,7 @@ class _BaseModelBuilder:
 
         The setting is stored on the built model as
         ``model['stability_analysis']`` and consumed by
-        ``api._mean_field_dae.solve_mean_field_dae``.
+        ``daedalus.api._mean_field_dae.solve_mean_field_dae``.
         """
         self._stability_analysis = bool(enabled)
         return self
@@ -1684,7 +1684,7 @@ class _BaseModelBuilder:
                 or self._cgf_terms):
             return
 
-        from api.model_compiler import (
+        from daedalus.api.model_compiler import (
             make_action_lambda,
             make_phi_concrete_lambda,
             make_specializations_lambda,
@@ -1896,10 +1896,10 @@ class _BaseModelBuilder:
             _hook_delays = {k['name']: k['delay'] for k in self._kernel_specs
                             if k.get('delay')}
             if _hook_delays:
-                from api.delay import wrap_hook_with_delays
+                from daedalus.api.delay import wrap_hook_with_delays
                 self._kernel_ft_image = wrap_hook_with_delays(
                     self._kernel_ft_image, _hook_delays, param_names)
-            # the declarations, for api.delay.kernel_delays (a cheap text check
+            # the declarations, for daedalus.api.delay.kernel_delays (a cheap text check
             # instead of evaluating the hook for models without a delay)
             self._kernel_ft_image._kernel_specs = [dict(k) for k in self._kernel_specs]
             # Time-domain images — same kernel specs, but evaluated
@@ -2093,10 +2093,10 @@ class _BaseModelBuilder:
         # downstream compiler sees the augmented spec.
         #
         # No-op when the builder-level toggle is OFF and no row
-        # opts in explicitly.  See ``api/colored_to_markovian.py``
+        # opts in explicitly.  See ``daedalus/api/colored_to_markovian.py``
         # and ``docs/correlated_noise_capabilities.md`` §1.5.
         if self._cgf_terms:
-            from api.colored_to_markovian import markovianize_spec
+            from daedalus.api.colored_to_markovian import markovianize_spec
             markovianize_spec(self)
 
         # Compile any text declarations into lambdas.  Done here, not
@@ -2178,7 +2178,7 @@ class _BaseModelBuilder:
         # on (per-pop sized vector) and which to evaluate compoundly.
         iter_saddle_names: list[str] = []
         if self._mf_eqs_text:
-            from api.model_compiler import (
+            from daedalus.api.model_compiler import (
                 _classify_mf_eqs as _classify,
             )
             iter_sentinel = 'AUTO'

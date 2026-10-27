@@ -181,7 +181,7 @@ def _dict_form_to_poly(R, exp_to_coeff: dict):
     non-polynomial actions)."""
     if not exp_to_coeff:
         return R.zero()
-    from engine.core.field_theory import _ring_from_nonzero_dict, _sr_nonzero
+    from daedalus.engine.core.field_theory import _ring_from_nonzero_dict, _sr_nonzero
     return _ring_from_nonzero_dict(
         R, {k: c for k, c in exp_to_coeff.items() if _sr_nonzero(c)})
 
@@ -239,7 +239,7 @@ def vertex_form_factor_signature(ns) -> str | None:
     content, operator ``chain`` and (coupling-mixing) ``weight`` -- the
     pieces that decide which momentum form factor every interaction node carries
     (see
-    :func:`engine.integration.spatial.pipeline_bridge.diagram_form_factor`).
+    :func:`daedalus.engine.integration.spatial.pipeline_bridge.diagram_form_factor`).
 
     Adding the KPZ ``(∂ₓφ)²`` vertex to a Model-B-only model, dropping
     it, or re-weighting the mix all change the signature, so a stale
@@ -392,7 +392,7 @@ def bundle_stale_reason(model: dict, ft, bundle: dict):
     """Why the expand-cache ``bundle`` does not fit ``model`` / ``ft``
     (a message), or ``None`` when it does.  The ONE validity check shared
     by :func:`load_expand` and the model analyzer's read-only reader
-    (``api.analyze._read_expand_cache``), so the two cannot diverge
+    (``daedalus.api.analyze._read_expand_cache``), so the two cannot diverge
     (``tests/test_analyzer_routing.py`` pins it).  May rebuild the
     operator-IR table on ``ft`` (``_reconstruct_operator_ir_table``, a no-op
     when ``prepare_for_load`` already did)."""
@@ -477,7 +477,7 @@ def bundle_stale_reason(model: dict, ft, bundle: dict):
 def _non_unit_kernel(model, ft):
     """The first kernel symbol whose integral ĝ(0) is not 1 (or cannot be
     read), or ``None``."""
-    from engine.core.field_theory import kernel_dc_gains_of
+    from daedalus.engine.core.field_theory import kernel_dc_gains_of
     gains = kernel_dc_gains_of(ft._ns, model)
     for ksym in gains.symbols():
         try:
@@ -521,7 +521,7 @@ def _kernel_aliases_from_names(names: dict) -> dict:
 def _vertex_kernel_symbol(model, ft, by_tp_dict):
     """The first kernel symbol found in an interaction-sector (total degree
     >= 3) coefficient of ``by_tp_dict`` (dict form), or ``None``."""
-    from engine.core.vertices import _flatten_kernel_symbols
+    from daedalus.engine.core.vertices import _flatten_kernel_symbols
     try:
         names = {str(k) for k in _flatten_kernel_symbols(ft._ns, model)}
     except Exception:
@@ -592,7 +592,7 @@ def load_expand(model: dict, ft, target_order: int,
     # Rebuild S_raw from the (potentially-filtered) by_tp so it stays
     # consistent with the requested target_order rather than carrying
     # the loaded higher-order surplus.
-    from engine.core.field_theory import _sum_of_polys
+    from daedalus.engine.core.field_theory import _sum_of_polys
     # the sectors partition the monomials (no re-test of coefficients)
     S_raw = _sum_of_polys(ft._R, list(ft._by_tp.values()))
     ft._S_raw = S_raw
@@ -628,7 +628,7 @@ def load_expand(model: dict, ft, target_order: int,
     # without a ``correlated_noises`` block (the function returns SR(0)
     # immediately).  See bug write-up in commit-message body.
     try:
-        from engine.core.field_theory import _build_cumulant_action
+        from daedalus.engine.core.field_theory import _build_cumulant_action
         _build_cumulant_action(ft._ns, model)
     except Exception as e:
         if verbose:

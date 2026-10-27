@@ -1,5 +1,5 @@
 """
-models/dendritic_quad_soma_sigmoid.model.py
+daedalus/models/dendritic_quad_soma_sigmoid.model.py
 ==============================================
 Two-neuron, two-compartment (soma + dendrite) point-process model with a
 QUADRATIC somatic transfer and a SIGMOIDAL dendritic transfer whose output is a
@@ -23,7 +23,7 @@ convolution to all powers).
 The sigmoid is what makes the dendritic output a true probability in (0,1).
 Cross-neuron coupling is carried by the off-diagonal weights wSD, wDS.
 """
-from api.model import TemporalModelBuilder
+from daedalus.api.model import TemporalModelBuilder
 
 
 def build():

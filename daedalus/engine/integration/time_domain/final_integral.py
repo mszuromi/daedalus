@@ -1,6 +1,6 @@
 """
-engine.integration.time_domain.final_integral
-=============================================
+daedalus.engine.integration.time_domain.final_integral
+======================================================
 Phase J: the vertex-time integration of a typed Feynman diagram, at any loop
 order, with the δ(t) component of instantaneous propagator entries.
 
@@ -55,7 +55,7 @@ import os as _os
 import itertools
 import functools as _functools
 from collections import namedtuple
-from engine.integration.time_domain._light import (   # noqa: F401
+from daedalus.engine.integration.time_domain._light import (   # noqa: F401
     _CounterDict, counter_delta, merge_counter_delta, _RUNTIME_COUNTERS,
     _ROW_COEF_ATOL, _EDGE_ROW_KINDS, _BOX_ROW_KINDS, ROW_KINDS, _TieContext,
     _raw_time_order, _tie_order_sign, _const_row_decision, _const_row_verdict,
@@ -71,15 +71,15 @@ from sage.symbolic.operators import (
 from sage.rings.complex_double import (
     ComplexDoubleElement as _ComplexDoubleElement)
 
-from engine.integration.time_domain.propagator_td import (
+from daedalus.engine.integration.time_domain.propagator_td import (
     build_G_t_matrix,
     G_t_entry,
     G_t_delta_coeff,
 )
-from engine.core.vertices import NoiseSourceType, ConvVertexType
-from engine import _env
-from engine.core.detnum import numeric_subs
-from engine.errors import DaedalusError
+from daedalus.engine.core.vertices import NoiseSourceType, ConvVertexType
+from daedalus.engine import _env
+from daedalus.engine.core.detnum import numeric_subs
+from daedalus.engine.errors import DaedalusError
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -309,7 +309,7 @@ class PoleFreePropagatorError(DaedalusError, ValueError):
     entry whose smooth (non-instantaneous) part cannot be shown to vanish.
 
     The propagator builder keeps only strictly retarded poles
-    (Im ω > 1e-12 of the largest |root|, ``api/_propagator.py``).  A
+    (Im ω > 1e-12 of the largest |root|, ``daedalus/api/_propagator.py``).  A
     marginal or non-retarded mode -- e.g. λ = 0 at q = 0 for a massless
     field -- is dropped from the list although the entry still has a
     smooth part, which then cannot be evaluated from the pole list.  Raised
@@ -394,7 +394,7 @@ def _pole_free_forced_delta_edges(edge_info, propagator_data, zero_by_entry,
             f"{'y' if len(bad) == 1 else 'ies'} used by this diagram is "
             f'not provably zero -- {lines}.  The propagator builder keeps '
             f'only strictly retarded poles (Im ω > 1e-12 max|root|, '
-            f'api/_propagator.py), so a marginal or non-retarded mode '
+            f'daedalus/api/_propagator.py), so a marginal or non-retarded mode '
             f'(e.g. λ = 0 at q = 0 for a massless field) was dropped from '
             f'the pole list, and this smooth part cannot be evaluated '
             f'from it, so no value is returned (rather than a wrong one).  '
@@ -411,7 +411,7 @@ def _smooth_part_is_exact_zero(C_mats, n_poles, pi, ri):
     With no poles at all this residue test decides nothing (False): an
     empty pole list is not evidence of a zero smooth part, because the
     propagator builder keeps only strictly retarded poles (Im ω > 1e-12 of
-    the largest |root|, ``api/_propagator.py``) and drops a marginal λ = 0 mode (e.g. a
+    the largest |root|, ``daedalus/api/_propagator.py``) and drops a marginal λ = 0 mode (e.g. a
     massless spatial mode at q = 0) although its smooth part is not zero.
     ``_forced_delta_edges`` decides a pole-free propagator from ``G_ft``
     instead (``_entry_is_provably_instantaneous``).  Any failure to
@@ -456,7 +456,7 @@ def _forced_delta_edges(edge_info, propagator_data, zero_by_entry=None,
     exact-zero residues at the kept poles although its smooth part is not
     zero; such an edge is kept (its subsets are evaluated as before M2a).
     Without ``G_ft`` nothing can be proven, and the stored residues alone
-    decide.  ``api/_propagator.py`` leaves ``G_ft`` as None when it skips
+    decide.  ``daedalus/api/_propagator.py`` leaves ``G_ft`` as None when it skips
     the symbolic inverse for a "rich" propagator (nf ≥ 6 or more than 20
     free symbols; e.g. ``multipopulation_test``, nf = 8), and when that
     inverse exceeds its time budget or fails.  The stored residues are what
@@ -773,7 +773,7 @@ def _kernel_modes(att, num_params=None):
 #: the propagator of the line it sits on (``(g ∗ G)``, a pole sum: no extra
 #: time variable).  Off: every kernel takes the leg-time path.  Read at call
 #: time; env ``DAEDALUS_PHASE_J_DRESS_KERNELS=0`` switches it off at import
-#: (``engine._env.flag``: any other word raises).
+#: (``daedalus.engine._env.flag``: any other word raises).
 DRESS_CONV_KERNELS = _env.flag('DAEDALUS_PHASE_J_DRESS_KERNELS', True)
 
 # every modesum plan leaves out the pole tuples that take a
@@ -809,7 +809,7 @@ PLAN_BYTES_PER_TUPLE = 1100
 PHASE_J_PREPASS_REFUSE_FACTOR = 8
 
 
-from engine.integration.time_domain._light import PhaseJResourceError  # noqa: E402,F401
+from daedalus.engine.integration.time_domain._light import PhaseJResourceError  # noqa: E402,F401
 
 
 # ── the default memory budget ───────────────────────────────────
@@ -831,7 +831,7 @@ MEM_BUDGET_FLOOR_RAM_FRACTION = 0.1
 
 def _ram_bytes():
     """Physical memory of the machine in bytes, or ``None``."""
-    from engine.enumeration.prediagram_cache import _physical_memory
+    from daedalus.engine.enumeration.prediagram_cache import _physical_memory
     return _physical_memory()
 
 
@@ -898,7 +898,7 @@ def default_mem_budget(ram=None, footprint=None):
 
 def mem_budget(var, environ=None):
     """``(bytes or None, rule)`` of the memory guard read from the
-    environment variable ``var`` (``engine._env.budget_gb``: a positive
+    environment variable ``var`` (``daedalus.engine._env.budget_gb``: a positive
     number of GB; ``None`` = no limit for ``off``, ``none``, ``inf`` or
     ``unlimited``; ``0`` and negative values raise -- they meant "no limit"
     here and "refuse everything" for the spatial guard);
@@ -1606,7 +1606,7 @@ USE_POLYGON_M2_INTEGRATOR = True
 
 
 def _env_truthy(name, environ=None):
-    """An on/off switch, default off (``engine._env.flag``)."""
+    """An on/off switch, default off (``daedalus.engine._env.flag``)."""
     return _env.flag(name, False, environ)
 
 
@@ -1617,7 +1617,7 @@ def _env_truthy(name, environ=None):
 # ``c_eff = c0 + Σ_j a_ext_j t_j``.  Its Heaviside is Θ(c_eff).  The package
 # convention is the Itô one, Θ(0) = 0 -- the left limit the k=2 τ = 0 grid
 # point takes (since Oct 2026 by evaluating AT the tie with the rule below;
-# ``api.compute._tau0_mode``).  ``_const_row_verdict`` is
+# ``daedalus.api.compute._tau0_mode``).  ``_const_row_verdict`` is
 # the ONE place that applies it; every integrator (m=0, m=1, m=2 polygon,
 # m≥3 poset, DBM, scipy fallback) calls it.
 #
@@ -1966,8 +1966,8 @@ def _divergence_policy(on_divergence=None):
                      f'{_DIVERGENCE_POLICIES}')
 
 
-# one copy, shared with ``api.save``
-from engine._warn_helpers import (                    # noqa: E402
+# one copy, shared with ``daedalus.api.save``
+from daedalus.engine._warn_helpers import (                    # noqa: E402
     ensure_warning_shown as _ensure_warning_shown)
 
 
@@ -2443,7 +2443,7 @@ def _build_pruned_modesum_plan(smooth_edge_modes, subset_constraint_data,
     ``term_const == 0`` in the interval / polygon / legacy poset loops,
     ``coefs != 0`` in the batched kernels).  Where the zeros come from: the
     residues are those of ``PropagatorTD.entry_modes`` (``complex(CDF(SR(
-    C_mats[k][pi, ri])))``), and the propagator builder (``api/_propagator``)
+    C_mats[k][pi, ri])))``), and the propagator builder (``daedalus/api/_propagator``)
     stores an exact 0 where an entry of ``G`` has no denominator, where a
     pole is not a root of the entry's own denominator (the exact tier-1
     membership test over QQ[i]: a driven filter that does not feed
@@ -3208,7 +3208,7 @@ def _bf():
     """The ``boxfree`` module (imported on first use, so the default
     routes never import it)."""
     if not _BOXFREE:
-        from engine.integration.time_domain import boxfree
+        from daedalus.engine.integration.time_domain import boxfree
         _BOXFREE.append(boxfree)
     return _BOXFREE[0]
 
@@ -3807,7 +3807,7 @@ def _poset_dd_finish(total, L, upper_for_ext, mag=0.0, scale=0.0):
 # ───────────────────────────────────────────────────────────────────────
 # Exact DBM route for m≥3 subsets (M3)
 # ───────────────────────────────────────────────────────────────────────
-from engine.integration.time_domain import dbm_integral as _dbm
+from daedalus.engine.integration.time_domain import dbm_integral as _dbm
 
 
 def _integrate_subset_dbm(
@@ -4513,7 +4513,7 @@ def _polygon_modesum_dd(smooth_edge_modes, prefactor_complex,
 # publication-quality results.
 #
 # Usage from a notebook cell (BEFORE running the numerics cell):
-#   from engine.integration.time_domain import final_integral
+#   from daedalus.engine.integration.time_domain import final_integral
 #   final_integral.QUAD_OPTS = {'limit': 30, 'epsrel': 1e-3}
 #
 QUAD_OPTS = {
@@ -4536,7 +4536,7 @@ QUAD_OPTS = {
 # adaptive quadrature is well-behaved.  ±50 is safe for kernels
 # with σ ≤ 5; loosen to ±200 (the polytope OUTER_CAP) if your
 # kernel has heavy tails:
-#   from engine.integration.time_domain import final_integral
+#   from daedalus.engine.integration.time_domain import final_integral
 #   final_integral.TAU_KERNEL_CAP = 200.0
 #
 # an absolute ±50 truncates a kernel wider than ~10 time units (and
@@ -4707,7 +4707,7 @@ DEBUG_HEAVISIDE_GUARD = False
 #       (``PropagatorTD``).
 #   L3: the SR objects only the shot-noise / SR-integrand branches need are
 #       built on demand.
-#   L5: the automorphism-order memo (``engine.diagrams.symmetry``).
+#   L5: the automorphism-order memo (``daedalus.engine.diagrams.symmetry``).
 #   M10 (L4a): the δ-edge eliminations by exact rational linear algebra
 #       instead of Maxima (``sage_solve``) and SR ``==`` tests (see
 #       ``_delta_solve_exact``).
@@ -5784,7 +5784,7 @@ def integrate_diagram(
             # even here, silently shrinking the single-mapping sum.)
             _compensation = 1
         else:
-            from engine.diagrams import symmetry as _symmetry
+            from daedalus.engine.diagrams import symmetry as _symmetry
             if len(_all_mappings) == 1:
                 # M5 L5: one mapping means every external field occurs once,
                 # so the leaves are pairwise distinguished by their field in
@@ -5984,7 +5984,7 @@ def integrate_diagram(
     conv_dress_att = {}         # {edge_key: the attachment}    ('dress')
     conv_dress_direct = {}      # {edge_key: c} a direct term c δ
     # the state-space route realizes a kernel exactly (equal or close
-    # rates, a Jordan-type chain; ``api._realization.realize_kernel``), so a
+    # rates, a Jordan-type chain; ``daedalus.api._realization.realize_kernel``), so a
     # kernel without separated modes is no longer refused when that route is
     # on: it takes the 'leg' path and the subsets without a pole route go to
     # the state-space route (``_ss_only_kernels``: kernels with no image the
@@ -6012,7 +6012,7 @@ def integrate_diagram(
     def _ss_realizes_kernel(att):
         if _engine_poles:
             return False
-        from engine.integration.time_domain import statespace as _ssk
+        from daedalus.engine.integration.time_domain import statespace as _ssk
         if not _ssk.engine_requested():
             return False
         _model, _why = _ssk.realization_for(propagator_data, num_params)
@@ -6640,7 +6640,7 @@ def integrate_diagram(
     n_shotnoise_skipped = 0
     # Feature B: shot-noise subsets that produced NO record although their
     # weight may be nonzero (several equalities, a coefficient that could
-    # not be built, ...); ``api.cumulant`` reports a result with any as
+    # not be built, ...); ``daedalus.api.cumulant`` reports a result with any as
     # incomplete.
     n_delta_dropped = 0
     subset_diagnostics = []
@@ -7217,7 +7217,7 @@ def integrate_diagram(
         # below changes.
         _ss_make = None
         if not _engine_poles:
-            from engine.integration.time_domain import statespace as _ss
+            from daedalus.engine.integration.time_domain import statespace as _ss
             _ss_specs = []
             for _i in smooth_edges:
                 if _i >= n_prop_edges:
@@ -7645,7 +7645,7 @@ def integrate_diagram(
     _comp = _compensation
 
     # Feature B: what a δ record needs to be put in the caller's frame
-    # (``api.cumulant``): the record is written in the FIRST mapping's free
+    # (``daedalus.api.cumulant``): the record is written in the FIRST mapping's free
     # times, exactly like one ``subset_contributions`` term, so the physical
     # spike is Σ_perm (record in that permutation's free times) / _comp.
     for _dc in delta_contributions + delta_contributions_multi:
@@ -7726,7 +7726,7 @@ def integrate_diagram(
                 total = total + complex(cfn(free_vals, _ctx, tie_ctx))
         return total / _comp
 
-    # C0 output (``api.me_output``): how ``contribution`` combines its
+    # C0 output (``daedalus.api.me_output``): how ``contribution`` combines its
     # subset closures, so the matrix-exponential form of the same sum can be
     # assembled term by term (read only; nothing above uses it)
     contribution.phase_j_parts = {

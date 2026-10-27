@@ -1,8 +1,8 @@
-"""D3 regime advisories (gate G5) and the D4 report table of ``api/analyze.py``.
+"""D3 regime advisories (gate G5) and the D4 report table of ``daedalus/api/analyze.py``.
 
 A  pole statistics: decay-rate range, fast/slow ratio, close and repeated poles, with their remedies, on synthetic
    models (two decoupled OU fields; a Jordan block).
-B  ``g_eff`` (definition: ``api.analyze._g_eff``): the closed form ``3 eps D / mu^2`` on the OU quartic model, monotone
+B  ``g_eff`` (definition: ``daedalus.api.analyze._g_eff``): the closed form ``3 eps D / mu^2`` on the OU quartic model, monotone
    in the coupling and in the noise, zero for a linear model, a warning only when loops are requested, never promoted by
    ``strict``.
 C  the Taylor-series check for non-polynomial responses: the estimator against a response with a known radius of
@@ -22,13 +22,13 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-import api.compute as C                                                       # noqa: E402
-from api import analyze as A                                                  # noqa: E402
-from api.analyze import FINDING_CODES, TABLE_WIDTH, analyze                   # noqa: E402
-from api.noise import Gaussian                                                # noqa: E402
-from api.sde import SDE                                                       # noqa: E402
+import daedalus.api.compute as C                                                       # noqa: E402
+from daedalus.api import analyze as A                                                  # noqa: E402
+from daedalus.api.analyze import FINDING_CODES, TABLE_WIDTH, analyze                   # noqa: E402
+from daedalus.api.noise import Gaussian                                                # noqa: E402
+from daedalus.api.sde import SDE                                                       # noqa: E402
 
-MODELS = Path(__file__).resolve().parent.parent / 'models'
+MODELS = Path(__file__).resolve().parent.parent / 'daedalus' / 'models'
 
 
 def _load(name):
@@ -70,7 +70,7 @@ def _jordan():
 def _spike_driven(vertex):
     """x' = -mu x + w n + noise + <vertex>, with n an exposed Poisson spike train (delta-correlated: G has a delta
     part, so n has no finite tree variance)."""
-    from api.noise import Poisson
+    from daedalus.api.noise import Poisson
     s = SDE('G5 spike-driven')
     for n, v in (('mu', 1.0), ('lam', 3.0), ('w', 0.5), ('c', 0.2), ('eps', 0.1)):
         s.parameter(n, default=v, domain='positive')

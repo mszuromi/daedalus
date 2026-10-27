@@ -26,8 +26,8 @@ from sage.all import (
     QQ, RR, CDF, PolynomialRing, CyclotomicField,
 )
 
-from engine.core.cache import PipelineCache
-from engine.core.field_theory import fourier_transform, _sr_nonzero
+from daedalus.engine.core.cache import PipelineCache
+from daedalus.engine.core.field_theory import fourier_transform, _sr_nonzero
 
 
 # Maximum wall-time (seconds) we'll spend in the polynomial fraction-field
@@ -82,7 +82,7 @@ def _run_with_timeout(fn, timeout_sec, *args, **kwargs):
 def _record_pole_analysis(out, G_ft_F, Q_poly, nf, roots=None,
                           squarefree=None):
     """Fill ``out`` (the ``prop['pole_analysis']`` record read by the
-    analyzer's G3 gate, ``api.analyze``) from the exact inverse: ``degree``
+    analyzer's G3 gate, ``daedalus.api.analyze``) from the exact inverse: ``degree``
     of ``Q = lcm(entry denominators)``, its distinct roots in every half
     plane sorted by ``(Im, Re)``, ``squarefree``, and the entries whose
     reduced form is constant at large omega (``delta``) or grows
@@ -160,7 +160,7 @@ def _d_delta_exact(G_ft_F, nf):
 
 
 def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
-    """Near-degenerate / repeated poles (``api._pole_clusters``): run the
+    """Near-degenerate / repeated poles (``daedalus.api._pole_clusters``): run the
     exact cluster analysis, record it in ``cluster_out['analysis']`` and
     return the tier-1 triple ``(pole_vals, C_mats, D_delta)`` with the
     residues to 50 digits (exact root membership per entry; the tier-1 loop
@@ -168,7 +168,7 @@ def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
     cannot separate close roots), else ``None`` (the caller keeps its old
     path): when the deformation is switched off, when the analysis failed,
     and for an unresolved repeated root.  Never raises."""
-    from api import _pole_clusters as _pc
+    from daedalus.api import _pole_clusters as _pc
     try:
         an = _pc.analyze(G_ft_F, Q_poly, nf, tau_max=tau_max)
     except Exception as exc:
@@ -204,7 +204,7 @@ def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
 #: root finder's error; any other factor's is at least (distance to its
 #: nearest root) / (its degree), so the gap is the root separation over the
 #: root error, many orders of magnitude for any root the exact tier keeps
-#: (close roots of different factors go to ``api._pole_clusters``).
+#: (close roots of different factors go to ``daedalus.api._pole_clusters``).
 _MEMBERSHIP_GAP = 1e-3
 
 #: Accuracy certificate of the exact tier's double-precision poles and
@@ -256,7 +256,7 @@ def _entry_pole_membership(Q_poly, dens, roots, to_cdf):
     import math
     if all(d == Q_poly for d in dens.values()):
         return {key: None for key in dens}, 'shared'
-    from api._pole_clusters import _coprime_base
+    from daedalus.api._pole_clusters import _coprime_base
     distinct = []
     for d in dens.values():
         if d != Q_poly and d not in distinct:
@@ -298,10 +298,10 @@ def _entry_pole_membership(Q_poly, dens, roots, to_cdf):
 
 def _exact_route(G_ft_F, Q_poly, nf, tau_max, verbose):
     """The exact tier's residues by the high-precision route of
-    ``api._pole_clusters`` (the roots of each exact coprime factor of Q,
+    ``daedalus.api._pole_clusters`` (the roots of each exact coprime factor of Q,
     membership exact, 50 digits): ``(pole_vals, C_mats, D_delta)``.
     Raises on failure."""
-    from api import _pole_clusters as _pc
+    from daedalus.api import _pole_clusters as _pc
     an = _pc.analyze(G_ft_F, Q_poly, nf, tau_max=tau_max)
     if an.nominal is None:
         raise ArithmeticError('the exact route returned no residues')
@@ -356,7 +356,7 @@ def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
     with the double value; per entry relative to its largest residue.
     ``inf`` when the refinement fails (no certificate)."""
     import mpmath as mp
-    from api._pole_clusters import _mpc, _polyval_asc
+    from daedalus.api._pole_clusters import _mpc, _polyval_asc
     with mp.workdps(_CERT_DPS):
         co = lambda poly: [_mpc(c) for c in poly.list()]
         q = co(Q_poly)
@@ -439,7 +439,7 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
     failure (caller falls back to numpy cofactor).
 
     ``cluster_out`` (a dict): a repeated root of ``Q`` or a pair of roots
-    closer than ``api._pole_clusters.CLUSTER_RTOL`` runs the exact cluster
+    closer than ``daedalus.api._pole_clusters.CLUSTER_RTOL`` runs the exact cluster
     analysis (``cluster_out['analysis']``); clusters it resolves return 50
     digit residues and a deformation for Phase J (``tau_max``: the largest
     time difference to be evaluated).  Nothing else changes.
@@ -537,7 +537,7 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
                                                nf, squarefree=False)
                 if cluster_out is not None:
                     # a repeated root: resolved by the pole-cluster
-                    # deformation when possible (api._pole_clusters)
+                    # deformation when possible (daedalus.api._pole_clusters)
                     res = _cluster_path(G_ft_F, Q_poly, nf, tau_max,
                                         cluster_out, verbose)
                     if res is not None:
@@ -570,7 +570,7 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
             _record_pole_analysis_safe(analysis_out, G_ft_F, Q_poly, nf,
                                        roots=roots)
         if cluster_out is not None:
-            from api._pole_clusters import has_close_pair
+            from daedalus.api._pole_clusters import has_close_pair
             if has_close_pair([complex(r) for r, _ in roots]):
                 res = _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out,
                                     verbose)
@@ -951,7 +951,7 @@ _SYMBOLIC_DDELTA_MAX_CHARS = 4000
 
 def _sr_is_zero(e) -> bool:
     """``SR(e).is_zero()`` (the same verdict), with the certified nonzero
-    fast path of :func:`engine.core.field_theory._sr_nonzero`: a float or
+    fast path of :func:`daedalus.engine.core.field_theory._sr_nonzero`: a float or
     ``I*omega`` entry otherwise goes to Maxima on every test."""
     return not _sr_nonzero(SR(e))
 
@@ -1122,7 +1122,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
                 # Rebuild the (unpicklable) spatial G_tx callables from
                 # the cached symbolic block.
                 if prop.get('G_tx_sym') is not None:
-                    from engine.integration.spatial.heat_kernel import (
+                    from daedalus.engine.integration.spatial.heat_kernel import (
                         make_g_tx_callables,
                     )
                     prop['G_tx'] = make_g_tx_callables(prop)
@@ -1233,7 +1233,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
             free_syms.update(SR(K_ft[i, j]).variables())
     free_syms.discard(omega)
     rich = nf >= 6 or len(free_syms) > 20
-    # api.delay's Pade copies: the numbers are substituted before inverting
+    # daedalus.api.delay's Pade copies: the numbers are substituted before inverting
     # (the symbolic inverse of a Pade-n kernel matrix is the slow part and
     # nothing downstream needs it)
     rich = rich or bool(model.get('_numeric_first_propagator'))
@@ -1350,7 +1350,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
     # symbolic G_ft carries Laplacian for downstream use).
     if model.get('spatial'):
         try:
-            from engine.integration.spatial.heat_kernel import (
+            from daedalus.engine.integration.spatial.heat_kernel import (
                 build_spatial_propagator,
             )
             spatial_block = build_spatial_propagator(
@@ -1394,7 +1394,7 @@ def build_propagator(ft, model, cache_dir_root='saved_models',
     # Attach the runtime spatial G_tx callables (post-cache-save so the
     # cached artefact stays picklable).
     if prop.get('G_tx_sym') is not None:
-        from engine.integration.spatial.heat_kernel import (
+        from daedalus.engine.integration.spatial.heat_kernel import (
             make_g_tx_callables,
         )
         prop['G_tx'] = make_g_tx_callables(prop)
@@ -1480,7 +1480,7 @@ def _exact_retarded_flags(Q_poly, roots, dps=60):
     ``Im > 1e-40 |r|`` (a real-axis root comes out ~1e-58 there).  A root
     that is not suspicious keeps its double sign."""
     import mpmath as _mp
-    from api._pole_clusters import _mpc, _roots
+    from daedalus.api._pole_clusters import _mpc, _roots
     roots = [complex(r) for r in roots]
     out = [r.imag > 0 for r in roots]
     sus = _suspicious_roots(roots)
@@ -1864,7 +1864,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     degree denominator across G_ft entries, residue at each pole
     computed as ``i · adj(ω_k) / det'(ω_k)``.
 
-    Near-degenerate or repeated poles (``api._pole_clusters``), with
+    Near-degenerate or repeated poles (``daedalus.api._pole_clusters``), with
     ``resolve_clusters`` (``compute_cumulants`` sets it; other callers get
     the old behaviour): ``prop['pole_clusters']`` (a report dict, or ``None``
     when no two poles are close) and ``prop['pole_deformation']`` (the
@@ -2321,7 +2321,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     if resolve_clusters and prop.get('pole_clusters') is None:
         # the numerical tiers: close poles with a large cancellation factor
         # cannot be deformed (no exact rational propagator) -- say so
-        from api._pole_clusters import numeric_screen
+        from daedalus.api._pole_clusters import numeric_screen
         try:
             _an = numeric_screen(pole_vals, C_mats)
         except Exception:

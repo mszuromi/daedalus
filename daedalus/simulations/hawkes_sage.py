@@ -1,5 +1,5 @@
 """
-simulations/hawkes_sage.py
+daedalus/simulations/hawkes_sage.py
 =====================
 Model specification for the nonlinear Hawkes process (SageMath version).
 

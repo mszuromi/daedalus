@@ -312,8 +312,8 @@ def _baseline_cache_state(entry):
     like every cache root).  Spatial entries do not use them."""
     if entry.get('kind') == 'spatial':
         return True
-    from api._diagrams import PREDIAGRAM_CACHE_ROOT
-    from engine.enumeration.prediagram_cache import v1_exists
+    from daedalus.api._diagrams import PREDIAGRAM_CACHE_ROOT
+    from daedalus.engine.enumeration.prediagram_cache import v1_exists
     return all(v1_exists(PREDIAGRAM_CACHE_ROOT, entry['k'], ell)
                for ell in range(int(entry['max_ell']) + 1))
 
@@ -337,7 +337,7 @@ def _reproduce(baseline, name, mode, monkeypatch):
     if s is None or s['status'] != 'ok':
         pytest.fail(f'{name}: no ok baseline entry ({s and s["status"]})')
     # the pre-M1 baseline samples the k = 2 τ = 0 point at −1e−6 (the
-    # convention until Oct 2026, ``api.compute._tau0_mode``)
+    # convention until Oct 2026, ``daedalus.api.compute._tau0_mode``)
     monkeypatch.setenv('DAEDALUS_TAU0', 'nudge')
     assert mode == 'default', mode
     assert s.get('m1_expected') != 'moves' and name not in _MOVERS, name

@@ -22,7 +22,7 @@ from tests.test_phase_j_box_free import (_CHAIN_ROWS, _WEDGE_ROWS,
 @pytest.fixture
 def FI():
     pytest.importorskip('sage.all')
-    import engine.integration.time_domain.final_integral as fi
+    import daedalus.engine.integration.time_domain.final_integral as fi
     return fi
 
 
@@ -217,7 +217,7 @@ def _diverge_every_interval(FI, monkeypatch):
 def _ou_k2(FI, **kw):
     import tests.tools.phase_j_zoo_baseline as Z
     import daedalus as dd
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     import numpy as np
     model, _mod = dd.load_model('ou_quartic')
     return compute_cumulants(
@@ -252,9 +252,9 @@ def test_policy_end_to_end(FI, monkeypatch):
 def test_spatial_certification_keeps_fallback(FI, monkeypatch):
     """``pipeline_bridge`` passes on_divergence='fallback' explicitly, so a
     temporal default of 'raise' does not reach the spatial certification."""
-    import engine.integration.spatial.pipeline_bridge as pb
-    import engine.integration.time_domain.pipeline as pl
-    from api import _propagator
+    import daedalus.engine.integration.spatial.pipeline_bridge as pb
+    import daedalus.engine.integration.time_domain.pipeline as pl
+    from daedalus.api import _propagator
     seen = []
 
     def spy(*a, **k):
@@ -348,7 +348,7 @@ def test_a_region_with_a_line_cancels_or_diverges(FI, monkeypatch):
 
 
 def test_the_policy_is_validated_at_every_entry_point(FI):
-    from engine.integration.time_domain.pipeline import compute_correction_td
+    from daedalus.engine.integration.time_domain.pipeline import compute_correction_td
     with pytest.raises(ValueError, match='on_divergence'):
         compute_correction_td(on_divergence='drop')
 

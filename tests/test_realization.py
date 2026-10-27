@@ -1,7 +1,7 @@
 """
 tests/test_realization.py
 =========================
-State-space realization of the propagator, ``api/_realization.py``:
+State-space realization of the propagator, ``daedalus/api/_realization.py``:
 ``K(omega)^{-1} = C (sI - A)^{-1} B + D`` (s = i omega) built without an
 eigenvalue or a numerical root.  Inline public models only:
 
@@ -23,7 +23,7 @@ pytest.importorskip('sage.all')
 import mpmath as mp                                                   # noqa: E402
 from sage.all import SR, I, matrix, var, exp                          # noqa: E402
 
-from api import _realization as RZ                                    # noqa: E402
+from daedalus.api import _realization as RZ                                    # noqa: E402
 
 W = var('omega')
 
@@ -101,10 +101,10 @@ def _pade_str(n, d='d'):
 
 def _kernel_prop(freq_image, name):
     """x' = -a x + c (g * x) - eps x^3 + noise; propagator data + parameters at x* = 0."""
-    from api.sde import SDE
-    from api.noise import Gaussian
-    from api._propagator import build_propagator
-    from engine.core.field_theory import FieldTheory
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.core.field_theory import FieldTheory
     m = (SDE(name).parameter('a', default=1.0).parameter('c', default=-2.0)
          .parameter('d', default=1.0, domain='positive').parameter('eps', default=0.1)
          .parameter('D', default=0.1).field('x').define_kernel('g', freq_image=freq_image)
@@ -280,10 +280,10 @@ def test_unbound_k_is_not_spatial():
 def test_two_field_orientation_end_to_end():
     """G[p, r] = (K_ft^{-1})[p, r]: physical rows, response columns, names
     from ring_gen_names (responses first)."""
-    from api.sde import SDE
-    from api.noise import Gaussian
-    from api._propagator import build_propagator
-    from engine.core.field_theory import FieldTheory
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.core.field_theory import FieldTheory
     m = (SDE('orient_realization_test').parameter('a', default=1.0).parameter('b', default=0.3)
          .parameter('D', default=0.5).field('x').field('y')
          .drift('x', '-a*x + b*y').drift('y', '-2*a*y - 0.1*y^3')

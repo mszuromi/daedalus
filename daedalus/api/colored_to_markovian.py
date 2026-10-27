@@ -3,7 +3,7 @@ Markovian embedding preprocessor for colored-noise models.
 
 Why this exists
 ---------------
-``engine.integration.time_domain.final_integral`` cannot absorb a smooth
+``daedalus.engine.integration.time_domain.final_integral`` cannot absorb a smooth
 ``exp(-|tau|/tauc)`` factor coming from a CGF-tab ``NoiseSourceType``
 vertex into its analytic mode-sum integrators.  At ``max_ell >= 1`` the
 scipy ``nquad`` fallback path either hangs or runs for orders of
@@ -523,6 +523,6 @@ def _sr_to_text(expr) -> str:
     The default ``str(expr)`` form uses Sage's preferred operators
     (``^`` for power, ``*`` / ``/`` for products, function names like
     ``sqrt``), which is exactly what
-    ``api.model_compiler._CGFKernelCallable`` accepts.
+    ``daedalus.api.model_compiler._CGFKernelCallable`` accepts.
     """
     return str(SR(expr))

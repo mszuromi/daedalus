@@ -12,9 +12,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.sde import SDE                                    # noqa: E402
-from api.noise import Gaussian                             # noqa: E402
-from api import compute_cumulants                          # noqa: E402
+from daedalus.api.sde import SDE                                    # noqa: E402
+from daedalus.api.noise import Gaussian                             # noqa: E402
+from daedalus.api import compute_cumulants                          # noqa: E402
 
 RUN = dict(parallel=False, verbose=False, use_cache=False)
 
@@ -51,7 +51,7 @@ def test_bug1_delta_inside_heaviside_end_to_end():
 # ── bug 4: placement-wrapped contributions in the symbolic loop ──────────────
 
 def test_bug4_symbolic_loop_refuses_placement_wrappers_by_name():
-    from api.symbolic_loop import _phase_j_parts_or_refuse, SymbolicLoopRefused
+    from daedalus.api.symbolic_loop import _phase_j_parts_or_refuse, SymbolicLoopRefused
 
     def placed(*a):
         return 0.0
@@ -100,8 +100,8 @@ def test_bug5_graded_realization_measured_and_harmless():
 def test_bug5_broken_rounded_realization_reaches_g6(monkeypatch):
     """Synthetic: the rounded Lyapunov solution off by 1e-3 passes the 1e-2
     refusal check but its measured error now enters G6's estimate."""
-    import api._realization as R
-    from engine.integration.time_domain import statespace as ss
+    import daedalus.api._realization as R
+    from daedalus.engine.integration.time_domain import statespace as ss
     orig = R.lyapunov_refined
     monkeypatch.setattr(R, 'lyapunov_refined',
                         lambda A, Q, **k: orig(A, Q, **k) * (1 + 1e-3))
@@ -120,10 +120,10 @@ def test_bug5_broken_rounded_realization_reaches_g6(monkeypatch):
 # ── bug 7: standalone analyze() agrees with the in-run verdict ───────────────
 
 def test_bug7_standalone_analyzer_makes_the_route_prediction(monkeypatch):
-    from api.analyze import analyze, Question
+    from daedalus.api.analyze import analyze, Question
     # an unresolved cluster: the exact residue tier fails (until audit W7
     # the retired DAEDALUS_POLE_CLUSTERS=0 switched the deformation off)
-    import api._propagator as PR
+    import daedalus.api._propagator as PR
     monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield',
                         lambda *a, **k: (None, None, None))
     s = (SDE('bug60 g3 standalone').parameter('a', default=1.0)
@@ -168,7 +168,7 @@ def test_bug8_population_named_I_keeps_the_imaginary_unit():
     a = _pp_pop('E').simulate(**kw)['counts']['n']
     b = _pp_pop('I').simulate(**kw)['counts']['n']
     assert np.array_equal(a, b)
-    from api.pp_simulate import _ImagPopulation
+    from daedalus.api.pp_simulate import _ImagPopulation
     z = _ImagPopulation(3)
     assert list(z) == [0, 1, 2] and z * 2.0 == 2j and abs(np.exp(1j * 0) - 1) == 0
 
@@ -177,7 +177,7 @@ def test_bug8_population_named_I_keeps_the_imaginary_unit():
 
 def test_bug10_config_delay_and_sde_model(tmp_path):
     import daedalus as dd
-    from api.config_run import run_config, ConfigError
+    from daedalus.api.config_run import run_config, ConfigError
     s = (SDE('bug60 cfg delayed').parameter('a', default=1.0).parameter('c', default=0.5)
          .parameter('d', default=1.0, domain='positive')
          .parameter('D', default=0.1, domain='positive').field('x')
@@ -217,8 +217,8 @@ policy: {use_cache: false}
 
 def test_bug11_sage_literals_in_simulators():
     from sage.all import Integer, RealNumber
-    from api import noise_samplers as NS
-    from simulations import delay_sde_sim as DS
+    from daedalus.api import noise_samplers as NS
+    from daedalus.simulations import delay_sde_sim as DS
     s = SDE('bug60 sage lits').parameter('a', default=1.0).point_process('n', 'a')
     rec = s.simulate(T=Integer(20), dt=RealNumber('0.01'), n_paths=Integer(5),
                      burn_in=Integer(1), bin=RealNumber('0.1'), seed=Integer(3))
@@ -241,7 +241,7 @@ def test_bug13_conductance_term_with_a_point_process():
     it is solved as a residual equation (it was emitted as an explicit
     ``vstar = ...`` substitution and failed the engine's saddle check)."""
     from scipy.optimize import brentq
-    from api.delay import Kernel
+    from daedalus.api.delay import Kernel
     s = (SDE('bug60 conductance pp').population('E', size=1)
          .parameter('Em', default=[-1.5], indexed_by=['E'])
          .parameter('tau', default=[2.0], indexed_by=['E']).parameter('Es', default=1.0)
@@ -268,7 +268,7 @@ def test_bug3_dae_residual_penalizes_nan_and_overflow(monkeypatch):
     """``np.errstate(all='ignore')`` turns an overflow into inf / NaN instead
     of an exception; the DAE residual now penalizes it (NaN compares False
     against the acceptance tolerance and could pass as a root)."""
-    import api._mean_field_dae as MD
+    import daedalus.api._mean_field_dae as MD
     cap = {}
     orig = MD._build_residual
 
@@ -291,7 +291,7 @@ def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
     """The ``.set_mf_equation`` saddle system (the same multi-root solver
     since audit W6 / GEN-02; its own fsolve residual check is retired)
     penalizes a non-finite residual like the ``.equation`` rows do."""
-    import api._mean_field_dae as MD
+    import daedalus.api._mean_field_dae as MD
     cap = {}
     orig = MD._saddle_system
 
@@ -300,12 +300,12 @@ def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
         if out is not None:          # (the reduced form: None without one)
             cap['R'] = out[2]
         return out
-    from api.model import ModelBuilder
+    from daedalus.api.model import ModelBuilder
     m = (ModelBuilder('bug60 saddle nan').physical_field('x')
          .parameter('D', default=0.1, domain='positive')
          .set_action_text('xt*((Dt + 1)*x - 0.5 - 1e-300*exp(800*x)) - D*xt^2')
          .set_mf_equation('xstar', '0.5 + 1e-300*exp(800*xstar)').build())
-    import api._mean_field_dae as MD2
+    import daedalus.api._mean_field_dae as MD2
     MD2._saddle_system = spy
     try:
         r = compute_cumulants(m, k=1, max_ell=0, external_fields=[('x', 1)],
@@ -320,7 +320,7 @@ def test_bug3_saddle_equation_residual_penalizes_nan_and_overflow():
 # ── bug 9: an invalid DAEDALUS_PHASE_J_ENGINE fails at the API entry ─────────
 
 def test_bug9_invalid_engine_fails_before_any_work(monkeypatch):
-    import api.compute as C
+    import daedalus.api.compute as C
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'statespce')
     called = []
     monkeypatch.setattr(C, 'build_propagator',
@@ -377,8 +377,8 @@ def test_bug14_mixed_conductance_vertex_equals_markov_form(case):
 
 def test_bug14_split_helper_refuses_a_non_product_prefactor():
     from sage.all import SR, var
-    from engine.integration.time_domain import final_integral as FI
-    from engine.core.vertices import ConvVertexType
+    from daedalus.engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.core.vertices import ConvVertexType
     z = var('z_h')
     vt = ConvVertexType.__new__(ConvVertexType)
     vt.coefficient = SR('c*z_h + ee')

@@ -16,7 +16,7 @@ import random
 import numpy as np
 import pytest
 
-from engine.integration.time_domain import boxfree as bf
+from daedalus.engine.integration.time_domain import boxfree as bf
 from tests.test_phase_j_box_free import (_CHAIN_ROWS, _WEDGE_FAST,
                                          _WEDGE_ROWS, _ems)
 
@@ -229,7 +229,7 @@ def test_chain_fold_matches_the_scalar_fold_and_hands_over():
 @pytest.fixture
 def FI():
     pytest.importorskip('sage.all')
-    import engine.integration.time_domain.final_integral as fi
+    import daedalus.engine.integration.time_domain.final_integral as fi
     fi._chain_simplex_memo_clear()
     yield fi
     fi._chain_simplex_memo_clear()
@@ -543,7 +543,7 @@ def test_chain_memo_warm_run_is_bit_identical_end_to_end(FI, monkeypatch):
     memo and a warm one give the same arrays bit for bit, and the warm run
     hits the memo."""
     import daedalus as dd
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     model = dd.load_model('ou_quartic')[0]
     pts = [(0.0, 0.3, 0.7, 1.1), (0.0, -0.4, 0.2, 0.9)]

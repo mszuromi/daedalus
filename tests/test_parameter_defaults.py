@@ -10,11 +10,11 @@ import importlib.util
 import numpy as np
 import pytest
 
-from api.compute import compute_cumulants
+from daedalus.api.compute import compute_cumulants
 
 
 def _load(name):
-    spec = importlib.util.spec_from_file_location('m', f'models/{name}.model.py')
+    spec = importlib.util.spec_from_file_location('m', f'daedalus/models/{name}.model.py')
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -54,7 +54,7 @@ def _model_without_defaults():
     with no defaults at all is gitignored (kept local), so loading it made
     this test pass in a working tree and fail in a fresh clone.
     """
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (
         TemporalModelBuilder('no-defaults probe')
         .population('pop', size=1)

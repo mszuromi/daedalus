@@ -1,8 +1,8 @@
 """
-engine._warn_helpers
-====================
+daedalus.engine._warn_helpers
+=============================
 Warning helpers shared by the engine and ``api`` (one copy:
-``api.save`` and ``final_integral`` each had a byte-identical copy).  Both
+``daedalus.api.save`` and ``final_integral`` each had a byte-identical copy).  Both
 modules re-export :func:`ensure_warning_shown` as ``_ensure_warning_shown``.
 """
 import re

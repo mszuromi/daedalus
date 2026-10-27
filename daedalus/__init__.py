@@ -8,7 +8,7 @@ The four group templates (``notebooks/templates/``) and every
 ``*_sim_compare`` notebook import this module so the thematics are common.
 
     import daedalus as dd
-    model, mod = dd.load_model('kpz_1d')          # from models/*.model.py
+    model, mod = dd.load_model('kpz_1d')          # from daedalus/models/*.model.py
     cfg = dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49))   # χ = spatial sep.
     res = dd.run(model, cfg, mod)                  # k/ell/Dyson all here
     dd.plot_cumulant(res, cfg, model)              # adaptable, auto-dispatched
@@ -16,7 +16,7 @@ The four group templates (``notebooks/templates/``) and every
 Design choices
 --------------
 * **Single source of truth for models.**  ``load_model`` imports a
-  ``models/<name>.model.py`` file and returns ``(model, module)``; demo
+  ``daedalus/models/<name>.model.py`` file and returns ``(model, module)``; demo
   notebooks never re-build a model inline.
 * **Arbitrary k and ℓ.**  ``Config.k`` / ``Config.max_ell`` are free; the
   spatial k≥3 path is wired through ``Config.spatial_points``.
@@ -35,9 +35,21 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import numpy as np
-import matplotlib.pyplot as plt
 
-#: Daedalus version (keep in sync with pyproject.toml and api/__init__.py;
+
+class _LazyPyplot:
+    """``matplotlib.pyplot``, imported on first use: ``import daedalus``
+    (and every ``daedalus.<subpackage>`` import, which runs this module
+    first) neither loads pyplot nor picks a backend."""
+
+    def __getattr__(self, name):
+        import matplotlib.pyplot
+        return getattr(matplotlib.pyplot, name)
+
+
+plt = _LazyPyplot()
+
+#: Daedalus version (keep in sync with pyproject.toml and daedalus/api/__init__.py;
 #: CITATION.cff describes the latest RELEASE and is bumped, with its
 #: date-released, when this version is released; tests/
 #: test_save_version_stamp.py checks all of it).
@@ -46,25 +58,51 @@ __version__ = '0.3.3'
 
 # ── Repo / model discovery ──────────────────────────────────────────────────
 
-def repo_root() -> str:
-    """Walk up from this file (or cwd, in a bare notebook) until the
-    ``api/`` package is found.  Robust to running from any of the
-    ``notebooks/`` subdirectories."""
-    here = os.path.dirname(os.path.abspath(__file__)) \
-        if '__file__' in globals() else os.path.abspath('')
-    root = here
-    while root != os.path.dirname(root):
-        if os.path.isdir(os.path.join(root, 'api')):
-            return root
-        root = os.path.dirname(root)
-    return here
+#: The installed package directory (``.../daedalus``).
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
+def repo_root() -> str:
+    """The source checkout this package runs from: the parent of the
+    ``daedalus/`` package when it holds ``pyproject.toml``.  For an
+    installed package (no checkout) it is the directory the package was
+    installed into."""
+    return os.path.dirname(PACKAGE_DIR)
+
+
+def _in_checkout() -> bool:
+    return os.path.isfile(os.path.join(REPO_ROOT, 'pyproject.toml'))
+
+
+from daedalus._resources import data_path as _data_path       # noqa: E402
 
 REPO_ROOT = repo_root()
-MODELS_DIR = os.path.join(REPO_ROOT, 'models')
-import sys as _sys
-if REPO_ROOT not in _sys.path:
-    _sys.path.insert(0, REPO_ROOT)
+#: The models shipped with the package (``daedalus/models/*.model.py``).
+MODELS_DIR = _data_path('models')
+#: Environment variable: extra model directories (``os.pathsep``-separated),
+#: searched before the shipped ones.
+MODELS_PATH_ENV = 'DAEDALUS_MODELS_PATH'
+
+from daedalus import _compat as _compat_mod      # noqa: E402
+_compat_mod.install()
+
+
+def model_dirs() -> list[str]:
+    """The directories ``load_model`` / ``list_models`` search, in order:
+    ``$DAEDALUS_MODELS_PATH``, the checkout's own ``models/`` (a user's
+    local model files, when running from a source checkout), then the
+    shipped ``MODELS_DIR``."""
+    dirs = [d for d in os.environ.get(MODELS_PATH_ENV, '').split(os.pathsep)
+            if d]
+    if _in_checkout():
+        dirs.append(os.path.join(REPO_ROOT, 'models'))
+    dirs.append(MODELS_DIR)
+    out = []
+    for d in dirs:
+        d = os.path.abspath(d)
+        if os.path.isdir(d) and d not in out:
+            out.append(d)
+    return out
 
 
 # ── Lazy re-exports of the user-facing pipeline API ──────────────────────────
@@ -72,109 +110,109 @@ if REPO_ROOT not in _sys.path:
 # alongside the notebook helpers defined below (``Config``, ``run``, ``plot_*``,
 # ``load_model``, …).  Resolved lazily on first access (PEP 562) so
 # ``import daedalus`` stays light and only pulls in Sage when something is
-# actually used.  The canonical ``from api... import <name>`` forms keep
+# actually used.  The canonical ``from daedalus.api... import <name>`` forms keep
 # working — these are aliases; that explicit form is the one to use inside a
-# saved ``models/*.model.py`` file (which cannot import this notebook helper).
+# saved ``daedalus/models/*.model.py`` file (which cannot import this notebook helper).
 _PIPELINE_EXPORTS = {
     # authoring — build a model in code (pipeline.model)
-    'ModelBuilder':             'api.model',
-    'TemporalModelBuilder':     'api.model',
-    'SpatialModelBuilder':      'api.model',
-    # noise template (api.model_templates) for builder.add_gtas_noise(...)
-    'GTaSNoise':                 'api.model_templates',
+    'ModelBuilder':             'daedalus.api.model',
+    'TemporalModelBuilder':     'daedalus.api.model',
+    'SpatialModelBuilder':      'daedalus.api.model',
+    # noise template (daedalus.api.model_templates) for builder.add_gtas_noise(...)
+    'GTaSNoise':                 'daedalus.api.model_templates',
     # graphical builder (pipeline.ui)
-    'ModelUI':                  'api.ui',
+    'ModelUI':                  'daedalus.api.ui',
     # deprecated aliases (pre-July-2026 name: "theory") — kept so existing
     # scripts and notebooks keep working; new code should use the Model* names
-    'TheoryBuilder':             'api.model',
-    'TemporalTheoryBuilder':     'api.model',
-    'SpatialTheoryBuilder':      'api.model',
-    'TheoryUI':                  'api.ui',
+    'TheoryBuilder':             'daedalus.api.model',
+    'TemporalTheoryBuilder':     'daedalus.api.model',
+    'SpatialTheoryBuilder':      'daedalus.api.model',
+    'TheoryUI':                  'daedalus.api.ui',
     # compute / report / precompute / persistence / access (pipeline top level)
-    'compute_cumulants':         'api',
-    'generate_report':           'api',
-    'precompute':                'api',
-    'save_npz':                  'api',
-    'save_csv':                  'api',
-    'load_npz':                  'api',
-    'load_provenance':           'api',
+    'compute_cumulants':         'daedalus.api',
+    'generate_report':           'daedalus.api',
+    'precompute':                'daedalus.api',
+    'save_npz':                  'daedalus.api',
+    'save_csv':                  'daedalus.api',
+    'load_npz':                  'daedalus.api',
+    'load_provenance':           'daedalus.api',
     # model analyzer (Feature D) and the backend registry
-    'analyze':                   'api.analyze',
-    'Question':                  'api.analyze',
-    'Policy':                    'api.analyze',
-    'AnalyzerError':             'api.analyze',
+    'analyze':                   'daedalus.api.analyze',
+    'Question':                  'daedalus.api.analyze',
+    'Policy':                    'daedalus.api.analyze',
+    'AnalyzerError':             'daedalus.api.analyze',
     # a run that left diagrams out (result['status'] == 'incomplete')
-    'PhaseJIncompleteWarning':   'api.compute',
-    'PhaseJIncompleteError':     'api.compute',
+    'PhaseJIncompleteWarning':   'daedalus.api.compute',
+    'PhaseJIncompleteError':     'daedalus.api.compute',
     # Phase J over its memory budget (PHASE_J_MEM_BUDGET_GB)
-    'PhaseJResourceError':       'api.compute',
+    'PhaseJResourceError':       'daedalus.api.compute',
     # a discard=True run asked for a point it did not evaluate
-    'DiscardedDiagramsError':    'api.compute',
-    'backends':                  'api.routing',
-    'params_slug':               'api',
-    'MeanField':                 'api',
+    'DiscardedDiagramsError':    'daedalus.api.compute',
+    'backends':                  'daedalus.api.routing',
+    'params_slug':               'daedalus.api',
+    'MeanField':                 'daedalus.api',
     # the common base of every exception the package raises on purpose
-    'DaedalusError':             'api',
-    'Parameters':                'api',
-    'normalize_external_fields': 'api',
+    'DaedalusError':             'daedalus.api',
+    'Parameters':                'daedalus.api',
+    'normalize_external_fields': 'daedalus.api',
     # δ components of a cumulant (Feature B): dd.cumulant(result)
-    'cumulant':                  'api.cumulant',
-    'Cumulant':                  'api.cumulant',
-    'DeltaComponent':            'api.cumulant',
-    'ModeTerm':                  'api.cumulant',
+    'cumulant':                  'daedalus.api.cumulant',
+    'Cumulant':                  'daedalus.api.cumulant',
+    'DeltaComponent':            'daedalus.api.cumulant',
+    'ModeTerm':                  'daedalus.api.cumulant',
     # matrix-exponential triples of the smooth part (C0 output):
     # dd.cumulant(result).me / .modes / .integrate_against / .spectrum
-    'CumulantME':                'api.me_output',
-    'RationalKernel':            'api.me_output',
-    'MEUnavailable':             'api.me_output',
-    'MEFallbackWarning':         'api.me_output',
-    'MEConditioningWarning':     'api.me_output',
-    'slice_me':                  'api.me_output',
+    'CumulantME':                'daedalus.api.me_output',
+    'RationalKernel':            'daedalus.api.me_output',
+    'MEUnavailable':             'daedalus.api.me_output',
+    'MEFallbackWarning':         'daedalus.api.me_output',
+    'MEConditioningWarning':     'daedalus.api.me_output',
+    'slice_me':                  'daedalus.api.me_output',
     # exact master-equation oracle for lattice jump processes
-    'master_equation':           'api.master_equation',
-    'MasterEquation':            'api.master_equation',
-    'TruncationWarning':         'api.master_equation',
+    'master_equation':           'daedalus.api.master_equation',
+    'MasterEquation':            'daedalus.api.master_equation',
+    'TruncationWarning':         'daedalus.api.master_equation',
     # reaction / transition builder for jump processes
-    'JumpProcess':               'api.jump_process',
-    'JumpProcessError':          'api.jump_process',
+    'JumpProcess':               'daedalus.api.jump_process',
+    'JumpProcessError':          'daedalus.api.jump_process',
     # exact S(omega), S(0), int_0^T C, tau_c of a k = 2 result
-    'spectra':                   'api.spectra',
-    'SpectraWarning':            'api.spectra',
+    'spectra':                   'daedalus.api.spectra',
+    'SpectraWarning':            'daedalus.api.spectra',
     # the k = 2 covariance matrix over many fields, and dSigma/dtheta
-    'covariance_matrix':         'api.covariance',
-    'CovarianceDerivativeError': 'api.covariance',
-    'CovarianceWarning':         'api.covariance',
+    'covariance_matrix':         'daedalus.api.covariance',
+    'CovarianceDerivativeError': 'daedalus.api.covariance',
+    'CovarianceWarning':         'daedalus.api.covariance',
     # opt-in resummations: the self-consistent Gaussian (Hartree) and the
     # screened (optimized-perturbation) loop series, Config(resum=...)
-    'hartree':                   'api.hartree',
-    'HartreeResult':             'api.hartree',
-    'HartreeError':              'api.hartree',
-    'HartreeUnsupported':        'api.hartree',
-    'HartreeBistabilityWarning': 'api.hartree',
-    'HartreeAdvisoryWarning':    'api.hartree',
-    'screened':                  'api.resum',
-    'ResumWarning':              'api.resum',
+    'hartree':                   'daedalus.api.hartree',
+    'HartreeResult':             'daedalus.api.hartree',
+    'HartreeError':              'daedalus.api.hartree',
+    'HartreeUnsupported':        'daedalus.api.hartree',
+    'HartreeBistabilityWarning': 'daedalus.api.hartree',
+    'HartreeAdvisoryWarning':    'daedalus.api.hartree',
+    'screened':                  'daedalus.api.resum',
+    'ResumWarning':              'daedalus.api.resum',
     # symbolic tree-level outputs (C1 Fourier domain, C2 time domain)
-    'tree_covariance':           'api.symbolic_out',
-    'tree_covariance_from_result': 'api.symbolic_out',
-    'TreeCovariance':            'api.symbolic_out',
-    'tree_modes':                'api.symbolic_out',
-    'ModeSum':                   'api.symbolic_out',
-    'PairingKernel':             'api.symbolic_out',
-    'Kernel':                    'api.delay',          # the kernel-shape builder (the pairing kernel is PairingKernel)
-    'KernelIntegral':            'api.symbolic_out',
-    'integrate_against':         'api.symbolic_out',
-    'inverse_transform':         'api.symbolic_out',
-    'pair_with_kernel':          'api.symbolic_out',
-    'AssumptionViolation':       'api.symbolic_out',
+    'tree_covariance':           'daedalus.api.symbolic_out',
+    'tree_covariance_from_result': 'daedalus.api.symbolic_out',
+    'TreeCovariance':            'daedalus.api.symbolic_out',
+    'tree_modes':                'daedalus.api.symbolic_out',
+    'ModeSum':                   'daedalus.api.symbolic_out',
+    'PairingKernel':             'daedalus.api.symbolic_out',
+    'Kernel':                    'daedalus.api.delay',          # the kernel-shape builder (the pairing kernel is PairingKernel)
+    'KernelIntegral':            'daedalus.api.symbolic_out',
+    'integrate_against':         'daedalus.api.symbolic_out',
+    'inverse_transform':         'daedalus.api.symbolic_out',
+    'pair_with_kernel':          'daedalus.api.symbolic_out',
+    'AssumptionViolation':       'daedalus.api.symbolic_out',
     # symbolic loop level (C3): equal-time cumulants, kernel pairings and
     # matrix-exponential triples as rational functions of the parameters
-    'symbolic_cumulant':         'api.symbolic_loop',
-    'symbolic_triple':           'api.symbolic_loop',
-    'SymbolicCumulant':          'api.symbolic_loop',
-    'SymbolicTriple':            'api.symbolic_loop',
-    'SymbolicLoopRefused':       'api.symbolic_loop',
-    'SaddleWarning':             'api.symbolic_loop',
+    'symbolic_cumulant':         'daedalus.api.symbolic_loop',
+    'symbolic_triple':           'daedalus.api.symbolic_loop',
+    'SymbolicCumulant':          'daedalus.api.symbolic_loop',
+    'SymbolicTriple':            'daedalus.api.symbolic_loop',
+    'SymbolicLoopRefused':       'daedalus.api.symbolic_loop',
+    'SaddleWarning':             'daedalus.api.symbolic_loop',
 }
 
 
@@ -192,21 +230,41 @@ def __dir__():
 
 
 def list_models() -> list[str]:
-    """Every ``models/<name>.model.py`` available to load."""
-    return sorted(f[:-len('.model.py')]
-                  for f in os.listdir(MODELS_DIR)
-                  if f.endswith('.model.py'))
+    """Every ``<name>.model.py`` available to load (see :func:`model_dirs`)."""
+    return sorted({f[:-len('.model.py')]
+                   for d in model_dirs() for f in os.listdir(d)
+                   if f.endswith('.model.py')})
+
+
+def _model_path(name: str) -> str:
+    """The file ``load_model(name)`` loads: ``name`` itself when it is a
+    path (ends in ``.model.py`` or holds a path separator), else the first
+    ``<name>.model.py`` along :func:`model_dirs`.  A name found in more than
+    one directory warns and the first one wins."""
+    if name.endswith('.model.py') or '/' in name or os.sep in name:
+        return os.path.abspath(os.path.expanduser(name))
+    hits = [os.path.join(d, f'{name}.model.py') for d in model_dirs()]
+    hits = [h for h in hits if os.path.isfile(h)]
+    if len(hits) > 1:
+        import warnings
+        warnings.warn(f'model {name!r} exists in more than one model directory; '
+                      f'loading {hits[0]} (also: {", ".join(hits[1:])})',
+                      UserWarning, stacklevel=3)
+    return hits[0] if hits else os.path.join(MODELS_DIR, f'{name}.model.py')
 
 
 def load_model(name: str):
-    """Import ``models/<name>.model.py`` and return ``(model, module)``.
+    """Import ``<name>.model.py`` and return ``(model, module)``.  ``name`` is
+    a model name looked up along :func:`model_dirs` (the shipped models live
+    in ``daedalus/models/``) or a path to a ``*.model.py`` file.
 
     ``model = module.build()`` is the model dict; ``module`` exposes
     ``DEFAULT_FUNDAMENTAL`` and ``METADATA`` (the run defaults)."""
-    path = os.path.join(MODELS_DIR, f'{name}.model.py')
+    path = _model_path(name)
     if not os.path.isfile(path):
         raise FileNotFoundError(
             f'No model file at {path}. Available: {list_models()}')
+    name = os.path.basename(path)[:-len('.model.py')]
     spec = importlib.util.spec_from_file_location(f'models.{name}', path)
     mod = importlib.util.module_from_spec(spec)
     try:
@@ -329,7 +387,7 @@ def param_names(model: dict) -> list[str]:
     """The parameter names you can override via ``Config(parameters={...})`` —
     the declared parameters, excluding the mean-field saddle symbols.  Use this
     to get the exact spellings (a mistyped name now raises in ``dd.run``)."""
-    from api.naming import free_parameter_names
+    from daedalus.api.naming import free_parameter_names
     return free_parameter_names(model)
 
 
@@ -371,8 +429,8 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
 
     This is the canonical "what is this model?" cell for the example
     notebooks — it reads only the model dict, so it stays model-independent.
-    An unbuilt ``api.sde.SDE`` / builder is built first."""
-    from api.compute import as_model_dict
+    An unbuilt ``daedalus.api.sde.SDE`` / builder is built first."""
+    from daedalus.api.compute import as_model_dict
     model = as_model_dict(model)
     out = []
     bar = '─' * 72
@@ -420,7 +478,7 @@ def describe_model(model: dict, module=None, show_doc: bool = True) -> str:
             for p in pops))
 
     params = model.get('parameters') or []
-    from api.naming import is_saddle as _is_saddle   # the mean_field flag
+    from daedalus.api.naming import is_saddle as _is_saddle   # the mean_field flag
     numeric = [p for p in params if not _is_saddle(p)]
     saddle = [p.get('name') for p in params if _is_saddle(p)]
     if saddle:
@@ -558,14 +616,14 @@ class Config:
     times: Any = None
     initial_covariance: Any = None
 
-    # ── delay kernels (api.delay) ──
+    # ── delay kernels (daedalus.api.delay) ──
     # options of the Pade route for models with delays, as
     # ``compute_cumulants(delay=...)``: e.g. {'order': 8} (fixed order) or
     # {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}.  None:
     # the route's defaults (automatic order).
     delay: Optional[dict] = None
 
-    # ── exact spectral outputs (k = 2; api.spectra) ──
+    # ── exact spectral outputs (k = 2; daedalus.api.spectra) ──
     # ``compute_cumulants(spectra=...)``: None (off), True (S(0), the
     # integrals to infinity, tau_c) or {'omega': (lo, hi, n) | array,
     # 'T': number | array, 'method': 'auto' | 'exact' | 'quad'}.  The values
@@ -573,7 +631,7 @@ class Config:
     # (tau_grid=np.array([0.0]) is enough).  S(omega) = int C e^{+i omega tau}.
     spectra: Any = None
 
-    # ── the k = 2 covariance matrix over many fields (api.covariance) ──
+    # ── the k = 2 covariance matrix over many fields (daedalus.api.covariance) ──
     # ``covariance_matrix(...)`` instead of one compute_cumulants call: None
     # (off), True (every physical field leg) or {'fields': [...], 'pairs':
     # 'upper' | 'all', 'derivatives': [parameter, ...] or {'parameters': [...],
@@ -582,7 +640,7 @@ class Config:
     # loop order in Sigma_by_ell, derivatives in 'derivatives').
     covariance: Any = None
 
-    # ── opt-in resummation (api.hartree, api.resum) ──
+    # ── opt-in resummation (daedalus.api.hartree, daedalus.api.resum) ──
     # None (off: the loop series, unchanged), 'hartree' (the self-consistent
     # Gaussian on its own; max_ell unset or 0, k = 1 or 2) or 'screened' / a
     # dict {'method': 'screened', 'mass': 'pms' | 'hartree' | kappa,
@@ -597,7 +655,7 @@ class Config:
     taylor_order: Optional[int] = None      # vertex Taylor order (None: max(k + 2 max_ell, 2))
     use_cache: Optional[bool] = None        # on-disk caches (None: on)
     accuracy: Optional[float] = None        # target relative accuracy of the G6 estimate
-    backend: Optional[str] = None           # an explicit backend name (api.routing)
+    backend: Optional[str] = None           # an explicit backend name (daedalus.api.routing)
     discard: Any = None                     # False | True | 'auto': release each diagram after evaluating it
 
     # ── Dyson dressing (coupled unequal-D) ──
@@ -621,13 +679,13 @@ class Config:
     # seconds).  The spatial backend and the temporal batch's thread fan-out
     # (diagrams with large state blocks) are safe in a Jupyter kernel; fork
     # (type assignment; the temporal batch only on request) is Linux-only: macOS never forks
-    # (engine.fork_safety).  The numbers do not depend on it.
+    # (daedalus.engine.fork_safety).  The numbers do not depend on it.
     # DAEDALUS_PARALLEL=0 turns every pool off.
     n_workers: Optional[int] = None
     verbose: bool = False
 
-    # ── model analyzer (api.analyze) ──
-    # ``policy``: an ``api.analyze.Policy`` or dict (mode 'strict' /
+    # ── model analyzer (daedalus.api.analyze) ──
+    # ``policy``: an ``daedalus.api.analyze.Policy`` or dict (mode 'strict' /
     # 'permissive', consents, ``downgrade`` codes); ``preflight``: None = the
     # gates run (unless DAEDALUS_PREFLIGHT=0), False = off.
     policy: Any = None
@@ -676,8 +734,8 @@ class Config:
         """The integer / positive options, checked at construction (and
         again by :func:`run`, as fields may be set afterwards) instead of
         deep inside the run."""
-        from api.compute import _entry_int
-        from api._grids import is_real_number
+        from daedalus.api.compute import _entry_int
+        from daedalus.api._grids import is_real_number
         for _n, _lo in (('k', 1), ('max_ell', 0), ('n_workers', 1),
                         ('fixed_point_index', 0), ('mf_dae_n_starts', 1),
                         ('taylor_order', 1)):
@@ -709,7 +767,7 @@ class Config:
                 f"Config.discard must be False, True or 'auto'; got "
                 f"{self.discard!r}.")
         if self.spectra is not None:
-            from api.spectra import resolve_spectra_options
+            from daedalus.api.spectra import resolve_spectra_options
             if resolve_spectra_options(self.spectra, 'Config.spectra') \
                     is not None and self.output != 'cumulant':
                 raise ValueError(
@@ -717,7 +775,7 @@ class Config:
                     f"spectral outputs are those of the connected cumulant "
                     f"(output='cumulant').")
         if self.covariance is not None:
-            from api.covariance import resolve_covariance_options
+            from daedalus.api.covariance import resolve_covariance_options
             if resolve_covariance_options(
                     self.covariance, 'Config.covariance') is not None:
                 for _bad, _why in (
@@ -733,8 +791,8 @@ class Config:
                             f'Config.covariance with {_why} is not '
                             f'supported.')
         if self.resum is not None:
-            from api.resum import resolve_resum_options, check_config
-            from api.covariance import resolve_covariance_options
+            from daedalus.api.resum import resolve_resum_options, check_config
+            from daedalus.api.covariance import resolve_covariance_options
             check_config(resolve_resum_options(self.resum, 'Config.resum'),
                          k=self.k, max_ell=self.max_ell, output=self.output,
                          t_min=self.t_min, spatial_points=self.spatial_points,
@@ -781,15 +839,15 @@ class Config:
     def _resolve_grid(g, name='grid'):
         """``(lo, hi, n)`` TUPLE → ``linspace``; list/array → literal points;
         None → None.  The rule is shared with ``compute_cumulants``
-        (:func:`api._grids.resolve_grid`); a 3-element *list* ending in an
+        (:func:`daedalus.api._grids.resolve_grid`); a 3-element *list* ending in an
         integer count (``[-5, 5, 51]``) is the "I meant a range" slip and
         raises, pointing at the tuple form."""
-        from api._grids import resolve_grid
+        from daedalus.api._grids import resolve_grid
         return resolve_grid(g, name)
 
     @staticmethod
     def _require_finite(arr, name):
-        from api._grids import require_finite
+        from daedalus.api._grids import require_finite
         require_finite(arr, name)
 
 
@@ -803,7 +861,7 @@ def fundamental_from_model(model: dict) -> dict:
     declared default.  Lets a loaded model run out of the box even when
     its ``DEFAULT_FUNDAMENTAL`` is empty.  Saddle params (``mean_field=True``,
     solved by the mean-field step) and defaultless params are skipped."""
-    from api.naming import is_saddle
+    from daedalus.api.naming import is_saddle
     out = {}
     for p in model.get('parameters') or []:
         if is_saddle(p) or p.get('default') is None:
@@ -819,19 +877,19 @@ parameters_from_model = fundamental_from_model
 
 def fetch_cache(cells='core', dest=None, base_url=None, **kw):
     """Download the prediagram cells that are too big for git (see
-    ``engine.enumeration.prediagram_cache.fetch_cache``).  Explicit only:
+    ``daedalus.engine.enumeration.prediagram_cache.fetch_cache``).  Explicit only:
     nothing is fetched unless you call this; the base URL comes from
     ``base_url=`` or the environment variable ``DAEDALUS_CACHE_URL``."""
-    from engine.enumeration import prediagram_cache as _pc
+    from daedalus.engine.enumeration import prediagram_cache as _pc
     return _pc.fetch_cache(cells, dest=dest, base_url=base_url, **kw)
 
 
 def build_cache(cells, dest=None, dry_run=False, **kw):
     """Estimate, then build, prediagram cells that are neither shipped nor
-    already under *dest* (see ``engine.enumeration.prediagram_cache.build_cache``).
+    already under *dest* (see ``daedalus.engine.enumeration.prediagram_cache.build_cache``).
     The report (status, class count, estimated time and memory) is printed
     first; ``dry_run=True`` stops there and writes nothing."""
-    from engine.enumeration import prediagram_cache as _pc
+    from daedalus.engine.enumeration import prediagram_cache as _pc
     return _pc.build_cache(cells, dest=dest, dry_run=dry_run, **kw)
 
 
@@ -899,19 +957,19 @@ def config_options(spatial=None):
             ('taylor_order', 'vertex Taylor order; None → max(k + 2 max_ell, 2)'),
             ('use_cache',    'on-disk caches (diagram, propagator, expand); None → on'),
             ('accuracy',     'target relative accuracy of the G6 error estimate; None → 1e-10'),
-            ('backend',      'an explicit backend name (api.routing); None → the router picks'),
+            ('backend',      'an explicit backend name (daedalus.api.routing); None → the router picks'),
             ('discard',      "False | True | 'auto': release each diagram after evaluating it at the run's points (memory; k≥3: the slice points)"),
         ]),
-        ('exact spectra (k=2; api.spectra)', [
+        ('exact spectra (k=2; daedalus.api.spectra)', [
             ('spectra', "None | True | {'omega': (lo,hi,n) or array, 'T': number or array, 'method': 'auto'|'exact'|'quad'} → result['spectra']: S(ω)=∫C e^{+iωτ}dτ, S(0), ∫_0^T C, τ_c per loop order (no lag grid needed)"),
         ]),
-        ('covariance matrix (k=2; api.covariance)', [
+        ('covariance matrix (k=2; daedalus.api.covariance)', [
             ('covariance', "None | True | {'fields': [...], 'pairs': 'upper'|'all', 'derivatives': [param, ...] or {'parameters': [...], 'step': 1e-3}, 'keep_entries': bool} → run() returns Sigma[n,i,j]=<dx_i(0) dx_j(τ_n)> over every pair (one shared MF/propagator/pole pass) and dSigma/dθ"),
         ]),
-        ('resummation (api.hartree, api.resum)', [
+        ('resummation (daedalus.api.hartree, daedalus.api.resum)', [
             ('resum', "None | 'hartree' (self-consistent Gaussian; max_ell 0) | 'screened' or {'method': 'screened', 'mass': 'pms'|'hartree'|kappa, 'observable': 'trace_cov'|'C0'|[fields], 'step', 'kappa_range', 'n_scan'} (k=1 the mean, k=2 the covariance: loop orders re-expanded around a variational propagator, order N = max_ell) → C_tau, C_tau_by_order, C_tau_spread, resummation"),
         ]),
-        ('delay kernels (api.delay)', [
+        ('delay kernels (daedalus.api.delay)', [
             ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
         ]),
         ('Dyson dressing (coupled unequal-D)', [
@@ -923,7 +981,7 @@ def config_options(spatial=None):
             ('n_workers', 'worker count (spatial and temporal threads; fork workers on Linux)'),
             ('verbose',   'print backend progress'),
         ]),
-        ('model analyzer (api.analyze)', [
+        ('model analyzer (daedalus.api.analyze)', [
             ('policy',    "Policy / dict: mode 'strict'|'permissive', consents, downgrade=[codes]; None → permissive"),
             ('preflight', 'None/True → analyzer gates before the enumeration; False → off'),
         ]),
@@ -999,7 +1057,7 @@ def _external_mean(model: dict, res: dict, leg=None) -> float:
     The cumulant pipeline expands around the saddle, so the *fluctuation*
     field's tree-level 1-point function is 0; the physical mean is the saddle
     value plus the ℓ≥1 loop tadpole shifts (:func:`_leg_mean_by_ell`).  The
-    saddle is stored under the field's saddle parameter (``api.naming``;
+    saddle is stored under the field's saddle parameter (``daedalus.api.naming``;
     ``nSstar``, ``xstar`` …) in the temporal ``res['mf_values']`` or the
     spatial ``res['mf']['mf_values']`` (a list of per-component dicts), one
     value per population.  ``leg`` is a ``(field, pop)`` external leg; None
@@ -1029,7 +1087,7 @@ def _external_mean(model: dict, res: dict, leg=None) -> float:
             names = field_names(model)
             leg = names[0] if names else ''
     fld, pop = _leg_parts(leg)
-    from api.naming import saddle_for_field
+    from daedalus.api.naming import saddle_for_field
     sad = saddle_for_field(model, fld)       # natural or internal leg name
     keys = [k for k in (sad, fld) if k]
     for d in dicts:
@@ -1108,7 +1166,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
     its legs (the order-k run for the full block).  ``res['moment_means']``
     records the leg means used."""
     import itertools
-    from api import compute_cumulants as _compute
+    from daedalus.api import compute_cumulants as _compute
 
     def compute_cumulants(**kw_):
         # an extra run that left diagrams out makes the moment incomplete too
@@ -1282,7 +1340,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
 # of that curve itself, never a value decided by a tie between the swept leg
 # and another leg.  At a coincident point that is the curve's LEFT limit, the
 # same convention as the k=2 grid, whose τ = 0 point is sampled at
-# τ = −``api.compute._ITO_EPS`` (the Itô left limit):
+# τ = −``daedalus.api.compute._ITO_EPS`` (the Itô left limit):
 #
 # * A pinned leg sits at its base lag, or at 0⁻ = −_ITO_EPS when that lag is 0
 #   (|b| ≤ 1e−12), as the k=2 grid's τ = 0 point does.
@@ -1313,7 +1371,7 @@ def _assemble_moment_temporal(model, res, kw, k, central):
 # lags, all of them at −_ITO_EPS) stay tied.  The engine then resolves the tie
 # by its external-time tie order (the later-listed leg counts as
 # infinitesimally earlier; ``_tie_order_sign`` in
-# ``engine/integration/time_domain/final_integral.py``).  The pinned legs do
+# ``daedalus/engine/integration/time_domain/final_integral.py``).  The pinned legs do
 # not move along a slice, so that order is the same at every point of the
 # curve and adds no jump to it.  But every point of such a slice is then a
 # tie, and the value at a tie is that one-sided limit only as accurately as
@@ -1435,9 +1493,9 @@ def _kpoint_incomplete(res, cfg, exc, msg):
     ``PhaseJIncompleteWarning``, or ``PhaseJIncompleteError`` under
     ``policy={'mode': 'strict'}``."""
     import warnings
-    from api.compute import (PhaseJIncompleteError, PhaseJIncompleteWarning,
+    from daedalus.api.compute import (PhaseJIncompleteError, PhaseJIncompleteWarning,
                              _policy_is_strict)
-    from api.save import _ensure_warning_shown
+    from daedalus.api.save import _ensure_warning_shown
     res['status'] = 'incomplete'
     if _policy_is_strict(cfg.policy):
         raise PhaseJIncompleteError(msg, result=res) from exc
@@ -1455,7 +1513,7 @@ def _kpoint_plan(cfg, k, tau):
     and the full grid's axis and point map (``kpoint_full_grid``).  Made
     before the run, so evaluate-and-discard knows the points
     (:func:`_kpoint_run_points`)."""
-    from api.compute import _ITO_EPS, _tau0_mode
+    from daedalus.api.compute import _ITO_EPS, _tau0_mode
     plan = {'replaced': False, 'resampled_from': None}
     tau = None if tau is None else np.asarray(tau, dtype=float)
     if tau is None or tau.size == 0:
@@ -1568,7 +1626,7 @@ def _moment_slice(k, tau):
     """The external times and leg orders of the temporal k≥3 moment's points
     (:func:`_assemble_moment_temporal`): those of ``run``'s slice 1 with the
     default base lags."""
-    from api.compute import _ITO_EPS, _tau0_mode
+    from daedalus.api.compute import _ITO_EPS, _tau0_mode
     if _tau0_mode() == 'exact':
         # exact ties; a tied point lists leg 1 last (``_kpoint_slice_point``)
         scale = max([abs(float(t)) for t in tau] + [0.0])
@@ -1613,7 +1671,7 @@ def _refuse_spatial_raw_moment(model, kw, ext, max_ell):
     L >= 1 with a nonzero saddle.  L >= 2 is decided from the budget alone;
     L = 1 needs the saddle, read from a one-event tree-level k = 1 run (the
     same call the k = 1 path makes), per distinct external leg."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     if max_ell >= 2:
         raise NotImplementedError(
             _spatial_raw_moment_message(max_ell))
@@ -1640,10 +1698,10 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     ``compute_cumulants``.  Handles temporal vs spatial, the spatial
     k≥3 event path, and the Dyson-order override.  Returns the result
     dict with ``cfg`` / ``model`` attached under ``'_cfg'`` / ``'_model'``."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     cfg._check_numbers()              # fields may be set after construction
-    # an api.sde.SDE (incl. point-process models) is built here, as by hand
+    # an daedalus.api.sde.SDE (incl. point-process models) is built here, as by hand
     if not isinstance(model, dict) and callable(getattr(model, 'build', None)):
         model = model.build()
     max_ell = (cfg.max_ell if cfg.max_ell is not None
@@ -1680,7 +1738,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if not ext_is_explicit and not _ext_is_valid(model, ext, k):
         ext = _auto_external_fields(model, k)
     # a bare field name ('x') is the leg ('x', 1) of a one-unit field
-    from api.access import resolve_external_fields
+    from daedalus.api.access import resolve_external_fields
     ext = resolve_external_fields(model, ext)
     # Layered fundamental: model param defaults ← model DEFAULT_FUNDAMENTAL
     # ← explicit cfg override.  Each layer wins over the one before, so a
@@ -1692,7 +1750,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if cfg.parameters:
         # Reject mistyped override names instead of silently inserting a
         # key the backend ignores (which would run with the DEFAULT value).
-        from api.naming import free_parameter_names
+        from daedalus.api.naming import free_parameter_names
         _valid = set(free_parameter_names(model))
         _unknown = [kk for kk in cfg.parameters if kk not in _valid]
         if _valid and _unknown:
@@ -1728,7 +1786,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if fpi is None and module is not None:
         fpi = _meta(module, 'fixed_point_index_default')
         if fpi is not None:
-            from api.compute import _entry_int
+            from daedalus.api.compute import _entry_int
             if _entry_int("METADATA['fixed_point_index_default']", fpi) < 0:
                 raise ValueError(
                     f"METADATA['fixed_point_index_default'] must be >= 0; "
@@ -1847,20 +1905,20 @@ def run(model: dict, cfg: Config, module=None) -> dict:
     if tg is not None and not (is_spatial(model) and k != 2):
         kw['tau_grid'] = tg
 
-    from api.covariance import resolve_covariance_options
+    from daedalus.api.covariance import resolve_covariance_options
     _cov = resolve_covariance_options(getattr(cfg, 'covariance', None),
                                       'Config.covariance')
-    from api.resum import resolve_resum_options
+    from daedalus.api.resum import resolve_resum_options
     _resum = resolve_resum_options(getattr(cfg, 'resum', None),
                                    'Config.resum')
     if _resum is not None:
-        # opt-in resummation (api.hartree / api.resum); the loop path below
+        # opt-in resummation (daedalus.api.hartree / daedalus.api.resum); the loop path below
         # is untouched when resum is None
         return _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental,
                              _resum, _cov)
     if _cov is not None:
-        # every pair of the fields in one shared pass (api.covariance)
-        from api.covariance import covariance_matrix
+        # every pair of the fields in one shared pass (daedalus.api.covariance)
+        from daedalus.api.covariance import covariance_matrix
         if is_spatial(model):
             raise NotImplementedError(
                 'Config.covariance is for temporal models')
@@ -1943,7 +2001,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             res['_kpoint_tau_resampled'] = (
                 f'tau_grid of {n_in} points replaced by 41 evenly spaced '
                 f'points over [{tau[0]}, {tau[-1]}] for the k={k} slices')
-            from api.save import _ensure_warning_shown
+            from daedalus.api.save import _ensure_warning_shown
             _msg = (f'k={k}: the {n_in}-point tau_grid was replaced by 41 '
                     f'evenly spaced points over [{tau[0]}, {tau[-1]}] for the '
                     f'slices (result["tau_grid"]); evaluate result["total_C"] '
@@ -2006,7 +2064,7 @@ def run(model: dict, cfg: Config, module=None) -> dict:
             tcb = {e: f for e, f in (res.get('total_C_by_ell') or {}).items()
                    if callable(f)}
             # The k−1 axis-parallel slices through ``base``.  When total_C is
-            # the plain sum of the per-ell callables (``api.compute``), its
+            # the plain sum of the per-ell callables (``daedalus.api.compute``), its
             # slice is that sum of their slices, in total_C's order, instead
             # of a second evaluation of every diagram (half the
             # Phase J evaluations of a k≥3 run).
@@ -2159,11 +2217,11 @@ _ORDER_COLORS = ['#3F00FF', '#1F9FCC', '#16A085', '#E67E22', '#E74C3C',
 def _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental, opts, cov):
     """``dd.run`` with ``Config.resum``: the Hartree closure or the screened
     series, on the τ grid :func:`run` resolved."""
-    from api.hartree import refusal_reason, HartreeUnsupported
+    from daedalus.api.hartree import refusal_reason, HartreeUnsupported
     why = refusal_reason(model)
     if why is not None:
         raise HartreeUnsupported(f'Config.resum: {why}.')
-    from api.resum import check_config
+    from daedalus.api.resum import check_config
     check_config(opts, k=k, max_ell=max_ell, output=cfg.output,
                  t_min=cfg.t_min, spatial_points=cfg.spatial_points,
                  covariance=cov, spectra=cfg.spectra)
@@ -2176,15 +2234,15 @@ def _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental, opts, cov):
                                       'mf_dae_seed_box') if key in kw}
     spec = kw.get('spectra')
     if spec is not None:
-        from api.spectra import resolve_spectra_options
+        from daedalus.api.spectra import resolve_spectra_options
         spec = resolve_spectra_options(spec, 'Config.spectra')
     if opts['method'] == 'hartree':
-        from api.hartree import hartree, run_result
+        from daedalus.api.hartree import hartree, run_result
         h = hartree(model, fundamental, taylor_order=opts.get('taylor_order'),
                     delay=kw.get('delay'), **mf_kw)
         res = run_result(h, ext, k, tau, spectra=spec, covariance=cov)
     else:
-        from api.resum import screened
+        from daedalus.api.resum import screened
         run_kw = {key: kw[key] for key in (
             'use_cache', 'parallel', 'n_workers', 'policy', 'preflight',
             'backend', 'accuracy', 'taylor_order', 'delay') if key in kw}
@@ -2242,7 +2300,7 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
     signal.  Ignored where it does not apply.
     ``show_delta=True`` (temporal cumulants, k = 2 or 3) draws, instead of
     the plot above, the cumulant with its shot-noise δ components
-    (:func:`api.cumulant_plot.plot_cumulant_delta`; ``delta_style`` 'arrow'
+    (:func:`daedalus.api.cumulant_plot.plot_cumulant_delta`; ``delta_style`` 'arrow'
     or 'bin'); not with ``residual`` or a moment output.
     Returns the Matplotlib ``Figure``.
     """
@@ -2258,7 +2316,7 @@ def plot_cumulant(result: dict, cfg: Config = None, model: dict = None,
             raise ValueError('show_delta draws the cumulant with its δ '
                              'components: not with residual=True or a '
                              'moment output')
-        from api.cumulant_plot import plot_cumulant_delta
+        from daedalus.api.cumulant_plot import plot_cumulant_delta
         return plot_cumulant_delta(result, cfg, model, sim, delta_style)
     if result.get('output_kind') in ('moment', 'central_moment') \
             and result.get('moment') is not None:
@@ -2636,7 +2694,7 @@ def plot_temporal_mean(result, cfg, model, sim=None):
         ax.legend(fontsize=8)
     fld = _result_meta(result, 'external_fields') or [('phi', 1)]
     fb = fld[0][0] if isinstance(fld[0], (tuple, list)) else str(fld[0])
-    from api.naming import field_natural_name
+    from daedalus.api.naming import field_natural_name
     base = field_natural_name(model, fb)                # the physical field
     ax.axhline(0, color='gray', lw=0.5)
     # Mark the mean-field tree value φ* so the loop shift off it is visible
@@ -2999,7 +3057,7 @@ def plot_prediagrams(model, k, max_ell, save=None, ncol=None):
     fallback.  Returns the Matplotlib ``Figure`` (and writes a PNG if ``save``
     is given).  Practical range: ``k + max_ell ≤ 4``.
     """
-    from engine.diagrams.prediagram_plot import plot_prediagrams as _pp
+    from daedalus.engine.diagrams.prediagram_plot import plot_prediagrams as _pp
     return _pp(model, int(k), int(max_ell), save=save, ncol=ncol)
 
 
@@ -3022,7 +3080,7 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
     printed per prediagram.  ``use_propagator=True`` builds the propagator and
     drops identically-zero typings (the exact contributing set).
     """
-    from engine.diagrams.prediagram_plot import prediagram_mappings as _pm
+    from daedalus.engine.diagrams.prediagram_plot import prediagram_mappings as _pm
     return _pm(model, int(k), int(max_ell), external_fields=external_fields,
                use_propagator=use_propagator, max_typings=max_typings,
                printout=printout)
@@ -3092,10 +3150,10 @@ def export_tikz(result, *, index=None, path=None, standalone=None,
     every edge of every panel crowds the vertex factors without adding
     information.  Pass ``propagator_label`` explicitly to override either.
     """
-    from engine.diagrams.tikz_export import (
+    from daedalus.engine.diagrams.tikz_export import (
         to_tikz_feynman, diagram_to_standalone,
     )
-    from engine.diagrams.tikz_figure import (
+    from daedalus.engine.diagrams.tikz_figure import (
         diagrams_to_figure, diagrams_to_standalone,
     )
 
@@ -3136,12 +3194,9 @@ def export_tikz(result, *, index=None, path=None, standalone=None,
 
 def main(argv=None):
     """Command line: ``sage -python -m daedalus run config.yaml [--dry-run]``
-    (logic in ``api/config_run.py``)."""
-    from api.config_run import main as _cli
+    (logic in ``daedalus/api/config_run.py``)."""
+    from daedalus.api.config_run import main as _cli
     status = _cli(argv)
     if status:
         raise SystemExit(status)
 
-
-if __name__ == "__main__":
-    main()

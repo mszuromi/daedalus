@@ -1,6 +1,6 @@
 """
-engine.core.vertices
-====================
+daedalus.engine.core.vertices
+=============================
 Decompose bigrade polynomial sectors into individual typed monomials
 with field-leg metadata (VertexType, SourceType data structures).
 
@@ -20,7 +20,7 @@ from sage.all import SR
 # a closure inside extract_source_types) so that NoiseSourceType
 # objects carrying this callable survive ``multiprocessing.Pool``
 # round-trips — pickle can locate the class by its fully-qualified
-# name (``engine.core.vertices._NamespaceBoundKernel``) and reconstruct
+# name (``daedalus.engine.core.vertices._NamespaceBoundKernel``) and reconstruct
 # the instance on the other side.
 class _NamespaceBoundKernel:
     """Picklable wrapper that pre-evaluates a kernel function against
@@ -152,7 +152,7 @@ class ConvVertexType(VertexType):
     ------
     Produced by :func:`extract_vertex_types` when a vertex
     coefficient contains kernel SR symbols recorded by
-    :func:`engine.core.convolution.reduce_conv_in_action`'s
+    :func:`daedalus.engine.core.convolution.reduce_conv_in_action`'s
     ``attachments_out`` mechanism.  The kernel symbol's attached
     field is resolved against the vertex's actual physical-leg list
     to identify which leg sits at ``anchor_time − τ``.
@@ -576,7 +576,7 @@ def extract_vertex_types(ft):
     ``ft.vertices()`` sector reaching this function is guaranteed at
     most linear in ``Dt``.
     """
-    from engine.core.convolution import kernel_attachments_in_coefficient
+    from daedalus.engine.core.convolution import kernel_attachments_in_coefficient
 
     ft._require_expanded()
     ns = ft._ns

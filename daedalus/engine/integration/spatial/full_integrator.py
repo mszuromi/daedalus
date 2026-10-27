@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.full_integrator
-==========================================
+daedalus.engine.integration.spatial.full_integrator
+===================================================
 Backend C — **the full-diagram integrator**.  ONE genuine integral evaluates
 *every* enumerated diagram (tree, bubble, tadpole, sunset, … any ``k``, ``ell``,
 ``d``) — no Dyson convolution, no mass-shift shortcut, no 1PI bookkeeping.
@@ -41,8 +41,8 @@ import warnings
 
 import numpy as np
 
-from engine.integration.spatial.causal_chambers import causal_chambers
-from engine.errors import DaedalusError
+from daedalus.engine.integration.spatial.causal_chambers import causal_chambers
+from daedalus.engine.errors import DaedalusError
 
 
 class BesselUnequalTimesWarning(RuntimeWarning):
@@ -453,15 +453,15 @@ def _chamber_breaks(order, ties):
 
 
 def _spatial_mem_budget():
-    """``(bytes, rule)``: SPATIAL_MEM_BUDGET_GB if set (``engine._env.
+    """``(bytes, rule)``: SPATIAL_MEM_BUDGET_GB if set (``daedalus.engine._env.
     budget_gb``: a positive number of GB, or ``off`` = no limit, ``inf``
     bytes; ``0`` / negative raise), else the RAM-aware default of the Phase
     J guards."""
-    from engine import _env
+    from daedalus.engine import _env
     gb = _env.budget_gb('SPATIAL_MEM_BUDGET_GB')
     if gb is not None:
         return gb * 1e9, f'SPATIAL_MEM_BUDGET_GB={gb:g}'
-    from engine.integration.time_domain.final_integral import default_mem_budget
+    from daedalus.engine.integration.time_domain.final_integral import default_mem_budget
     return default_mem_budget()
 
 

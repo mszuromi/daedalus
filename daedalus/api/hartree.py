@@ -1,6 +1,6 @@
 """
-api.hartree
-===========
+daedalus.api.hartree
+====================
 Self-consistent Gaussian (Hartree) resummation of a temporal model
 (``dd.hartree``, ``dd.Config(resum='hartree')``).
 
@@ -27,7 +27,7 @@ correlator is one matrix exponential, ``C(τ) = Σ e^{Aᵀτ}`` for ``τ >= 0``.
 What it misses: every non-cactus diagram (from two loops on: the sunset),
 every connected cumulant of order three or more (``κ_3 = κ_4 = 0``), the
 multi-exponential shape of ``C(τ)`` and activated hopping between wells.
-:mod:`api.resum` builds on it a screened loop series (optimized perturbation
+:mod:`daedalus.api.resum` builds on it a screened loop series (optimized perturbation
 theory) that adds those back order by order.
 
 Expectations are taken over the *nonlinear* fields only: a field that enters
@@ -71,7 +71,7 @@ import numpy as np
 import scipy.linalg as sl
 from scipy.optimize import root
 
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = ['hartree', 'gaussian_closure', 'HartreeResult', 'HartreeError',
            'HartreeUnsupported', 'HartreeBistabilityWarning',
@@ -219,7 +219,7 @@ class HartreeResult:
 
     # ── spectra ──
     def spectrum(self, omega, i=0, j=0):
-        """``S_ij(ω) = ∫ C_ij(τ) e^{+iωτ} dτ`` (the ``api.spectra``
+        """``S_ij(ω) = ∫ C_ij(τ) e^{+iωτ} dτ`` (the ``daedalus.api.spectra``
         convention, no ``1/2π``), entry ``(i, j)`` of ``H Q Hᴴ`` with
         ``H = (-iω - A)^{-1}``."""
         omega = np.atleast_1d(np.asarray(omega, dtype=float))
@@ -238,7 +238,7 @@ class HartreeResult:
         conventions of ``dd.spectra`` (one order, ``method='exact'``):
         ``S(ω)``, ``S0``, ``∫_0^T C``, ``∫_{-T}^0 C``, the one-sided
         integrals to infinity, ``C0`` and ``tau_c``."""
-        from api.spectra import resolve_spectra_options, CONVENTIONS
+        from daedalus.api.spectra import resolve_spectra_options, CONVENTIONS
         opts = resolve_spectra_options({'omega': omega, 'T': T},
                                        'HartreeResult.spectra')
         ii, jj = self.index(i), self.index(j)
@@ -655,7 +655,7 @@ def refusal_reason(model):
 def _phys_layout(model, ns):
     """The physical fields in ring order: ``[(ring name, field, index,
     saddle parameter name or None, natural name or None)]``."""
-    from engine.core.vertices import field_symbol_name
+    from daedalus.engine.core.vertices import field_symbol_name
     conv = model.get('naming_convention') or {}
     saddles = conv.get('mean_field_saddles') or {}
     fluct = {v: k for k, v in (conv.get('fluctuation_fields') or {}).items()}
@@ -719,7 +719,7 @@ def _kernel_pencil(klin, n, images, num):
     states: ``K(s) = K1 s + K0 + sum_blocks c (s - A_R)^-1 b`` for each entry
     ``(i, j)`` of ``klin`` (the coefficients of the linear monomials
     ``xt_i x_j``, with ``Dt`` and the kernel symbols).  This is the engine's
-    own realization (:func:`api._realization._realize_proper`: an exact
+    own realization (:func:`daedalus.api._realization._realize_proper`: an exact
     chain of first-order blocks per rate and Schwarz blocks per irreducible
     factor, no roots); the closure then runs on the fields and these states.
 
@@ -727,7 +727,7 @@ def _kernel_pencil(klin, n, images, num):
     (numpy; the states obey ``Dt z = A z + b x_j`` and feed row ``i`` of
     ``K1 Dt x + K0 x + c z = ...``)."""
     from sage.all import SR, matrix
-    from api import _realization as R
+    from daedalus.api import _realization as R
     omega, Dt = SR.var('omega'), SR.var('Dt')
     K = matrix(SR, n, n)
     for (i, j), c in klin.items():
@@ -827,8 +827,8 @@ def action_system(model, parameters=None, *, fixed_point_index=0,
     (an :class:`ActionSystem`), with every parameter substituted.  Raises
     :class:`HartreeUnsupported` outside the closure's scope."""
     from sage.all import SR, matrix
-    from engine.core.field_theory import FieldTheory
-    from api._mean_field import solve_mean_field, complete_parameters
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._mean_field import solve_mean_field, complete_parameters
 
     why = refusal_reason(model)
     if why is not None:
@@ -1089,11 +1089,11 @@ def _delay_names(model):
     hook = model.get('kernel_ft_image')
     if hook is None or not model.get('kernels'):
         return {}
-    from api.delay import kernel_delays, specs_may_delay
+    from daedalus.api.delay import kernel_delays, specs_may_delay
     specs = getattr(hook, '_kernel_specs', None)
     if specs is not None and not specs_may_delay(specs):
         return {}
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ns, _R, _nt = FieldTheory(model, taylor_order=2)._build_namespace()
     return kernel_delays(model, ns)
 
@@ -1130,11 +1130,11 @@ def _delay_lag_change(a, b, lags):
 def _hartree_delayed(model, parameters, delay, kw):
     """The closure of a model with hard delays: every delay factor of the
     kernel images by its Pade approximant of order ``n``; ``n`` from the
-    order search of the loop path (``api.delay``): ``n_start``, doubling up
+    order search of the loop path (``daedalus.api.delay``): ``n_start``, doubling up
     to ``n_max``, the first order that agrees with the one before to ``tol``
     (the mean, the covariance and the lag correlator, relative to the
     largest entry).  A target that is not met is refused."""
-    from api import delay as D
+    from daedalus.api import delay as D
     o = D.resolve_options(delay)
     warn = kw.get('warn', True)
     kw = dict(kw, warn=False)
@@ -1215,7 +1215,7 @@ def _hartree_delayed(model, parameters, delay, kw):
 def _delay_cache_key(model, parameters, kw, o):
     if not o['order_cache'] or model.get('spec_signature') is None:
         return None
-    from api._propagator import model_cache_signature
+    from daedalus.api._propagator import model_cache_signature
     return repr(('hartree', model_cache_signature(model), model.get('name'),
                  sorted((str(k), repr(v)) for k, v in (parameters or {}).items()),
                  sorted((str(k), repr(v)) for k, v in kw.items()
@@ -1267,7 +1267,7 @@ def _hartree(model, parameters=None, *, fixed_point_index=0, start=None,
 
     Parameters
     ----------
-    model : dict (or an unbuilt ``api.sde.SDE`` / builder)
+    model : dict (or an unbuilt ``daedalus.api.sde.SDE`` / builder)
     parameters : dict
         The model's parameters (omitted ones take their defaults).
     fixed_point_index : int

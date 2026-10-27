@@ -18,10 +18,10 @@ cannot represent (the conservation law forces Σ(q→0) ∝ q²).
 Validated this session (the spatial-v2 wiring): flows through
 ``compute_cumulants(max_ell=1)`` via the momentum-first bubble path, B≈0.944 vs
 simulation (the internal design notes (not distributed);
-sim force ``g_lap`` in ``simulations/spatial_field_1d_sim.py``).  It is the
+sim force ``g_lap`` in ``daedalus/simulations/spatial_field_1d_sim.py``).  It is the
 first-class backend-C test model for derivative / form-factor vertices.
 """
-from api.model import SpatialModelBuilder
+from daedalus.api.model import SpatialModelBuilder
 
 
 def build():

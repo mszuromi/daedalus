@@ -2,7 +2,7 @@ r"""
 Symbolic tree-level covariance in the Fourier domain, with exports.
 
 Stage C1 of the internal SDE/δ feature plan (not distributed).  The pipeline builds the
-symbolic frequency-domain propagator ``G(omega)`` (``api/_propagator.py``) before
+symbolic frequency-domain propagator ``G(omega)`` (``daedalus/api/_propagator.py``) before
 any number is substituted.  This module turns it, together with the noise
 matrix read off the second-order response-field sector of the action, into the
 tree-level covariance
@@ -17,8 +17,8 @@ Conventions (all of them tested in ``tests/test_symbolic_out.py``)
 -------------------------------------------------------------------
 Fourier:    G(t) = (1/2 pi) int d omega exp(i omega t) G(omega)
             G(omega) = int dt exp(-i omega t) G(t)         (so d/dt -> i omega)
-This is the pipeline-wide convention (``engine/integration/time_domain``,
-``engine.core.field_theory.fourier_transform``).  Poles with Im(omega) > 0
+This is the pipeline-wide convention (``daedalus/engine/integration/time_domain``,
+``daedalus.engine.core.field_theory.fourier_transform``).  Poles with Im(omega) > 0
 give decaying exponentials for t > 0.
 
 Action:     the bilinear (1,1) sector is  S ⊃ xt_r K_{r p}(d/dt) dx_p  and the
@@ -97,7 +97,7 @@ polynomial x exponential, two-sided exponential) gives ``int L(s) C(s) ds`` exac
 it equals the Fourier route ``pair_with_kernel(C0, L~(-omega))`` on the
 smooth part.  The numeric twin for a computed cumulant at any loop order
 (matrix-exponential triples of the state-space route, no poles) is
-``api.me_output`` / ``Cumulant.integrate_against``.
+``daedalus.api.me_output`` / ``Cumulant.integrate_against``.
 """
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ from sage.all import (
 from sage.rings.rational import Rational as _Rational
 from sage.rings.integer import Integer as _Integer
 from sage.rings.real_mpfr import RealNumber as _RealNumber
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 __all__ = [
     'SymbolicOutError', 'UnsupportedModelError', 'NonRationalPropagatorError',
@@ -129,7 +129,7 @@ __all__ = [
     # stage C2
     'AssumptionViolation', 'Mode', 'RootOf', 'Assumption', 'ModeSum',
     'PairingKernel', 'KernelIntegral', 'tree_modes', 'integrate_against', 'SIDES',
-    # stage C3 (api.symbolic_loop; resolved lazily, see __getattr__)
+    # stage C3 (daedalus.api.symbolic_loop; resolved lazily, see __getattr__)
     'symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
     'SymbolicTriple', 'SymbolicLoopRefused', 'SaddleWarning',
 ]
@@ -139,10 +139,10 @@ _C3_NAMES = ('symbolic_cumulant', 'symbolic_triple', 'SymbolicCumulant',
 
 
 def __getattr__(name):
-    """Stage C3 lives in ``api.symbolic_loop`` (loop level, state-space
+    """Stage C3 lives in ``daedalus.api.symbolic_loop`` (loop level, state-space
     route); its entry points are reachable from here too."""
     if name in _C3_NAMES:
-        from api import symbolic_loop
+        from daedalus.api import symbolic_loop
         return getattr(symbolic_loop, name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
@@ -280,7 +280,7 @@ class _Bridge:
             if reserved in syms:
                 raise SymbolicOutError(
                     f'parameter name {reserved!r} is reserved by '
-                    f'api.symbolic_out')
+                    f'daedalus.api.symbolic_out')
         self.sym_of = syms
         self.pow_of = pows
         names = [_S, _PAD] + sorted(syms) + sorted(pows)
@@ -439,7 +439,7 @@ def noise_matrix_from_theory(ft, model: Optional[dict] = None):
 
     Returns ``(D, resp_names)`` with ``D`` a symmetric Sage ``SR`` matrix.
     Raises ``UnsupportedModelError`` for non-local (kernel) noise."""
-    from engine.core.vertices import extract_source_types, NoiseSourceType
+    from daedalus.engine.core.vertices import extract_source_types, NoiseSourceType
     ft._require_expanded()
     for st in extract_source_types(ft):
         if isinstance(st, NoiseSourceType):
@@ -478,7 +478,7 @@ def _reject_spatial(model: dict) -> None:
             f"model {model.get('name', '<unnamed>')!r} is spatial: its "
             f"propagator carries the inert Laplacian operator and depends on "
             f"the wavevector k, so there is no scalar C0(omega).  "
-            f"api.symbolic_out covers temporal models only; use "
+            f"daedalus.api.symbolic_out covers temporal models only; use "
             f"compute_cumulants(spatial_grid=...) for C(x, tau).")
 
 
@@ -486,8 +486,8 @@ def _expanded_theory(model: dict, taylor_order: int, use_cache: bool,
                      verbose: bool):
     """FieldTheory expansion exactly as ``compute_cumulants`` stage 1 does it
     (expand-cache aware, sanity-checked)."""
-    from engine.core.field_theory import FieldTheory
-    from api import _expand_cache as _ec
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as _ec
     ft = FieldTheory(model, taylor_order=taylor_order)
     hit = False
     if use_cache:
@@ -526,7 +526,7 @@ def _model_fundamental(model: dict, parameters: Optional[dict]) -> dict:
 
 def _solve_mean_field(ft, model: dict, fundamental: dict) -> dict:
     """``num_params`` of the pipeline's MF solve ({SR symbol: float})."""
-    from api._mean_field import solve_mean_field
+    from daedalus.api._mean_field import solve_mean_field
     return solve_mean_field(ft, model, fundamental, verbose=False)['num_params']
 
 
@@ -708,7 +708,7 @@ def tree_covariance(model: dict, *, values: Optional[dict] = None,
     """
     _reject_spatial(model)
     ft = _expanded_theory(model, taylor_order, use_cache, verbose)
-    from api._propagator import build_propagator
+    from daedalus.api._propagator import build_propagator
     prop = build_propagator(ft, model, use_cache=use_cache, verbose=verbose)
     return _from_theory(model, ft, prop, values=values, mean_field=mean_field,
                         parameters=parameters)
@@ -836,9 +836,9 @@ def _expand_param_names(d: Optional[dict]) -> dict:
 def _is_saddle_symbol(name: str, model: Optional[dict]) -> bool:
     """Whether the symbol ``name`` is a mean-field value: a declared saddle
     (``mean_field=True``), plain or with a population index (``xstar`` /
-    ``xstar1`` / ``nEstar2``); ``api.naming``, no spelling rule (a
+    ``xstar1`` / ``nEstar2``); ``daedalus.api.naming``, no spelling rule (a
     parameter named ``tstar`` is a parameter)."""
-    from api.naming import is_saddle_symbol
+    from daedalus.api.naming import is_saddle_symbol
     return is_saddle_symbol(name, model)
 
 
@@ -1046,12 +1046,12 @@ class TreeCovariance:
         if isinstance(field_, (int, np.integer)):
             return int(field_)
         if isinstance(field_, (tuple, list)) and len(field_) == 2:
-            from engine.core.vertices import field_symbol_name
+            from daedalus.engine.core.vertices import field_symbol_name
             nm, pop = field_
             cands = [field_symbol_name(nm, int(pop))]
             conv = (self._model or {}).get('naming_convention')
             if conv is not None:
-                from api.access import normalize_external_fields
+                from daedalus.api.access import normalize_external_fields
                 cands.append(field_symbol_name(*normalize_external_fields(
                     [field_], naming_convention=conv)[0]))
             for c in cands:

@@ -10,11 +10,11 @@ import numpy as np
 import pytest
 
 import daedalus as dd
-from api import compute_cumulants
-from api.covariance import covariance_matrix
-from api.noise import Gaussian
-from api.operators import Laplacian, TimeDerivative
-from api.sde import SDE, SDEError
+from daedalus.api import compute_cumulants
+from daedalus.api.covariance import covariance_matrix
+from daedalus.api.noise import Gaussian
+from daedalus.api.operators import Laplacian, TimeDerivative
+from daedalus.api.sde import SDE, SDEError
 from tests._sde_model_catalogue import digest
 
 
@@ -114,14 +114,14 @@ def test_k1_is_the_loop_shift_and_moment_is_the_mean():
 
 
 def _yaml(tmp_path, ext):
-    from api.config_run import load_config
+    from daedalus.api.config_run import load_config
     p = os.path.join(tmp_path, 'c.yaml')
     open(p, 'w').write(f'model: {ext[0]}\nquestion:\n  k: 2\n  max_ell: 0\n  external_fields: {ext[1]}\n')
     return load_config(p)
 
 
 def test_yaml_takes_bare_names(tmp_path):
-    from api.config_run import ConfigError
+    from daedalus.api.config_run import ConfigError
     a = _yaml(tmp_path, ('ou_quartic', '[x, x]'))[0]
     b = _yaml(tmp_path, ('ou_quartic', '[[x, 1], [x, 1]]'))[0]
     assert a['question']['external_fields'] == b['question']['external_fields']
@@ -130,6 +130,6 @@ def test_yaml_takes_bare_names(tmp_path):
 
 
 def test_the_analyzer_takes_bare_names():
-    from api.analyze import Policy, Question, analyze
+    from daedalus.api.analyze import Policy, Question, analyze
     rep = analyze(_ouq(), Question(k=2, max_ell=0, external_fields=('x', 'x')), Policy())
     assert not [f for f in rep.findings if f.code == 'G0_EXTERNAL_FIELD']

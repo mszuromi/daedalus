@@ -65,14 +65,15 @@ _LABELS = re.compile(
 
 def test_no_internal_ticket_numbers_in_library_text():
     pat = _LABELS
-    hits = []
+    hits, scanned = [], 0
     for f in _tracked():
-        if not f.endswith('.py') or not f.startswith(('api/', 'engine/', 'simulations/', 'models/')) \
-                and f != 'daedalus.py':
+        if not f.endswith('.py') or not f.startswith('daedalus/'):
             continue
+        scanned += 1
         for i, line in enumerate(_read(f).split('\n'), 1):
             if pat.search(line):
                 hits.append(f'{f}:{i}: {line.strip()[:80]}')
+    assert scanned > 100, f'only {scanned} library files scanned: has the package moved?'
     assert not hits, hits[:10]
 
 

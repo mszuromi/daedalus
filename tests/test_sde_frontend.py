@@ -1,4 +1,4 @@
-"""SDE front-end (api/sde.py): the action and mean-field equations derived from declared fields, drift and noise
+"""SDE front-end (daedalus/api/sde.py): the action and mean-field equations derived from declared fields, drift and noise
 sources, checked against the tracked hand-written models (A, C), physics oracles through the full pipeline (B) and the
 rule errors (D).  The ell = 2 pipeline runs are marked slow."""
 import importlib.util
@@ -12,19 +12,19 @@ pytest.importorskip('sage.all')
 from sage.all import SR, function, preparse                                 # noqa: E402
 import sage.all as sage_all                                                   # noqa: E402
 
-import api.compute as AC                                                      # noqa: E402
-import api.model as api_model                                                 # noqa: E402
+import daedalus.api.compute as AC                                                      # noqa: E402
+import daedalus.api.model as api_model                                                 # noqa: E402
 import tests._ito_moments as im                                               # noqa: E402
-from api._mean_field_dae import linear_stability, solve_mean_field_dae        # noqa: E402
-from api.noise import (CompoundPoisson, Dirac, Gaussian, NoiseError, Poisson,  # noqa: E402
+from daedalus.api._mean_field_dae import linear_stability, solve_mean_field_dae        # noqa: E402
+from daedalus.api.noise import (CompoundPoisson, Dirac, Gaussian, NoiseError, Poisson,  # noqa: E402
                        Uniform)
-from api.sde import SDE, SDEError                                             # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                             # noqa: E402
 
-MODELS = Path(__file__).resolve().parent.parent / 'models'
+MODELS = Path(__file__).resolve().parent.parent / 'daedalus' / 'models'
 T_STATIONARY = 150.0
 
 
-# ── an independent evaluator of action / equation text (no api.model_compiler) ──────────────
+# ── an independent evaluator of action / equation text (no daedalus.api.model_compiler) ──────────────
 
 class _Idx:
     """``name[i]`` / ``name[i, j]`` -> a fresh symbol ``name_i_j``; ``name(...)`` -> a formal function."""

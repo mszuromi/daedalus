@@ -9,7 +9,7 @@ Usage in a notebook
 -------------------
 ::
 
-    from api.ui import ModelUI
+    from daedalus.api.ui import ModelUI
     ui = ModelUI()
     ui.show()
 
@@ -27,12 +27,12 @@ from typing import Any, Optional
 import ipywidgets as W
 from IPython.display import display, HTML
 
-from api.ui.widgets import (
+from daedalus.api.ui.widgets import (
     DynamicTable,
     paste_button,
     textarea_input,
 )
-from api.model_serialize import (
+from daedalus.api.model_serialize import (
     save_model_to_file,
     render_model_file,
     normalize_equation_rows,
@@ -2247,7 +2247,7 @@ class ModelUI:
                 path = os.path.join(self.models_dir, explicit)
         else:
             # Auto-slugify from the model name.
-            from api.model_serialize import _slugify
+            from daedalus.api.model_serialize import _slugify
             try:
                 slug = _slugify(self._w_name.value or '')
             except Exception:
@@ -2769,8 +2769,8 @@ class ModelUI:
         primitive.  Output goes to the global ``self._status`` panel,
         same as Save / Load.
         """
-        from api import precompute
-        from api.model_serialize import render_model_file
+        from daedalus.api import precompute
+        from daedalus.api.model_serialize import render_model_file
 
         self._status.clear_output()
         with self._status:

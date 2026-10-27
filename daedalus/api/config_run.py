@@ -1,4 +1,4 @@
-"""api/config_run.py — run Daedalus from a YAML config file (``daedalus run config.yaml``).
+"""daedalus/api/config_run.py — run Daedalus from a YAML config file (``daedalus run config.yaml``).
 
 A thin entry point over ``daedalus.run`` / ``api.compute_cumulants``: it parses
 and strictly validates a config, loads the model, resolves every default, calls
@@ -9,7 +9,7 @@ writers (``save_npz`` / ``save_csv`` / ``plot_cumulant`` / ``generate_report``).
 
 Schema (all sections but ``model`` are optional; unknown keys are errors)::
 
-    model: ou_quartic                 # name of models/<name>.model.py, or a path
+    model: ou_quartic                 # name of daedalus/models/<name>.model.py, or a path
                                       # (or an inline ``sde:`` block instead, below)
     parameters: {mu: 1.0, eps: 0.02}  # numbers, or (nested) lists of numbers
     question:
@@ -20,19 +20,19 @@ Schema (all sections but ``model`` are optional; unknown keys are errors)::
       points: [...]                              # spatial k >= 3 only
       taylor_order: 4
       accuracy: 1e-10                            # target relative accuracy (G6)
-      delay: {order: 8}                          # delay models (api.delay options)
-      spectra: {omega: {start: 0, stop: 5, num: 51}, T: [1, 10]}   # k=2: exact S(omega), int_0^T C, tau_c (api.spectra)
+      delay: {order: 8}                          # delay models (daedalus.api.delay options)
+      spectra: {omega: {start: 0, stop: 5, num: 51}, T: [1, 10]}   # k=2: exact S(omega), int_0^T C, tau_c (daedalus.api.spectra)
     policy: {use_cache: true, parallel: false, n_workers: 4, verbose: false,
              mode: permissive,                   # model analyzer: or strict
-             allow_taylor_truncation: true,      # consents (api.analyze.Policy)
+             allow_taylor_truncation: true,      # consents (daedalus.api.analyze.Policy)
              downgrade: [G4_NEGATIVE_VARIANCE],  # errors accepted as warnings
              preflight: true,                    # false: analyzer gates off
-             backend: state_space,               # an explicit backend (api.routing)
+             backend: state_space,               # an explicit backend (daedalus.api.routing)
              discard: auto}                      # true | false | auto: release diagrams after use
     outputs: {npz: out/c.npz, csv: out/c.csv, plot: out/c.png, report_pdf: out/r.pdf}
     output: results/                  # a directory or a file stem: .npz/.csv/.png
 
-An inline SDE (instead of ``model:``; built with ``api.sde.SDE``, so the
+An inline SDE (instead of ``model:``; built with ``daedalus.api.sde.SDE``, so the
 noise and the action are derived exactly as for a Python-built model)::
 
     sde:
@@ -43,7 +43,7 @@ noise and the action are derived exactly as for a Python-built model)::
         D: {default: 1.0, domain: positive}
       fields: [x]
       drift: {x: "-mu*x - eps*x^3"}   # or equations: {x: {lhs: ..., rhs: ...}}
-      noise:                          # type = a class of api.noise, the rest are its arguments
+      noise:                          # type = a class of daedalus.api.noise, the rest are its arguments
         xi: {type: Gaussian, var: "2*D", into: {x: 1}}   # couples: is the former name
                                       # (interpretation: per source, optional)
       interpretation: ito             # or stratonovich, marcus
@@ -51,7 +51,7 @@ noise and the action are derived exactly as for a Python-built model)::
       marcus_route: auto              # or series (marcus: exact for affine couplings)
       stability_analysis: true
 
-The block also takes the rest of the builder (``api.sde_text``; ``SDE.to_text()``
+The block also takes the rest of the builder (``daedalus.api.sde_text``; ``SDE.to_text()``
 writes any model in this form and ``SDE.from_text()`` reads it)::
 
       n_populations: 2                # SDE(name, n_populations=...); space: d for an SPDE
@@ -109,21 +109,21 @@ SDE_GAUSSIAN_KEYS = ('sigma', 'tol')
 SDE_POINT_PROCESS_KEYS = ('rate', 'jump_size', 'population', 'domain', 'description', 'size')
 SDE_OBSERVABLE_KEYS = ('expr', 'population', 'description')
 SDE_OPERATOR_TYPES = ('TimeDerivative', 'Laplacian')
-#: the ``type:`` of an inline noise source (classes of api.noise); a jump law
-#: inside one is any ``api.noise.JumpDistribution`` subclass
-from api.noise import SOURCE_TYPES as SDE_NOISE_TYPES  # noqa: E402
-from engine.errors import DaedalusError
+#: the ``type:`` of an inline noise source (classes of daedalus.api.noise); a jump law
+#: inside one is any ``daedalus.api.noise.JumpDistribution`` subclass
+from daedalus.api.noise import SOURCE_TYPES as SDE_NOISE_TYPES  # noqa: E402
+from daedalus.engine.errors import DaedalusError
 
 QUESTION_KEYS = ('k', 'max_ell', 'external_fields', 'tau_grid', 'chi_grid',
                  'spatial_grid', 'points', 'taylor_order', 'accuracy', 'delay',
                  'spectra')
-#: the keys of ``question.spectra`` (``api.spectra``)
+#: the keys of ``question.spectra`` (``daedalus.api.spectra``)
 SPECTRA_KEYS = ('omega', 'T', 'method')
 POLICY_KEYS = ('use_cache', 'parallel', 'n_workers', 'verbose', 'preflight',
                'backend', 'discard',
                'mode', 'allow_taylor_truncation', 'allow_markov_embedding',
                'allow_numeric_fallback', 'interpretation', 'downgrade')
-#: the policy keys that go to the model analyzer (``api.analyze.Policy``)
+#: the policy keys that go to the model analyzer (``daedalus.api.analyze.Policy``)
 ANALYZER_POLICY_KEYS = ('mode', 'allow_taylor_truncation',
                         'allow_markov_embedding', 'allow_numeric_fallback',
                         'interpretation', 'downgrade')
@@ -303,7 +303,7 @@ class _Parser:
         """The inline ``sde:`` block -> ``{'spec': plain dict, 'lines': {...}}``.
         Structure is checked here; the SDE builder checks the content when
         the model is built (its errors are reported at the line of the
-        entry they name).  ``api.sde.SDE.from_text`` reads the same block."""
+        entry they name).  ``daedalus.api.sde.SDE.from_text`` reads the same block."""
         Y = self.yaml
         items = self.mapping(node, SDE_KEYS, "'sde'")
         lines = {k: v[0].start_mark.line + 1 for k, v in items.items()}
@@ -592,9 +592,9 @@ class _Parser:
     def spectra_options(self, node):
         """``question.spectra``: ``true`` (S(0), the integrals to infinity,
         tau_c) or a mapping ``{omega: grid, T: number | list, method}``
-        (``compute_cumulants(spectra=)``, ``api.spectra``); ``false``: off.
+        (``compute_cumulants(spectra=)``, ``daedalus.api.spectra``); ``false``: off.
         Returned with the grids as ``{values: [...]}`` (literal points)."""
-        from api.spectra import resolve_spectra_options
+        from daedalus.api.spectra import resolve_spectra_options
         if isinstance(node, self.yaml.ScalarNode):
             return {} if self.boolean(node, 'question.spectra') else None
         items = self.mapping(node, SPECTRA_KEYS, "'question.spectra'")
@@ -621,9 +621,9 @@ class _Parser:
 
     def delay_options(self, node):
         """``question.delay``: the options of the Pade route for models with
-        delays (``api.delay.DEFAULTS`` names; ``compute_cumulants(delay=)``),
-        validated by ``api.delay.resolve_options``."""
-        from api.delay import DEFAULTS, resolve_options
+        delays (``daedalus.api.delay.DEFAULTS`` names; ``compute_cumulants(delay=)``),
+        validated by ``daedalus.api.delay.resolve_options``."""
+        from daedalus.api.delay import DEFAULTS, resolve_options
         items = self.mapping(node, tuple(DEFAULTS), "'question.delay'")
         out = {}
         for key, (_knode, vnode) in items.items():
@@ -767,13 +767,13 @@ class _Parser:
             if not isinstance(node, self.yaml.SequenceNode):
                 self.fail(node, 'policy.downgrade must be a list of finding '
                                 'codes, e.g. [G4_NEGATIVE_VARIANCE]')
-            from api.analyze import FINDING_CODES, _NEVER_DOWNGRADE
+            from daedalus.api.analyze import FINDING_CODES, _NEVER_DOWNGRADE
             codes = []
             for n in node.value:
                 c = self.string(n, 'policy.downgrade entry')
                 if FINDING_CODES.get(c, ('', ''))[1] != 'error':
                     self.fail(n, f'policy.downgrade: {c!r} is not an error '
-                                 'code of api.analyze.FINDING_CODES')
+                                 'code of daedalus.api.analyze.FINDING_CODES')
                 if c in _NEVER_DOWNGRADE:
                     self.fail(n, f'policy.downgrade: {c!r} cannot be '
                                  'downgraded (the run cannot go past it)')
@@ -825,17 +825,17 @@ def _sde_plain(block):
 
 
 def _noise_object(desc):
-    """``{type: Gaussian, var: ...}`` -> an ``api.noise`` object; mappings
+    """``{type: Gaussian, var: ...}`` -> an ``daedalus.api.noise`` object; mappings
     with a ``type`` inside it are jump laws; ``kernel:`` of a Gaussian is
-    the image of an :class:`api.delay.Kernel`."""
-    from api import noise as N
+    the image of an :class:`daedalus.api.delay.Kernel`."""
+    from daedalus.api import noise as N
     args = {}
     for key, value in desc.items():
         if key in ('type', 'couples', 'into', 'interpretation', 'as_field', 'population',
                    'domain'):
             continue
         if key == 'kernel' and value is not None:
-            from api.delay import Kernel
+            from daedalus.api.delay import Kernel
             value = Kernel(**value) if isinstance(value, dict) else Kernel(str(value))
         elif isinstance(value, dict) and 'type' in value:
             law = getattr(N, str(value['type']), None)
@@ -854,15 +854,15 @@ def _noise_object(desc):
 
 
 def sde_from_block(block, src='<text>'):
-    """The :class:`api.sde.SDE` of a parsed ``sde:`` block (unbuilt).
+    """The :class:`daedalus.api.sde.SDE` of a parsed ``sde:`` block (unbuilt).
     Builder errors become ``ConfigError`` at the line of the entry they
     name.  Declaration order: operators, populations, parameters,
     functions, kernels; then ``fields`` in order (an entry that is a point
     process or the field a noise source creates, ``as_field`` or the state
     of a coloured source, declares that); then the equations, the other
     noise sources, the model-wide settings and the observables."""
-    from api.operators import Laplacian, TimeDerivative
-    from api.sde import SDE
+    from daedalus.api.operators import Laplacian, TimeDerivative
+    from daedalus.api.sde import SDE
     spec, lines = block['spec'], block['lines']
     s = SDE(spec.get('name', 'config SDE'), spec.get('n_populations'), space=spec.get('space'))
 
@@ -885,7 +885,7 @@ def sde_from_block(block, src='<text>'):
         at(line, lambda name=name, entry=entry: s.define_function(name, **entry))
     for name, (entry, line) in (spec.get('kernels') or {}).items():
         if 'gaussian' in entry:
-            from api.delay import Kernel
+            from daedalus.api.delay import Kernel
             entry = {'kernel': Kernel.gaussian(**entry['gaussian'])}
         at(line, lambda name=name, entry=entry: s.define_kernel(name, **entry))
     noise = dict(spec.get('noise') or {})
@@ -950,7 +950,7 @@ def sde_from_block(block, src='<text>'):
 
 
 def _build_sde(raw):
-    """The model dict of an inline ``sde:`` block (``api.sde.SDE``).
+    """The model dict of an inline ``sde:`` block (``daedalus.api.sde.SDE``).
     Builder errors become ``ConfigError`` at the line of the entry they
     name."""
     block = raw['sde']
@@ -1000,7 +1000,7 @@ def _load_model(raw):
         if not os.path.isfile(path):
             raise ConfigError(src, line, f'no model file at {path}')
         if os.path.dirname(path) == os.path.normpath(dd.MODELS_DIR):
-            return dd.load_model(os.path.basename(path)[:-len('.model.py')])
+            return dd.load_model(path)
         import importlib.util
         name = os.path.basename(path)[:-len('.model.py')]
         mspec = importlib.util.spec_from_file_location(f'models.{name}', path)
@@ -1169,7 +1169,7 @@ def resolve(raw, model, mod):
                                    f'give the unit, [{name}, i] with 1 <= i <= {npop}')
                 idx = 1
             # spatial callers label the legs (phi, 1), (phi, 2): the second
-            # entry is a slot, not a population (as in api.analyze G0)
+            # entry is a slot, not a population (as in daedalus.api.analyze G0)
             if idx > npop and not spatial:
                 raise ConfigError(
                     src, line, f'external field {name!r} has {npop} '
@@ -1352,8 +1352,8 @@ def dry_run_report(resolved, model):
     J) for a resolved config, with the route the router would pick, or
     ``None`` when the config turns the analyzer off (``preflight: false``)."""
     from dataclasses import asdict, replace
-    from api import routing
-    from api.analyze import Policy, Question, analyze
+    from daedalus.api import routing
+    from daedalus.api.analyze import Policy, Question, analyze
     pol = resolved['policy']
     if pol.get('preflight') is False:
         return None
@@ -1411,7 +1411,7 @@ def run_config(path, dry_run=False, out=None):
         return resolved
 
     import daedalus as dd
-    from api.save import save_npz, save_csv
+    from daedalus.api.save import save_npz, save_csv
     q, pol, outs = resolved['question'], resolved['policy'], resolved['outputs']
 
     tau = q.get('tau_grid')
@@ -1449,7 +1449,7 @@ def run_config(path, dry_run=False, out=None):
         plt.close(fig)
         written['plot'] = outs['plot']
     if 'report_pdf' in outs:
-        from api.report import generate_report
+        from daedalus.api.report import generate_report
         os.makedirs(os.path.dirname(outs['report_pdf']) or '.', exist_ok=True)
         generate_report(model, q['k'], parameters=resolved['parameters'],
                         external_fields=[tuple(e) for e in q['external_fields']],

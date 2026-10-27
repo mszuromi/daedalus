@@ -12,7 +12,7 @@ as a sibling ``.sobj`` file under ``saved_models/<model>/``, alongside
 the Taylor-expansion artefact ``saved_models/<model>/expand_taylor<N>.sobj``.
 
 The cache slot lives in the same directory as the propagator cache
-written by ``api._propagator``, so a single ``saved_models/<model>``
+written by ``daedalus.api._propagator``, so a single ``saved_models/<model>``
 directory holds all symbolic+combinatorial state for a model.
 
 Cache invalidation
@@ -26,13 +26,13 @@ from __future__ import annotations
 
 import re
 
-from api._propagator import cache_signature_stale, model_cache_signature
-from engine.core.cache import PipelineCache
-from engine.core.vertices import ConvVertexType
-from engine.diagrams.causality import filter_causal
-from engine.diagrams.symmetry import deduplicate_with_multiplicities
-from engine.diagrams.type_assignment import enumerate_all as enumerate_all_typed
-from engine.enumeration import prediagram_cache as pd_format
+from daedalus.api._propagator import cache_signature_stale, model_cache_signature
+from daedalus.engine.core.cache import PipelineCache
+from daedalus.engine.core.vertices import ConvVertexType
+from daedalus.engine.diagrams.causality import filter_causal
+from daedalus.engine.diagrams.symmetry import deduplicate_with_multiplicities
+from daedalus.engine.diagrams.type_assignment import enumerate_all as enumerate_all_typed
+from daedalus.engine.enumeration import prediagram_cache as pd_format
 
 
 def _ext_fields_tag(external_fields):
@@ -52,11 +52,11 @@ def _ext_fields_tag(external_fields):
 PREDIAGRAM_CACHE_ROOT = 'saved_prediagrams'
 
 #: Format selection, lookup order and the file layout all live in
-#: :mod:`engine.enumeration.prediagram_cache`.  In short: a local v2 file
+#: :mod:`daedalus.engine.enumeration.prediagram_cache`.  In short: a local v2 file
 #: (packed certs -- ~4-5x smaller on disk, ~350x smaller live) is preferred,
 #: a local v1 file (pickled Sage records, written by older runs) is still
 #: read but never written, the cells shipped with the package
-#: (``engine/enumeration/shipped_prediagrams/``, k <= 4 and ell <= 2 plus a few
+#: (``daedalus/engine/enumeration/shipped_prediagrams/``, k <= 4 and ell <= 2 plus a few
 #: more) are read next, and only a miss on all three computes via the
 #: streaming path and writes a local v2 file.  Nothing under this root is
 #: tracked in git.
@@ -150,7 +150,7 @@ def enumerate_unique_diagrams(
     parallel : bool, default False
         If True, fan the per-prediagram type-assignment stage across a
         fork-based ``multiprocessing.Pool`` (see
-        ``engine.diagrams.type_assignment.enumerate_all``).  Skipped on
+        ``daedalus.engine.diagrams.type_assignment.enumerate_all``).  Skipped on
         cache hits; serial on macOS, which never forks.
     n_workers : int or None, default None
         Worker count when ``parallel=True``.  ``None`` lets the
@@ -212,7 +212,7 @@ def enumerate_unique_diagrams(
     # order, so a warm run summed the same diagrams in another order than the
     # cold run that wrote the file (totals moved in the last bits).  v4 files
     # hold ``PrediagramRecord``s, which pickle their construction inputs and
-    # come back bit for bit (``engine.enumeration.prediagram_cache``).
+    # come back bit for bit (``daedalus.engine.enumeration.prediagram_cache``).
     stage_name = f'unique_typed_mult_v4_{ext_tag}_taylor{ft.taylor_order}'
     # Conductance vertices: before it a warm expand cache built
     # plain vertices for them and the typed-diagram cache stored those, so

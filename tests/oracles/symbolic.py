@@ -1,7 +1,7 @@
 """
 tests.oracles.symbolic
 ======================
-Test-only reference (was ``engine.integration.symbolic``; moved out of
+Test-only reference (was ``daedalus.engine.integration.symbolic``; moved out of
 the library in audit W7: no production module imports it).
 
 Construct and evaluate diagram integral expressions symbolically
@@ -46,7 +46,7 @@ from collections import defaultdict
 
 from sage.all import SR, I, pi, exp, matrix, QQ
 
-from engine.diagrams.symmetry import classify_coefficient_factors
+from daedalus.engine.diagrams.symmetry import classify_coefficient_factors
 
 
 # ═══════════════════════════════════════════════════════════════════════════

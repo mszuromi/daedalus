@@ -1,6 +1,6 @@
 """
 Two-compartment (soma + dendrite) point-process simulator (Numba JIT) for
-``models/dendritic_quad_soma_sigmoid.model.py``.
+``daedalus/models/dendritic_quad_soma_sigmoid.model.py``.
 
 Voltage formulation — each compartment carries a voltage that exponentially
 low-pass-filters its synaptic input:
@@ -19,7 +19,7 @@ somatic voltage by wSD/tauS and decays over tauS (∫ = wSD), matching the
 framework's unit-DC-gain propagator 1/(1+iωτS).
 
 Output shape matches the Hawkes ``binned_counts`` convention so
-``simulations.cumulant_estimator`` consumes it directly.
+``daedalus.simulations.cumulant_estimator`` consumes it directly.
 """
 from __future__ import annotations
 

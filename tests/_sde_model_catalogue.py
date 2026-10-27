@@ -1,4 +1,4 @@
-"""A catalogue of SDE front-end models (api/sde.py) written with the default ``Dt``.
+"""A catalogue of SDE front-end models (daedalus/api/sde.py) written with the default ``Dt``.
 
 The declarations are taken from the SDE tests (test_sde_frontend, test_marcus, test_point_process_front_end,
 test_delay_kernels, test_delay_nonlinear) and the README.  tests/test_declared_operators.py checks that their derived
@@ -6,10 +6,10 @@ action text, mean-field equations and built model dicts stay byte-identical to t
 tests/fixtures/declared_operators_sde_golden.json (written before declared operators existed), and
 ``digest`` is the snapshot's form of a built model dict.
 """
-from api.delay import Kernel
-from api.noise import (CompoundPoisson, Cumulants, Dirac, Exponential, Gaussian, GammaProcess, Poisson,
+from daedalus.api.delay import Kernel
+from daedalus.api.noise import (CompoundPoisson, Cumulants, Dirac, Exponential, Gaussian, GammaProcess, Poisson,
                        Uniform)
-from api.sde import SDE
+from daedalus.api.sde import SDE
 
 
 def _ou(name, rhs, defaults, drift_form=True, stability=None):

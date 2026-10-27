@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 pytest.importorskip('sage.all')
 
-from api import _mean_field_dae as MF          # noqa: E402
+from daedalus.api import _mean_field_dae as MF          # noqa: E402
 
 
 def _residual(rows):

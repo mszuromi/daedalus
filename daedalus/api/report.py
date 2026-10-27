@@ -1,5 +1,5 @@
 """
-api.report — multi-page PDF showing prediagrams, typed-diagram
+daedalus.api.report — multi-page PDF showing prediagrams, typed-diagram
 assignments, and per-diagram numerical contributions.
 
 The report is meant for *intuition-building*:  scroll through diagrams,
@@ -28,7 +28,7 @@ from datetime import datetime
 
 import numpy as np
 
-from api.compute import compute_cumulants
+from daedalus.api.compute import compute_cumulants
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ def _install_pdf_repr_sage_fallback():
 def _plt():
     """``matplotlib.pyplot``, imported on first use with the PDF fallback
     above installed (importing it with the module cost ~0.4 s of every
-    ``from api import ...``)."""
+    ``from daedalus.api import ...``)."""
     import matplotlib.pyplot as plt
     _install_pdf_repr_sage_fallback()
     return plt
@@ -96,7 +96,7 @@ def _canonical_view(td):
     same canonical labelling.  Two labelled representatives of one class
     therefore get the same page.
     """
-    from engine.diagrams.symmetry import _colored_incidence_digraph, diagram_signature
+    from daedalus.engine.diagrams.symmetry import _colored_incidence_digraph, diagram_signature
     D, _, _, color_groups = _colored_incidence_digraph(td, fix_external=False)
     # The class key IS ``diagram_signature`` (whatever backend it uses); the page order comes from the canonical labelling of
     # the same coloured digraph, a function of the isomorphism class alone.
@@ -283,7 +283,7 @@ def _draw_cover_page(pdf, model, k, max_ell, fundamental,
     mf = result['mf_values']
     mf_lines = []
     # the model's saddles in declaration order, labelled by their field
-    from api.naming import saddle_label, saddle_names
+    from daedalus.api.naming import saddle_label, saddle_names
     order = saddle_names(model)
     names = [n for n in order if n in mf] + [n for n in mf if n not in order]
     for name in names:
@@ -373,7 +373,7 @@ def _pages_in_canonical_order(records):
 def _diagram_contribution_curve(contrib, tau_grid, k):
     """One diagram's k=2 slice C_Γ(0, τ) on ``tau_grid``, sampled like the
     total (``C_tau``): Itô left limit at τ=0."""
-    from api.compute import _ito_nudge_callable
+    from daedalus.api.compute import _ito_nudge_callable
     fn = _ito_nudge_callable(contrib, k)
     return np.array([complex(fn(0.0, float(t))) for t in tau_grid],
                     dtype=complex)
@@ -562,8 +562,8 @@ def generate_report(
         return result
 
     # Backstop: never let a path built from ``str(params_dict)`` create a
-    # junk ``{...}/`` directory (see api.save._sanitize_output_path).
-    from api.save import _sanitize_output_path
+    # junk ``{...}/`` directory (see daedalus.api.save._sanitize_output_path).
+    from daedalus.api.save import _sanitize_output_path
     output_pdf = _sanitize_output_path(output_pdf)
 
     if verbose:

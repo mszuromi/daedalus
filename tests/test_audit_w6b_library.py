@@ -36,10 +36,10 @@ import scipy.linalg as sla
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                          # noqa: E402
-from api.model import ModelBuilder                         # noqa: E402
-from api.noise import Gaussian, NormalInverseGaussian      # noqa: E402
-from api.sde import SDE                                    # noqa: E402
+from daedalus.api import compute_cumulants                          # noqa: E402
+from daedalus.api.model import ModelBuilder                         # noqa: E402
+from daedalus.api.noise import Gaussian, NormalInverseGaussian      # noqa: E402
+from daedalus.api.sde import SDE                                    # noqa: E402
 
 RUN = dict(parallel=False, verbose=False, use_cache=False)
 
@@ -71,7 +71,7 @@ def test_loud01_nig_symbolic_parameters_match_closed_form():
 
 def test_loud01_nig_cgf_vanishes_at_zero_for_symbols():
     from sage.all import SR
-    from api.noise import THETA
+    from daedalus.api.noise import THETA
     K = NormalInverseGaussian('na', 'nb', 'nd').action_cgf()
     assert SR(K.subs({THETA: 0})).is_trivial_zero()
 
@@ -96,7 +96,7 @@ def _ou3(fmt, tag):
 
 
 def test_gen08_float_three_field_symbolic_c2_matches_lyapunov():
-    from api.symbolic_out import tree_covariance
+    from daedalus.api.symbolic_out import tree_covariance
     Q = sum(v * np.outer(bv, bv) for bv, v in _BS)
     Sig = sla.solve_continuous_lyapunov(_A, -Q)
     taus = np.array([0.0, 0.5, 1.3])
@@ -116,7 +116,7 @@ def test_gen08_float_three_field_symbolic_c2_matches_lyapunov():
 
 def test_gen08_supplied_inverse_in_wrong_convention_is_refused():
     from sage.all import SR, matrix
-    from api.symbolic_out import tree_covariance_from_matrices, SymbolicOutError
+    from daedalus.api.symbolic_out import tree_covariance_from_matrices, SymbolicOutError
     w = SR.var('omega')
     K = matrix(SR, [[SR.I() * w + 1, SR(2)], [SR(0), SR.I() * w + 3]])
     G = K.inverse()
@@ -129,7 +129,7 @@ def test_gen08_supplied_inverse_in_wrong_convention_is_refused():
 # ── GEN-15 ────────────────────────────────────────────────────────────
 def test_gen15_complex_hurwitz_test_matches_eigenvalues():
     from sage.all import matrix, QQ
-    from api._realization import _routh_hurwitz, _gauss_field
+    from daedalus.api._realization import _routh_hurwitz, _gauss_field
     F = _gauss_field()
     I = F.gen()
     rng = random.Random(11)
@@ -186,7 +186,7 @@ def _ei(P, Q, with_taug=True):
 
 
 def _arrays(m, P):
-    from simulations.hawkes_sim_multipop_numba import build_sim_arrays
+    from daedalus.simulations.hawkes_sim_multipop_numba import build_sim_arrays
     r = compute_cumulants(m, k=1, max_ell=0, external_fields=[(f'n{P}', 1)],
                           tau_grid=np.array([0.0]), **RUN)
     f = {p['name']: p['default'] for p in m['parameters'] if p.get('default') is not None}
@@ -210,7 +210,7 @@ def test_gen16_missing_time_constant_of_a_filter_raises():
 
 def test_gen16_delta_kernel_needs_no_time_constant():
     import daedalus as dd
-    from simulations.hawkes_sim_multipop_numba import build_sim_arrays
+    from daedalus.simulations.hawkes_sim_multipop_numba import build_sim_arrays
     m, mod = dd.load_model('single_population_spike_reset_test')
     f = {**dd.fundamental_from_model(m), **(getattr(mod, 'DEFAULT_FUNDAMENTAL', {}) or {})}
     r = compute_cumulants(m, k=1, max_ell=0, external_fields=[('n', 1)],

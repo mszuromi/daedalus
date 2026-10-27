@@ -1,6 +1,6 @@
 """
-engine.integration.spatial.momentum_routing
-===========================================
+daedalus.engine.integration.spatial.momentum_routing
+====================================================
 Momentum routing for spatial Feynman diagrams — the pre-integration
 step that runs AFTER typing and BEFORE the (t,k) integral
 (re-architecture plan §4a).

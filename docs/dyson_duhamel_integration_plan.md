@@ -37,7 +37,7 @@ computable. Today the code is hard‑gated to a single scalar diffusion `D` (`�
 so only the `n=0` term is realized. Builds on the internal design notes (not distributed).
 
 **Done (validated, committed):**
-- **Spectral reference propagator** `G₀` — `engine/integration/spatial/spectral_propagator.py`
+- **Spectral reference propagator** `G₀` — `daedalus/engine/integration/spatial/spectral_propagator.py`
   (`D₀` split, eigenprojectors `P_α`, `G₀=Σ_α P_α e^{−(m_α+D₀|k|²)t}`). Commit `24135f1`.
 - **`M`/`𝒟` extraction** from the symbolic `K_ft` — `heat_kernel.reaction_diffusion_matrices`.
   Commit `0205e42`. (Full chain `K_ft → M,𝒟 → G₀ == expm` validated.)

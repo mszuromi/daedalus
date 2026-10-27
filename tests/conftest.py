@@ -67,9 +67,9 @@ def shuffle_diagram_order(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fresh_delay_order_cache():
     """A delayed model's automatic Pade order is cached for the process
-    (``api.delay``); a test that asserts the order search starts from none."""
+    (``daedalus.api.delay``); a test that asserts the order search starts from none."""
     import sys
-    mod = sys.modules.get('api.delay')
+    mod = sys.modules.get('daedalus.api.delay')
     if mod is not None:
         mod.clear_order_cache()
     yield

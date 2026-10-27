@@ -1,6 +1,6 @@
 """
-engine.core.cache
-=================
+daedalus.engine.core.cache
+==========================
 Persistent, stage-based cache for Feynman diagram pipeline results.
 
 Each model's computed results are stored in a single directory.  Pipeline
@@ -10,7 +10,7 @@ so that restarting a notebook can skip expensive re-computation.
 
 Typical usage in a notebook::
 
-    from engine.core.cache import PipelineCache
+    from daedalus.engine.core.cache import PipelineCache
 
     cache = PipelineCache("saved_results/hawkes_2pop")
 

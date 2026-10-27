@@ -85,7 +85,7 @@ import math
 from fractions import Fraction
 
 import numpy as np
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 try:
     import numba as _numba

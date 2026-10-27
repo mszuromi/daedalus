@@ -53,7 +53,7 @@ So: *given a compiled KPZ/Burgers diagram, the integrator computes it.*
 ## The remaining blocker — the v2 k-explicit propagator kernel (Phase 3)
 
 KPZ/Burgers cannot yet COMPILE through `compute_cumulants`. Exact failure
-(`api/model_compiler.py:796`):
+(`daedalus/api/model_compiler.py:796`):
 
 > `NotImplementedError: operator IR: bilinear 'Dx' has no v1 lowering yet (only Lap/Dt); a k-explicit kernel builder is needed.`
 

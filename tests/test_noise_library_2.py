@@ -1,5 +1,5 @@
-"""Noise library, round 2 (item 48): the finite-moment Levy sources / jump laws / composites of api/noise.py
-and their samplers (api/noise_samplers.py).
+"""Noise library, round 2 (item 48): the finite-moment Levy sources / jump laws / composites of daedalus/api/noise.py
+and their samplers (daedalus/api/noise_samplers.py).
 
 A  every CGF: cumulant rates (orders 1-4) against independent closed forms, action round trip, domain errors;
 B  every sampler: sample cumulants / jump moments against the exact values (fixed seeds, batch standard errors);
@@ -14,11 +14,11 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR                                                          # noqa: E402
 
-import api.compute as AC                                                         # noqa: E402
-import api.noise as N                                                            # noqa: E402
-from api.noise import NoiseError                                                 # noqa: E402
-from api.noise_samplers import euler_ou_cumulant, simulate_ou_paths              # noqa: E402
-from api.sde import SDE, SDEError                                                # noqa: E402
+import daedalus.api.compute as AC                                                         # noqa: E402
+import daedalus.api.noise as N                                                            # noqa: E402
+from daedalus.api.noise import NoiseError                                                 # noqa: E402
+from daedalus.api.noise_samplers import euler_ou_cumulant, simulate_ou_paths              # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                                # noqa: E402
 from tests.test_sde_frontend import _same, _to_sr                                # noqa: E402
 
 M4 = (1, 2, 3, 4)
@@ -347,7 +347,7 @@ def test_sampler_edge_cases():
 
 def test_meixner_inversion_table_is_accurate():
     """deterministic check of the inversion table (no sampling noise): moments of the tabulated law."""
-    from api.noise_samplers import _meixner_table
+    from daedalus.api.noise_samplers import _meixner_table
     for alpha, beta, d in ((1.0, 0.3, 1.0), (1.0, -0.5, 0.05), (2.0, 0.9, 7.0)):
         cdf, z = _meixner_table(alpha, beta, d)
         pdf_mass = np.diff(cdf)
@@ -454,7 +454,7 @@ def test_sum_operator_and_flattening():
 
 
 def test_config_accepts_new_source_types():
-    from api.config_run import SDE_NOISE_TYPES
+    from daedalus.api.config_run import SDE_NOISE_TYPES
     assert {'VarianceGamma', 'CGMY', 'Meixner', 'NormalInverseGaussian'} <= set(SDE_NOISE_TYPES)
 
 

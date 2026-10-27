@@ -1,4 +1,4 @@
-"""SDE front end with drifts that have no syntactic field-independent linear term (api/sde.py ``_normalise_lhs``).
+"""SDE front end with drifts that have no syntactic field-independent linear term (daedalus/api/sde.py ``_normalise_lhs``).
 
 A rational or exponential drift (``-x/(1+eps*x^2)``, ``-x*exp(-eps*x^2)``), or a drift whose linear coefficient holds
 a field, used to be refused: the mean-field equation of ``Dt*x = drift`` needs ``lhs|_{Dt=0} != 0``, and the front end
@@ -18,10 +18,10 @@ import pytest
 pytest.importorskip('sage.all')
 from scipy.integrate import quad                                              # noqa: E402
 
-import api.compute as AC                                                       # noqa: E402
-from api.analyze import analyze                                                # noqa: E402
-from api.noise import Gaussian                                                 # noqa: E402
-from api.sde import SDE, SDEError                                              # noqa: E402
+import daedalus.api.compute as AC                                                       # noqa: E402
+from daedalus.api.analyze import analyze                                                # noqa: E402
+from daedalus.api.noise import Gaussian                                                 # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                              # noqa: E402
 
 TAU = np.array([0.0, 1.0])
 
@@ -168,7 +168,7 @@ def test_restoring_rational_drift_is_not_flagged():
 
 
 def test_stability_is_independent_of_c():
-    from api._mean_field_dae import linear_stability, solve_mean_field_dae
+    from daedalus.api._mean_field_dae import linear_stability, solve_mean_field_dae
     par = {'eps': 0.05}
     eig = []
     for c in (None, 1, 5.0):
@@ -263,7 +263,7 @@ def test_an_rhs_that_cannot_be_split_is_still_refused_with_the_workaround():
 
 def test_unreadable_lhs_names_the_workaround(monkeypatch):
     s = SDE('t').field('x').equation('x', lhs='Dt*x', rhs='-x').noise('xi', Gaussian(var='2'), couples={'x': 1})
-    import api.sde as mod
+    import daedalus.api.sde as mod
     real = mod.parse_expr
 
     def boom(text, what=''):

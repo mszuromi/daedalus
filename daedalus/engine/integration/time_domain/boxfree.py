@@ -74,7 +74,7 @@ from functools import cmp_to_key
 
 import numpy as np
 
-from engine.integration.time_domain import expdd
+from daedalus.engine.integration.time_domain import expdd
 
 OK = expdd.OK
 OVERFLOW = expdd.OVERFLOW
@@ -223,7 +223,7 @@ def _abs_det_exact(ax, ay, bx, by):
 
 # one copy: exactly opposite normals whose half-planes
 # do not overlap, exact comparisons only
-from engine.integration.time_domain.final_integral import (  # noqa: E402
+from daedalus.engine.integration.time_domain.final_integral import (  # noqa: E402
     _opposite_rows_empty)
 
 

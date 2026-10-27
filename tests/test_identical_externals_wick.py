@@ -2,7 +2,7 @@
 fields in the per-diagram Phase J path.
 
 Before the fix, ``integrate_diagram``'s ``contribution`` closure
-(``engine/integration/time_domain/final_integral.py``) enumerated 2!
+(``daedalus/engine/integration/time_domain/final_integral.py``) enumerated 2!
 Wick contractions for ⟨x(t1) x(t2)⟩ when both externals were the same
 field (e.g. ``[('x', 1), ('x', 1)]``) and re-fed ``ext_time_values``
 through each permutation.  With ``origin_leaf_idx`` pinning one leaf at
@@ -26,7 +26,7 @@ import sys
 import numpy as np
 
 MODEL_PATH = os.path.join(
-    os.path.dirname(__file__), '..', 'models',
+    os.path.dirname(__file__), '..', 'daedalus', 'models',
     'toy_quartic_double_well.model.py',
 )
 
@@ -41,7 +41,7 @@ def _load_model(path):
 def _run_tree():
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     m = _load_model(MODEL_PATH)
     mu, D = -1.0, 0.1
     fundamental = {'mu': [mu], 'g': [1.0], 'D': [D]}
@@ -85,7 +85,7 @@ def test_identical_externals_match_OU_perdiag():
 def _run_1loop():
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     m = _load_model(MODEL_PATH)
     fundamental = {'mu': [-1.0], 'g': [1.0], 'D': [0.1]}
     return compute_cumulants(
@@ -128,15 +128,15 @@ def test_1loop_symmetric_in_tau_perdiag():
 def _run_ou_quartic_2loop(eps):
     """Helper: run OU+εx³ to 2 loops at the symmetric saddle xstar=0.
 
-    Uses the production model ``models/ou_quartic_double_well``
+    Uses the production model ``daedalus/models/ou_quartic_double_well``
     (with literal sign convention ``dx = (−μx − εx³)dt + √(2D)dW``)
     so the Boltzmann perturbative coefficients match exactly.
     """
     sys.path.insert(0, os.path.abspath(
         os.path.join(os.path.dirname(__file__), '..')))
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     model_path = os.path.join(
-        os.path.dirname(__file__), '..', 'models',
+        os.path.dirname(__file__), '..', 'daedalus', 'models',
         'ou_quartic_double_well.model.py',
     )
     m = _load_model(model_path)

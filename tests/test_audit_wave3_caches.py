@@ -31,10 +31,10 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                       # noqa: E402
-from api._propagator import (cache_signature_stale,     # noqa: E402
+from daedalus.api import compute_cumulants                       # noqa: E402
+from daedalus.api._propagator import (cache_signature_stale,     # noqa: E402
                              model_cache_signature)
-from api.model import TemporalModelBuilder              # noqa: E402
+from daedalus.api.model import TemporalModelBuilder              # noqa: E402
 
 TAU = np.array([0.0, 1.0])
 
@@ -103,7 +103,7 @@ def _lyapunov(T, tau):
 
 
 def test_files_without_a_signature_are_stale(tmp_path, monkeypatch):
-    from engine.core.cache import PipelineCache
+    from daedalus.engine.core.cache import PipelineCache
     monkeypatch.chdir(tmp_path)
     tau = np.array([0.0, 1.0, 3.0])
     _run(_kernel_model(1), True, max_ell=0, tau=tau)
@@ -134,7 +134,7 @@ def test_files_without_a_signature_are_stale(tmp_path, monkeypatch):
 
 def test_short_local_prediagram_cell_is_not_served(tmp_path):
     import json
-    import engine.enumeration.prediagram_cache as P
+    import daedalus.engine.enumeration.prediagram_cache as P
     man = json.load(open(os.path.join(P.SHIPPED_DIR, 'MANIFEST.json')))
     want = {(e['k'], e['ell']): e['count'] for e in man['files']}[(2, 1)]
     root = str(tmp_path / 'pd')
@@ -156,7 +156,7 @@ def test_short_local_v1_cell_is_not_served(tmp_path, monkeypatch):
     """A new case: a v1 file (another format, another cell)."""
     import json
     from sage.all import save as sage_save
-    import engine.enumeration.prediagram_cache as P
+    import daedalus.engine.enumeration.prediagram_cache as P
     man = json.load(open(os.path.join(P.SHIPPED_DIR, 'MANIFEST.json')))
     want = {(e['k'], e['ell']): e['count'] for e in man['files']}[(3, 1)]
     root = str(tmp_path / 'pd')

@@ -36,14 +36,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, I, cos, exp, heaviside, matrix, var       # noqa: E402
 
-import engine.integration.time_domain.final_integral as FI         # noqa: E402
-from engine.integration.time_domain import dbm_integral as DBM      # noqa: E402
-from engine.integration.time_domain.final_integral import EdgeModeSum  # noqa: E402
-import engine.integration.time_domain.statespace as SS              # noqa: E402
-from api import compute_cumulants                                   # noqa: E402
-from api import _propagator as PR                                   # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE                                             # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI         # noqa: E402
+from daedalus.engine.integration.time_domain import dbm_integral as DBM      # noqa: E402
+from daedalus.engine.integration.time_domain.final_integral import EdgeModeSum  # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS              # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api import _propagator as PR                                   # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
 
 SCALES = [1e-6, 1e-3, 1.0, 1e3, 1e6]
 RUN = dict(parallel=False, verbose=False, use_cache=False)
@@ -167,7 +167,7 @@ def test_complex_exponential_kernel_image_without_sage_integral():
     had no image, and the mean-field check took it as normalised (gain 1
     against the solver's 1/2: 'saddle does not satisfy its own
     equations').  Growing and undamped terms are still refused."""
-    from api.model_compiler import causal_exponential_ft
+    from daedalus.api.model_compiler import causal_exponential_ft
     t, w, r = SR.var('t'), SR.var('w'), SR.var('r')
     f = (r / 2) * (exp((-r + I * r) * t) + exp((-r - I * r) * t)) * heaviside(t)
     g = causal_exponential_ft(f, t, w, positive={'r'})
@@ -184,7 +184,7 @@ def test_exp_form_kernel_model_without_sage_integral(engine, monkeypatch):
     complex-exponential kernel fails (monkeypatched), the structural transform
     builds the image, and the pole engine's one loop is the state-space
     value of the cos-written kernel."""
-    import engine.core.field_theory as FT
+    import daedalus.engine.core.field_theory as FT
 
     def no_integral(*a, **k):
         raise ValueError('Maxima requested additional constraints (simulated)')

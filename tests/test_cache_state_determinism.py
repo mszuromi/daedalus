@@ -19,7 +19,7 @@ import textwrap
 import pytest
 
 pytest.importorskip("sage.all")
-from engine.enumeration import prediagram_cache as pdc            # noqa: E402
+from daedalus.engine.enumeration import prediagram_cache as pdc            # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -60,7 +60,7 @@ def test_records_pickle_bit_for_bit(k, ell):
 
 
 def test_eager_records_are_rebuilt_as_the_same_labelled_graphs():
-    from engine.enumeration.loop_diagram_enumeration import enumerate_all
+    from daedalus.engine.enumeration.loop_diagram_enumeration import enumerate_all
     eager = enumerate_all(2, 2, verbose=False)[2]
     recs, source = pdc.load_prediagrams('unused', 2, 2, use_cache=False, stream=False)
     assert source == 'eager' and len(recs) == len(eager)
@@ -80,9 +80,9 @@ _RUN = """
     warnings.simplefilter('ignore')
     sys.path.insert(0, {root!r})
     import numpy as np
-    from api import compute_cumulants
-    from api.noise import Poisson
-    from api.sde import SDE
+    from daedalus.api import compute_cumulants
+    from daedalus.api.noise import Poisson
+    from daedalus.api.sde import SDE
     p = dict(al1=0.132, be1=0.132, ga1=3.9, al2=10.19, be2=0.0054, ga2=12.7, s=0.021,
              b1=1.04, b2=0.21)
     m = SDE('cache state twin')

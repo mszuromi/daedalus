@@ -16,7 +16,7 @@ coefficient's ``_latex_`` needs, so the emitter can be unit-tested on a
 hand-built diagram.
 """
 
-from engine.diagrams.typed_diagram_layout import (
+from daedalus.engine.diagrams.typed_diagram_layout import (
     DX, ARROWHEAD_MM, DOT_RADIUS_MM, layout_typed_diagram, mm_per_unit,
     _seg_distance, bubble_bend_deg, BOW as _BOW, MAX_BEND as _MAX_BEND,
     MIN_BUBBLE_MM,
@@ -623,7 +623,7 @@ def edge_style_map(diagrams):
 
 
 try:                                    # pragma: no cover - import guard
-    from engine.core.vertices import SourceType as _SourceType
+    from daedalus.engine.core.vertices import SourceType as _SourceType
 except Exception:                       # pragma: no cover
     _SourceType = ()
 

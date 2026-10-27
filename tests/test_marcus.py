@@ -1,4 +1,4 @@
-"""The Marcus rule for jump and non-Gaussian sources (``SDE(...).interpretation('marcus')``, api/sde.py).
+"""The Marcus rule for jump and non-Gaussian sources (``SDE(...).interpretation('marcus')``, daedalus/api/sde.py).
 
 A jump ``z`` of a source coupled through ``G = sum_i b_i d/dx_i`` moves the state along the flow of ``G``,
 ``x -> exp(z G) x``; the Ito-ordered action carries ``sum_k kappa_k/k! D_k``, ``D_k = e^{-xt.x} G^k e^{xt.x}``.
@@ -36,14 +36,14 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR                                                     # noqa: E402
 
-import api.compute as AC                                                    # noqa: E402
-from api.analyze import Policy, analyze                                     # noqa: E402
-from api.model import SpatialModelBuilder                                   # noqa: E402
-from api.noise import (CGF, CompoundPoisson, Cumulants, Dirac, Exponential,  # noqa: E402
+import daedalus.api.compute as AC                                                    # noqa: E402
+from daedalus.api.analyze import Policy, analyze                                     # noqa: E402
+from daedalus.api.model import SpatialModelBuilder                                   # noqa: E402
+from daedalus.api.noise import (CGF, CompoundPoisson, Cumulants, Dirac, Exponential,  # noqa: E402
                        GammaProcess, Gaussian, LogNormal, NoiseError, Poisson, Uniform,
                        parse_expr)
-from api.pp_simulate import _marcus_jump                                    # noqa: E402
-from api.sde import SDE, SDEError                                           # noqa: E402
+from daedalus.api.pp_simulate import _marcus_jump                                    # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                           # noqa: E402
 
 TAU = np.array([0.0, 0.7])
 
@@ -491,7 +491,7 @@ def test_marcus_policy_and_config():
 
 
 def test_config_accepts_marcus_and_series_order(tmp_path):
-    from api.config_run import load_config
+    from daedalus.api.config_run import load_config
     text = """\
 sde:
   name: affine inline
@@ -693,7 +693,7 @@ def test_exact_route_refuses_where_the_mgf_does_not_exist():
 def test_exact_route_rounding_advisory_and_series_remedy():
     """A Gaussian jump law has no one-fraction form: at a small slope the alternating mgf sum cancels.  The
     rounding advisory fires and names the series route, which is accurate there."""
-    from api.noise import GaussianJump
+    from daedalus.api.noise import GaussianJump
 
     def model(route):
         return (SDE('small slope').parameter('mu', default=1.0, domain='positive').parameter('lam', default=1.5)
@@ -714,7 +714,7 @@ def test_exact_route_rounding_advisory_and_series_remedy():
 def test_marcus_route_validation_and_config(tmp_path):
     with pytest.raises(SDEError, match="'auto' or 'series'"):
         SDE('x').marcus_route('exact')
-    from api.config_run import load_config
+    from daedalus.api.config_run import load_config
     p = tmp_path / 'm.yaml'
     p.write_text("""\
 sde:
@@ -770,7 +770,7 @@ def test_mgf_check_sees_even_order_poles():
     """Gamma(2) jumps: K = lam((1 - th theta)^(-2) - 1), whose expanded base th^2 theta^2 - 2 th theta + 1 touches 0
     at the pole without changing sign; NegativeBinomial(r = 2): (1 - p e^theta)^(-2).  Both are seen (the
     unexpanded bases and the real roots of polynomial bases), so a b past the pole is refused, not computed."""
-    from api.noise import Gamma, NegativeBinomial
+    from daedalus.api.noise import Gamma, NegativeBinomial
     c = 0.37
     quartic = ' + '.join(f'({math.comb(4, j) * (-c) ** j!r})*theta^{j}' for j in range(5))
     cases = ((CompoundPoisson('lam', Gamma(2, 'th')), {'b': 1.5, 'th': 0.5}, 2),     # n b th >= 1 from n = 2

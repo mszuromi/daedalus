@@ -1,5 +1,5 @@
-"""M7: the Phase J flags stamp of saved results (``api/save.py``,
-``api/compute.py``), the retired ``use_grouped_phase_j`` flag (W7: it only
+"""M7: the Phase J flags stamp of saved results (``daedalus/api/save.py``,
+``daedalus/api/compute.py``), the retired ``use_grouped_phase_j`` flag (W7: it only
 warns) and the visibility of the package warnings.  No number changes: the
 stamp is provenance only."""
 import math
@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture
 def FI():
     pytest.importorskip('sage.all')
-    import engine.integration.time_domain.final_integral as fi
+    import daedalus.engine.integration.time_domain.final_integral as fi
     return fi
 
 
@@ -36,7 +36,7 @@ def test_retired_grouped_flag_warns_and_changes_nothing():
     leaves no grouped entry in the flags stamp."""
     pytest.importorskip('sage.all')
     import daedalus as dd
-    import api.compute as AC
+    import daedalus.api.compute as AC
     model, _mod = dd.load_model('linear_hawkes')
     kw = dict(k=2, max_ell=0, external_fields=[('n', 1), ('n', 1)],
               tau_grid=np.array([0.0, 1.0]), parallel=False, verbose=False,
@@ -62,7 +62,7 @@ def test_retired_grouped_flag_warns_and_changes_nothing():
 
 
 def test_save_stamp_records_the_phase_j_flags(FI, monkeypatch, tmp_path):
-    from api import save as S
+    from daedalus.api import save as S
     _set_flags(monkeypatch, FI)
     flags = S._phase_j_flags()
     assert 'PHASE_J_T_MIN=-inf' in flags
@@ -82,7 +82,7 @@ def test_save_stamp_records_the_phase_j_flags(FI, monkeypatch, tmp_path):
 
 
 def test_npz_and_csv_carry_the_phase_j_flags(FI, monkeypatch, tmp_path):
-    from api import save as S
+    from daedalus.api import save as S
     res = {'config': {'k': 2, 'max_ell': 0, 'phase_j_convention':
                       S.PHASE_J_CONVENTION, 'phase_j_flags': 'X=1;Y=box',
                       'external_fields': [('dx', 1), ('dx', 1)],
@@ -99,7 +99,7 @@ def test_npz_and_csv_carry_the_phase_j_flags(FI, monkeypatch, tmp_path):
 
 
 def test_compute_cumulants_records_the_flags_it_ran_with(FI, monkeypatch):
-    import api.compute as AC
+    import daedalus.api.compute as AC
     import daedalus as dd
     model, _mod = dd.load_model('ou_quartic')
     _set_flags(monkeypatch, FI)
@@ -123,7 +123,7 @@ def test_stale_and_nquad_warnings_beat_the_environment_ignore(monkeypatch,
     import sys
     import warnings
     if which == 'stale':
-        import api.save as S
+        import daedalus.api.save as S
         category = S.StaleResultWarning
         monkeypatch.setattr(S, '_STALE_WARNED', set())
 
@@ -132,7 +132,7 @@ def test_stale_and_nquad_warnings_beat_the_environment_ignore(monkeypatch,
             S._warn_if_stale('0.1.0', None, 'x.npz')
     else:
         pytest.importorskip('sage.all')
-        import engine.integration.time_domain.final_integral as FI
+        import daedalus.engine.integration.time_domain.final_integral as FI
         category = FI.PhaseJNquadFallbackWarning
         import inspect
         src = inspect.getsource(FI)
@@ -169,11 +169,11 @@ def test_the_visibility_helpers_respect_filters_set_in_code(monkeypatch,
     import sys
     import warnings
     if which == 'stale':
-        import api.save as S
+        import daedalus.api.save as S
         helper, category = S._ensure_warning_shown, S.StaleResultWarning
     else:
         pytest.importorskip('sage.all')
-        import engine.integration.time_domain.final_integral as FI
+        import daedalus.engine.integration.time_domain.final_integral as FI
         helper = FI._ensure_warning_shown
         category = FI.PhaseJNquadFallbackWarning
     monkeypatch.setattr(sys, 'warnoptions', ['ignore'])
@@ -201,14 +201,14 @@ def test_the_visibility_helpers_respect_filters_set_in_code(monkeypatch,
 
 
 def _visibility_case(which):
-    """(helper, category, real_emit) for ``api.save`` / the engine copy."""
+    """(helper, category, real_emit) for ``daedalus.api.save`` / the engine copy."""
     import warnings
     if which == 'stale':
-        import api.save as S
+        import daedalus.api.save as S
         helper, category = S._ensure_warning_shown, S.StaleResultWarning
     else:
         pytest.importorskip('sage.all')
-        import engine.integration.time_domain.final_integral as FI
+        import daedalus.engine.integration.time_domain.final_integral as FI
         helper, category = FI._ensure_warning_shown, FI.PhaseJNquadFallbackWarning
 
     def emit(msg='probe text'):

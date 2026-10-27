@@ -21,8 +21,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, DiGraph, matrix, I                    # noqa: E402
 
-from engine.core.vertices import VertexType                    # noqa: E402
-from engine.diagrams.type_assignment import TypedDiagram       # noqa: E402
+from daedalus.engine.core.vertices import VertexType                    # noqa: E402
+from daedalus.engine.diagrams.type_assignment import TypedDiagram       # noqa: E402
 
 
 # ── ACC-68: the symbolic reference never drops an undecidable pole ─────────
@@ -89,7 +89,7 @@ def test_symbolic_reference_decided_poles_match_the_closed_form():
 def test_kernel_groups_input_is_retired_and_direct_input_is_additive():
     from tests.oracles.symbolic import (
         build_integrand_stationary, group_diagrams_by_kernel)
-    from engine.integration.time_domain.pipeline import compute_correction_td
+    from daedalus.engine.integration.time_domain.pipeline import compute_correction_td
     from tests.test_time_domain import (
         _propagator_data_2pop_nondiagonal, _tree_k2_cross_population)
     pd = _propagator_data_2pop_nondiagonal()
@@ -114,15 +114,15 @@ def test_kernel_groups_input_is_retired_and_direct_input_is_additive():
 # ── RED-04: test-only references are not in the library ───────────────────
 
 @pytest.mark.parametrize('mod', [
-    'engine.integration.symbolic', 'engine.integration.numerical',
-    'engine.integration.spatial.loop_dyson',
-    'engine.integration.spatial.generic_evaluator',
-    'engine.integration.spatial.loop_parametric',
-    'engine.integration.spatial.spatial_reduce',
-    'engine.integration.spatial.temporal_integrate',
-    'engine.enumeration.degree_scan', 'engine.enumeration.orderly',
-    'engine.core.serialize', 'engine.core.propagator',
-    'engine.integration.time_domain.grouped_integral',
+    'daedalus.engine.integration.symbolic', 'daedalus.engine.integration.numerical',
+    'daedalus.engine.integration.spatial.loop_dyson',
+    'daedalus.engine.integration.spatial.generic_evaluator',
+    'daedalus.engine.integration.spatial.loop_parametric',
+    'daedalus.engine.integration.spatial.spatial_reduce',
+    'daedalus.engine.integration.spatial.temporal_integrate',
+    'daedalus.engine.enumeration.degree_scan', 'daedalus.engine.enumeration.orderly',
+    'daedalus.engine.core.serialize', 'daedalus.engine.core.propagator',
+    'daedalus.engine.integration.time_domain.grouped_integral',
     'api._grouped_phase_j'])
 def test_retired_modules_are_gone(mod):
     with pytest.raises(ImportError):
@@ -130,8 +130,8 @@ def test_retired_modules_are_gone(mod):
 
 
 def test_retired_delta_grid_helpers_are_gone():
-    import engine.integration.time_domain as TD
-    import engine.integration.time_domain.final_integral as FI
+    import daedalus.engine.integration.time_domain as TD
+    import daedalus.engine.integration.time_domain.final_integral as FI
     for name in ('eval_delta_contributions_on_tau_grid',
                  'eval_delta_contributions_on_2d_grid'):
         assert not hasattr(TD, name) and not hasattr(FI, name)
@@ -144,7 +144,7 @@ def test_G_t_entry_uses_the_recorded_time_variable():
     old name-order guess substituted a RATE.  New case: a 2x2 triangular
     propagator with rates b, c (closed form of the off-diagonal entry
     (e^{-b t} - e^{-c t}) / (c - b))."""
-    from engine.integration.time_domain.propagator_td import (
+    from daedalus.engine.integration.time_domain.propagator_td import (
         build_G_t_matrix, G_t_entry)
     b = SR.var('w7_b', domain='positive')
     c = SR.var('w7_c', domain='positive')

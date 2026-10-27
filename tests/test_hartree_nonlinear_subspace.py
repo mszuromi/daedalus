@@ -2,7 +2,7 @@
 tests/test_hartree_nonlinear_subspace.py
 ========================================
 The Hartree / Gaussian closure takes its expectations over the fields that
-enter nonlinearly only (``api/hartree.py``): a linear filter stage adds no
+enter nonlinearly only (``daedalus/api/hartree.py``): a linear filter stage adds no
 quadrature dimension.
 
 * the nonlinear subspace is read off the drift and the noise (a field that
@@ -32,10 +32,10 @@ pytest.importorskip('sage.all')
 sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
-from api import hartree as H  # noqa: E402
-from api.hartree import hartree, HartreeUnsupported  # noqa: E402
-from api.noise import Gaussian  # noqa: E402
-from api.sde import SDE  # noqa: E402
+from daedalus.api import hartree as H  # noqa: E402
+from daedalus.api.hartree import hartree, HartreeUnsupported  # noqa: E402
+from daedalus.api.noise import Gaussian  # noqa: E402
+from daedalus.api.sde import SDE  # noqa: E402
 
 PARS = dict(ts=0.5, D=0.3, mu=1.0, w=0.8, eps=0.5, h=0.4, a=2.0)
 
@@ -222,7 +222,7 @@ def test_non_polynomial_drift_integrates_on_the_nonlinear_two(monkeypatch):
 # ── the point limit applies to the nonlinear dimension ──────────────────────
 
 def _on_model(N):
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (TemporalModelBuilder('O(N) quartic').population('pop', size=N)
             .physical_field('x', population='pop')
             .parameter('mu', default=1.0, domain='positive')

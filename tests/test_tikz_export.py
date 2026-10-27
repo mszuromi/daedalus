@@ -8,14 +8,14 @@ into the output.
 
 import pytest
 
-import engine.enumeration.loop_diagram_enumeration as L
-from engine.diagrams.typed_diagram_layout import (
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
+from daedalus.engine.diagrams.typed_diagram_layout import (
     causal_depths, layout_typed_diagram, legibility_penalty,
     vertex_edge_clearances, fan_separations, mm_per_unit,
     edge_edge_clearances, crossing_separations,
     DOT_RADIUS_MM, ARROWHEAD_MM,
 )
-from engine.diagrams.tikz_export import (
+from daedalus.engine.diagrams.tikz_export import (
     to_tikz_feynman, diagram_to_standalone, DEFAULT_SYMBOL_MAP,
     edge_bends, path_point, arrow_positions, place_labels, MIN_BUBBLE_MM,
     _LABEL_MARGIN_MM, _INNER_SEP_MM, _PT_MM,
@@ -146,7 +146,7 @@ def test_symbol_map_rewrites_parameter_names():
         prediagram = None
         vertex_assignments = {}
 
-    from engine.diagrams.tikz_export import _vertex_label
+    from daedalus.engine.diagrams.tikz_export import _vertex_label
     out = _vertex_label(_V(), True, DEFAULT_SYMBOL_MAP)
     assert r'\varepsilon' in out
     # the saddle renders in the model's OWN field name, matching the
@@ -157,7 +157,7 @@ def test_symbol_map_rewrites_parameter_names():
 
 def test_saddle_symbols_render_for_unmapped_fields():
     """<field>star must work for a model the explicit map never listed."""
-    from engine.diagrams.tikz_export import _apply_symbol_map, DEFAULT_SYMBOL_MAP
+    from daedalus.engine.diagrams.tikz_export import _apply_symbol_map, DEFAULT_SYMBOL_MAP
     out = _apply_symbol_map(r'3 \, \varepsilon_{2} \mathit{ystar}_{1}',
                             DEFAULT_SYMBOL_MAP)
     assert r'y^{*}' in out and 'mathit' not in out
@@ -192,7 +192,7 @@ def test_standalone_document_compiles(tmp_path, prediagrams_2_1):
 # ── multi-field labelling ───────────────────────────────────────────
 
 def test_field_symbol_strips_response_and_delta_markers():
-    from engine.diagrams.tikz_export import _field_symbol
+    from daedalus.engine.diagrams.tikz_export import _field_symbol
     assert _field_symbol(('yt', 1)) == 'y'    # response: trailing t
     assert _field_symbol(('dx', 1)) == 'x'    # physical: leading d
     assert _field_symbol(('n', 0)) == 'n'     # unmarked passes through
@@ -201,7 +201,7 @@ def test_field_symbol_strips_response_and_delta_markers():
 
 def test_auto_propagator_label_names_the_matrix_element():
     """In a multi-field model different edges are different G_{ab}."""
-    from engine.diagrams.tikz_export import _edge_label
+    from daedalus.engine.diagrams.tikz_export import _edge_label
 
     class _TD:
         edge_types = {(2, 1, 0): (('yt', 1), ('dx', 1)),
@@ -240,7 +240,7 @@ def test_no_self_loops_to_draw():
     tadpole would vanish anyway.  Pinned here because a drawing routine that
     silently mishandled one would be hard to notice.
     """
-    import engine.enumeration.loop_diagram_enumeration as L
+    import daedalus.engine.enumeration.loop_diagram_enumeration as L
     for k, ell in ((2, 1), (2, 2), (3, 1)):
         for D, _G, _lv, _in in L.enumerate_all(k, ell, verbose=False)[2]:
             assert not any(u == v for u, v in D.edges(labels=False))
@@ -248,8 +248,8 @@ def test_no_self_loops_to_draw():
 
 def test_external_column_is_spaced_wider_than_internal_rows():
     """External nodes carry inline text, so they need more room than dots."""
-    import engine.enumeration.loop_diagram_enumeration as L
-    from engine.diagrams.typed_diagram_layout import DY, DY_EXTERNAL
+    import daedalus.engine.enumeration.loop_diagram_enumeration as L
+    from daedalus.engine.diagrams.typed_diagram_layout import DY, DY_EXTERNAL
     assert DY_EXTERNAL > DY
     pd = [p for p in L.enumerate_all(4, 0, verbose=False)[2]][0]
     pos = layout_typed_diagram(pd)
@@ -298,7 +298,7 @@ def test_layout_minimises_drawn_crossings(prediagrams_2_1):
     """
     import itertools, math
     from collections import defaultdict
-    from engine.diagrams.typed_diagram_layout import (
+    from daedalus.engine.diagrams.typed_diagram_layout import (
         causal_depths, _neighbours, _relax_y, _geometric_crossings,
         DX, DY, DY_EXTERNAL,
     )
@@ -519,7 +519,7 @@ def test_legibility_never_costs_a_crossing(monkeypatch, prediagrams_2_2):
     order in the search, or the crossing check inside the y nudge) is ever
     relaxed into a weighted sum.
     """
-    import engine.diagrams.typed_diagram_layout as T
+    import daedalus.engine.diagrams.typed_diagram_layout as T
     edges_of = {i: list(pd[0].edges(labels=False))
                 for i, pd in enumerate(prediagrams_2_2)}
     tidy = [T._geometric_crossings(layout_typed_diagram(pd), edges_of[i])
@@ -759,7 +759,7 @@ def test_a_label_box_is_where_tikz_actually_prints_the_glyphs():
 
 def _labelled(pd):
     """A prediagram dressed with real vertex types, so labels are emitted."""
-    from engine.core.vertices import SourceType, VertexType
+    from daedalus.engine.core.vertices import SourceType, VertexType
     D = pd[0]
     leaf = set(pd[2])
     assign = {}
@@ -896,7 +896,7 @@ def test_a_stroke_means_one_component_across_the_whole_figure():
     meaning for the figure.  Measured on the 24-panel two-field figure,
     `solid` covered three different components and `dashed` three more.
     """
-    from engine.diagrams.tikz_export import edge_style_map
+    from daedalus.engine.diagrams.tikz_export import edge_style_map
     a, b = _Styled(_XX, _XY), _Styled(_XX, _YY)
     per_panel = (edge_style_map(a), edge_style_map(b))
     assert per_panel[0][('x', 'y')] == per_panel[1][('y', 'y')], (
@@ -912,7 +912,7 @@ def test_a_stroke_means_one_component_across_the_whole_figure():
 
 
 def _field_pair_of(legs):
-    from engine.diagrams.tikz_export import _field_symbol
+    from daedalus.engine.diagrams.tikz_export import _field_symbol
     return (_field_symbol(legs[0]), _field_symbol(legs[1]))
 
 
@@ -924,7 +924,7 @@ def test_a_shared_style_map_overrides_the_per_panel_one(prediagrams_2_1):
     G_xx.  Handed the figure-wide map it must draw the stroke that means
     G_yy everywhere in the figure.
     """
-    from engine.diagrams.tikz_export import edge_style_map
+    from daedalus.engine.diagrams.tikz_export import edge_style_map
     pd = prediagrams_2_1[0]
 
     from collections import Counter
@@ -952,7 +952,7 @@ def test_a_shared_style_map_overrides_the_per_panel_one(prediagrams_2_1):
 # ── source vs interaction naming ────────────────────────────────────
 
 def _real_types():
-    from engine.core.vertices import SourceType, VertexType
+    from daedalus.engine.core.vertices import SourceType, VertexType
     return SourceType, VertexType
 
 
@@ -966,7 +966,7 @@ def _fig(*assignments):
 
 def test_source_is_named_by_its_leg_count():
     """A noise source IS its cumulant order; an opaque index would hide it."""
-    from engine.diagrams.tikz_export import vertex_symbol_map
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map
     SourceType, _V = _real_types()
     two = SourceType('-D', [('xt', 1)] * 2, (2, 0))
     three = SourceType('K', [('xt', 1)] * 3, (3, 0))
@@ -977,7 +977,7 @@ def test_source_is_named_by_its_leg_count():
 
 def test_sources_do_not_consume_an_interaction_index():
     """v_j runs over the DISTINCT INTERACTION factors only."""
-    from engine.diagrams.tikz_export import vertex_symbol_map
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map
     SourceType, VertexType = _real_types()
     src = SourceType('-D', [('xt', 1)] * 2, (2, 0))
     a = VertexType('g', [('xt', 1)], [('dx', 1)] * 3, (1, 3))
@@ -989,7 +989,7 @@ def test_sources_do_not_consume_an_interaction_index():
 
 def test_a_bare_factor_object_is_still_an_interaction():
     """Nothing declaring itself a source must not be named as one."""
-    from engine.diagrams.tikz_export import vertex_symbol_map
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map
 
     class _C:
         def _latex_(self): return 'A'
@@ -1003,7 +1003,7 @@ def test_a_bare_factor_object_is_still_an_interaction():
 def test_source_and_interaction_stay_apart_when_expressions_agree():
     """Same LaTeX, different KIND -> different symbol; a tex-keyed map alone
     could not tell them apart."""
-    from engine.diagrams.tikz_export import vertex_symbol_map, _symbol_for
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map, _symbol_for
     SourceType, VertexType = _real_types()
     src = SourceType('D', [('xt', 1)] * 2, (2, 0))
     vtx = VertexType('D', [('xt', 1)], [('dx', 1)] * 2, (1, 2))
@@ -1015,7 +1015,7 @@ def test_source_and_interaction_stay_apart_when_expressions_agree():
 
 def test_same_order_sources_of_different_fields_are_distinguishable():
     """Two 2-leg noises would both want \\kappa_2; the key must stay usable."""
-    from engine.diagrams.tikz_export import vertex_symbol_map
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map
     SourceType, _V = _real_types()
     dx = SourceType('-D_1', [('xt', 1)] * 2, (2, 0))
     dy = SourceType('-D_2', [('yt', 1)] * 2, (2, 0))
@@ -1035,7 +1035,7 @@ def test_symbol_numbering_depends_only_on_the_set_of_factors():
     import itertools
     import random
 
-    from engine.diagrams.tikz_export import vertex_symbol_map
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map
     SourceType, VertexType = _real_types()
     s1 = SourceType('-D_1', [('xt', 1)] * 2, (2, 0))
     s2 = SourceType('-D_2', [('xt', 1)] * 2, (2, 0))
@@ -1059,7 +1059,7 @@ def test_symbol_numbering_depends_only_on_the_set_of_factors():
 
 def test_a_lone_source_keeps_the_plain_symbol():
     """The disambiguating superscript must fire only on a real collision."""
-    from engine.diagrams.tikz_export import vertex_symbol_map
+    from daedalus.engine.diagrams.tikz_export import vertex_symbol_map
     SourceType, _V = _real_types()
     m = vertex_symbol_map(_fig(SourceType('-D', [('xt', 1)] * 2, (2, 0))))
     assert m['-D'] == r'\kappa_{2}'
@@ -1096,9 +1096,9 @@ def test_no_arrowhead_is_drawn_on_a_propagator_it_does_not_belong_to():
     the foreign line.  Foreign propagators are therefore obstacles too.
     """
     import math
-    from engine.diagrams.tikz_export import (arrow_positions, path_point,
+    from daedalus.engine.diagrams.tikz_export import (arrow_positions, path_point,
                                              edge_bends)
-    from engine.diagrams.typed_diagram_layout import (ARROWHEAD_MM,
+    from daedalus.engine.diagrams.typed_diagram_layout import (ARROWHEAD_MM,
                                                       mm_per_unit)
     pos = {'a': (0.0, 1.0), 'b': (2.3, -1.0), 'c': (0.0, -1.0), 'd': (2.3, 1.0)}
     edges = [('a', 'b'), ('c', 'd')]
@@ -1130,9 +1130,9 @@ def test_two_arrowheads_are_separated_not_merely_tangent():
     with a single black bowtie.
     """
     import math
-    from engine.diagrams.tikz_export import (arrow_positions, path_point,
+    from daedalus.engine.diagrams.tikz_export import (arrow_positions, path_point,
                                              edge_bends)
-    from engine.diagrams.typed_diagram_layout import (ARROWHEAD_MM,
+    from daedalus.engine.diagrams.typed_diagram_layout import (ARROWHEAD_MM,
                                                       mm_per_unit)
     pos = {'u': (0.0, 0.0), 'v': (2.3, 0.0)}
     edges = [('u', 'v'), ('u', 'v')]
@@ -1155,7 +1155,7 @@ def test_a_bubble_is_judged_by_its_ARC_and_not_by_its_chord():
     three-loop panel 479 of the quartic OU set: the guard scored the drawing
     a PERFECT zero while an arc passed 0.04 mm from an unrelated vertex.
     """
-    from engine.diagrams.typed_diagram_layout import (
+    from daedalus.engine.diagrams.typed_diagram_layout import (
         vertex_edge_clearances, legibility_penalty, mm_per_unit,
         bubble_half_width_mm, DOT_RADIUS_MM, _seg_distance)
     pos = {'u': (0.0, 0.0), 'v': (4.0, 0.0), 'w': (2.0, 0.5)}

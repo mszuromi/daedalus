@@ -9,10 +9,10 @@ import pytest
 from scipy.linalg import expm, solve_continuous_lyapunov
 from sage.all import SR
 
-from api import compute_cumulants
-from api.delay import Kernel
-from api.noise import Gaussian, GaussianVector, NoiseError
-from api.sde import SDE, SDEError
+from daedalus.api import compute_cumulants
+from daedalus.api.delay import Kernel
+from daedalus.api.noise import Gaussian, GaussianVector, NoiseError
+from daedalus.api.sde import SDE, SDEError
 from tests._sde_model_catalogue import digest
 
 TAUS = [0.0, 0.4, 1.1]
@@ -139,7 +139,7 @@ def test_white_gaussians_are_unchanged():
 
 @pytest.mark.parametrize('make,exc,match', [
     (lambda: Gaussian(var=1, kernel=Kernel.delay('d')), NoiseError, 'no Markov embedding'),
-    (lambda: Gaussian(var=1, kernel='exp'), NoiseError, 'api.delay.Kernel'),
+    (lambda: Gaussian(var=1, kernel='exp'), NoiseError, 'daedalus.api.delay.Kernel'),
     (lambda: _model('b', Kernel.image('exp(-I*omega*a)')), SDEError, 'not rational'),
     (lambda: _model('b', Kernel.image('1 + I*omega*a')), SDEError, 'improper'),
     (lambda: _model('b', Kernel.image('2')), SDEError, 'white noise; drop kernel='),
@@ -166,7 +166,7 @@ def test_sde_text_refuses_coloured_and_vector_sources():
 
 def test_config_takes_a_gaussian_vector(tmp_path):
     import os
-    from api.config_run import load_config
+    from daedalus.api.config_run import load_config
     from tests import _sde_model_catalogue as cat
     text = ('sde:\n  name: V\n  parameters: {mu: 1.0, nu: 2.0, rho: 0.6}\n  fields: [x, y]\n'
             '  drift: {x: "-mu*x", y: "-nu*y"}\n  noise:\n'

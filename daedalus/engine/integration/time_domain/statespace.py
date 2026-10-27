@@ -8,7 +8,7 @@ Evaluates one Phase J subset integral
 
 without poles, residues or pole tuples.  Each smooth edge ``e`` carries the
 minimal SISO realization ``(a_e, b_e, c_e)`` of ITS propagator entry
-``G[pi_e, ri_e]`` (``api._realization``, ``Realization.entries``), so its
+``G[pi_e, ri_e]`` (``daedalus.api._realization``, ``Realization.entries``), so its
 state axis has ``n_e = entries[(pi, ri)].n_states`` components, never the
 global state dimension.  ``R`` is the subset's region: every row is
 ``Δt_e = a_int·s + a_ext·f + c0 > 0`` with ``a_int`` one head (+1) and/or one
@@ -29,7 +29,7 @@ call: the per-diagram path and grouped Phase J's per-diagram groups
 diagram); the spatial certification's per-momentum calls are declined
 (``realization_spatial_per_q``).  A subset is taken here when every row is
 an edge with a realization (``subset_maker``): a propagator entry of the
-model's realization, a conductance kernel (``api._realization.
+model's realization, a conductance kernel (``daedalus.api._realization.
 realize_kernel``: its exact chain, equal rates included), or a dressed line
 (the kernel cascaded with its propagator entry); no noise-kernel boxes, a
 numeric prefactor, a Hurwitz realization, rows of the shape above, every
@@ -158,11 +158,11 @@ Numerics
   segment (fast rates over a long gap) is exponentiated instead in the
   per-edge triangular basis with the blocks in reverse order, where the
   generator is upper triangular, by the reset-diagonal triangular Padé
-  (``api._realization.expm_upper_triangular``: exact ``e^{lambda L}`` on the
+  (``daedalus.api._realization.expm_upper_triangular``: exact ``e^{lambda L}`` on the
   diagonal); with an exact basis (scalar / triangular entries, 2 x 2 Schur
   forms) from ``TAYLOR_S_MAX`` steps, with a Schur basis of a larger
   (graded) entry only from ``TAYLOR_S_MAX_SCHUR``, since such a basis costs
-  accuracy itself (``api._realization``).  Beyond ``TRI_DENSE_MAX`` states a segment needing
+  accuracy itself (``daedalus.api._realization``).  Beyond ``TRI_DENSE_MAX`` states a segment needing
   more than ``TAYLOR_S_HARD`` steps raises.
 * **Per-entry balancing** (``_balance_siso``): of the entry as given, ``a``
   balanced alone, and ``[[a, b], [c, 0]]`` balanced, each followed by an
@@ -177,7 +177,7 @@ side of 0; a k >= 3 slice whose swept leg is first or last) the order of the
 external times is fixed and exactly one segment moves, so a subset is one
 matrix exponential ``c e^{G s} x0`` there: ``SubsetSS.me_line`` returns the
 moving segment, the state entering it and the functional of everything after
-it.  ``api.me_output`` sums these over subsets, Wick permutations and
+it.  ``daedalus.api.me_output`` sums these over subsets, Wick permutations and
 diagrams with the closures' own weights (``_contrib.ss_prefactor``; the
 contribution's ``phase_j_parts``) into ``Cumulant.me``; nothing here changes
 a value.  On a finite chamber where several segments move (a k >= 3 slice
@@ -215,9 +215,9 @@ from collections import OrderedDict
 
 import numpy as np
 import scipy.linalg as sl
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
-from engine.integration.time_domain import _light
+from daedalus.engine.integration.time_domain import _light
 
 __all__ = [
     'ENGINE_ENV', 'FALLBACK_ENV', 'engine_requested', 'engine_name',
@@ -285,7 +285,7 @@ MAX_EDGES = 50
 #: for refusing an evaluation at call time (``ss_fallback_by_reason``), with
 #: what it means.  The pole engine evaluates whatever is declined.  Names
 #: starting with a ``DECLINE_PREFIXES`` key are families: ``realization_`` +
-#: an ``api._realization.RealizationRefused`` reason (or ``error``),
+#: an ``daedalus.api._realization.RealizationRefused`` reason (or ``error``),
 #: ``kernel_`` + a kernel's refusal reason, ``numerical_`` + an exception
 #: type.  ``tests/test_ss_decline_reasons.py`` checks that every reason the
 #: code can produce is named here (one reason per decline).
@@ -337,7 +337,7 @@ DECLINE_REASONS = {
 }
 DECLINE_PREFIXES = {
     'realization_': 'the propagator has no supported realization '
-                    '(api._realization.RealizationRefused.reason, or error)',
+                    '(daedalus.api._realization.RealizationRefused.reason, or error)',
     'kernel_': "a conductance kernel the route cannot realize (its "
                "RealizationRefused reason, 'kernel_'-prefixed)",
     'numerical_': 'a numerical exception at call time (its type name)',
@@ -460,8 +460,8 @@ def engine_requested(environ=None):
     """True when ``DAEDALUS_PHASE_J_ENGINE`` selects the state-space route:
     unset, ``default`` or ``statespace`` (the default); ``poles``:
     False (the pole engine everywhere).  Any other value raises (the one
-    parser: ``engine._env.phase_j_engine``)."""
-    from engine import _env
+    parser: ``daedalus.engine._env.phase_j_engine``)."""
+    from daedalus.engine import _env
     return _env.phase_j_engine(environ) == 'statespace'
 
 
@@ -474,7 +474,7 @@ def fallback_enabled(environ=None):
     """``DAEDALUS_PHASE_J_SS_FALLBACK``: on (default) a late refusal falls
     back to the pole route; off (``0`` / ``off`` / ``false`` / ``no``): it
     raises (the earlier behaviour).  Any other value raises."""
-    from engine import _env
+    from daedalus.engine import _env
     return _env.flag(FALLBACK_ENV, True, environ)
 
 
@@ -485,7 +485,7 @@ _FI_MOD = []
 
 def _FI():
     if not _FI_MOD:
-        from engine.integration.time_domain import final_integral as FI
+        from daedalus.engine.integration.time_domain import final_integral as FI
         _FI_MOD.append(FI)
     return _FI_MOD[0]
 
@@ -620,7 +620,7 @@ def realization_for(propagator_data, num_params):
                 if vals is not None:
                     _REAL_LAST[0] = (K, om, num_params, vals, hit[1], hit[2])
                 return hit[1], hit[2]
-    from api._realization import try_realize
+    from daedalus.api._realization import try_realize
     if any(str(k_).startswith('Laplacian') for k_ in (num_params or {})):
         # the spatial certification's per-momentum temporal calls
         # (``pipeline_bridge.pipeline_C_q_tau``): the spatial engine's
@@ -671,7 +671,7 @@ def _content_key(K, om):
     try:
         # the exact values of float literals (a RealNumber prints ~15
         # digits): the realization's exactification, then the text
-        from api._realization import _exactify
+        from daedalus.api._realization import _exactify
         from sage.all import SR as _SR
         ck = (str(om), int(K.nrows()), int(K.ncols()),
               tuple(str(_exactify(_SR(x))) for x in K.list()))
@@ -872,7 +872,7 @@ class _EntryOps:
                  else TAYLOR_S_MAX_IMPULSE):
             # stiff (|a| t large): the reset-diagonal triangular Pade in the
             # triangular basis (exact e^{lambda t} on the diagonal)
-            from api._realization import expm_upper_triangular
+            from daedalus.api._realization import expm_upper_triangular
             v = self.ct @ (expm_upper_triangular(self.T, t) @ self.bt)
             return v.real if not np.iscomplexobj(self.a) else v
         return (self.c @ _taylor_action(lambda y: A @ y, mu, dn, self.b,
@@ -937,7 +937,7 @@ class _ModelOps:
             hit = self._extra.get(key)
         if hit is not None:
             return hit
-        from api._realization import realize_kernel, RealizationRefused
+        from daedalus.api._realization import realize_kernel, RealizationRefused
         try:
             # a direct term (g = d delta + smooth) is realized too;
             # only a dressed line takes it (kernel_entry refuses it)
@@ -1009,7 +1009,7 @@ class _ModelOps:
         every edge).  Or a reason.
 
         the cascade is reduced by balanced truncation at the
-        truncation tolerance in effect (``api._realization.truncation_tol``;
+        truncation tolerance in effect (``daedalus.api._realization.truncation_tol``;
         ``0``, the exact setting: not reduced).  When the propagator cancels
         the kernel's poles (a closed loop through the vertex: one
         population, or a network whose ``G = (I - Lambda W K)^-1`` vanishes
@@ -1020,7 +1020,7 @@ class _ModelOps:
         with the H-infinity bound ``2 sum(discarded HSV) <= tol sigma_1``,
         recorded per line in the realization's truncation record
         (``Realization.truncation['dressed']``)."""
-        from api._realization import truncation_tol
+        from daedalus.api._realization import truncation_tol
         tol = truncation_tol()
         key = ('dress', int(pi), int(ri), _att_key(att), tol)
         with self._lock:
@@ -1072,7 +1072,7 @@ class _ModelOps:
         (``dressed_entry``), its record kept in the realization's
         truncation record; the same arrays when nothing can be
         discarded."""
-        from api._realization import balanced_truncation
+        from daedalus.api._realization import balanced_truncation
         ar, br, cr, info = balanced_truncation(A, B, C, tol)
         rec = {'n': int(info['n']), 'r': int(info['r']),
                'bound_rel': float(info['bound_rel']),
@@ -1725,10 +1725,10 @@ class _Segment:
 
     def _action_tri(self, v, L, dtype):
         """``exp(G L) v`` through the upper-triangular form (``tri``) and
-        the reset-diagonal triangular Pade (``api._realization.
+        the reset-diagonal triangular Pade (``daedalus.api._realization.
         expm_upper_triangular``): exact ``e^{lambda L}`` on the diagonal, so
         a stiff decay costs no accuracy."""
-        from api._realization import expm_upper_triangular
+        from daedalus.api._realization import expm_upper_triangular
         G, roffs = self.tri()
         _count('ss_segments_triangular')
         _est_steps(1)
@@ -2894,8 +2894,8 @@ def _warn_outside_run(reason):
         return
     _WARNED_OUTSIDE.add(reason)
     import warnings
-    from api.compute import PhaseJEngineFallbackWarning
-    from api.save import _ensure_warning_shown
+    from daedalus.api.compute import PhaseJEngineFallbackWarning
+    from daedalus.api.save import _ensure_warning_shown
     _msg = (f'Phase J: the state-space route fell back on the pole route '
             f'({reason}) while a returned callable was evaluated; the '
             f'counters ss_fallback_* have the details (warned once per '
@@ -3058,7 +3058,7 @@ def subset_maker(*, propagator_data, num_params, pi_ri, plain_edges,
                     row_kinds=row_kinds, tie_ctx=_tie_ctx)
             return val
         _contrib.ss_subset = sub
-        # C0 output (``api.me_output``): what the closure multiplies the
+        # C0 output (``daedalus.api.me_output``): what the closure multiplies the
         # subset integral by, and whether it is pruned to 0
         _contrib.ss_prefactor = pref
         _contrib.ss_theta0_empty = bool(theta0_empty)
@@ -3133,7 +3133,7 @@ def _subset_value(sub, pref, free_vals, tie_ctx, t_min):
     prefetch when one is open, else evaluated), counted; raises a late
     refusal (``_late_errors``) for the caller's fallback.  The one code
     path of a subset closure and of a spawned worker
-    (``engine._spawn_worker``)."""
+    (``daedalus.engine._spawn_worker``)."""
     hit = _prefetched(sub, free_vals, tie_ctx, t_min)
     if hit is None:
         # the states and programs built here at call time count against
@@ -3201,7 +3201,7 @@ def _t_min_frame(free_vals, tie_ctx):
     return t_rel
 
 
-#: In a spawned worker (``engine._spawn_worker``): the parent's running
+#: In a spawned worker (``daedalus.engine._spawn_worker``): the parent's running
 #: ``(budget bytes or None, rule)``, so a segment check decides there as it
 #: would in the parent (it compares with the budget only, not the charges).
 #: ``False`` everywhere else: read ``final_integral``'s running budget.
@@ -3314,7 +3314,7 @@ def diagram_route(typed_diagram, propagator_data, num_params):
     """``(True, None)`` when every vertex of the diagram is one the route
     takes (no noise-kernel source, every conductance kernel realizable),
     else ``(False, reason)``; ``model_route`` must hold too."""
-    from engine.core.vertices import NoiseSourceType, ConvVertexType
+    from daedalus.engine.core.vertices import NoiseSourceType, ConvVertexType
     model, why = realization_for(propagator_data, num_params)
     if model is None:
         return False, why
@@ -3341,7 +3341,7 @@ def run_route(propagator_data, num_params, vertex_types=()):
     subset can still decline on its rows (offset rows, a vertex after the
     last external time, a symbolic prefactor): the caller checks the run's
     census.  Returns ``{'engine', 'covers_run', 'reason'}``."""
-    from engine.core.vertices import NoiseSourceType, ConvVertexType
+    from daedalus.engine.core.vertices import NoiseSourceType, ConvVertexType
     eng = engine_name()
     ok, why = model_route(propagator_data, num_params)
     if ok:
@@ -3438,7 +3438,7 @@ def _line_layouts(typed_diagram, model, propagator_data, num_params,
     Mirrors ``final_integral.integrate_diagram`` section 2c (slots per leg
     from the coefficient's degree in the kernel symbol, placements as
     permutations, a local-weight kernel leaves the line as it is)."""
-    from engine.core.vertices import ConvVertexType
+    from daedalus.engine.core.vertices import ConvVertexType
     from sage.all import SR
     FI = _FI()
     D_ = typed_diagram.prediagram[0]

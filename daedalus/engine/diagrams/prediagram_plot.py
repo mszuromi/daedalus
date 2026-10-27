@@ -48,10 +48,10 @@ def contributing_prediagrams(model, k, max_ell):
     dict from :func:`daedalus.load_model`).  Returns ``{ell: [prediagram]}``
     where each prediagram is the ``(D, G, leaves, internal)`` tuple from the
     enumerator (``D`` a Sage DiGraph)."""
-    from engine.core.field_theory import FieldTheory
-    from engine.core.vertices import extract_vertex_types, extract_source_types
-    from engine.enumeration.loop_diagram_enumeration import enumerate_all as enum_pre
-    from engine.diagrams.filter import filter_prediagrams
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.vertices import extract_vertex_types, extract_source_types
+    from daedalus.engine.enumeration.loop_diagram_enumeration import enumerate_all as enum_pre
+    from daedalus.engine.diagrams.filter import filter_prediagrams
     ft = FieldTheory(model, taylor_order=max(k + 2 * max_ell, 2)); ft.expand()
     vt = extract_vertex_types(ft); st = extract_source_types(ft)
     out = {}
@@ -158,7 +158,7 @@ def _pt_seg_d2(p, a, b):
 
 
 def _roles(D, leaves):
-    from engine.diagrams.filter import classify_prediagram_vertices
+    from daedalus.engine.diagrams.filter import classify_prediagram_vertices
     s, i = classify_prediagram_vertices(D, leaves)
     return [int(v) for v in leaves], [int(v) for v in s], [int(v) for v in i]
 
@@ -787,9 +787,9 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
         name = model; model, _ = dd.load_model(model)
     else:
         name = model.get('name', 'model')
-    from engine.core.field_theory import FieldTheory
-    from engine.core.vertices import extract_vertex_types, extract_source_types
-    from engine.diagrams.type_assignment import (enumerate_typed_diagrams,
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.vertices import extract_vertex_types, extract_source_types
+    from daedalus.engine.diagrams.type_assignment import (enumerate_typed_diagrams,
                                                 build_field_index_map)
     ft = FieldTheory(model, taylor_order=max(k + 2 * max_ell, 2)); ft.expand()
     vt = extract_vertex_types(ft); st = extract_source_types(ft)
@@ -801,7 +801,7 @@ def prediagram_mappings(model, k, max_ell, external_fields=None,
     external_fields = [tuple(e) for e in external_fields]
     G_ft = None
     if use_propagator:
-        from api._propagator import build_propagator
+        from daedalus.api._propagator import build_propagator
         G_ft = build_propagator(ft, model, verbose=False)['G_ft']
     pre = contributing_prediagrams(model, k, max_ell)
     result = {}

@@ -1,9 +1,9 @@
 """
-simulations/hawkes_sim_multipop_numba.py
+daedalus/simulations/hawkes_sim_multipop_numba.py
 ====================================
 Numba-JIT Euler-step simulator for the **linear multipopulation Hawkes
 process** with per-pair exponential synaptic filters.  Matches the
-model file ``models/multipopulation_test.model.py``.
+model file ``daedalus/models/multipopulation_test.model.py``.
 
 Continuous-time dynamics (MSR-JD tree of the heterogeneous-population
 model, two populations E and I of arbitrary size):
@@ -36,7 +36,7 @@ filter" shared across all connections.
 
 Usage (from a Sage notebook cell):
 
-    from simulations.hawkes_sim_multipop_numba import sim_hawkes_multipop_numba
+    from daedalus.simulations.hawkes_sim_multipop_numba import sim_hawkes_multipop_numba
 
     binned_counts, voltage_bins, total_spikes = sim_hawkes_multipop_numba(
         int(n_steps), float(dt_sim),
@@ -290,7 +290,7 @@ def sim_hawkes_multipop_quad_numba(n_steps, dt_sim,
       lambda_i(t)  = max(a_i · v_i^2, 0)
       n_i(t)       ~ Poisson(lambda_i(t) dt)
 
-    Matches ``models/single_population_quad_exp_test.model.py`` and
+    Matches ``daedalus/models/single_population_quad_exp_test.model.py`` and
     any other quad-φ Hawkes model without spike reset.  Identical to
     ``sim_hawkes_multipop_quad_reset_numba`` except the ``v → 0``
     hard-reset step is removed — voltage drifts continuously through
@@ -462,7 +462,7 @@ def sim_hawkes_multipop_quad_alpha_numba(n_steps, dt_sim,
       lambda_i(t)    = max(a_i · v_i^2, 0)                       # QUADRATIC rate
       n_i(t)         ~ Poisson(lambda_i(t) dt)
 
-    Matches ``models/quadratic_hawkes_alpha.model.py``: no spike reset,
+    Matches ``daedalus/models/quadratic_hawkes_alpha.model.py``: no spike reset,
     quadratic φ(v) = a·v², alpha synaptic kernel
     α(t) = (t / τ_g²) · exp(-t / τ_g) · H(t).
 
@@ -549,7 +549,7 @@ def sim_hawkes_multipop_linear_reset_numba(n_steps, dt_sim,
     """
     Euler-step simulator for the **linear-rate hard-spike-reset** variant
     of the heterogeneous-population Hawkes process.  Matches
-    ``models/single_population_spike_reset_test.model.py`` (and any
+    ``daedalus/models/single_population_spike_reset_test.model.py`` (and any
     other linear-φ + hard-reset model).
 
       dF_{ij}/dt   = (1/tau_g[i,j]) * (n_j(t) - F_{ij})
@@ -726,7 +726,7 @@ def sim_hawkes_multipop_linear_softreset_numba(
     """
     Euler-step simulator for **linear-rate + SOFT spike-reset +
     exponential-synapse** Hawkes.  Matches
-    ``models/single_population_spike_reset_test.model.py`` after its
+    ``daedalus/models/single_population_spike_reset_test.model.py`` after its
     2026-05-18 update (reset term changed from full ``tau[i]*v[i]*n[i]``
     to the parameter-free ``reset_coeff*v[i]*n[i]``).
 
@@ -1032,7 +1032,7 @@ def sim_hawkes_multipop_linear_softreset_delta_numba(
     """
     Euler-step simulator for **linear-rate + SOFT spike-reset +
     delta-synapse** Hawkes.  Matches
-    ``models/single_population_spike_reset_test.model.py`` after its
+    ``daedalus/models/single_population_spike_reset_test.model.py`` after its
     2026-05-18 update (kernel changed from per-pair exponential
     ``(1/τ_g)·exp(-t/τ_g)·θ(t)`` to scalar ``dirac_delta(t)``, and
     reset term changed from full ``tau[i]*v[i]*n[i]`` to the
@@ -1227,8 +1227,8 @@ def _coupling_from_model(model, fundamental, mf_values, pops, pop_offsets):
     ``P`` are ``v<P>star`` / ``n<P>star`` (or ``vstar`` / ``nstar``), the
     simulator's convention."""
     from sage.all import SR
-    from engine.core.field_theory import FieldTheory
-    from api._mean_field import _kernel_saddle_subs
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._mean_field import _kernel_saddle_subs
     ns = FieldTheory(model)._build_namespace()[0]
     mf = model['mf_bg_conditions'](ns)
     N = sum(int(p['size']) for p in pops)

@@ -1,6 +1,6 @@
 """Model ergonomics of the SDE front end: delayed fields ``x(t - d)``, ``SDE.connectivity``, ``SDE.observable``
-(api/observables.py) and the text form ``SDE.to_text`` / ``SDE.from_text`` (api/sde_text.py, the YAML ``sde:``
-block of api/config_run.py).
+(daedalus/api/observables.py) and the text form ``SDE.to_text`` / ``SDE.from_text`` (daedalus/api/sde_text.py, the YAML ``sde:``
+block of daedalus/api/config_run.py).
 
 Identities are checked with ``digest`` (action text, mean-field equations, notes and built model dict).  The
 nonlinear observable is checked against the exact stationary density of a 1-d SDE: the one-loop mean must miss it
@@ -14,13 +14,13 @@ import numpy as np
 import pytest
 from scipy.integrate import quad
 
-from api import compute_cumulants
-from api.config_run import ConfigError, run_config
-from api.delay import Kernel
-from api.noise import Gaussian, GaussianVector, NormalInverseGaussian, Poisson
-from api.observables import ObservableError
-from api.operators import Laplacian, TimeDerivative
-from api.sde import SDE, SDEError
+from daedalus.api import compute_cumulants
+from daedalus.api.config_run import ConfigError, run_config
+from daedalus.api.delay import Kernel
+from daedalus.api.noise import Gaussian, GaussianVector, NormalInverseGaussian, Poisson
+from daedalus.api.observables import ObservableError
+from daedalus.api.operators import Laplacian, TimeDerivative
+from daedalus.api.sde import SDE, SDEError
 from tests import _sde_model_catalogue as cat
 from tests._sde_model_catalogue import digest
 

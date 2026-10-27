@@ -1,8 +1,8 @@
 """The text form of an SDE model: the YAML ``sde:`` block of a config.
 
-:meth:`api.sde.SDE.to_text` writes a model as the ``sde:`` block that
-``daedalus run`` reads (:mod:`api.config_run`), and
-:meth:`api.sde.SDE.from_text` reads one back through the same parser and
+:meth:`daedalus.api.sde.SDE.to_text` writes a model as the ``sde:`` block that
+``daedalus run`` reads (:mod:`daedalus.api.config_run`), and
+:meth:`daedalus.api.sde.SDE.from_text` reads one back through the same parser and
 builder, so a config's inline model and the text of a Python-built one are
 the same format::
 
@@ -17,25 +17,25 @@ on reading.  The builder declares in a fixed order (operators, populations,
 parameters, functions, kernels; ``fields`` in order, where an entry that is
 a point process or a field a noise source creates declares that; the
 equations; the other sources; the settings; the observables), and
-:meth:`~api.sde.SDE.to_text` checks that reading the text back gives the
+:meth:`~daedalus.api.sde.SDE.to_text` checks that reading the text back gives the
 same model, byte for byte: a model declared in an order the block cannot
 record (a field created by one equation before another field is declared,
 say) is refused with that reason.  Refused as well: sources the block has
 no form for (``SumSource``, objects outside
-:mod:`api.noise`), and parameter values that are not numbers.
+:mod:`daedalus.api.noise`), and parameter values that are not numbers.
 """
 from __future__ import annotations
 
 import re
 
-from api.noise import GaussianVector, expr_to_text
-from api.sde import _unwrap
+from daedalus.api.noise import GaussianVector, expr_to_text
+from daedalus.api.sde import _unwrap
 
 __all__ = ['sde_spec', 'to_text', 'from_text']
 
 
 def _err(msg):
-    from api.sde import SDEError
+    from daedalus.api.sde import SDEError
     return SDEError(f'to_text(): {msg}')
 
 
@@ -96,7 +96,7 @@ def _law(obj, what):
 
 def _source(name, s):
     """The ``noise:`` entry of one source."""
-    from api.noise import CGF, CompoundPoisson, Cumulants, Gaussian
+    from daedalus.api.noise import CGF, CompoundPoisson, Cumulants, Gaussian
     what = f'source {name!r}'
     col = s.get('colored')
     src = s['source']
@@ -131,7 +131,7 @@ def _source(name, s):
     elif t is CGF:
         d = {'type': 'CGF', 'expression': expr_to_text(src._K)}
     else:
-        from api.noise import SOURCE_TYPES
+        from daedalus.api.noise import SOURCE_TYPES
         if t.__name__ not in SOURCE_TYPES:
             raise _err(f'{what}: {t.__name__} has no text form (the sde: block takes the '
                        f'sources {", ".join(SOURCE_TYPES)}).')
@@ -144,7 +144,7 @@ def _source(name, s):
 def sde_spec(sde) -> dict:
     """The plain-data ``sde:`` block of ``sde`` (ordered as the builder
     reads it)."""
-    from api.operators import Laplacian, TimeDerivative
+    from daedalus.api.operators import Laplacian, TimeDerivative
     out = {'name': sde.name}
     if sde._n_pop_default != 1:
         out['n_populations'] = sde._n_pop_default
@@ -298,7 +298,7 @@ def _dump(spec) -> str:
 
 
 def _same(a, b):
-    from api.sde import _canon_model
+    from daedalus.api.sde import _canon_model
     return (a.action_text() == b.action_text() and a.equations() == b.equations()
             and _canon_model(a.build()) == _canon_model(b.build()))
 
@@ -326,9 +326,9 @@ def to_text(sde, verify: bool = True) -> str:
 
 
 def from_text(text: str, source: str = '<text>'):
-    """The :class:`api.sde.SDE` of an ``sde:`` block (a config holding
+    """The :class:`daedalus.api.sde.SDE` of an ``sde:`` block (a config holding
     ``sde:``, or the block's mapping alone), read with the parser and the
     builder of ``daedalus run``; errors are line-numbered
-    (:class:`api.config_run.ConfigError`)."""
-    from api.config_run import sde_block_from_text, sde_from_block
+    (:class:`daedalus.api.config_run.ConfigError`)."""
+    from daedalus.api.config_run import sde_block_from_text, sde_from_block
     return sde_from_block(sde_block_from_text(text, source), source)

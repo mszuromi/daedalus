@@ -35,7 +35,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.model import ModelBuilder
+from daedalus.api.model import ModelBuilder
 
 
 # ── Builders ─────────────────────────────────────────────────────
@@ -194,7 +194,7 @@ def test_periodic_without_length_rejected():
 
 # ── 1.2 / 1.3 — expand() + Laplacian inert + saddle resolves ──────
 def test_expand_runs_and_laplacian_in_bilinear_sector():
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     m = _allen_cahn_1d()
     ft = FieldTheory(m, taylor_order=2)
     ft.expand()   # raises if the MF saddle does not resolve to φ*=0
@@ -219,7 +219,7 @@ def test_time_only_model_has_no_spatial_keys():
 
 
 def test_time_only_phi4_still_expands():
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     m = _time_only_phi4()
     ft = FieldTheory(m, taylor_order=2)
     ft.expand()
@@ -229,7 +229,7 @@ def test_time_only_phi4_still_expands():
 
 # ── 1.5 — serializer round-trip ───────────────────────────────────
 def test_serializer_roundtrip_spatial_boundary_initial():
-    from api.model_serialize import (
+    from daedalus.api.model_serialize import (
         render_model_file, load_spec_from_file,
     )
     spec = {
@@ -268,7 +268,7 @@ def test_serializer_roundtrip_operator_ir_and_dyson():
     render -> load -> re-render -> build.  Regression for the bug where
     .operator_ir() was silently dropped, changing the physics of a
     re-saved derivative model."""
-    from api.model_serialize import (
+    from daedalus.api.model_serialize import (
         render_model_file, load_spec_from_file, save_model_to_file,
     )
     import importlib.util
@@ -321,9 +321,9 @@ def test_serializer_roundtrip_operator_ir_and_dyson():
 def test_serializer_spatial_dim_convenience_roundtrip():
     """A hand-written ``.spatial_dim(d)`` call (convenience form)
     parses back to per-field spatial_dim."""
-    from api.model_serialize import load_spec_from_file
+    from daedalus.api.model_serialize import load_spec_from_file
     src = '''"""Convenience spatial_dim round-trip."""
-from api.model import ModelBuilder
+from daedalus.api.model import ModelBuilder
 
 
 def build():

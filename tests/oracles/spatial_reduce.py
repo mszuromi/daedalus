@@ -1,7 +1,7 @@
 """
 tests.oracles.spatial_reduce
 ============================
-Test-only reference (was ``engine.integration.spatial.spatial_reduce``; moved out of
+Test-only reference (was ``daedalus.engine.integration.spatial.spatial_reduce``; moved out of
 the library in audit W7: no production module imports it).
 
 Backend C — **C0 (graph → Symanzik polynomials)** and **C1 (the L-loop Gaussian

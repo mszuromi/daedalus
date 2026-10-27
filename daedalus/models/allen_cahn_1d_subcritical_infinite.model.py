@@ -20,7 +20,7 @@ Phase 1 status: this file ``build()``s and ``FieldTheory.expand()``s.
 Propagator construction (heat kernel × exp decay) lands in Phase 2;
 the (t, x) loop integral in Phase 5.
 """
-from api.model import SpatialModelBuilder
+from daedalus.api.model import SpatialModelBuilder
 
 
 def build():

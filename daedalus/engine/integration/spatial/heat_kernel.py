@@ -1,5 +1,5 @@
 """
-engine.integration.spatial.heat_kernel
+daedalus.engine.integration.spatial.heat_kernel
 =====================================
 Real-space (t, x) propagators for spatial field theories (v1).
 
@@ -45,7 +45,7 @@ from typing import Callable, Optional
 
 import mpmath as mp
 from sage.all import SR, I as SR_I, matrix
-from engine.errors import DaedalusError
+from daedalus.engine.errors import DaedalusError
 
 
 class SpatialPropagatorError(DaedalusError, Exception):

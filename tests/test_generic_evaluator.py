@@ -27,7 +27,7 @@ from sage.all import SR
 
 import importlib.util
 
-from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
 from tests.oracles.generic_evaluator import (
     loop_self_energy, bubble_delta_C, tadpole_delta_C,
 )
@@ -35,17 +35,17 @@ from tests.oracles.temporal_integrate import (
     sigma_parametric, bubble_edges,
 )
 from tests.oracles import loop_dyson
-from engine.integration.spatial.pipeline_bridge import (
+from daedalus.engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
-from engine.diagrams.type_assignment import build_field_index_map
+from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
 
 @pytest.fixture(scope='module')
 def rd_ell1():
-    from api.model import ModelBuilder
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
+    from daedalus.api.model import ModelBuilder
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
 
     model = (ModelBuilder('rd1', n_populations=0)
              .physical_field('phi', spatial_dim=1)
@@ -127,11 +127,11 @@ def test_generic_bubble_dC_matches_loop_dyson(rd_ell1):
 @pytest.fixture(scope='module')
 def allencahn_ell1():
     """Allen-Cahn (φ̃φ³) d=1, λ=0.1: ell=1 (descriptor, 𝒮(Γ)·prefactor) pairs."""
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
     repo = os.path.join(os.path.dirname(__file__), '..')
     spec = importlib.util.spec_from_file_location(
-        'ac', os.path.join(repo, 'models',
+        'ac', os.path.join(repo, 'daedalus', 'models',
                            'allen_cahn_1d_subcritical_infinite.model.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

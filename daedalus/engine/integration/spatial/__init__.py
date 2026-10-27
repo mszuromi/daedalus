@@ -1,7 +1,7 @@
 """Spatial-extension utilities (v1): heat-kernel propagators in (t, x)."""
 
 #: Why conserved noise (``div`` of a white vector noise) is refused; shared by
-#: ``api.noise.Gaussian(space='conserved')``, the SDE front end and the noise
+#: ``daedalus.api.noise.Gaussian(space='conserved')``, the SDE front end and the noise
 #: extractor of ``spatial_correlator``.
 CONSERVED_NOISE_WHY = (
     'conserved noise (the divergence of a white vector noise, noise spectrum '

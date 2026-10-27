@@ -71,7 +71,7 @@ class PoleClusterWarning(UserWarning):
     the numbers may have lost the stated number of digits."""
 
 
-from engine import _env                                     # noqa: E402
+from daedalus.engine import _env                                     # noqa: E402
 
 _env.retired('DAEDALUS_POLE_CLUSTERS',
              'the near-degenerate pole deformation is always on')
