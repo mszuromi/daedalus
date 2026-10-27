@@ -384,9 +384,12 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
         (ft._mf_sector_raw or {}).values()) for c in poly.coefficients()
         for v in SR(c).variables()}
     known |= {str(v) for e in prop['K_ft'].list() for v in SR(e).variables()}
-    bases = [str(p['name']) for p in model.get('parameters') or []]
+    # a declared parameter (a kernel's time constant enters only the
+    # propagator); an indexed one with its unit
+    declared = [re.escape(str(p['name'])) + (r'\d+' if p.get('indexed') else '')
+                for p in model.get('parameters') or []]
     unknown = sorted(k for k in sub_names if k not in known and not any(
-        re.fullmatch(re.escape(b) + r'\d*', k) for b in bases))
+        re.fullmatch(d, k) for d in declared))
     if unknown:
         raise SymbolicOutError(
             f'values= / mean_field= name {unknown}, which the action does not '
