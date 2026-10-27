@@ -20,7 +20,7 @@ def _ou(name, rhs, defaults, drift_form=True, stability=None):
         s.drift('x', f'-mu*x + {rhs}')
     else:
         s.equation('x', lhs='(Dt+mu)*x[i]', rhs=rhs)
-    s.noise('xi', Gaussian(var='2*D'), couples={'x': 1})
+    s.noise('xi', Gaussian(var='2*D'), into={'x': 1})
     if stability is not None:
         s.stability_analysis(stability)
     return s
@@ -46,7 +46,7 @@ def linear_hawkes():
             .parameter('w', indexed='matrix', default=[[0.30, 0.25], [0.30, 0.35]])
             .define_function('phi', args=['v'], expression='a * v', latex=r'\varphi')
             .define_kernel('g', freq_image='1 / (1 + I*omega*tau_g)', latex_name='g')
-            .noise('spikes', Poisson(rate='phi(v)'), expose='n')
+            .noise('spikes', Poisson(rate='phi(v)'), as_field='n')
             .field('v')
             .equation('v', lhs='(tau*Dt + 1)*v', rhs='E[i] + sum(w[i, j]*g*n[j] for j in pop)'))
 
@@ -57,7 +57,7 @@ def exp_hawkes():
             .parameter('taug', default=1.0, domain='positive').parameter('a', default=1.0, domain='positive')
             .parameter('w', default=0.4)
             .define_kernel('g', time_expr='exp(-t/taug)/taug*heaviside(t)')
-            .noise('spikes', Poisson(rate='a*exp(v)'), expose='n')
+            .noise('spikes', Poisson(rate='a*exp(v)'), as_field='n')
             .field('v').equation('v', lhs='(tau*Dt + 1)*v', rhs='Em + w*g*n').stability_analysis(True))
 
 
@@ -65,9 +65,9 @@ def two_field_cross():
     s = (SDE('two-field').field('x').field('y')
          .equation('x', lhs='(Dt+mu1)*x', rhs='J1*y')
          .equation('y', lhs='(Dt+mu2)*y', rhs='J2*x - eps*x^2')
-         .noise('own_x', Gaussian(var='2*D1'), couples={'x': 1})
-         .noise('own_y', Gaussian(var='2*D2'), couples={'y': 1})
-         .noise('common', Gaussian(var='2*r'), couples={'x': 1, 'y': 1}))
+         .noise('own_x', Gaussian(var='2*D1'), into={'x': 1})
+         .noise('own_y', Gaussian(var='2*D2'), into={'y': 1})
+         .noise('common', Gaussian(var='2*r'), into={'x': 1, 'y': 1}))
     for p in ('mu1', 'mu2', 'J1', 'J2', 'eps', 'D1', 'D2', 'r'):
         s.parameter(p, default=0.5)
     return s
@@ -77,7 +77,7 @@ def stratonovich_multiplicative():
     return (SDE('Stratonovich multiplicative').parameter('mu', default=1.0, domain='positive')
             .parameter('s0', default=0.6, domain='positive')
             .parameter('s1', default=0.2, domain='positive').field('x')
-            .drift('x', '-mu*x').noise('W', Gaussian(var=1), couples={'x': 's0 + s1*x'})
+            .drift('x', '-mu*x').noise('W', Gaussian(var=1), into={'x': 's0 + s1*x'})
             .interpretation('stratonovich').stability_analysis(True))
 
 
@@ -85,19 +85,19 @@ def stratonovich_tau_lhs():
     return (SDE('strat tau').parameter('tau', default=2.0).parameter('c0', default=1.0)
             .parameter('c1', default=0.1).field('x')
             .equation('x', lhs='(tau*Dt + 1)*x', rhs='0')
-            .noise('W', Gaussian(var=1), couples={'x': 'c0 + c1*x'}).interpretation('stratonovich'))
+            .noise('W', Gaussian(var=1), into={'x': 'c0 + c1*x'}).interpretation('stratonovich'))
 
 
 def nonpolynomial_drift():
     return (SDE('nonpolynomial').parameter('eps', default=0.05, domain='positive').field('x')
             .drift('x', '-x/(1+eps*x^2)')
-            .noise('xix', Gaussian(var='2'), couples={'x': '1 + x/5'}).stability_analysis(True))
+            .noise('xix', Gaussian(var='2'), into={'x': '1 + x/5'}).stability_analysis(True))
 
 
 def gaussian_mean_and_var():
     return (SDE('mv').parameter('mu', default=1.0).parameter('c', default=0.3)
             .parameter('s', default=0.4).field('x').drift('x', '-mu*x')
-            .noise('W', Gaussian(mean='c*x', var='s^2*(1 + x^2)'), couples={'x': 'x'}))
+            .noise('W', Gaussian(mean='c*x', var='s^2*(1 + x^2)'), into={'x': 'x'}))
 
 
 def _additive(name):
@@ -106,19 +106,19 @@ def _additive(name):
 
 
 def poisson_driven():
-    return _additive('p').noise('N', Poisson('lam'), couples={'x': 'w'})
+    return _additive('p').noise('N', Poisson('lam'), into={'x': 'w'})
 
 
 def gamma_process():
-    return _additive('g').noise('G', GammaProcess('lam', 'm'), couples={'x': '-w'})
+    return _additive('g').noise('G', GammaProcess('lam', 'm'), into={'x': '-w'})
 
 
 def uniform_jumps():
-    return _additive('u').noise('U', CompoundPoisson('lam', Uniform(0, 'm')), couples={'x': 1}).series_order(5)
+    return _additive('u').noise('U', CompoundPoisson('lam', Uniform(0, 'm')), into={'x': 1}).series_order(5)
 
 
 def cumulants_source():
-    return _additive('cum').noise('C', Cumulants(['0', 'w', 'm']), couples={'x': 1})
+    return _additive('cum').noise('C', Cumulants(['0', 'w', 'm']), into={'x': 1})
 
 
 def marcus_affine():
@@ -126,7 +126,7 @@ def marcus_affine():
             .parameter('lam', default=1.5, domain='positive').parameter('a', default=0.4)
             .parameter('b', default=0.15).parameter('mJ', default=0.2, domain='positive')
             .field('x').drift('x', '-mu*x')
-            .noise('L', CompoundPoisson('lam', Exponential('mJ')), couples={'x': 'a + b*x'})
+            .noise('L', CompoundPoisson('lam', Exponential('mJ')), into={'x': 'a + b*x'})
             .interpretation('marcus').series_order(16).stability_analysis(True))
 
 
@@ -134,7 +134,7 @@ def marcus_rotation():
     return (SDE('rotation').parameter('mu', default=1.0).parameter('lam', default=1.0)
             .parameter('z', default=0.7).field('x').field('y')
             .drift('x', '-mu*x').drift('y', '-mu*y')
-            .noise('L', CompoundPoisson('lam', Dirac('z')), couples={'x': 'y', 'y': '-x'})
+            .noise('L', CompoundPoisson('lam', Dirac('z')), into={'x': 'y', 'y': '-x'})
             .interpretation('marcus').series_order(7))
 
 
@@ -175,7 +175,7 @@ def delay_ou():
             .parameter('d', default=0.5, domain='positive').parameter('eps', default=0.05)
             .parameter('D', default=0.2).field('x')
             .drift('x', '-a*x + c*x(t - d) - eps*x^3')
-            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+            .noise('xi', Gaussian(var='2*D'), into={'x': 1}))
 
 
 def delay_product():
@@ -183,7 +183,7 @@ def delay_product():
             .parameter('c', default=0.5).parameter('d', default=0.5, domain='positive')
             .parameter('D', default=0.1).field('x')
             .drift('x', '-a*x + b - c*x*x(t - d)')
-            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+            .noise('xi', Gaussian(var='2*D'), into={'x': 1}))
 
 
 def kernel_conductance():
@@ -192,7 +192,7 @@ def kernel_conductance():
             .parameter('tau', default=0.4, domain='positive').parameter('D', default=0.05)
             .field('x').define_kernel('g', kernel=Kernel.delay('d') * Kernel.exponential('tau'))
             .drift('x', '-a*x + b - c*x*Conv(g, x)')
-            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
+            .noise('xi', Gaussian(var='2*D'), into={'x': 1}))
 
 
 #: name -> factory of a fresh SDE (declared with the default ``Dt``)

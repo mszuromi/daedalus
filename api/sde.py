@@ -124,6 +124,21 @@ is ``-(1/2) theta^T cov theta``, and under the Stratonovich rule the drift
 gains ``1/2 sum_kl cov_kl sum_j b_jl d_j b_ik``.  The simulator draws it
 through ``cov = L L^T`` at the run's parameters.
 
+Delays, connectivity, observables and the text form
+---------------------------------------------------
+A delayed field ``x(t - d)`` (``v[j](t - d)`` in a population sum, also in a
+point-process rate) is the hard-delay kernel ``Conv(delay_d, x)``, declared on
+the fly (:mod:`api.delay`); :meth:`sde_text` and :meth:`to_text` write it back
+as ``x(t - d)``.  :meth:`connectivity` declares a weight matrix from an array
+(``w[i,j]`` onto unit ``i`` from unit ``j``), the matrix parameter of the
+populations.  :meth:`observable` names a function of the fields that
+``compute_cumulants`` takes as an external leg, through its composite-operator
+expansion about the saddle (:mod:`api.observables`: exact for a linear
+observable; for a nonlinear one the mean to one loop and the ``k = 2`` tree,
+higher orders refused).  :meth:`to_text` writes the model as the YAML ``sde:``
+block of a ``daedalus run`` config and :meth:`from_text` reads one, with the
+config's parser and builder (:mod:`api.sde_text`).
+
 Declared operators and SPDEs
 ----------------------------
 The operators an equation uses are named with :meth:`SDE.operator` and the
@@ -172,8 +187,20 @@ refused with a Laplacian, never dropped: populations, kernels and delays
 or time-only noise, the Stratonovich and Marcus rules, and the SDE simulator.
 Everything the spatial pipeline refuses (UV-divergent subgraphs, periodic
 loops, switch-on transients, ...) it refuses for these models as for the
-hand-written ones.  Conserved noise (``div`` of a white vector noise) is not
-supported yet.
+hand-written ones.
+
+Conserved noise (``div`` of a white vector noise, ``Gaussian(var,
+space='conserved')``, noise spectrum ``var |q|^2``) is refused, in each form
+it can be written (``space='conserved'``, an operator in a noise coefficient,
+``div(eta)``, an operator on a response field in :meth:`extra_action`, or a
+hand-written action whose response-field quadratic term holds a Laplacian):
+the spatial integrator takes momentum-independent noise only.  Its tree heat
+kernels and its loop integral (the Symanzik reduction of one constant noise
+vertex per correlation line) would need a ``|q|^2`` factor on every
+correlation line, and the Model B dynamics that conserved noise belongs to
+(``Dt u = lap(r u + g u^3 - K lap(u)) + div(eta)``) need two more things the
+spatial pipeline refuses: the ``k^4`` propagator of ``lap(lap(u))`` and the
+conserved vertex ``lap(u^3)`` (field-degree 3).
 
 Paper-style equations and per-source interpretations
 ----------------------------------------------------
@@ -466,6 +493,59 @@ def _wrap(text) -> str:
     return t if re.fullmatch(r'[\w\[\],.\s]*', t) else f'({t})'
 
 
+def _unwrap(text) -> str:
+    """``(f)`` -> ``f`` when the brackets enclose all of ``text``."""
+    t = str(text).strip()
+    while t.startswith('(') and t.endswith(')'):
+        depth = 0
+        for k, ch in enumerate(t):
+            depth += {'(': 1, ')': -1}.get(ch, 0)
+            if depth == 0 and k < len(t) - 1:
+                return t
+        t = t[1:-1].strip()
+    return t
+
+
+def _canon_model(v):
+    """A built model dict as comparable plain data (callables as
+    ``'<callable>'``, other objects by ``repr``)."""
+    if callable(v):
+        return '<callable>'
+    if isinstance(v, dict):
+        return {str(k): _canon_model(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_canon_model(x) for x in v]
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    return repr(v)
+
+
+def _strip_index_name(name: str) -> str:
+    """``v__i`` (the parsed ``v[i]``) -> ``v``."""
+    return name.split('__')[0]
+
+
+def _inline_functions(e, funcs: dict, where: str, depth: int = 0):
+    """``e`` with every call of a declared function (``funcs``: name ->
+    (args, body text)) replaced by its body, recursively."""
+    if depth > 20:
+        raise SDEError(f'{where}: the declared functions call each other too deeply.')
+    from sage.symbolic.expression import Expression
+    op = e.operator() if isinstance(e, Expression) else None
+    if op is None:
+        return e
+    args = [_inline_functions(a, funcs, where, depth) for a in e.operands()]
+    name = getattr(op, 'name', lambda: None)()
+    if name in funcs:
+        fargs, body = funcs[name]
+        if len(fargs) != len(args):
+            raise SDEError(f'{where}: {name} takes {len(fargs)} argument(s); got {len(args)}.')
+        b = parse_expr(body, what=f'function {name!r}')
+        b = b.subs({SR.var(a): x for a, x in zip(fargs, args)})
+        return _inline_functions(b, funcs, where, depth + 1)
+    return op(*args)
+
+
 def _strip_index(text: str) -> str:
     """``u[i]`` -> ``u``, ``phi[i](u[i])`` -> ``phi(u)``: the scalar text of a
     spatial model (one field per species, no population index)."""
@@ -587,6 +667,8 @@ class SDE:
         self._functions: list[tuple[tuple, dict]] = []
         self._function_names: list[str] = []
         self._kernels: 'OrderedDict[str, dict]' = OrderedDict()
+        self._auto_kernels: set = set()     # the delay kernels x(t - d) declared
+        self._composite_kernels: set = set()   # Conv(a*b, x) products declared
         # kernels carrying a Gaussian jitter (Kernel.gaussian), name -> its
         # jitter record; composite kernels inherit it (_compose_kernels)
         self._jitter: dict[str, dict] = {}
@@ -602,6 +684,10 @@ class SDE:
         # higher-order equations: field -> its velocity embedding (see equation())
         self._embedded: 'OrderedDict[str, dict]' = OrderedDict()
         self._ito_drift: dict = {}
+        # observables (functions of the fields read as external legs): name -> spec
+        self._observables: 'OrderedDict[str, dict]' = OrderedDict()
+        # equations as declared (the text the user gave), for to_text()
+        self._declared_eqs: 'OrderedDict[str, dict]' = OrderedDict()
         # what the last derivation emitted, by origin (read by check() and
         # latex(); the action text itself is unchanged by it)
         self._action_log: list[dict] = []
@@ -648,6 +734,142 @@ class SDE:
                                            indexed_by=indexed_by)))
         self._param_names.append(name)
         return Symbol(self, name, 'parameter')
+
+    def connectivity(self, name: str, weights, *, between=None, domain: Optional[str] = None,
+                     description: str = ''):
+        """Declare the weight matrix ``name`` of a population model from an
+        array (a numpy array, nested lists, or anything with ``tolist()`` /
+        ``toarray()``): ``w[i,j]`` is the weight onto unit ``i`` from unit
+        ``j``.  ``between=(post, pre)`` names the two populations (shape
+        ``(size_post, size_pre)``); without it the matrix is square over the
+        model's one population (``SDE(name, n_populations=N)`` or the one
+        declared :meth:`population`).  The entries must be finite numbers; it
+        is :meth:`parameter` with ``default=`` the nested list (``indexed_by=``
+        the populations, or ``indexed='matrix'``), so the built model is the
+        one that call builds.  Returns its :class:`~api.sde_symbols.Symbol`."""
+        import numpy as np
+        if hasattr(weights, 'toarray'):
+            weights = weights.toarray()
+        try:
+            arr = np.asarray(weights, dtype=float)
+        except (TypeError, ValueError):
+            raise SDEError(f'connectivity({name!r}): give a 2-d array of numbers; got '
+                           f'{type(weights).__name__}.') from None
+        if arr.ndim != 2:
+            raise SDEError(f'connectivity({name!r}): give a 2-d array (rows = target units, '
+                           f'columns = source units); got shape {arr.shape}.')
+        if not np.isfinite(arr).all():
+            raise SDEError(f'connectivity({name!r}): the weights must be finite numbers.')
+        sizes = {p['name']: p['size'] for p in self._pops}
+        if between is not None:
+            post, pre = (as_name(p) for p in between)
+            for p in (post, pre):
+                if p not in sizes:
+                    raise SDEError(f'connectivity({name!r}, between=...): {p!r} is not a declared '
+                                   f'population (declared: {sorted(sizes) or "none"}).')
+            shape, kw = (sizes[post], sizes[pre]), {'indexed_by': [post, pre]}
+        elif len(self._pops) == 1:
+            p = self._pops[0]['name']
+            shape, kw = (sizes[p], sizes[p]), {'indexed_by': [p, p]}
+        elif not self._pops:
+            n = self._n_pop_default
+            shape, kw = (n, n), {'indexed': 'matrix'}
+        else:
+            raise SDEError(f'connectivity({name!r}): the model has populations '
+                           f'{sorted(sizes)}; give between=(post, pre).')
+        if arr.shape != shape:
+            hint = (f' (declare SDE(name, n_populations={arr.shape[0]}) or a population of that '
+                    f'size first)' if not self._pops and arr.shape[0] == arr.shape[1] else '')
+            raise SDEError(f'connectivity({name!r}): expected shape {shape}; got {arr.shape}{hint}.')
+        return self.parameter(name, default=arr.tolist(), domain=domain,
+                              description=description, **kw)
+
+    def observable(self, name: str, expr, *, population: Optional[str] = None,
+                   description: str = ''):
+        """Declare the observable ``name = expr``, a function of the fields
+        (``m.observable('rate', 'phi(v)')``): ``compute_cumulants`` and
+        ``dd.run`` then take ``name`` as an external leg (``['rate']``,
+        ``['rate', 'x']``; ``('rate', u)`` for unit ``u`` of a population
+        observable).  ``expr`` may use fields, parameters and declared
+        functions; with ``population=P`` its bare fields and parameters of
+        ``P`` are those of the unit (as in a function of ``P``).
+
+        The cumulants are the composite-operator expansion of ``expr`` about
+        the saddle, ``f(x* + dx) = f* + f_a dx_a + f_ab dx_a dx_b/2 + ...``,
+        assembled from the field cumulants (:mod:`api.observables`): exact at
+        every ``k`` and loop order for an observable linear in the fields;
+        for a nonlinear one the mean to one loop (``k = 1``,
+        ``f_a <dx_a> + f_ab C_ab(0)/2``) and the tree of ``k = 2``
+        (``f_a f'_b C_ab(tau)``).  Higher orders need the coincident-time
+        cumulants of the composite operator (not in the engine) and are
+        refused.  Returns the builder."""
+        name, expr, population = as_name(name), as_text(expr), as_name(population)
+        if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z]\w*', name) or '__' in name:
+            raise SDEError(f'observable({name!r}): the name must be an identifier without a double '
+                           f'underscore.')
+        _check_declarable(name, 'observable')
+        self._check_not_operator(name, 'observable')
+        taken = self._name_owner(name)
+        if taken:
+            raise SDEError(f'observable({name!r}): {name!r} is already the {taken}.')
+        expr = ' '.join(str(expr).split())
+        if not expr:
+            raise SDEError(f'observable({name!r}): empty expression.')
+        self._syntax_check(expr, f'observable({name!r})')
+        self._observables[name] = {'expr': expr, 'population': population,
+                                   'description': description}
+        return self
+
+    def _observable_specs(self) -> dict:
+        """The ``observables`` entry of the built model: per observable its
+        text, the text with the declared functions inlined, its population,
+        the fields it reads and whether it is linear in them."""
+        out = {}
+        funcs = {n: (a, e) for (n, a, e), _ in self._functions}
+        for name, ob in self._observables.items():
+            where = f'observable({name!r})'
+            taken = [w for w in (self._name_owner(name),) if w and not w.startswith('observable')]
+            if name in self._fields or taken:
+                raise SDEError(f'{where}: {name!r} is also the {taken[0] if taken else "field"}; '
+                               f'rename the observable.')
+            text = ob['expr']
+            for bad, why in (('sum', 'a population sum'), ('Conv', 'a kernel')):
+                if self._has_token(text, bad):
+                    raise SDEError(f'{where}: {why} is not supported in an observable (a '
+                                   f'function of the fields at one time).')
+            if re.search(r'\bt\b', text):
+                raise SDEError(f'{where}: the time t is not supported in an observable.')
+            for n in list(self._operators) + list(self._kernels):
+                if self._has_token(text, n):
+                    raise SDEError(f'{where}: {n!r} (an operator or kernel) is not supported in '
+                                   f'an observable.')
+            self._check_text(text, where)
+            sizes = {p['name']: p['size'] for p in self._populations()}
+            pop = ob['population']
+            if pop == 'pop':
+                pop = self._implicit_pop()
+            if pop is not None and pop not in sizes:
+                raise SDEError(f'{where}: population {pop!r} is not declared.')
+            e = _inline_functions(parse_expr(text, what=where), funcs, where)
+            fields = sorted({_strip_index_name(str(v)) for v in e.variables()}
+                            & set(self._fields))
+            field_pops = {f: self._pop_of_field(f) for f in fields}
+            if pop is None:
+                # (read at a unit when its fields are those of one population of several units)
+                multi = {field_pops[f] for f in fields if sizes[field_pops[f]] > 1}
+                if len(multi) == 1:
+                    pop = multi.pop()
+            syms = [v for v in e.variables() if _strip_index_name(str(v)) in self._fields]
+            linear = all(e.diff(a).diff(b).is_zero() for a in syms for b in syms)
+            for f in fields:
+                if self._fields[f].get('exposed') and not linear:
+                    raise SDEError(f'{where}: {f!r} is a spike train or exposed source; an '
+                                   f'observable may use it only linearly (its value is a sum '
+                                   f'of deltas).')
+            out[name] = {'expr': text, 'inlined': expr_to_text(e), 'population': pop,
+                         'fields': fields, 'field_pops': field_pops, 'linear': bool(linear),
+                         'description': ob['description']}
+        return out
 
     def define_function(self, name: str, args: list, expression: str,
                         latex: Optional[str] = None, description: str = '',
@@ -831,6 +1053,8 @@ class SDE:
             return f'kernel {name!r}'
         if name in {p['name'] for p in self._pops}:
             return f'population {name!r}'
+        if name in self._observables:
+            return f'observable {name!r}'
         return ''
 
     def _check_not_operator(self, name: str, kind: str):
@@ -859,12 +1083,15 @@ class SDE:
         for n in self._operators:
             if not (n == 'Dt' and self._dt_implicit) and self._has_token(text, n):
                 shown = ' '.join(str(text).split())
+                hint = (f'move the operator to the equation\'s lhs/rhs, e.g. '
+                        f'{n}(x) or {n}*x, not inside a function argument or a coefficient')
+                if where.startswith('noise(') and self._operators[n].spatial:
+                    from engine.integration.spatial import CONSERVED_NOISE_WHY
+                    hint = CONSERVED_NOISE_WHY
                 raise SDEError(format_caret_error(
                     shown, max(self._token_at(shown, n), 0),
                     f'{where} uses the operator {n!r}; operators act in the equations '
-                    f'only.',
-                    f'move the operator to the equation\'s lhs/rhs, e.g. '
-                    f'{n}(x) or {n}*x, not inside a function argument or a coefficient'))
+                    f'only.', hint))
 
     # ── dynamics ──────────────────────────────────────────────────────
     def equation(self, field: str, lhs: str, rhs: str = '0', *, velocity=None):
@@ -884,6 +1111,19 @@ class SDE:
         field = as_name(field)
         lhs, rhs = (v if isinstance(v, str) else str(as_text(v)) for v in (lhs, rhs))
         lhs, rhs = self._unicode_dt(lhs), self._unicode_dt(rhs)
+        info = self._fields.get(field) or {}
+        user = not (info.get('embedded_of') or info.get('colored_of'))
+        out = self._equation(field, lhs, rhs, velocity)
+        if user:
+            # (as declared: to_text() writes it back; an equation the
+            # embedding of this one declares is overwritten here)
+            self._declared_eqs[field] = {
+                'lhs': lhs, 'rhs': rhs, 'velocity': None if velocity is None else
+                [as_name(v) for v in ([velocity] if isinstance(velocity, (str, Symbol))
+                                      else list(velocity))]}
+        return out
+
+    def _equation(self, field, lhs, rhs, velocity):
         if field not in self._fields:
             raise SDEError(f'equation({field!r}): declare the field first with .field().')
         if field in self._eqs:
@@ -1015,21 +1255,19 @@ class SDE:
                 s['couples'] = {top if f == field else f: c for f, c in s['couples'].items()}
         return self
 
-    def _delayed_fields(self, text: str, where: str) -> str:
-        """``x(t - d)`` (``x`` a declared field, ``d`` a parameter expression)
-        -> ``Conv(delay_<d>, x)`` with the hard-delay kernel ``delay_<d>``
-        declared on the fly (:mod:`api.delay`)."""
+    def _delayed_fields(self, text: str, where: str, label: Optional[str] = None) -> str:
+        """``x(t - d)`` and ``x[j](t - d)`` (``x`` a declared field, ``d`` a
+        parameter expression) -> ``Conv(delay_<d>, x)`` / ``Conv(delay_<d>,
+        x[j])`` with the hard-delay kernel ``delay_<d>`` declared on the fly
+        (:mod:`api.delay`).  ``label`` names the declaration in errors
+        (default ``equation(<where>)``)."""
         if not self._fields:
             return text
+        label = label or f'equation({where!r})'
         names = '|'.join(re.escape(f) for f in sorted(self._fields, key=len, reverse=True))
-        ind = re.search(rf'\b({names})\s*\[[^\]]*\]\s*\(\s*t\b', text)
-        if ind:
-            raise SDEError(f'equation({where!r}): an indexed delayed field '
-                           f'{text[ind.start():ind.end()]}...) is not supported; write '
-                           f"Conv(K, {ind.group(1)}[...]) with define_kernel('K', delay='d').")
         # Sage prints x(t - d) as x(-d + t) (the call of a field symbol)
         text = re.sub(rf'\b({names})\s*\(\s*-\s*([^()]*?)\s*\+\s*t\s*\)', r'\1(t - \2)', text)
-        pat = re.compile(rf'\b({names})\s*\(\s*t\s*-\s*')
+        pat = re.compile(rf'\b({names})\s*(\[[^\]]*\])?\s*\(\s*t\s*-\s*')
         out, pos = '', 0
         while True:
             m = pat.search(text, pos)
@@ -1040,27 +1278,36 @@ class SDE:
                 depth += {'(': 1, ')': -1}.get(text[k], 0)
                 k += 1
             if depth:
-                raise SDEError(f'equation({where!r}): unbalanced parentheses in '
-                               f'{text[m.start():]!r}.')
-            dexpr = text[m.end():k - 1].strip()
+                raise SDEError(f'{label}: unbalanced parentheses in {text[m.start():]!r}.')
+            dexpr = _unwrap(text[m.end():k - 1])
             if not dexpr or re.search(r'\bt\b', dexpr):
-                raise SDEError(f'equation({where!r}): cannot read the delay in '
-                               f'{text[m.start():k]!r} (write x(t - d), d free of t).')
-            self._check_text(dexpr, f'equation({where!r}) delay {dexpr!r}')
+                raise SDEError(f'{label}: cannot read the delay in {text[m.start():k]!r} (write '
+                               f'x(t - d), d free of t).')
+            self._check_text(dexpr, f'{label} delay {dexpr!r}')
             kname = 'delay_' + (re.sub(r'\W+', '_', dexpr).strip('_') or 'd')
             have = self._kernels.get(kname)
             if have is None:
                 if kname in self._allowed_names():
-                    raise SDEError(f'equation({where!r}): the delay kernel name '
-                                   f'{kname!r} is taken; declare the kernel with '
-                                   f"define_kernel(..., delay={dexpr!r}).")
+                    raise SDEError(f'{label}: the delay kernel name {kname!r} is taken; declare '
+                                   f"the kernel with define_kernel(..., delay={dexpr!r}).")
                 self.define_kernel(kname, delay=dexpr)
+                self._auto_kernels.add(kname)
             elif have.get('delay') != dexpr or have.get('freq_image') != '1':
-                raise SDEError(f'equation({where!r}): kernel {kname!r} exists and is '
-                               f'not the delay {dexpr!r}.')
-            out += text[pos:m.start()] + f'Conv({kname}, {m.group(1)})'
+                raise SDEError(f'{label}: kernel {kname!r} exists and is not the delay '
+                               f'{dexpr!r}.')
+            leg = m.group(1) + re.sub(r'\s+', '', m.group(2) or '')
+            out += text[pos:m.start()] + f'Conv({kname}, {leg})'
             pos = k
         return out + text[pos:]
+
+    def _redelay(self, text: str) -> str:
+        """The inverse of :meth:`_delayed_fields`: ``Conv(delay_<d>, x)`` of a
+        delay kernel declared on the fly written back as ``x(t - d)``."""
+        for kname, k in self._kernels.items():
+            if kname in self._auto_kernels:
+                text = re.sub(rf'Conv\(\s*{re.escape(kname)}\s*,\s*(\w+(?:\[[^\]]*\])?)\s*\)',
+                              lambda m, d=k['delay']: f'{m.group(1)}(t - {_wrap(d)})', text)
+        return text
 
     def drift(self, field: str, f: str):
         """Shorthand for ``equation(field, lhs='Dt*field', rhs=f)`` (with the
@@ -1094,6 +1341,24 @@ class SDE:
         :mod:`api.sde_paper`."""
         from api.sde_paper import apply_paper
         return apply_paper(self, text, noises)
+
+    def to_text(self, *, verify: bool = True) -> str:
+        """The model as the YAML ``sde:`` block of a ``daedalus run`` config
+        (:mod:`api.sde_text`): the declarations as given, read back by
+        :meth:`from_text` (or a config file) into the same model.  With
+        ``verify`` (default) the text is read back and compared with this
+        model (action, equations, built dict); a model the block cannot
+        record raises :class:`SDEError` with the reason."""
+        from api.sde_text import to_text
+        return to_text(self, verify=verify)
+
+    @classmethod
+    def from_text(cls, text: str) -> 'SDE':
+        """The model of an ``sde:`` block (a config holding ``sde:``, or the
+        block alone), as :meth:`to_text` writes it and ``daedalus run``
+        reads it; errors name the line (:class:`api.config_run.ConfigError`)."""
+        from api.sde_text import from_text
+        return from_text(text)
 
     def sde_text(self) -> str:
         """The equations written as :meth:`sde` reads them (a ``str``; its
@@ -1270,7 +1535,8 @@ class SDE:
         product of declared kernels inside ``Conv`` (``Conv(h[i]*g[i,j],
         n[j])``) is their convolution.  ``jump_size`` is the jump of ``name`` at a
         spike (a deterministic mark, default 1; ``size=`` is its deprecated name).  A spike train enters a rate
-        only through ``Conv`` (its instantaneous value is a delta).  Returns
+        only through ``Conv`` (its instantaneous value is a delta); a delayed
+        field ``x(t - d)`` is the delay kernel ``Conv(delay_d, x)``.  Returns
         the symbol of the spike train ``name``."""
         if size is not None:
             warnings.warn('point_process(size=) is renamed jump_size= (population(size=), '
@@ -1290,9 +1556,11 @@ class SDE:
             raise SDEError(f'point_process({name!r}): empty rate.')
         self._syntax_check(rate, f'point_process({name!r}) rate')
         self._syntax_check(size, f'point_process({name!r}) size')
+        declared = rate
+        rate = self._delayed_fields(rate, name, f'point_process({name!r})')
         if re.search(r'\bDt\b', rate) or re.search(r'\bt\b', rate):
             raise SDEError(f'point_process({name!r}): the rate may not contain Dt or '
-                           f'the time t (a delayed field is Conv(K, x) with '
+                           f'the time t (a delayed field is x(t - d), or Conv(K, x) with '
                            f"define_kernel('K', delay='d')).")
         for n in self._operators:
             if self._has_token(rate, n):
@@ -1303,7 +1571,8 @@ class SDE:
                               'domain': domain, 'latex': '', 'exposed': name}
         self._sources[name] = {'source': None, 'couples': {}, 'expose': name,
                                'population': population,
-                               'pp': {'rate': rate, 'size': str(size).strip() or '1'}}
+                               'pp': {'rate': rate, 'size': str(size).strip() or '1'},
+                               'declared': {'rate': declared, 'size': size}}
         return Symbol(self, name, 'field')
 
     def interpretation(self, mode: str):
@@ -1586,6 +1855,10 @@ class SDE:
         except NoiseError as exc:
             raise SDEError(f'{where}: cannot read the operator argument ({exc}).') from exc
         xs = [x for x in self._field_syms() if E.has(x)]
+        if not xs and any(self._has_token(text_v1, f + 't') for f in self._fields):
+            from engine.integration.spatial import CONSERVED_NOISE_WHY
+            raise SDEError(f'{where} acts on a response field (a noise term with an '
+                           f'operator): {CONSERVED_NOISE_WHY}.')
         if not xs:
             # (Dt(mu), lap(c): zero, or a symbol the engine would misread)
             raise SDEError(f'{where} acts on no field; an operator acts on the '
@@ -1661,11 +1934,16 @@ class SDE:
             if at < 0:
                 shown, at = ' '.join(str(text).split()), self._token_at(' '.join(str(text).split()), first)
             more = [u for u in unknown if u != first]
+            hint = self._name_hint(first, allowed, shown, at)
+            if first in ('div', 'grad', 'nabla') and (
+                    self._space is not None
+                    or any(op.spatial for op in self._operators.values())):
+                from engine.integration.spatial import CONSERVED_NOISE_WHY
+                hint = CONSERVED_NOISE_WHY
             raise SDEError(format_caret_error(
                 shown, max(at, 0),
                 f'{what}: undeclared symbol {first!r}'
-                + (f' (also undeclared: {more})' if more else ''),
-                self._name_hint(first, allowed, shown, at)))
+                + (f' (also undeclared: {more})' if more else ''), hint))
 
     def _source_error(self, name, src, allowed, exc) -> SDEError:
         """The undeclared symbol of a noise source's parameter, with a caret
@@ -2200,6 +2478,7 @@ class SDE:
                 if cname in self._allowed_names():
                     raise SDEError(f'{where}: the composite kernel name {cname!r} is taken.')
                 self._kernels[cname] = spec
+                self._composite_kernels.add(cname)
             elif any(have.get(q) != spec[q] for q in ('freq_image', 'delay', 'indexed_by')):
                 raise SDEError(f'{where}: kernel {cname!r} exists and is not the convolution '
                                f'{args[0].strip()!r} (index the factors the same way at '
@@ -3262,6 +3541,9 @@ class SDE:
             # Cumulants([...]) sources: cumulants above the declared order are 0;
             # compute_cumulants warns when (k, max_ell) can reach them
             m['noise_declared_orders'] = declared
+        if self._observables:
+            # functions of the fields read as external legs (api.observables)
+            m['observables'] = self._observable_specs()
         return m
 
     # ── diagnostics ───────────────────────────────────────────────────

@@ -42,6 +42,7 @@ set, it warns once and is ignored.)
 """
 from __future__ import annotations
 
+import inspect
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -111,6 +112,18 @@ def _coeffs(poly):
     return [_mpc(c) for c in poly.list()]          # ascending
 
 
+#: mpmath >= 1.4 takes ``asc=`` and warns (DeprecationWarning) when it is
+#: left out; older releases read descending coefficients only
+_MP_ASC = 'asc' in inspect.signature(mp.polyval).parameters
+
+
+def _polyval_asc(coeffs_asc, x):
+    """``mp.polyval`` of ascending coefficients, on every mpmath release."""
+    if _MP_ASC:
+        return mp.polyval(coeffs_asc, x, asc=True)
+    return mp.polyval(coeffs_asc[::-1], x)
+
+
 def _horner(coeffs, x):
     v = mp.mpc(0)
     for c in reversed(coeffs):
@@ -129,8 +142,10 @@ def _roots(coeffs_asc):
         return []
     if deg == 1:
         return [-coeffs_asc[0] / coeffs_asc[1]]
-    desc = list(reversed(coeffs_asc))
-    rts = mp.polyroots(desc, maxsteps=400, extraprec=4 * mp.mp.prec)
+    if _MP_ASC:
+        rts = mp.polyroots(list(coeffs_asc), maxsteps=400, extraprec=4 * mp.mp.prec, asc=True)
+    else:
+        rts = mp.polyroots(list(reversed(coeffs_asc)), maxsteps=400, extraprec=4 * mp.mp.prec)
     out = []
     dcoef = [j * coeffs_asc[j] for j in range(1, deg + 1)]
     for r in rts:

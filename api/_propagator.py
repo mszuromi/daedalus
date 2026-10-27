@@ -356,12 +356,12 @@ def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
     with the double value; per entry relative to its largest residue.
     ``inf`` when the refinement fails (no certificate)."""
     import mpmath as mp
-    from api._pole_clusters import _mpc
+    from api._pole_clusters import _mpc, _polyval_asc
     with mp.workdps(_CERT_DPS):
         co = lambda poly: [_mpc(c) for c in poly.list()]
         q = co(Q_poly)
         dq = [k * q[k] for k in range(1, len(q))]
-        ev = lambda c, x: mp.polyval(c[::-1], x)
+        ev = _polyval_asc
         dd = {key: co(d.derivative()) for key, d in dens.items()}
         pp = {key: co(P) for key, P in nums.items()}
         exact = []

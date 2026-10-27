@@ -602,8 +602,11 @@ class Gaussian(NoiseSource):
 
     ``space='white'`` makes it space-time white noise for an SPDE
     (``SDE(..., space=d)``): ``<eta(x,t) eta(x',t')> = var delta(x - x')
-    delta(t - t')``.  (Conserved noise, ``div`` of a white vector noise, is not
-    supported yet.)
+    delta(t - t')``.  Conserved noise (``space='conserved'``, ``div`` of a
+    white vector noise, spectrum ``var |q|^2``) is refused: the spatial
+    integrator carries one constant noise vertex per correlation line, and
+    the Model B dynamics that go with it need the ``k^4`` propagator and the
+    ``lap(u^3)`` vertex, which it refuses as well.
 
     ``kernel=`` makes it coloured: the white noise of intensity ``var``
     filtered by a causal kernel ``h`` (an :class:`api.delay.Kernel`:
@@ -623,9 +626,9 @@ class Gaussian(NoiseSource):
     def __init__(self, var, mean=0, *, space=None, kernel=None):
         if space not in (None, 'white'):
             if space == 'conserved':
-                raise NoiseError("Gaussian(space='conserved'): conserved noise (the divergence "
-                                 "of a white vector noise) is not supported yet; use "
-                                 "space='white'.")
+                from engine.integration.spatial import CONSERVED_NOISE_WHY
+                raise NoiseError(f"Gaussian(space='conserved'): {CONSERVED_NOISE_WHY}.  "
+                                 f"Use space='white'.")
             raise NoiseError(f"Gaussian(space={space!r}): use space='white' (space-time white "
                              f"noise of an SPDE) or omit it (time-only noise).")
         self.space = space

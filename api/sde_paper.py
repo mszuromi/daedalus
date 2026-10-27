@@ -239,10 +239,14 @@ def parse_paper(text: str, fields, SDEError, context: Optional[dict] = None):
             else:
                 sp = _split_differential(body)
             if sp is None:
+                hint = ('every term ends in dt, dW, dN(rate) or d<X>_<name>, separated from its '
+                        'factor by a space or "*", e.g. (-mu*x) dt or sqrt(2*D) dW')
+                if re.search(r'\b(\w+)\s*\(\s*dW(_\w+)?\s*\)', body):
+                    # an operator on the increment (lap(dW), div(dW)): conserved noise
+                    from engine.integration.spatial import CONSERVED_NOISE_WHY
+                    hint = CONSERVED_NOISE_WHY
                 raise _err(SDEError, line, at + len(body) - 1 if body else at,
-                           f'the term {body!r} of d{field} has no differential',
-                           'every term ends in dt, dW, dN(rate) or d<X>_<name>, separated from its '
-                           'factor by a space or "*", e.g. (-mu*x) dt or sqrt(2*D) dW')
+                           f'the term {body!r} of d{field} has no differential', hint)
             coef, mark, diff, arg, dpos = sp
             coef = _strip_parens(coef) if coef else '1'
             if coef != '1':
@@ -435,7 +439,7 @@ def paper_text(sde) -> str:
                                f'{f}dot, ... (rename them to write the text).')
             lhs, rhs, key = emb['lhs_raw'].strip(), emb['rhs_raw'].strip(), emb['top']
         else:
-            lhs, rhs = eq['lhs_raw'].strip(), eq['rhs_raw'].strip()
+            lhs, rhs = eq['lhs_raw'].strip(), sde._redelay(eq['rhs_raw'].strip())
             L = sde._parse(eq['lhs'], f'lhs of {f}').expand()
             a = L.coefficient(_DT, 1).coefficient(sde._sym(f), 1)
             if not a.is_zero() and (L - a * _DT * sde._sym(f)).expand() == 0:
