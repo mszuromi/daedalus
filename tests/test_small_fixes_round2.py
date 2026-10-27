@@ -22,9 +22,9 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-import api.compute as AC                                            # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE                                             # noqa: E402
+import daedalus.api.compute as AC                                            # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
 
 TAU = np.array([-1.0, 0.0, 0.7, 1.5])
 XY = [('x', 1), ('y', 1)]
@@ -141,7 +141,7 @@ def test_partial_parameters_missing_one_without_a_default_names_it():
 
 
 def test_complete_parameters_helper():
-    from api._mean_field import complete_parameters
+    from daedalus.api._mean_field import complete_parameters
     m = _ou_quad()
     assert complete_parameters(m, {'a': 3.0}) == {'a': 3.0, 'b': 0.5}
     assert complete_parameters(m, None) == {'a': 1.0, 'b': 0.5}
@@ -152,7 +152,7 @@ def test_complete_parameters_helper():
 
 
 def test_partial_parameters_reach_the_mean_field_dae_directly():
-    from api._mean_field_dae import solve_mean_field_dae
+    from daedalus.api._mean_field_dae import solve_mean_field_dae
     m = _ou_quad()
     part = solve_mean_field_dae(m, {'a': 2.0})['mf_values']
     full = solve_mean_field_dae(m, {'a': 2.0, 'b': 0.5})['mf_values']
@@ -165,7 +165,7 @@ def test_partial_parameters_reach_the_mean_field_dae_directly():
 def test_unused_parameter_without_a_default_does_not_stop_a_direct_solve():
     """A noise strength with no default that the saddle equations never read: the solvers below
     ``compute_cumulants`` (and ``precompute``) only fill, they do not require."""
-    from api._mean_field_dae import solve_mean_field_dae
+    from daedalus.api._mean_field_dae import solve_mean_field_dae
     m = (SDE('nd').parameter('a', default=1.0).parameter('D').field('x').drift('x', '-a*x + 0.1')
          .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
     assert solve_mean_field_dae(m, {'a': 1.0})['mf_values']['xstar'][0] == pytest.approx(0.1, rel=1e-12)
@@ -177,7 +177,7 @@ def test_a_saddle_default_is_not_merged_into_explicit_parameters():
     import importlib.util
     import os
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        'models', 'linear_hawkes.model.py')
+                        'daedalus', 'models', 'linear_hawkes.model.py')
     spec = importlib.util.spec_from_file_location('lh_fix49', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

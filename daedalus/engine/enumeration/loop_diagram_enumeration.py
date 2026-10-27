@@ -1,0 +1,1664 @@
+"""
+loop_diagram_enumeration.py
+============================
+Enumerate nonisomorphic trees, topologies, and prediagrams for
+ell-loop corrections to k-point functions in MSRJD field theory.
+
+Requires a SageMath kernel.
+
+Public API
+----------
+enumerate_all(k, ell, ...)          -> (trees, topologies, prediagrams, counts)
+enumerate_trees(k, ell, ...)        -> (trees, count)
+enumerate_topologies(k, ell, ...)   -> (topologies, count)
+enumerate_prediagrams(k, ell, ...)  -> (prediagrams, count)
+
+show_all(k, ell, ...)               -> counts dict  (+ inline display)
+show_trees(k, ell, ...)             -> count  (+ inline display)
+show_topologies(k, ell, ...)        -> count
+show_prediagrams(k, ell, ...)       -> count
+"""
+
+from sage.all import *
+from itertools import combinations, combinations_with_replacement
+from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+# ===========================================================================
+# Core graph utilities
+# ===========================================================================
+
+def classify_vertices_sage(G):
+    """Returns (leaves, internal, degree_2, degree_3plus).
+
+    One ``degree(labels=True)`` call instead of four per-vertex scans: this
+    runs on every tree ``graphs.trees`` produces (~200k at (6,1)) and was the
+    largest single cost of tree generation.
+    """
+    deg = G.degree(labels=True)
+    leaves, internal, degree_2, degree_3plus = [], [], [], []
+    for v, d in deg.items():
+        if d == 1:
+            leaves.append(v)
+        else:
+            internal.append(v)
+            if d == 2:
+                degree_2.append(v)
+            elif d >= 3:
+                degree_3plus.append(v)
+    return leaves, internal, degree_2, degree_3plus
+
+
+def two_path_lengths(G, degree_2_vertices):
+    """Lengths of the maximal runs of adjacent degree-2 vertices of ``G``.
+
+    In a tree these are the subdivision counts of its skeleton edges (the
+    paper's *maximal 2-paths*).
+    """
+    d2 = set(degree_2_vertices)
+    seen, runs = set(), []
+    for v in degree_2_vertices:
+        if v in seen:
+            continue
+        comp, stack = {v}, [v]
+        while stack:
+            x = stack.pop()
+            for y in G.neighbors(x):
+                if y in d2 and y not in comp:
+                    comp.add(y)
+                    stack.append(y)
+        seen |= comp
+        runs.append(len(comp))
+    return runs
+
+
+def endpoint_condition_holds(tree, degree_2_vertices, j, ell):
+    """The 2-path endpoint condition:  sum_e floor(m_e/2) + j <= 2*ell.
+
+    Every maximal 2-path of the tree must be broken by the added edges so that
+    no two adjacent degree-2 vertices survive in the topology -- a vertex
+    cover of a path of m vertices needs floor(m/2) of them, each costing one
+    of the 2*ell edge endpoints -- and each of the j retired leaves needs an
+    endpoint of its own.  Necessary, not sufficient; it never rejects a tree
+    that yields a prediagram (checked exhaustively at (3,1),(4,1),(5,1),(2,2),
+    (3,2),(2,3)).
+    """
+    return sum(m // 2 for m in two_path_lengths(tree, degree_2_vertices)) + j <= 2 * ell
+
+
+def has_adjacent_degree2_sage(G, degree_2_vertices):
+    degree_2_set = set(degree_2_vertices)
+    for v in degree_2_vertices:
+        for neighbor in G.neighbors(v):
+            if neighbor in degree_2_set and neighbor != v:
+                return True
+    return False
+
+
+def check_deg3_has_non_deg2_neighbor(G, deg3plus_vertices, deg2_vertices):
+    deg2_set = set(deg2_vertices)
+    for v in deg3plus_vertices:
+        if all(n in deg2_set for n in G.neighbors(v)):
+            return False
+    return True
+
+
+def check_leaf_neighbors_not_all_deg2(G, leaves, deg2_vertices):
+    deg2_set = set(deg2_vertices)
+    leaf_neighbors = set()
+    for leaf in leaves:
+        leaf_neighbors.update(G.neighbors(leaf))
+    if leaf_neighbors and all(n in deg2_set for n in leaf_neighbors):
+        return False
+    return True
+
+
+def count_cycles_sage(G):
+    if not G.is_connected():
+        return -1
+    return G.size() - G.order() + 1
+
+
+def relabel_leaves_first(G):
+    leaves, internal, _, _ = classify_vertices_sage(G)
+    relabel_dict = {}
+    for idx, v in enumerate(sorted(leaves)):
+        relabel_dict[v] = idx
+    for idx, v in enumerate(sorted(internal)):
+        relabel_dict[v] = len(leaves) + idx
+    return G.relabel(relabel_dict, inplace=False), relabel_dict
+
+
+# ===========================================================================
+# Tree generation
+# ===========================================================================
+
+def v_max_orientable_bound(k, ell):
+    """Orientability cap on |V|:  |V| <= 3k + 3*ell - 3.
+
+    Derivation (see the block comment in ``generate_trees_with_constraints``):
+    sum(deg) = 2|E| = 2(|V|-1+ell) with sum(deg) >= k + 2|V2^G| + 3|V3^G| gives
+    |V3^G| <= k + 2*ell - 2, which with |V2^G| <= k + ell - 1 (Lemma v2g)
+    yields |V| <= 3k + 3*ell - 3.
+
+    Factored out of the tree loop so ``tests/test_orientability_cap.py`` can
+    monkeypatch it to +infinity and assert that lifting the cap adds no
+    prediagram -- i.e. that every topology above it really is non-orientable.
+    """
+    return 3 * k + 3 * ell - 3
+
+
+def generate_trees_with_constraints(k, ell, max_vertices_search=50):
+    """
+    Generate all trees T with k+j leaves satisfying degree constraints.
+    Returns list of (tree, j, num_leaves).
+    """
+    valid_trees = []
+    j_max = ell + (ell // 2)
+
+    for j in range(0, j_max + 1):
+        num_leaves = k + j
+        v3_max = k + j - 2
+        # |V2^T| <= k + 3*ell - 2*j - 1: the PROVEN tree-decomposition bound
+        # (paper, sharpened Sept 2026).  Split the j retired tree leaves J by
+        # their G-degree, j = j2 + j3 (G-degree 2 -> one F-endpoint; >= 3 ->
+        # at least two), and V2^T into A (untouched by F, still degree 2 in
+        # G) and B (touched).  A and J2 are disjoint subsets of V2^G, so
+        # |A| <= k + ell - 1 - j2 (source bound, Lemma v2g); the 2*ell
+        # F-endpoints give |B| <= 2*ell - j2 - 2*j3.  Hence
+        #     |V2^T| <= k + 3*ell - 1 - 2*j .
+        # The older k + 3*ell - j - 1 charged the source budget and the
+        # endpoint budget separately and so counted the retired leaves twice.
+        # With this bound num_leaves + v2_max + v3_max == 3k + 3*ell - 3 for
+        # every j, i.e. the orientability cap below is implied and never
+        # binds.  Verified: identical prediagram counts at (k,ell) in
+        # {(2,1),(3,1),(4,1),(2,2),(3,2),(1,3),(2,3),(4,2)} with 12-48% fewer
+        # trees generated.  (An even earlier "- (j // 3)" tightening came
+        # from a theta-lemma that is FALSE at ell >= 3 — counterexample:
+        # three doubled-edge bubbles on a hub, j = theta = 3 — and is NOT
+        # what is used here.)
+        v2_max = k + 3 * ell - 2 * j - 1
+
+        min_n = num_leaves if num_leaves == 1 else num_leaves + 1
+        # Only the PROVEN vertex-count bound (num_leaves + v2_max + v3_max) and
+        # the global search cap (max_vertices_search=50) apply here; the per-tree
+        # degree constraints below (v3_max / v2_max) do the rest.  An earlier
+        # extra clamp ``min(max_n, num_leaves + min(10, v2_max + v3_max))`` was
+        # un-proven (it silently truncated the search at high vertex counts and
+        # could drop valid trees at loop order >= 3); removed to restore
+        # completeness.  Inert at ell <= 2 (the proven bound already binds).
+        # Orientability caps |V| independently of the tree decomposition.
+        # Partitioning G by degree, sum(deg) = 2|E| = 2(|V|-1+ell) and
+        # sum(deg) >= k + 2|V2^G| + 3|V3^G| give
+        #     |V3^G| <= k + 2*ell - 2 ,
+        # which with |V2^G| <= k + ell - 1 (Lemma v2g, from orientability)
+        # yields
+        #     |V| = k + |V2^G| + |V3^G| <= 3k + 3*ell - 3 .
+        # T and G share a vertex set, so a larger tree can only ever produce
+        # NON-ORIENTABLE topologies -- verified exhaustively at (k,ell) in
+        # {(2,1),(3,1),(4,1),(2,2)}: every topology above the cap admits zero
+        # valid orientations, so no prediagram is lost.  Both bounds are tight
+        # (attained at each of those points).  This is what makes ell=3
+        # tractable: it removes 33x of the candidate multisets there.
+        v_max_orientable = v_max_orientable_bound(k, ell)
+        max_n = min(num_leaves + v2_max + v3_max, v_max_orientable,
+                    max_vertices_search)
+
+        if max_n < min_n or v2_max < 0:
+            continue
+
+        for n in range(min_n, max_n + 1):
+            for tree in graphs.trees(n):
+                leaves, internal, degree_2, degree_3plus = classify_vertices_sage(tree)
+                if len(leaves) != num_leaves:
+                    continue
+                if len(degree_3plus) > v3_max:
+                    continue
+                if len(degree_2) > v2_max:
+                    continue
+                if not endpoint_condition_holds(tree, degree_2, j, ell):
+                    continue
+                valid_trees.append((tree, j, num_leaves))
+
+    return valid_trees
+
+
+def _tree_bounds_by_j(k, ell, max_vertices_search=50):
+    """``{j: (num_leaves, v3_max, v2_max, min_n, max_n)}`` for the admissible j.
+
+    Factored out of :func:`generate_trees_with_constraints` so the same bounds
+    drive both the serial path and the parallel one.
+    """
+    spec = {}
+    for j in range(0, ell + (ell // 2) + 1):
+        num_leaves = k + j
+        v3_max = k + j - 2
+        v2_max = k + 3 * ell - 2 * j - 1          # sharpened bound, see generate_trees_with_constraints
+        min_n = num_leaves if num_leaves == 1 else num_leaves + 1
+        max_n = min(num_leaves + v2_max + v3_max,
+                    v_max_orientable_bound(k, ell), max_vertices_search)
+        if max_n < min_n or v2_max < 0:
+            continue
+        spec[j] = (num_leaves, v3_max, v2_max, min_n, max_n)
+    return spec
+
+
+def _trees_of_order(args):
+    """Worker: admissible trees in one ``(n, residue)`` slice, as packed certs.
+
+    Two things are going on.  First, ``graphs.trees(n)`` is the expensive call
+    and the serial path invokes it once per admissible ``j`` -- up to j_max+1
+    times over the same trees.  A tree's leaf count fixes its surplus,
+    ``j = |L| - k``, so ONE pass can dispatch each tree to its single
+    admissible j.
+
+    Second, splitting only by ``n`` balances terribly: the largest ``n``
+    carries most of the trees (2.14M of 3.5M at (6,2)) and cannot be split,
+    because ``graphs.trees`` is a sequential generator.  nauty's ``gentreeg``
+    accepts a ``res/mod`` argument that partitions its own search, verified
+    disjoint and complete against ``graphs.trees``, so each ``n`` splits into
+    ``mod`` balanced slices instead.
+
+    Returns packed certs rather than Sage trees so the pool pays tens of bytes
+    of IPC per tree instead of pickling a graph.
+    """
+    n, res, mod, k, ell, spec = args
+    if CERT_BACKEND == 'fast':
+        return _trees_of_order_fast(n, res, mod, k, ell, spec)
+    gen = (graphs.nauty_gentreeg(f'{n} {res}/{mod}') if mod > 1
+           else graphs.trees(n))
+    out = []
+    for tree in gen:
+        leaves, _internal, degree_2, degree_3plus = classify_vertices_sage(tree)
+        j = len(leaves) - k
+        s = spec.get(j)
+        if s is None:
+            continue
+        num_leaves, v3_max, v2_max, min_n, max_n = s
+        if not (min_n <= n <= max_n):
+            continue
+        if len(degree_3plus) > v3_max or len(degree_2) > v2_max:
+            continue
+        if not endpoint_condition_holds(tree, degree_2, j, ell):
+            continue
+        out.append((pack_cert(_iso_cert(tree)), j, num_leaves))
+    return out
+
+
+def _gentreeg_path():
+    from sage.features.nauty import NautyExecutable
+    return NautyExecutable('gentreeg').absolute_filename()
+
+
+def _trees_of_order_fast(n, res, mod, k, ell, spec):
+    """Compiled tree stage: read gentreeg's sparse6 output directly and apply
+    the (E1) filters in C (``_fastenum.tree_filter_sparse6``), certifying only
+    the survivors.  Same records as the Sage-graph path."""
+    import subprocess
+    jmax = max(spec) if spec else -1
+    valid = [1 if j in spec else 0 for j in range(jmax + 1)]
+    v3max = [spec[j][1] if j in spec else 0 for j in range(jmax + 1)]
+    v2max = [spec[j][2] if j in spec else 0 for j in range(jmax + 1)]
+    nmin = [spec[j][3] if j in spec else 0 for j in range(jmax + 1)]
+    nmax = [spec[j][4] if j in spec else 0 for j in range(jmax + 1)]
+    cmd = [_gentreeg_path(), '-q', str(n)] + ([f'{res}/{mod}'] if mod > 1 else [])
+    import tempfile
+    out = []
+    # the exit status is checked: a generator that dies mid-stream (OOM,
+    # signal, broken install) would otherwise leave a silently truncated
+    # tree list, hence missing prediagrams in a correctly stamped cache file
+    #.  stderr goes to a file (a pipe could fill and block).
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err)
+        try:
+            for line in proc.stdout:
+                rec = _fe.tree_filter_sparse6(line.rstrip(b'\n'), k, ell, valid, v3max,
+                                              v2max, nmin, nmax)
+                if rec is None:
+                    continue
+                j, num_leaves, nn, edges = rec
+                out.append((pack_cert(_fe.cert(nn, edges, False)), j, num_leaves))
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            proc.stdout.close()
+        rc = proc.wait()
+        if rc != 0:
+            err.seek(0)
+            msg = err.read()[-2000:].decode('utf-8', 'replace').strip()
+            raise RuntimeError(
+                f'gentreeg {" ".join(cmd[1:])} exited with status {rc} after '
+                f'{len(out)} accepted tree(s); the tree list would be incomplete'
+                + (f': {msg}' if msg else ''))
+    return out
+
+
+def generate_trees_parallel(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
+    """``(packed_tree_cert, j, num_leaves)`` records, one pass, in parallel.
+
+    Two independent savings over :func:`generate_trees_with_constraints`:
+    ``graphs.trees(n)`` runs once per ``n`` rather than once per ``(j, n)``,
+    and the ``n`` are farmed out.  Load balance is poor by construction --
+    the largest ``n`` dominates and cannot be split, since Sage's tree
+    generator is sequential -- so most of the win is the deduplication.
+
+    Returns CERTS, not Sage trees: (6,2) admits 1.47M trees, which as live
+    graph objects would be ~20 GB in the parent, reintroducing exactly the
+    ceiling this module exists to remove.  Consumers rebuild per tree.
+    """
+    spec = _tree_bounds_by_j(k, ell, max_vertices_search)
+    if not spec:
+        return []
+    ns = range(min(v[3] for v in spec.values()), max(v[4] for v in spec.values()) + 1)
+    # Split each order into ``mod`` balanced slices so the largest n, which
+    # dominates, is not stuck on one worker.  Below _SPLIT_MIN_N the split is
+    # not merely pointless but WRONG: gentreeg's search tree is too shallow to
+    # partition, and every residue emits the whole set (measured at n=3: the
+    # lone tree came back 12 times).  Those orders hold a handful of trees, so
+    # they run as single units.
+    args = []
+    for n in ns:
+        mod = max(1, n_procs) if n >= _SPLIT_MIN_N else 1
+        args.extend((n, res, mod, k, ell, spec) for res in range(mod))
+    # Dedup defensively: gentreeg residues are disjoint for n >= _SPLIT_MIN_N
+    # and graphs.trees yields pairwise non-isomorphic trees, so a repeat can
+    # only be a generator quirk, never a legitimate duplicate.
+    seen = set()
+    out = []
+    for chunk in _map_unordered(_trees_of_order, args, n_procs, verbose, 'order'):
+        for rec in chunk:
+            if rec not in seen:
+                seen.add(rec)
+                out.append(rec)
+    return out
+
+
+# ===========================================================================
+# Edge addition
+# ===========================================================================
+
+def generate_edge_multisets(all_vertices, ell):
+    if len(all_vertices) < 2:
+        return []
+    possible_edges = list(combinations(all_vertices, 2))
+    return list(combinations_with_replacement(possible_edges, ell))
+
+
+def add_edges_to_tree(tree, edge_multiset):
+    G = Graph(tree, multiedges=True, loops=False)
+    for edge in edge_multiset:
+        G.add_edge(edge[0], edge[1])
+    return G
+
+
+def check_topology_constraints(G, k, ell=None):
+    leaves, internal, degree_2, degree_3plus = classify_vertices_sage(G)
+    if len(leaves) != k:
+        return False
+    if not G.is_connected():
+        return False
+    # Degree-2 pruning constraints avoid redundant topologies when edges
+    # will be added (ell >= 1).  At tree level (ell=0) the tree IS the
+    # topology — no contraction ambiguity — so skip these checks.
+    if ell is None or ell > 0:
+        if has_adjacent_degree2_sage(G, degree_2):
+            return False
+        if not check_deg3_has_non_deg2_neighbor(G, degree_3plus, degree_2):
+            return False
+        if not check_leaf_neighbors_not_all_deg2(G, leaves, degree_2):
+            return False
+    return True
+
+
+# ===========================================================================
+# Topology enumeration
+# ===========================================================================
+
+# Which (E2) generator ``process_tree_parallel`` dispatches to.
+#   'canonical'    -- degree-first, and a (tree, added-edges) pair is built only
+#                     if the added edges are a locally maximal co-tree of the
+#                     topology (``_cotree_is_local_max``); every topology is
+#                     still produced from at least one of its spanning trees.
+#   'degree_first' -- builds the added edges from their degree-increment
+#                     vector (forced endpoints first), every spanning tree.
+#   'multiset'     -- the former enumerate-every-multiset-then-screen path.
+# All three yield the same set of topologies (tests/test_degree_first_edges.py,
+# tests/test_canonical_cotree.py): the other two are kept as the canonical
+# generator's independent references (tests set this attribute).  The env
+# switch ``DAEDALUS_EDGE_GENERATOR`` is retired (it only warns).
+
+from daedalus.engine import _env
+_env.retired('DAEDALUS_EDGE_GENERATOR',
+             "the 'canonical' generator is the only route; the 'degree_first' "
+             "and 'multiset' generators remain as test references")
+EDGE_GENERATOR = 'canonical'
+
+
+def process_tree_parallel(args, raw=False):
+    """``raw=True`` (degree-first generators only) returns ``(n, edges, leaves)``
+    index data instead of Sage graphs, for the certificate fast path."""
+    if EDGE_GENERATOR == 'multiset':
+        if raw:
+            return [(_graph_index_data(G) + (leaves,)) for G, leaves, _ in process_tree_multiset(args)]
+        return process_tree_multiset(args)
+    if EDGE_GENERATOR == 'degree_first':
+        return process_tree_degree_first(args, cotree_filter=False, raw=raw)
+    return process_tree_degree_first(args, cotree_filter=True, raw=raw)
+
+
+def _tree_paths(tree, verts):
+    """``paths[(u, w)]`` = the edges of the unique tree path from ``u`` to
+    ``w``, as sorted pairs, for every unordered pair (u < w)."""
+    nbrs = {v: tree.neighbors(v) for v in verts}
+    paths = {}
+    for u in verts:
+        parent = {u: None}
+        stack = [u]
+        while stack:
+            x = stack.pop()
+            for y in nbrs[x]:
+                if y not in parent:
+                    parent[y] = x
+                    stack.append(y)
+        for w in verts:
+            if w <= u:
+                continue
+            edges = []
+            x = w
+            while parent[x] is not None:
+                edges.append((min(x, parent[x]), max(x, parent[x])))
+                x = parent[x]
+            paths[(u, w)] = edges
+    return paths
+
+
+def _cotree_is_local_max(F, deg, paths):
+    """Canonical-decomposition filter for ``G = T + F``.
+
+    ``T + F`` is one spanning-tree decomposition of the topology ``G``;
+    exchanging an added edge ``f`` for a tree edge ``e`` on the tree path
+    between the endpoints of ``f`` gives another, ``T' = T + f - e``,
+    ``F' = F - f + e``, with the same ``G``.  Rank edges by the invariant
+    ``inv(e) = (max, min)`` of the degrees of their endpoints IN ``G``.  A
+    decomposition is accepted iff no single exchange strictly raises the
+    invariant of the replaced edge.  The set of accepted co-trees of ``G`` is
+    a graph invariant of ``G`` and contains the global maximum, so every
+    topology is produced from at least one of its trees, while a topology
+    with several inequivalent spanning trees is no longer built once per
+    tree.  Costs O(ell * |V|) integer comparisons, before any Sage graph is
+    built; no isomorphism test is involved."""
+    for u, w in F:
+        du, dw = deg[u], deg[w]
+        inv_f = (du, dw) if du >= dw else (dw, du)
+        for a, b in paths[(u, w) if u < w else (w, u)]:
+            da, db = deg[a], deg[b]
+            inv_e = (da, db) if da >= db else (db, da)
+            if inv_e > inv_f:
+                return False
+    return True
+
+
+def _degree_vectors(order, nbrs, base_d2, retired, budget):
+    """Yield ``delta`` dicts (vertex -> number of added-edge endpoints) with
+    ``sum(delta) == budget``, ``delta >= 1`` on the retired leaves, ``0`` on
+    the other leaves, and no two TREE-adjacent vertices both of topology
+    degree 2 (a tree degree-2 vertex with delta 0, or a retired leaf with
+    delta 1).  Vertices are assigned in ``order`` (retired leaves, then tree
+    degree-2 vertices, then branching vertices), pruning as soon as the
+    remaining budget cannot pay for the endpoints the assignment still owes.
+    """
+    n = len(order)
+    delta = {}
+
+    def in_d2(v):                      # topology degree 2, given current assignment
+        d = delta.get(v)
+        if d is None:
+            return False
+        return (v in base_d2 and d == 0) or (v in retired and d == 1)
+
+    def owed(i):
+        """Endpoints the unassigned vertices order[i:] must still take."""
+        need = 0
+        for v in order[i:]:
+            if v in retired:
+                need += 1
+            elif v in base_d2 and any(in_d2(u) for u in nbrs[v]):
+                need += 1              # its D2 neighbour forces it to be touched
+        return need
+
+    def rec(i, rem):
+        if rem < owed(i):
+            return
+        if i == n:
+            if rem == 0:
+                yield dict(delta)
+            return
+        v = order[i]
+        lo = 1 if v in retired else 0
+        for d in range(lo, rem + 1):
+            # adjacency screen against the already-assigned neighbours
+            if (v in base_d2 and d == 0) or (v in retired and d == 1):
+                if any(in_d2(u) for u in nbrs[v]):
+                    continue
+            delta[v] = d
+            yield from rec(i + 1, rem - d)
+            del delta[v]
+
+    yield from rec(0, budget)
+
+
+def _realizations(vs, rem, forbidden):
+    """All multisets of edges (no self-loops) on the vertices ``vs`` with the
+    prescribed degrees ``rem`` (a dict, mutated during the recursion), each
+    multiset exactly once.  ``forbidden`` is a set of frozenset pairs that
+    may not be joined."""
+    a = next((i for i, v in enumerate(vs) if rem[v] > 0), None)
+    if a is None:
+        yield []
+        return
+    u = vs[a]
+    need = rem[u]
+    rem[u] = 0
+    partners = [w for w in vs[a + 1:] if rem[w] > 0 and frozenset((u, w)) not in forbidden]
+
+    def choose(start, left, chosen):
+        if left == 0:
+            for rest in _realizations(vs, rem, forbidden):
+                yield chosen + rest
+            return
+        for pi in range(start, len(partners)):
+            w = partners[pi]
+            if rem[w] == 0:
+                continue
+            rem[w] -= 1
+            yield from choose(pi, left - 1, chosen + [(u, w)])
+            rem[w] += 1
+
+    yield from choose(0, need, [])
+    rem[u] = need
+
+
+# Orbit-deduplicate the endpoint vectors under Aut(T) (one canonical_label per
+# vector).  Worth it without the co-tree filter; with it, the filter already
+# removes most repeats and the per-vector labelling costs more than the extra
+# certificates it saves (measured: see tests/test_canonical_cotree.py header).
+# 'auto' | '1' | '0' (tests set it; the env switch is retired).
+_env.retired('DAEDALUS_DELTA_ORBIT_DEDUP',
+             "'auto' (on only without the co-tree filter) is the only setting")
+DELTA_ORBIT_DEDUP = 'auto'
+
+
+def process_tree_degree_first(args, cotree_filter=True, delta_dedup=None, raw=False):
+    """(E2) by degree increments: for a tree with surplus ``j``, enumerate the
+    endpoint vectors ``delta`` of the ``ell`` added edges (retired leaves and
+    2-path vertex covers first, so most endpoints are forced), then realize
+    each as edge multisets.  Produces exactly the candidates that survive the
+    multiset path's screens, without generating the ~98% that do not.
+
+    With ``cotree_filter`` a realization is built only if its added edges are
+    a locally maximal co-tree of the resulting topology
+    (``_cotree_is_local_max``), which removes most of the copies a topology
+    otherwise receives from its other spanning trees."""
+    tree, j, num_leaves, k, ell = args
+    all_verts = sorted(tree.vertices())
+    base_deg = {v: tree.degree(v) for v in all_verts}
+    paths = _tree_paths(tree, all_verts) if (cotree_filter and ell > 0) else None
+    if delta_dedup is None:
+        delta_dedup = ({'auto': not cotree_filter, '1': True, '0': False}
+                       .get(DELTA_ORBIT_DEDUP, not cotree_filter))
+    tree_leaves = [v for v in all_verts if base_deg[v] == 1]
+    base_d2 = frozenset(v for v in all_verts if base_deg[v] == 2)
+    nbrs = {v: tree.neighbors(v) for v in all_verts}
+    if num_leaves - j != k:
+        return []
+    local_candidates = []
+
+    idx = {v: i for i, v in enumerate(all_verts)}
+    tree_edges_idx = [(idx[u], idx[w]) for u, w in tree.edges(labels=False)]
+
+    def emit_raw(F, delta):
+        """Raw-mode emit: the same two structural checks on adjacency lists,
+        no Sage graph; appends ``(n, edges, leaves)`` in 0..n-1 indices."""
+        deg_f = {v: base_deg[v] + delta.get(v, 0) for v in all_verts}
+        leaves = [v for v in all_verts if deg_f[v] == 1]
+        if ell > 0:
+            d2 = {v for v in all_verts if deg_f[v] == 2}
+            adj = {v: list(nbrs[v]) for v in all_verts}
+            for u, w in F:
+                adj[u].append(w)
+                adj[w].append(u)
+            for v in all_verts:
+                if deg_f[v] >= 3 and all(x in d2 for x in adj[v]):
+                    return
+            ln = {x for l in leaves for x in adj[l]}
+            if ln and all(x in d2 for x in ln):
+                return
+        edges = tree_edges_idx + [(idx[u], idx[w]) for u, w in F]
+        local_candidates.append((len(all_verts), edges, [idx[v] for v in leaves]))
+
+    def emit(G, delta):
+        leaves = [v for v in all_verts if base_deg[v] + delta.get(v, 0) == 1]
+        if ell > 0:
+            d2 = [v for v in all_verts if base_deg[v] + delta.get(v, 0) == 2]
+            d3 = [v for v in all_verts if base_deg[v] + delta.get(v, 0) >= 3]
+            if not check_deg3_has_non_deg2_neighbor(G, d3, d2):
+                return
+            if not check_leaf_neighbors_not_all_deg2(G, leaves, d2):
+                return
+        # Raw labelling: the leaves-first relabelling is applied by the
+        # consumer to the representatives that survive isomorphism dedup
+        # (``_remove_isomorphic_undirected``); the streaming path certifies
+        # the raw graph directly.  Doing it here cost ~45 us per candidate,
+        # most of them duplicates.
+        local_candidates.append((G, leaves, [v for v in all_verts if v not in leaves]))
+
+    if ell == 0:
+        if raw:
+            emit_raw([], {})
+        else:
+            emit(Graph(tree, multiedges=True, loops=False), {})
+        return local_candidates
+
+    internal = [v for v in all_verts if base_deg[v] >= 2]
+    d2_first = sorted(base_d2) + [v for v in internal if v not in base_d2]
+    # Orbit dedup of the endpoint vectors under Aut(T): two deltas related by a
+    # tree automorphism realize isomorphic topologies, so only one is kept.
+    # The orbit representative is identified by the canonical label of the
+    # tree with delta as a vertex colouring -- one C call, no group listing
+    # (stars have |Aut| in the thousands).  Removes ~half of the within-tree
+    # duplicates; the rest sit inside a delta's realizations.
+    seen_delta = set()
+    for retired_tuple in combinations(tree_leaves, j):
+        retired = frozenset(retired_tuple)
+        order = list(retired_tuple) + d2_first
+        for delta in _degree_vectors(order, nbrs, base_d2, retired, 2 * ell):
+            if delta_dedup:
+                cells = {}
+                for v in all_verts:
+                    cells.setdefault(delta.get(v, 0), []).append(v)
+                colours = sorted(cells)
+                C, cert = tree.canonical_label(partition=[cells[c] for c in colours],
+                                               certificate=True)
+                key = (tuple(colours), tuple(sorted(C.edges(labels=False))),
+                       tuple(tuple(sorted(cert[v] for v in cells[c])) for c in colours))
+                if key in seen_delta:
+                    continue
+                seen_delta.add(key)
+            support = [v for v in all_verts if delta.get(v, 0) > 0]
+            # two retired leaves of delta 1 joined by an added edge would be
+            # adjacent degree-2 vertices of the topology
+            ones = [v for v in support if v in retired and delta[v] == 1]
+            forbidden = {frozenset(p) for p in combinations(ones, 2)}
+            rem = {v: delta[v] for v in support}
+            if paths is not None:
+                deg = dict(base_deg)
+                for v in support:
+                    deg[v] += delta[v]
+            for F in _realizations(support, rem, forbidden):
+                if paths is not None and not _cotree_is_local_max(F, deg, paths):
+                    continue
+                if raw:
+                    emit_raw(F, delta)
+                    continue
+                G = Graph(tree, multiedges=True, loops=False)
+                for u, w in F:
+                    G.add_edge(u, w)
+                emit(G, delta)
+    return local_candidates
+
+
+def process_tree_multiset(args):
+    tree, j, num_leaves, k, ell = args
+    local_candidates = []
+    all_verts = list(tree.vertices())
+
+    # Base-tree invariants, computed once, for the pre-build screens.
+    base_deg = {v: tree.degree(v) for v in all_verts}
+    tree_leaves = frozenset(v for v, d in base_deg.items() if d == 1)
+    base_d2 = frozenset(v for v, d in base_deg.items() if d == 2)
+    tree_edges = list(tree.edges(labels=False))
+
+    # Restrict the pair pool before enumerating multisets.  Exactly j = the
+    # tree's surplus leaves must be killed, and touching a leaf always kills
+    # it, so a pair carrying more than j leaves can never appear in a
+    # qualifying multiset.  At j = 0 this drops every leaf-incident pair and
+    # leaves only internal-internal edges.
+    n_surplus = num_leaves - k
+    pairs = [(u, v) for u, v in combinations(all_verts, 2)
+             if (u in tree_leaves) + (v in tree_leaves) <= n_surplus]
+
+    for edge_multiset in combinations_with_replacement(pairs, ell):
+        # ── Screen 1: leaf count, in O(ell) ──────────────────────────
+        # Degrees only ever increase, so no new leaf can appear and a tree
+        # leaf survives iff the multiset does not touch it:
+        #     leaves(G) = leaves(T) - |touched cap leaves(T)| .
+        # Touching only the ell added edges avoids copying the whole degree
+        # dict per multiset -- this screen runs on every multiset and
+        # rejects ~80% of them, so its constant factor dominates.
+        delta = {}
+        for u, v in edge_multiset:
+            delta[u] = delta.get(u, 0) + 1
+            delta[v] = delta.get(v, 0) + 1
+        if num_leaves - sum(1 for v in delta if v in tree_leaves) != k:
+            continue
+
+        # ── Screen 2: adjacent degree-2 vertices (Thm. no-adj-2) ─────
+        # Rejects ~93% of what survives screen 1.  Only touched vertices can
+        # change degree, so the degree-2 set updates from ``base_d2`` in
+        # O(ell); adjacency is the tree's edges together with the multiset.
+        # NOTE: the degree-2 constraints apply only for ell > 0.  At tree
+        # level the tree IS the topology -- there is no contraction ambiguity
+        # to break -- and ``check_topology_constraints`` skips them, so
+        # screening on them here would wrongly discard every tree-level
+        # record.
+        d2 = set(base_d2)
+        for v, dv in delta.items():
+            if base_deg[v] + dv == 2:
+                d2.add(v)
+            else:
+                d2.discard(v)
+        if ell > 0 and len(d2) >= 2:
+            if any(u in d2 and v in d2 for u, v in tree_edges) or \
+               any(u in d2 and v in d2 for u, v in edge_multiset):
+                continue
+
+        G = add_edges_to_tree(tree, edge_multiset)
+        # NOTE: the former ``count_cycles_sage(G) != ell`` guard here was
+        # dead.  ``generate_edge_multisets`` draws from ``combinations(V, 2)``
+        # so no edge is a self-loop, and a connected tree with V-1 edges plus
+        # ell of them has b1 = (V-1+ell) - V + 1 = ell identically.  The guard
+        # never fired but paid a full ``is_connected()`` per candidate, which
+        # ``check_topology_constraints`` then recomputed.
+
+        # The screens above already determined every degree, so the vertex
+        # classification is in hand: re-deriving it via
+        # ``classify_vertices_sage`` (which ``check_topology_constraints`` and
+        # ``relabel_leaves_first`` each did independently) is redundant.  The
+        # leaf-count and connectivity tests inside
+        # ``check_topology_constraints`` are likewise already settled -- the
+        # first by screen 1, the second because tree-plus-edges is always
+        # connected -- as is the adjacent-degree-2 test by screen 2.  Only the
+        # last two structural checks remain.
+        leaves = [v for v in all_verts if base_deg[v] + delta.get(v, 0) == 1]
+        if ell > 0:
+            d3 = [v for v in all_verts if base_deg[v] + delta.get(v, 0) >= 3]
+            if not check_deg3_has_non_deg2_neighbor(G, d3, d2):
+                continue
+            if not check_leaf_neighbors_not_all_deg2(G, leaves, d2):
+                continue
+
+        G_relabeled, _ = relabel_leaves_first(G)
+        # ``relabel_leaves_first`` maps the sorted leaves onto 0..|L|-1 and the
+        # sorted internal vertices onto |L|..|V|-1, so the post-relabel
+        # classification is these ranges by construction.
+        n_leaf = len(leaves)
+        leaves_final = list(range(n_leaf))
+        internal_final = list(range(n_leaf, len(all_verts)))
+        local_candidates.append((G_relabeled, leaves_final, internal_final))
+    return local_candidates
+
+
+# Certificate backend.  'fast' = daedalus.engine.enumeration.fastenum.cert: nauty's
+# densenauty on a coloured subdivision encoding (~4-6 us) when Sage's bundled
+# libnauty links, else Sage's search_tree on a DenseGraph (~30 us); 'sage' =
+# canonical_label() of the multigraph (~100 us).  All are complete isomorphism
+# invariants in the same (order, sorted_edges) format, but their BYTES differ
+# for the same class: compare certificate sets across backends only via
+# prediagram_cache.recanonicalize.  Env DAEDALUS_CERT_BACKEND = fast | sage
+# overrides (any other value raises: 'nauty' used to mean 'sage' silently).
+from daedalus.engine.enumeration import fastenum as _fe
+CERT_BACKEND = _env.choice('DAEDALUS_CERT_BACKEND', ('fast', 'sage'),
+                           'fast' if _fe.available else 'sage')
+if CERT_BACKEND == 'fast' and not _fe.available:
+    CERT_BACKEND = 'sage'
+
+
+def _graph_index_data(G):
+    """``(n, edges)`` of a Sage (di)graph with its vertices renumbered 0..n-1 in
+    sorted order; edge labels dropped, multiplicity kept."""
+    vs = sorted(G.vertices())
+    idx = {v: i for i, v in enumerate(vs)}
+    return len(vs), [(idx[u], idx[v]) for u, v in G.edges(labels=False)]
+
+
+def _iso_cert(G):
+    """Hashable isomorphism certificate for a (possibly multi-) graph.
+
+    One ``canonical_label()`` call replaces the O(N*U) pairwise
+    ``is_isomorphic`` scan the dedup loops used to run: candidates whose
+    certificates collide are isomorphic, so a dict keyed by the certificate
+    deduplicates in O(N).
+
+    Edge labels are stripped first.  ``orient_edges`` attaches a DISTINCT
+    integer label to every edge copy, and ``canonical_label`` honours edge
+    labels -- so canonicalising the labelled digraph makes every orientation
+    look unique and defeats the dedup entirely.  ``is_isomorphic`` (used by
+    the predicates this replaces) ignores edge labels by default, so
+    stripping restores exactly the old equivalence.
+
+    With ``CERT_BACKEND == 'fast'`` the certificate is computed by
+    ``_fastenum.aux_cert`` from the index data instead (same format, different
+    bytes; see the backend note above).
+
+    Vertex colouring by leaf/internal is deliberately NOT part of the
+    certificate: leaves are exactly the degree-1 vertices and degree is an
+    isomorphism invariant, so the ``set_vertex`` colouring the pairwise
+    predicates applied was redundant (and ignored by ``is_isomorphic``).
+    """
+    if CERT_BACKEND == 'fast':
+        n, edges = _graph_index_data(G)
+        return _fe.cert(n, edges, bool(G.is_directed()))
+    cls = DiGraph if G.is_directed() else Graph
+    stripped = cls(multiedges=True, loops=False)
+    stripped.add_vertices(G.vertices())
+    for u, v in G.edges(labels=False):
+        stripped.add_edge(u, v)
+    C = stripped.canonical_label()
+    return (C.order(), tuple(sorted(C.edges(labels=False))))
+
+
+def cert_to_graph(cert, directed):
+    """Inverse of :func:`_iso_cert`: rebuild the canonical representative.
+
+    ``_iso_cert`` returns ``(order, sorted_edges)`` of ``canonical_label()``,
+    which is a LOSSLESS encoding of the graph up to isomorphism -- the pair is
+    enough to reconstruct the canonical representative outright.  Repeated
+    pairs in ``sorted_edges`` carry edge multiplicity, since
+    ``edges(labels=False)`` lists every copy.
+
+    This is what lets the enumeration pass ~100-byte tuples between stages and
+    between processes instead of Sage graph objects, which cost ~13.8 kB of
+    live memory apiece (measured on the (4,2) cache: 6.7 MB on disk, 0.91 GB
+    resident).  Round-trip identity ``_iso_cert(cert_to_graph(c)) == c`` is
+    asserted over every cached cell by ``tests/test_cert_roundtrip.py``.
+
+    The leaf set is NOT stored: leaves are exactly the degree-1 vertices and
+    degree is an isomorphism invariant, so ``leaves_of`` recovers it.
+    """
+    order, edges = cert
+    cls = DiGraph if directed else Graph
+    G = cls(multiedges=True, loops=False)
+    G.add_vertices(range(order))
+    for u, v in edges:
+        G.add_edge(u, v)
+    return G
+
+
+def leaves_of(G):
+    """External vertices of a (pre)diagram: exactly its degree-1 vertices."""
+    return sorted(v for v in G.vertices() if G.degree(v) == 1)
+
+
+def _remove_isomorphic_undirected(candidates):
+    """One representative per isomorphism class, in the leaves-first labelling
+    (``relabel_leaves_first``) that the downstream typing relies on.  The
+    relabel is applied here, to the survivors only."""
+    seen = {}
+    for G, leaves, internal in candidates:
+        seen.setdefault(_iso_cert(G), (G, leaves, internal))
+    out = []
+    for G, leaves, internal in seen.values():
+        G_rel, _ = relabel_leaves_first(G)
+        n_leaf = len(leaves)
+        out.append((G_rel, list(range(n_leaf)), list(range(n_leaf, G_rel.order()))))
+    return out
+
+
+def _threads_allowed(n_threads):
+    """``n_threads``, or 1 under ``DAEDALUS_PARALLEL=0`` (the kill switch)."""
+    from daedalus.engine.fork_safety import parallel_disabled
+    return 1 if n_threads != 1 and parallel_disabled() else n_threads
+
+
+def _enumerate_topologies_raw(k, ell, n_threads=1, max_vertices_search=50, verbose=True,
+                              trees_with_j=None):
+    """Internal: returns unique_multigraphs list."""
+    if trees_with_j is None:
+        trees_with_j = generate_trees_with_constraints(k, ell, max_vertices_search)
+
+    if verbose:
+        print(f"  {len(trees_with_j)} valid trees found")
+
+    candidates = []
+    n_threads = _threads_allowed(n_threads)
+
+    if n_threads == 1:
+        for i, (tree, j, num_leaves) in enumerate(trees_with_j):
+            if verbose and (i + 1) % 10 == 0:
+                print(f"  Processing tree {i+1}/{len(trees_with_j)}...", end='\r')
+            candidates.extend(process_tree_parallel((tree, j, num_leaves, k, ell)))
+        if verbose:
+            print(f"  Processed {len(trees_with_j)}/{len(trees_with_j)} trees. Done!")
+    else:
+        args_list = [(t, j, nl, k, ell) for t, j, nl in trees_with_j]
+        with ThreadPoolExecutor(max_workers=n_threads) as ex:
+            for future in as_completed(
+                    [ex.submit(process_tree_parallel, a) for a in args_list]):
+                candidates.extend(future.result())
+
+    if verbose:
+        print(f"  {len(candidates)} candidate topologies before isomorphism removal")
+
+    unique = _remove_isomorphic_undirected(candidates)
+    return unique
+
+
+# ===========================================================================
+# Orientation enumeration
+# ===========================================================================
+
+def orient_edges(G, orientation_bits):
+    D = DiGraph(multiedges=True, loops=False)
+    D.add_vertices(G.vertices())
+    for i, (u, v) in enumerate(G.edges(labels=False)):
+        if orientation_bits[i] == 0:
+            D.add_edge(u, v, i)
+        else:
+            D.add_edge(v, u, i)
+    return D
+
+
+def check_orientation_constraints(D, leaves):
+    leaves_set = set(leaves)
+    if not D.is_directed_acyclic():
+        return False
+    for v in D.vertices():
+        in_deg  = D.in_degree(v)
+        out_deg = D.out_degree(v)
+        if (in_deg + out_deg) == 1 and in_deg != 1:
+            return False
+        if out_deg == 0 and in_deg >= 2:
+            return False
+        if in_deg == 1 and out_deg == 1:
+            return False
+    sources = [v for v in D.vertices() if D.in_degree(v) == 0]
+    for v in sources:
+        if any(u in sources for u in D.neighbors_out(v)):
+            return False
+    return True
+
+
+# Which (E3) checker ``enumerate_orientations`` dispatches to.
+#   'integer' -- the causal checks run on plain Python integers (degrees,
+#                adjacency, Kahn acyclicity) and a Sage DiGraph is built only
+#                for the ~12% of patterns that pass;
+#   'sage'    -- the former path: build a DiGraph per pattern, check with Sage.
+# Same output (tests/test_orientation_integer.py); measured 2-2.6x faster
+# stage at (3,2), (4,2), (2,3).  'sage' is kept as the reference (tests set
+# this attribute); the env switch ``DAEDALUS_ORIENTATION_CHECKER`` is retired
+# (it only warns).
+_env.retired('DAEDALUS_ORIENTATION_CHECKER',
+             "the 'integer' checker is the only route; 'sage' remains as a "
+             "test reference")
+ORIENTATION_CHECKER = 'integer'
+
+
+def enumerate_orientations(G, leaves):
+    """Valid orientations of ``G`` as Sage DiGraphs (edge copy ``i`` carries
+    label ``i``, as ``orient_edges`` sets it).  Dispatches on
+    ``ORIENTATION_CHECKER``; both implementations return the same set."""
+    if ORIENTATION_CHECKER == 'sage':
+        return enumerate_orientations_sage(G, leaves)
+    return enumerate_orientations_integer(G, leaves)
+
+
+def _forced_orientation_bits(edges, leafset, deg):
+    """``(base, free)``: the bit of every edge fixed by the two forcings --
+    (R2) an edge at a leaf points INTO the leaf; every degree-2 vertex is a
+    source, so both its edge copies point OUT of it -- and the indices of the
+    edges left undetermined.  ``orient_edges`` reads bit 0 as u -> v and bit
+    1 as v -> u.  Returns ``None`` when the forcings contradict (no legal
+    orientation)."""
+    base = [0] * len(edges)
+    free = []
+    for i, (u, v) in enumerate(edges):
+        head_v = (v in leafset) or (deg[u] == 2)      # u -> v
+        head_u = (u in leafset) or (deg[v] == 2)      # v -> u
+        if head_v and head_u:
+            return None
+        if head_v:
+            base[i] = 0
+        elif head_u:
+            base[i] = 1
+        else:
+            free.append(i)
+    return base, free
+
+
+def enumerate_orientations_integer(G, leaves):
+    """(E3) with the causal checks on plain integers.
+
+    For each pattern of the free edges (see ``_forced_orientation_bits``) the
+    in- and out-degrees, the successor lists and the undirected adjacency are
+    small Python lists, and the four tests of ``check_orientation_constraints``
+    are applied in the same order and with the same meaning:
+
+      * a degree-1 vertex has in-degree 1                 (R2, external legs),
+      * no vertex has out-degree 0 and in-degree >= 2     (no internal sink),
+      * no vertex has (in, out) = (1, 1)                  (no bilinear vertex),
+      * no two sources (in-degree 0) are adjacent,
+      * the digraph is acyclic (Kahn's algorithm, ``|V|`` vertices popped).
+
+    A Sage ``DiGraph`` is built only for the patterns that pass -- one in
+    eight at (4,2) -- which is where the former path spent two thirds of the
+    stage.  Output identical to ``enumerate_orientations_sage``.
+    """
+    edges = list(G.edges(labels=False))
+    verts = list(G.vertices())
+    idx = {v: i for i, v in enumerate(verts)}
+    E = [(idx[u], idx[v]) for u, v in edges]
+    n = len(verts)
+    leafset = set(leaves)
+    deg = {v: G.degree(v) for v in verts}
+    forced = _forced_orientation_bits(edges, leafset, deg)
+    if forced is None:
+        return []
+    base, free = forced
+    if _fe.available:
+        dl = [deg[v] for v in verts]
+        leaf = [1 if leaf_flag else 0 for leaf_flag in (v in leafset for v in verts)]
+        pats = _fe.orientation_patterns(n, [a for a, b in E], [b for a, b in E], base, free, leaf, dl)
+        return [orient_edges(G, [(pat >> i) & 1 for i in range(len(E))]) for pat in pats]
+    nbr = [set() for _ in range(n)]
+    for a, b in E:
+        nbr[a].add(b)
+        nbr[b].add(a)
+    out = []
+    for bits in range(1 << len(free)):
+        pat = base[:]
+        for slot, i in enumerate(free):
+            pat[i] = (bits >> slot) & 1
+        indeg = [0] * n
+        outdeg = [0] * n
+        succ = [[] for _ in range(n)]
+        for i, (a, b) in enumerate(E):
+            if pat[i]:
+                a, b = b, a
+            outdeg[a] += 1
+            indeg[b] += 1
+            succ[a].append(b)
+        ok = True
+        for v in range(n):
+            i_, o_ = indeg[v], outdeg[v]
+            if (i_ + o_ == 1 and i_ != 1) or (o_ == 0 and i_ >= 2) or (i_ == 1 and o_ == 1):
+                ok = False
+                break
+        if not ok:
+            continue
+        for v in range(n):
+            if indeg[v] == 0 and any(indeg[w] == 0 for w in nbr[v]):
+                ok = False
+                break
+        if not ok:
+            continue
+        rem = indeg[:]
+        stack = [v for v in range(n) if rem[v] == 0]
+        popped = 0
+        while stack:
+            v = stack.pop()
+            popped += 1
+            for w in succ[v]:
+                rem[w] -= 1
+                if rem[w] == 0:
+                    stack.append(w)
+        if popped != n:
+            continue                                    # directed cycle
+        out.append(orient_edges(G, pat))
+    return out
+
+
+def enumerate_orientations_sage(G, leaves):
+    """Valid orientations of ``G``, branching only on the UNDETERMINED edges.
+
+    Most edge directions are fixed before any search, by two of the causal
+    Feynman rules:
+
+      * (R2) every degree-1 vertex has in-degree 1, so an edge incident to a
+        leaf is directed INTO the leaf;
+      * (Corollary, paper appendix) every degree-2 vertex is a source with
+        (in, out) = (0, 2), so both of its edge copies are directed OUT of it.
+
+    These never conflict on a valid topology: a degree-2 vertex adjacent to a
+    leaf forces the same direction from both ends, while adjacent leaves (a
+    leaf cannot be a source) and adjacent degree-2 vertices (Theorem
+    ``no adjacent degree-2``) are excluded at the topology level.  The only
+    free edges are therefore those with BOTH endpoints internal of degree >= 3.
+
+    This is a pure search-space restriction, not a semantic change:
+    ``check_orientation_constraints`` already rejects every orientation that
+    violates the forcings above (a degree-2 vertex oriented (2,0) trips the
+    no-internal-sink test, (1,1) trips the bilinear test; a leaf oriented
+    (0,1) trips the external-leg test), so the skipped candidates would have
+    been discarded anyway and the returned set is unchanged.  Measured
+    71-100% of edges forced, i.e. a 4x-550x smaller branch.
+    """
+    edges = list(G.edges(labels=False))
+    leafset = set(leaves)
+    deg = {v: G.degree(v) for v in G.vertices()}
+
+    # ``orient_edges`` reads bit 0 as u -> v and bit 1 as v -> u.
+    forced = {}
+    for i, (u, v) in enumerate(edges):
+        head_v = (v in leafset) or (deg[u] == 2)      # u -> v
+        head_u = (u in leafset) or (deg[v] == 2)      # v -> u
+        if head_v and head_u:
+            return []          # contradictory forcing: no legal orientation
+        if head_v:
+            forced[i] = 0
+        elif head_u:
+            forced[i] = 1
+
+    free = [i for i in range(len(edges)) if i not in forced]
+
+    base = [0] * len(edges)
+    for i, b in forced.items():
+        base[i] = b
+
+    out = []
+    for bits in range(2 ** len(free)):
+        pattern = list(base)
+        for slot, i in enumerate(free):
+            pattern[i] = (bits >> slot) & 1
+        D = orient_edges(G, pattern)       # built once, not twice
+        if check_orientation_constraints(D, leaves):
+            out.append(D)
+    return out
+
+
+def remove_isomorphic_directed(directed_diagrams):
+    seen = {}
+    for D, G, leaves, internal in directed_diagrams:
+        seen.setdefault(_iso_cert(D), (D, G, leaves, internal))
+    return list(seen.values())
+
+
+def process_orientation_parallel(args):
+    G, leaves, internal = args
+    return [(D, G, leaves, internal) for D in enumerate_orientations(G, leaves)]
+
+
+def _enumerate_prediagrams_raw(topologies, n_threads=1, verbose=True):
+    """Internal: returns unique_directed_diagrams list."""
+    all_directed = []
+    n_threads = _threads_allowed(n_threads)
+
+    if n_threads == 1:
+        for i, (G, leaves, internal) in enumerate(topologies):
+            if verbose and (i + 1) % 10 == 0:
+                print(f"  Processing topology {i+1}/{len(topologies)}...", end='\r')
+            for D in enumerate_orientations(G, leaves):
+                all_directed.append((D, G, leaves, internal))
+        if verbose:
+            print(f"  Processed {len(topologies)}/{len(topologies)} topologies. Done!")
+    else:
+        args_list = [(G, leaves, internal) for G, leaves, internal in topologies]
+        with ThreadPoolExecutor(max_workers=n_threads) as ex:
+            for future in as_completed(
+                    [ex.submit(process_orientation_parallel, a) for a in args_list]):
+                all_directed.extend(future.result())
+
+    if verbose:
+        print(f"  {len(all_directed)} oriented diagrams before isomorphism removal")
+
+    return remove_isomorphic_directed(all_directed)
+
+
+# ===========================================================================
+# Visualization helpers
+# ===========================================================================
+
+def _plot_trees(trees_with_j, k, ell, save=False):
+    from sage.plot.plot import graphics_array as ga_func
+    trees_by_j = defaultdict(list)
+    for tree, j, num_leaves in trees_with_j:
+        trees_by_j[j].append((tree, num_leaves))
+
+    for j in sorted(trees_by_j.keys()):
+        group = trees_by_j[j]
+        print(f"\nTrees with j={j}  (k+j={k+j} leaves): {len(group)}")
+        n_cols = min(4, len(group))
+        n_rows = (len(group) + n_cols - 1) // n_cols
+        plots = []
+        for idx, (tree, num_leaves) in enumerate(group):
+            leaves, internal, deg2, deg3 = classify_vertices_sage(tree)
+            color_map = {}
+            for v in tree.vertices():
+                if v in set(leaves):
+                    color_map.setdefault('black', []).append(v)
+                elif v in set(deg2):
+                    color_map.setdefault('lightblue', []).append(v)
+                else:
+                    color_map.setdefault('red', []).append(v)
+            title = (f"Tree {idx+1}\n"
+                     f"|V|={tree.order()}, |L|={len(leaves)}\n"
+                     f"|V₂|={len(deg2)}, |V₃|={len(deg3)}")
+            plots.append(tree.plot(vertex_colors=color_map, vertex_size=300,
+                                   edge_thickness=2, title=title,
+                                   title_pos=(0.5, -0.1)))
+        ga = ga_func(plots, n_rows, n_cols)
+        if save:
+            ga.save(f'trees_j{j}_{ell}loop_{k}point.png',
+                    figsize=[5 * n_cols, 4 * n_rows], dpi=150)
+        ga.show(figsize=[5 * n_cols, 4 * n_rows])
+
+
+def _plot_topologies(topologies, k, ell, save=False):
+    from sage.plot.plot import graphics_array as ga_func
+    n = len(topologies)
+    n_cols = min(4, n)
+    n_rows = (n + n_cols - 1) // n_cols
+    plots = []
+    for i, (G, leaves, internal) in enumerate(topologies):
+        leaves_set = set(leaves)
+        color_map = {}
+        for v in G.vertices():
+            key = 'black' if v in leaves_set else 'lightgray'
+            color_map.setdefault(key, []).append(v)
+        plots.append(G.plot(vertex_colors=color_map, vertex_size=400,
+                            edge_thickness=2, title=f"Topology {i+1}"))
+    ga = ga_func(plots, n_rows, n_cols)
+    if save:
+        ga.save(f'topologies_{ell}_loop_{k}_point.png',
+                figsize=[6 * n_cols, 5 * n_rows], dpi=150)
+    ga.show(figsize=[6 * n_cols, 5 * n_rows])
+
+
+def _plot_prediagrams(prediagrams, k, ell, save=False):
+    from sage.plot.plot import graphics_array as ga_func
+    n = len(prediagrams)
+    n_cols = min(3, n)
+    n_rows = (n + n_cols - 1) // n_cols
+    plots = []
+    for i, (D, G, leaves, internal) in enumerate(prediagrams):
+        leaves_set = set(leaves)
+        sources = [v for v in D.vertices() if D.in_degree(v) == 0]
+        color_map = {}
+        for v in D.vertices():
+            if v in leaves_set:
+                color_map.setdefault('black', []).append(v)
+            elif v in sources:
+                color_map.setdefault('red', []).append(v)
+            else:
+                color_map.setdefault('lightblue', []).append(v)
+        plots.append(D.plot(vertex_colors=color_map, vertex_size=400,
+                            edge_thickness=2, edge_labels=False,
+                            title=f"Prediagram {i+1}"))
+    ga = ga_func(plots, n_rows, n_cols)
+    if save:
+        ga.save(f'prediagrams_{ell}_loop_{k}_point.png',
+                figsize=[6 * n_cols, 5 * n_rows], dpi=150)
+    ga.show(figsize=[6 * n_cols, 5 * n_rows])
+
+
+
+# ===========================================================================
+# Streaming enumeration
+#
+# The eager path holds every prediagram as a live Sage graph (~13.8 kB each,
+# measured), which is what caps (6,2) and (4,3) -- not CPU.  The streaming
+# path carries PACKED CERTIFICATES instead: 23 bytes each, so a plain
+# in-memory set deduplicates 207M of them in under 5 GB.  Sage objects are
+# rebuilt only where a consumer needs one.
+# ===========================================================================
+
+_CERT_VMAX = 255          # struct 'B'; |V| <= 3k+3ell-3 stays far below this
+_SPLIT_MIN_N = 8         # below this, gentreeg res/mod emits duplicates
+
+
+def pack_cert(cert):
+    """Pack ``(order, edges)`` into bytes.  23 bytes typical vs 770 as a tuple."""
+    import struct
+    order, edges = cert
+    if order > _CERT_VMAX:
+        raise ValueError(f'pack_cert: order {order} exceeds {_CERT_VMAX}')
+    out = [struct.pack('!B', order)]
+    for u, v in edges:
+        out.append(struct.pack('!BB', u, v))
+    return b''.join(out)
+
+
+def unpack_cert(blob):
+    """Inverse of :func:`pack_cert`."""
+    import struct
+    order = blob[0]
+    edges = tuple((blob[i], blob[i + 1]) for i in range(1, len(blob), 2))
+    return (order, edges)
+
+
+def _tree_to_topology_certs(args):
+    """Worker: one packed tree cert -> packed certs of the topologies it makes.
+
+    Takes and returns packed bytes so the pool never pickles a Sage graph, in
+    either direction.
+    """
+    blob, j, num_leaves, k, ell = args
+    if CERT_BACKEND == 'fast' and ell > 0 and EDGE_GENERATOR != 'multiset':
+        n, tedges = unpack_cert(blob)
+        return _tree_topology_certs_fast(n, list(tedges), j, num_leaves, k, ell)
+    tree = cert_to_graph(unpack_cert(blob), directed=False)
+    out = set()
+    if CERT_BACKEND == 'fast':
+        for n, edges, _leaves in process_tree_parallel((tree, j, num_leaves, k, ell), raw=True):
+            out.add(pack_cert(_fe.cert(n, edges, False)))
+        return out
+    for G, _leaves, _internal in process_tree_parallel((tree, j, num_leaves, k, ell)):
+        out.add(pack_cert(_iso_cert(G)))
+    return out
+
+
+def _tree_topology_certs_fast(n, tedges, j, num_leaves, k, ell):
+    """(E2) for one tree in C (``_fastenum.tree_candidates``): for each
+    ``j``-subset of the tree's leaves, endpoint vectors, realizations,
+    co-tree filter, structural checks and certificates.  Same set as the
+    Python degree-first path."""
+    if num_leaves - j != k:
+        return set()
+    deg = [0] * n
+    for u, v in tedges:
+        deg[u] += 1
+        deg[v] += 1
+    leaves = [v for v in range(n) if deg[v] == 1]
+    eu = [u for u, v in tedges]
+    ev = [v for u, v in tedges]
+    cotree = EDGE_GENERATOR != 'degree_first'
+    out = set()
+    for retired in combinations(leaves, j):
+        for cert in _fe.tree_candidates(n, eu, ev, list(retired), ell, cotree):
+            out.add(pack_cert(cert))
+    return out
+
+
+def _prediagram_certs_fast(n, edges):
+    """Packed certs of the causal orientations of the multigraph ``(n, edges)``
+    without building a DiGraph: compiled pattern search, then ``aux_cert`` on
+    the oriented edge list."""
+    deg = [0] * n
+    for u, v in edges:
+        deg[u] += 1
+        deg[v] += 1
+    leafset = {v for v in range(n) if deg[v] == 1}
+    forced = _forced_orientation_bits(edges, leafset, deg)
+    if forced is None:
+        return set()
+    base, free = forced
+    leaf = [1 if deg[v] == 1 else 0 for v in range(n)]
+    pats = _fe.orientation_patterns(n, [u for u, v in edges], [v for u, v in edges],
+                                    base, free, leaf, deg)
+    out = set()
+    for pat in pats:
+        dedges = [(v, u) if (pat >> i) & 1 else (u, v) for i, (u, v) in enumerate(edges)]
+        out.add(pack_cert(_fe.cert(n, dedges, True)))
+    return out
+
+
+def _topology_cert_to_prediagram_certs(blob):
+    """Worker: one packed topology cert -> packed certs of its orientations."""
+    if CERT_BACKEND == 'fast' and ORIENTATION_CHECKER == 'integer':
+        n, edges = unpack_cert(blob)
+        return {pack_cert(c) for c in _fe.prediagram_certs(n, list(edges))}
+    G = cert_to_graph(unpack_cert(blob), directed=False)
+    leaves = leaves_of(G)
+    return {pack_cert(_iso_cert(D)) for D in enumerate_orientations(G, leaves)}
+
+
+def _map_unordered(fn, items, n_procs, verbose=False, label=''):
+    """Map ``fn`` over ``items``, with processes when that is safe here.
+
+    Threads are GIL-bound for Sage graph work, so processes are the point.
+    macOS never forks (it has hard-crashed this project's machine from a
+    notebook), so the guard degrades to serial there rather than to threads;
+    ``DAEDALUS_PARALLEL=0`` makes it serial everywhere.
+    """
+    from daedalus.engine.fork_safety import (fork_unsafe, parallel_disabled,
+                                    warn_fork_fallback_once)
+    if n_procs != 1 and parallel_disabled():
+        n_procs = 1
+    if n_procs == 1 or len(items) == 0:
+        for i, it in enumerate(items):
+            if verbose and (i + 1) % 200 == 0:
+                print(f'  {label} {i+1}/{len(items)}...', end='\r')
+            yield fn(it)
+        return
+
+    if fork_unsafe('fork'):
+        warn_fork_fallback_once('Streaming enumeration')
+        for it in items:
+            yield fn(it)
+        return
+
+    # 'fork', not 'spawn': spawn re-imports the calling module in every
+    # worker, which both re-runs an unguarded caller and pays a full
+    # `from sage.all import *` per process.  The guard above has already
+    # established that forking is allowed here (not macOS), the same contract
+    # the temporal pipeline runs under.
+    import multiprocessing as mp
+    import threading
+    from concurrent.futures import ProcessPoolExecutor
+    from daedalus.engine import worker_budget as _wb
+    n_fit, share = _wb.workers_that_fit(n_procs, _wb.FORK_WORKER_FLOOR,
+                                        'parallel_workers_capped_by_budget')
+    if n_fit < 2:
+        for it in items:
+            yield fn(it)
+        return
+    n_procs = n_fit
+    over = threading.Event()
+
+    def on_over(pid, fp):
+        over.set()
+        _wb.kill_pid(pid)                # stop its growth now
+    done = 0
+    broken = False
+    with ProcessPoolExecutor(max_workers=n_procs,
+                             mp_context=mp.get_context('fork')) as ex:
+        procs = lambda: list(getattr(ex, '_processes', None) or ())  # noqa: E731
+        with _wb.FootprintWatch(procs, share, on_over, relative=True):
+            try:
+                for res in ex.map(fn, items,
+                                  chunksize=max(1, len(items) // (n_procs * 8))):
+                    if over.is_set():
+                        broken = True
+                        break
+                    done += 1
+                    if verbose and done % 200 == 0:
+                        print(f'  {label} {done}/{len(items)}...', end='\r')
+                    yield res
+            except Exception as exc:     # BrokenProcessPool after a kill
+                from concurrent.futures.process import BrokenProcessPool
+                if not isinstance(exc, BrokenProcessPool):
+                    raise
+                broken = True
+            if broken:
+                for pid in procs():
+                    _wb.kill_pid(pid)
+                ex.shutdown(wait=False, cancel_futures=True)
+    if broken:
+        # a worker outgrew its share: the rest in this process (in order:
+        # ``ex.map`` yields in input order, so ``items[done:]`` is the rest)
+        for it in items[done:]:
+            yield fn(it)
+
+
+def stream_topology_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
+    """Packed certs of every topology at ``(k, ell)``, deduplicated."""
+    trees = generate_trees_parallel(k, ell, n_procs, max_vertices_search, verbose)
+    args = [(blob, j, nl, k, ell) for blob, j, nl in trees]
+    seen = set()
+    for chunk in _map_unordered(_tree_to_topology_certs, args, n_procs,
+                                verbose, 'tree'):
+        seen |= chunk
+    return seen
+
+
+def stream_prediagram_certs(k, ell, n_procs=1, max_vertices_search=50, verbose=False):
+    """Packed certs of every prediagram at ``(k, ell)``, deduplicated.
+
+    Two passes -- topologies first, then orientations -- because a topology is
+    reachable from several spanning trees (three, for the worked example of
+    Sec. IV), so fusing them would re-orient each topology that many times.
+    """
+    topo = sorted(stream_topology_certs(k, ell, n_procs, max_vertices_search, verbose))
+    seen = set()
+    for chunk in _map_unordered(_topology_cert_to_prediagram_certs, topo, n_procs,
+                                verbose, 'topology'):
+        seen |= chunk
+    return seen
+
+
+# ===========================================================================
+# Public API
+# ===========================================================================
+
+def enumerate_all(k, ell, n_threads=1, max_vertices_search=50, verbose=True):
+    """
+    Run the full enumeration pipeline once: trees → topologies → prediagrams.
+    Tree generation is shared across all three stages — no repeated work.
+
+    Returns
+    -------
+    trees       : list of (tree, j, num_leaves)
+    topologies  : list of (G, leaves, internal)
+    prediagrams : list of (D, G, leaves, internal)
+    counts      : dict with keys n_trees, n_topologies, n_prediagrams
+    """
+    if verbose:
+        print(f"Enumerating all for k={k}, ell={ell}...")
+
+    trees = generate_trees_with_constraints(k, ell, max_vertices_search)
+    topos = _enumerate_topologies_raw(k, ell, n_threads, max_vertices_search, verbose,
+                                      trees_with_j=trees)
+    pds   = _enumerate_prediagrams_raw(topos, n_threads, verbose)
+
+    counts = dict(n_trees=len(trees), n_topologies=len(topos), n_prediagrams=len(pds))
+    if verbose:
+        print(f"\n  Trees: {counts['n_trees']}")
+        print(f"  Topologies: {counts['n_topologies']}")
+        print(f"  Prediagrams: {counts['n_prediagrams']}")
+    return trees, topos, pds, counts
+
+
+def show_all(k, ell, n_threads=1, max_vertices_search=50, save=False):
+    """
+    Run the full pipeline once, then display trees, topologies, and prediagrams.
+
+    Returns
+    -------
+    counts : dict with keys n_trees, n_topologies, n_prediagrams
+    """
+    trees, topos, pds, counts = enumerate_all(k, ell, n_threads, max_vertices_search,
+                                              verbose=True)
+    if counts['n_trees']      > 0: _plot_trees(trees, k, ell, save=save)
+    if counts['n_topologies'] > 0: _plot_topologies(topos, k, ell, save=save)
+    if counts['n_prediagrams'] > 0: _plot_prediagrams(pds, k, ell, save=save)
+    return counts
+
+
+def enumerate_trees(k, ell, max_vertices_search=50, verbose=False):
+    """
+    Return all nonisomorphic trees for the (k, ell) problem.
+
+    Parameters
+    ----------
+    k : int   k-point function
+    ell : int   ell-loop correction
+
+    Returns
+    -------
+    trees : list of (tree, j, num_leaves)
+    count : int
+    """
+    trees = generate_trees_with_constraints(k, ell, max_vertices_search)
+    if verbose:
+        print(f"Trees for k={k}, ell={ell}: {len(trees)}")
+    return trees, len(trees)
+
+
+def enumerate_topologies(k, ell, n_threads=1, max_vertices_search=50, verbose=True):
+    """
+    Return all nonisomorphic undirected topologies for the (k, ell) problem.
+
+    Returns
+    -------
+    topologies : list of (G, leaves, internal)
+    count : int
+    """
+    if verbose:
+        print(f"Enumerating topologies for k={k}, ell={ell}...")
+    topo = _enumerate_topologies_raw(k, ell, n_threads, max_vertices_search, verbose)
+    if verbose:
+        print(f"\nNonisomorphic topologies: {len(topo)}")
+    return topo, len(topo)
+
+
+def enumerate_prediagrams(k, ell, n_threads=1, max_vertices_search=50, verbose=True):
+    """
+    Return all nonisomorphic prediagrams (oriented topologies) for (k, ell).
+
+    Returns
+    -------
+    prediagrams : list of (D, G, leaves, internal)
+    count : int
+    """
+    if verbose:
+        print(f"Enumerating topologies for k={k}, ell={ell}...")
+    topo = _enumerate_topologies_raw(k, ell, n_threads, max_vertices_search, verbose)
+    if verbose:
+        print(f"\n  {len(topo)} topologies. Now enumerating orientations...")
+    pds = _enumerate_prediagrams_raw(topo, n_threads, verbose)
+    if verbose:
+        print(f"\nNonisomorphic prediagrams: {len(pds)}")
+    return pds, len(pds)
+
+
+def show_trees(k, ell, max_vertices_search=50, save=False):
+    """
+    Display all nonisomorphic trees for (k, ell) and print the count.
+
+    Color code: black = leaves, lightblue = degree-2, red = degree-3+
+
+    Returns
+    -------
+    count : int
+    """
+    trees, count = enumerate_trees(k, ell, max_vertices_search, verbose=False)
+    print(f"Nonisomorphic trees for k={k}, ell={ell}: {count}")
+    if count > 0:
+        _plot_trees(trees, k, ell, save=save)
+    return count
+
+
+def show_topologies(k, ell, n_threads=1, max_vertices_search=50, save=False):
+    """
+    Display all nonisomorphic undirected topologies for (k, ell) and print the count.
+
+    Color code: black = leaves, lightgray = internal vertices
+
+    Returns
+    -------
+    count : int
+    """
+    topo, count = enumerate_topologies(k, ell, n_threads, max_vertices_search, verbose=True)
+    print(f"\nNonisomorphic topologies for k={k}, ell={ell}: {count}")
+    if count > 0:
+        _plot_topologies(topo, k, ell, save=save)
+    return count
+
+
+def show_prediagrams(k, ell, n_threads=1, max_vertices_search=50, save=False):
+    """
+    Display all nonisomorphic prediagrams (oriented) for (k, ell) and print the count.
+
+    Color code: black = external legs, red = sources, lightblue = internal vertices
+
+    Returns
+    -------
+    count : int
+    """
+    pds, count = enumerate_prediagrams(k, ell, n_threads, max_vertices_search, verbose=True)
+    print(f"\nNonisomorphic prediagrams for k={k}, ell={ell}: {count}")
+    if count > 0:
+        _plot_prediagrams(pds, k, ell, save=save)
+    return count

@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.model import (                       # noqa: E402
+from daedalus.api.model import (                       # noqa: E402
     ModelBuilder, SpatialModelBuilder, TemporalModelBuilder,
     _BaseModelBuilder,
 )
@@ -114,19 +114,19 @@ def test_serializer_phase1_round_trip():
     import os
     import shutil
     import tempfile
-    from api.model_serialize import load_spec_from_file, render_model_file
+    from daedalus.api.model_serialize import load_spec_from_file, render_model_file
 
     root = os.path.join(os.path.dirname(__file__), '..')
 
     def emit(rel):
         return render_model_file(load_spec_from_file(os.path.join(root, rel)))
 
-    sp = emit('models/kpz_1d.model.py')               # spatial fixture
-    assert 'from api.model import SpatialModelBuilder' in sp
+    sp = emit('daedalus/models/kpz_1d.model.py')               # spatial fixture
+    assert 'from daedalus.api.model import SpatialModelBuilder' in sp
     assert 'SpatialModelBuilder(' in sp
 
-    tp = emit('models/linear_hawkes.model.py')        # temporal fixture
-    assert 'from api.model import TemporalModelBuilder' in tp
+    tp = emit('daedalus/models/linear_hawkes.model.py')        # temporal fixture
+    assert 'from daedalus.api.model import TemporalModelBuilder' in tp
     assert 'TemporalModelBuilder(' in tp
     # legacy indexed=True / indexed='matrix' must survive the round-trip
     # (regression guard: _emit_parameter once read a never-set 'type' key and
@@ -230,7 +230,7 @@ def test_serializer_dyson_round_trip():
     both; and the rendered file BUILDS with the policy in model['spatial']."""
     import shutil
     import tempfile
-    from api.model_serialize import load_spec_from_file, render_model_file
+    from daedalus.api.model_serialize import load_spec_from_file, render_model_file
 
     spec = {
         'name': 'lin_diff_dyson',

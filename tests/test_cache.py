@@ -1,4 +1,4 @@
-"""Tests for engine.core.cache — PipelineCache round-trip serialization."""
+"""Tests for daedalus.engine.core.cache — PipelineCache round-trip serialization."""
 
 import os
 import tempfile
@@ -6,9 +6,9 @@ import tempfile
 import pytest
 from sage.all import SR, DiGraph
 
-from engine.core.cache import PipelineCache
-from engine.core.vertices import VertexType, SourceType
-from engine.diagrams.type_assignment import TypedDiagram
+from daedalus.engine.core.cache import PipelineCache
+from daedalus.engine.core.vertices import VertexType, SourceType
+from daedalus.engine.diagrams.type_assignment import TypedDiagram
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────

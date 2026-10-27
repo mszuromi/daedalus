@@ -4,7 +4,7 @@ import os
 import pytest
 
 pytest.importorskip("sage.all")
-from engine.enumeration import prediagram_cache as pdc            # noqa: E402
+from daedalus.engine.enumeration import prediagram_cache as pdc            # noqa: E402
 
 
 def _tree(path):

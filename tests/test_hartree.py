@@ -1,7 +1,7 @@
 """
 tests/test_hartree.py
 =====================
-The self-consistent Gaussian (Hartree) closure, ``api/hartree.py``
+The self-consistent Gaussian (Hartree) closure, ``daedalus/api/hartree.py``
 (``dd.hartree``, ``dd.Config(resum='hartree')``).
 
 * OU quartic: the closure equals the closed form
@@ -40,9 +40,9 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
 import daedalus as dd  # noqa: E402
-from api.hartree import (hartree, HartreeUnsupported,  # noqa: E402
+from daedalus.api.hartree import (hartree, HartreeUnsupported,  # noqa: E402
                          HartreeBistabilityWarning)
-from api.model import TemporalModelBuilder  # noqa: E402
+from daedalus.api.model import TemporalModelBuilder  # noqa: E402
 
 
 def _closed(mu, eps, D):

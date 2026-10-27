@@ -11,7 +11,7 @@ import pytest
 
 sage = pytest.importorskip("sage.all")
 from sage.all import load                                    # noqa: E402
-from engine.enumeration.loop_diagram_enumeration import (    # noqa: E402
+from daedalus.engine.enumeration.loop_diagram_enumeration import (    # noqa: E402
     _iso_cert, cert_to_graph, leaves_of,
 )
 
@@ -26,7 +26,7 @@ def _load(k, ell):
     path = f'{CACHE}/prediagrams_v1_k{k}_l{ell}.sobj'
     if os.path.exists(path):
         return load(path)
-    from engine.enumeration import prediagram_cache as pdc
+    from daedalus.engine.enumeration import prediagram_cache as pdc
     if pdc.shipped_exists(k, ell):
         return pdc.records_from_certs(pdc.load_shipped_certs(k, ell))
     return list(pdc._enumerate_eager(k=k, ell=ell, verbose=False)[2])

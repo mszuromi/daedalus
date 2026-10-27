@@ -1,6 +1,6 @@
 # Noise library (finite-moment Levy sources) and samplers
 
-Every source is one per-unit-time CGF `K(theta; x)` (`api/noise.py`); the SDE builder derives the action term
+Every source is one per-unit-time CGF `K(theta; x)` (`daedalus/api/noise.py`); the SDE builder derives the action term
 `-K(sum_i c_i psi_i)` from it. Only infinitely divisible sources are offered. This page lists what exists and what is
 deliberately not expressible.
 
@@ -48,7 +48,7 @@ For a two-point state the saddle of `K'(0)` (zero for the telegraph, a cubic roo
 lives (`s = +-a`), so the tree and loop cumulants are not the cumulants of the process (for the telegraph the saddle
 variance is `4 g s^2 -> 0`: an undriven field). Use these models for simulation, or their exact moment equations.
 
-## Samplers (`api/noise_samplers.py`)
+## Samplers (`daedalus/api/noise_samplers.py`)
 
 `source.sample(dt, size, rng, values=None)` draws `size` independent increments over `dt`; `values` binds
 field-dependent parameters (scalars or arrays of length `size`). `jump.sample(rng, size)` draws jump sizes.

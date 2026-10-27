@@ -11,8 +11,8 @@ import pytest
 
 pytest.importorskip("sage.all")
 from sage.all import load                                     # noqa: E402
-import engine.enumeration.loop_diagram_enumeration as L       # noqa: E402
-from engine.enumeration import prediagram_cache as pdc        # noqa: E402
+import daedalus.engine.enumeration.loop_diagram_enumeration as L       # noqa: E402
+from daedalus.engine.enumeration import prediagram_cache as pdc        # noqa: E402
 
 CACHE = 'saved_prediagrams'
 CELLS = [(2, 1), (3, 1), (2, 2), (4, 1)]      # fast cells; (3,2)+ marked slow
@@ -43,7 +43,7 @@ def test_pack_unpack_roundtrip(k, ell):
 
 
 @pytest.mark.skipif(sys.platform == 'darwin',
-                    reason='macOS never forks (engine.fork_safety); Linux CI '
+                    reason='macOS never forks (daedalus.engine.fork_safety); Linux CI '
                            'covers the fork path')
 @pytest.mark.parametrize('k,ell', [(2, 1), (3, 1)])
 def test_parallel_matches_serial(k, ell):

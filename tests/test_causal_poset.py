@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.integration.time_domain.final_integral import (
+from daedalus.engine.integration.time_domain.final_integral import (
     _CausalPoset,
     _extract_causal_poset,
     _enumerate_linear_extensions,

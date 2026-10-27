@@ -24,11 +24,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                   # noqa: E402
-from api.compute import PhaseJIncompleteError, PhaseJIncompleteWarning  # noqa: E402
-from api.cumulant import Cumulant                                   # noqa: E402
-from api.model import TemporalModelBuilder                          # noqa: E402
-import engine.integration.time_domain.pipeline as PL                # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api.compute import PhaseJIncompleteError, PhaseJIncompleteWarning  # noqa: E402
+from daedalus.api.cumulant import Cumulant                                   # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                          # noqa: E402
+import daedalus.engine.integration.time_domain.pipeline as PL                # noqa: E402
 
 TAU = np.array([0.0, 1.0])
 REASON = 'deliberately broken diagram (test)'

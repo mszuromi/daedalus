@@ -3,7 +3,7 @@
 ## Setup
 
 See the [README](README.md): install **SageMath 10.9** (conda `environment.yml`, or native),
-then optionally `sage -pip install -e .` so `import daedalus` works from anywhere.
+then `sage -pip install -e .` from a clone so `import daedalus` works from anywhere.
 
 All Python runs under Sage's interpreter: `sage -python ...` with a native Sage install, or plain
 `python ...` inside the activated conda environment (the conda-forge `sage` launcher has no `-python`
@@ -38,17 +38,17 @@ same in any module that asserts list order (see `tests/conftest.py`).
 
 Temporal `use_cache=False` runs keep the eager enumerator only because Phase J's `scipy.nquad`
 fallback is not yet representative-independent (`TEMPORAL_CACHE_OFF_STREAMS` in
-`engine/enumeration/prediagram_cache.py`). After any change to that fallback, run its slow gate,
+`daedalus/engine/enumeration/prediagram_cache.py`). After any change to that fallback, run its slow gate,
 `sage -python -m pytest -m slow tests/test_prediagram_cache.py -k fallback_model` (about 7 min;
 `-n 3` runs its three cases side by side). Each case is a strict expected failure on one model
 that reaches the fallback; flip the flag only when every case fails as an unexpected pass.
 
 ## Adding a model
 
-A model is a `models/<name>.model.py` file that builds a model dict with
+A model is a `daedalus/models/<name>.model.py` file that builds a model dict with
 `TemporalModelBuilder` / `SpatialModelBuilder` — see
 [`notebooks/model_builder_tutorial.ipynb`](notebooks/model_builder_tutorial.ipynb) and
-`api/model.py`. It must expose `build()`, `DEFAULT_FUNDAMENTAL`, and `METADATA`. Load it with
+`daedalus/api/model.py`. It must expose `build()`, `DEFAULT_FUNDAMENTAL`, and `METADATA`. Load it with
 `dd.load_model('<name>')`; it then appears in `dd.list_models()`. Confirm it runs at its own
 defaults (`dd.run(*dd.load_model('<name>'))`) before committing — a shipped model that fails
 on run is worse than no model.

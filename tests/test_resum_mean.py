@@ -2,7 +2,7 @@
 tests/test_resum_mean.py
 ========================
 The screened series at ``k = 1``: the resummed MEAN of one field
-(``dd.Config(k=1, resum='screened')``, ``api/resum.py``).
+(``dd.Config(k=1, resum='screened')``, ``daedalus/api/resum.py``).
 
 A single field with an odd vertex, ``dx = (-mu x + g x^2 - eps x^3) dt + noise``
 (additive Gaussian noise of variance ``2 D``): its stationary density is
@@ -34,9 +34,9 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
 import daedalus as dd  # noqa: E402
-from api.hartree import hartree, HartreeUnsupported  # noqa: E402
-from api.noise import Gaussian  # noqa: E402
-from api.sde import SDE  # noqa: E402
+from daedalus.api.hartree import hartree, HartreeUnsupported  # noqa: E402
+from daedalus.api.noise import Gaussian  # noqa: E402
+from daedalus.api.sde import SDE  # noqa: E402
 
 TAU = np.array([0.0])
 
@@ -158,7 +158,7 @@ def test_result_keys_and_the_mean_by_order():
     assert r['mean_by_order'][N] == pytest.approx(r['mean'])
     assert r['config']['resum'] == 'screened' and r['config']['k'] == 1
     # the plain series is the k = 1 loop path
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     base = compute_cumulants(odd_quartic(0.3), k=1, max_ell=N,
                              external_fields=[('x', 1)], tau_grid=TAU,
                              verbose=False)

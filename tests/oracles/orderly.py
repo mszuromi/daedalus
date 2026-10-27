@@ -1,7 +1,7 @@
 """
 tests.oracles.orderly
 =====================
-Test-only reference (was ``engine.enumeration.orderly``; moved out of
+Test-only reference (was ``daedalus.engine.enumeration.orderly``; moved out of
 the library in audit W7: no production module imports it).
 
 EXPERIMENT (Sept 2026), NOT used by the pipeline: level-wise topology
@@ -39,7 +39,7 @@ from itertools import combinations
 
 from sage.all import Graph
 
-from engine.enumeration import loop_diagram_enumeration as L
+from daedalus.engine.enumeration import loop_diagram_enumeration as L
 
 
 def _leaves(G):

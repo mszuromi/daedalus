@@ -3,7 +3,7 @@
 The saddle solve compiles the equation text once and evaluates it in a numpy namespace; that namespace lacked
 ``erf``, ``arctan`` and ``heaviside`` (and the Sage namespace of the linear stability lacked them too), so a drift
 using one stopped with ``NameError: name 'erf' is not defined`` (Sage 10.8 and 10.9).  Both tables now carry every
-function ``api.noise._MATH_FUNCS`` accepts, and a call of any other name is refused up front with the list of
+function ``daedalus.api.noise._MATH_FUNCS`` accepts, and a call of any other name is refused up front with the list of
 supported functions.  (The vertex expansion evaluates the text in ``sage.all`` and was never affected.)
 
 A  one-field drift per parser function: the saddle equals an independent ``scipy.optimize.brentq`` root of
@@ -25,10 +25,10 @@ pytest.importorskip('sage.all')
 from scipy.optimize import brentq                                             # noqa: E402
 from scipy.special import erf                                                 # noqa: E402
 
-import api.compute as AC                                                       # noqa: E402
-from api import _mean_field_dae as MF                                         # noqa: E402
-from api.noise import Gaussian                                                # noqa: E402
-from api.sde import SDE                                                       # noqa: E402
+import daedalus.api.compute as AC                                                       # noqa: E402
+from daedalus.api import _mean_field_dae as MF                                         # noqa: E402
+from daedalus.api.noise import Gaussian                                                # noqa: E402
+from daedalus.api.sde import SDE                                                       # noqa: E402
 
 A = 0.5                      # the parameter ``a`` of every drift
 VAR = 0.1                    # noise strength of the tree runs
@@ -90,7 +90,7 @@ def test_theta_at_zero_is_zero_everywhere():
     """Theta(0) = 0: the Ito value of Phase J and of the equal-time k = 2 limit tau -> 0^-.  The mean-field table,
     the point-process simulator and numpy-with-0 agree; Sage leaves ``heaviside(0)`` unevaluated (it fixes no
     other value)."""
-    from api import pp_simulate
+    from daedalus.api import pp_simulate
     assert MF._MATH_NS['heaviside'](0.0) == 0.0
     assert MF._MATH_NS['heaviside'](np.array([-1.0, 0.0, 1e-300, 2.0])).tolist() == [0.0, 0.0, 1.0, 1.0]
     assert pp_simulate._NP['heaviside'](0.0) == 0.0
@@ -139,7 +139,7 @@ def test_an_unsupported_function_is_refused_up_front(call):
 def test_scalar_mode_bare_field_argument(rhs, g):
     """A population-less model writes the bare field (``erf(x)``): the linearization wraps it in a size-1
     field wrapper that Sage's functions refuse unless unwrapped (``erf(x)`` is not ``exp(-x)``, an expression)."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     m = (TemporalModelBuilder('bare').physical_field('x').parameter('a', default=A, domain='positive')
          .stability_analysis(True).set_action_text('xt*((Dt + 1)*x)')
          .mf_residual(lhs='(Dt+1)*x', rhs=rhs).build())
@@ -164,7 +164,7 @@ def test_the_constant_e_and_sign_in_an_equation_text():
 
 def test_both_tables_carry_the_same_functions():
     """The numeric table and the Sage table of the linearization are the same set of names."""
-    from api.noise import _MATH_FUNCS
+    from daedalus.api.noise import _MATH_FUNCS
     parser = set(_MATH_FUNCS)                      # what the parser accepts in a drift
     assert parser <= set(MF._MATH_NS), parser - set(MF._MATH_NS)
     assert {'gamma', 'factorial'} <= set(MF._SPECIAL_NS)

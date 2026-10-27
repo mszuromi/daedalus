@@ -28,10 +28,10 @@ import mpmath as mp
 import numpy as np
 import pytest
 
-import api.noise as N
-from api.compute import compute_cumulants
-from api.delay import Kernel
-from api.sde import SDE
+import daedalus.api.noise as N
+from daedalus.api.compute import compute_cumulants
+from daedalus.api.delay import Kernel
+from daedalus.api.sde import SDE
 from tests.oracles_public import refs
 
 RTOL = 1e-12

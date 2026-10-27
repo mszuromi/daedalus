@@ -27,10 +27,10 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
 import daedalus as dd                                               # noqa: E402
-from api.compute import (compute_cumulants, PhaseJIncompleteError,  # noqa: E402
+from daedalus.api.compute import (compute_cumulants, PhaseJIncompleteError,  # noqa: E402
                          PhaseJIncompleteWarning)
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE, SDEError                                   # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                   # noqa: E402
 
 
 # ── models ───────────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ def _ou():
 def _double_well():
     # dx = (x - 0.1 x^3) dt + noise (mu = -1): stable roots -sqrt(10),
     # +sqrt(10), the unstable root 0 rejected by the stability analysis
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (TemporalModelBuilder('w3a double well')
             .population('pop', size=1)
             .physical_field('x', population='pop', domain='real')

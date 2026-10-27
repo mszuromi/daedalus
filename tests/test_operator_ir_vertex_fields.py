@@ -28,8 +28,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR
 
-from api import compute_cumulants
-from api.model import ModelBuilder
+from daedalus.api import compute_cumulants
+from daedalus.api.model import ModelBuilder
 
 _P = {'ma': 1.0, 'mb': 1.6, 'DD': 1.0, 'c1': 0.3, 'c2': 0.2, 'c3': 0.15, 'T': 1.0}
 _A = '- c1*Lap(a^2)'
@@ -51,7 +51,7 @@ def _two(a_term=_A, b_term=_B, fields=('a', 'b')):
 
 
 def _table(m):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(m, taylor_order=4)
     ft.expand()
     sub = {SR.var(k): v for k, v in _P.items()}

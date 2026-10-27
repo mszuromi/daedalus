@@ -1,0 +1,2355 @@
+"""
+Propagator construction (extracted from notebook cell 8).
+
+Given an expanded ``FieldTheory`` and the model dict, build:
+  K_ker  — kernel-form bilinear matrix in time domain (with δ, δ′)
+  K_ft   — Fourier image of K_ker (with kernel symbols replaced via
+           model['kernel_ft_image'])
+  G_ft   — propagator = K_ft^{-1} (rows = physical, cols = response by
+           Sage's matrix.inverse() convention; the type-assignment and
+           Phase J machinery use G_ft[pi, ri] consistently)
+  adj_ft — K_ft.adjugate()
+  D_omega — det(K_ft)
+  D_delta — coefficient matrix of δ(t) in the time-domain propagator
+            (= lim_{ω→∞} G_ft(ω) entrywise)
+
+Cached on disk under ``saved_models/<model-tag>_taylor<N>/propagator.sobj``
+so kernel restarts skip the expensive 6×6 inverse + factor() pass.
+"""
+from __future__ import annotations
+
+import math
+import re
+
+from sage.all import (
+    SR, matrix, dirac_delta, diff, oo,
+    QQ, RR, CDF, PolynomialRing, CyclotomicField,
+)
+
+from daedalus.engine.core.cache import PipelineCache
+from daedalus.engine.core.field_theory import fourier_transform, _sr_nonzero
+
+
+# Maximum wall-time (seconds) we'll spend in the polynomial fraction-field
+# path before falling back to the numpy-cofactor path.  Quad-φ completes in
+# <1s; spike-reset's matrix structure (vstar coupling in row 2/3 col 0/1 +
+# nstar coupling on the diagonal) drives Sage's CF[ω] matrix inverse into a
+# very expensive simplification cascade that has been observed to exceed
+# 10 minutes without converging.  15s is generous for the fast cases and a
+# clean tripwire for the pathological ones.
+#
+# Set to ``None`` to disable the timeout entirely (the path will run to
+# completion no matter how long it takes — useful for cross-checking
+# against the no-timeout result).
+_POLYNOMIAL_PATH_BUDGET_SEC = 120
+
+try:
+    import signal as _signal
+    _HAS_SIGALRM = hasattr(_signal, 'SIGALRM')
+except ImportError:
+    _signal = None
+    _HAS_SIGALRM = False
+
+
+class _PolynomialPathTimeout(Exception):
+    """Raised when the polynomial fraction-field inverse exceeds budget."""
+
+
+def _run_with_timeout(fn, timeout_sec, *args, **kwargs):
+    """Run ``fn(*args, **kwargs)`` with a SIGALRM-based time budget.
+
+    Returns ``fn``'s result on completion within budget, or raises
+    :class:`_PolynomialPathTimeout` on expiry.  No-op timeout (just calls
+    ``fn`` directly) on platforms without SIGALRM, or when
+    ``timeout_sec`` is ``None`` (explicit disable).
+    """
+    if not _HAS_SIGALRM or timeout_sec is None:
+        return fn(*args, **kwargs)
+
+    def _handler(signum, frame):
+        raise _PolynomialPathTimeout(
+            f'polynomial fraction-field path exceeded {timeout_sec}s budget')
+
+    old_handler = _signal.signal(_signal.SIGALRM, _handler)
+    _signal.alarm(int(timeout_sec))
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        _signal.alarm(0)
+        _signal.signal(_signal.SIGALRM, old_handler)
+
+
+def _record_pole_analysis(out, G_ft_F, Q_poly, nf, roots=None,
+                          squarefree=None):
+    """Fill ``out`` (the ``prop['pole_analysis']`` record read by the
+    analyzer's G3 gate, ``daedalus.api.analyze``) from the exact inverse: ``degree``
+    of ``Q = lcm(entry denominators)``, its distinct roots in every half
+    plane sorted by ``(Im, Re)``, ``squarefree``, and the entries whose
+    reduced form is constant at large omega (``delta``) or grows
+    (``improper``).  Bookkeeping only: nothing in the pipeline reads it."""
+    from sage.all import CDF, PolynomialRing
+    delta, improper = [], []
+    for i in range(nf):
+        for j in range(nf):
+            e = G_ft_F[i, j]
+            if e == 0:
+                continue
+            dn, dd = e.numerator().degree(), e.denominator().degree()
+            if dn > dd:
+                improper.append((i, j))
+            elif dn == dd:
+                delta.append((i, j))
+    if Q_poly is None:
+        out.update(degree=0, poles=(), squarefree=True, delta=tuple(delta),
+                   improper=tuple(improper))
+        return
+    if roots is None and Q_poly.degree() > 0:
+        Qc = PolynomialRing(CDF, 'om_c')(
+            [complex(c) for c in Q_poly.coefficients(sparse=False)])
+        roots = Qc.roots(CDF)
+    poles = (sorted((complex(r) for r, _ in roots),
+                    key=lambda p: (p.imag, p.real))
+             if Q_poly.degree() > 0 else [])
+    if squarefree is None:
+        try:
+            squarefree = bool(Q_poly.is_squarefree())
+        except (AttributeError, TypeError):
+            squarefree = None
+    out.update(degree=int(Q_poly.degree()), poles=tuple(poles),
+               squarefree=squarefree, delta=tuple(delta),
+               improper=tuple(improper))
+
+
+def _record_pole_analysis_safe(out, *args, **kw):
+    """:func:`_record_pole_analysis` that can never raise: a failure leaves
+    ``out`` empty, so it never changes which tier computes the residues."""
+    try:
+        _record_pole_analysis(out, *args, **kw)
+    except Exception:
+        out.clear()
+
+
+def _qq(x):
+    """``QQ(x)``; a float that ``QQ`` refuses through ``SR`` -- e.g. a
+    ``2.0 + 0i`` backed by a ``ComplexDoubleElement``, produced by a product
+    of imaginary floats -- by its exact binary value."""
+    try:
+        return QQ(x)
+    except (TypeError, ValueError):
+        return QQ(RR(x))
+
+
+def _d_delta_exact(G_ft_F, nf):
+    """``D_delta = lim_{omega -> oo} G_ft`` entrywise from the exact reduced
+    entries (the same values as the tier-1 per-entry computation)."""
+    data = [[0j] * nf for _ in range(nf)]
+    for i in range(nf):
+        for j in range(nf):
+            e = G_ft_F[i, j]
+            if e == 0:
+                continue
+            P, Q = e.numerator(), e.denominator()
+            assert P.degree() <= Q.degree(), (
+                f'D_delta: improper propagator entry ({i},{j}): '
+                f'deg(P)={P.degree()} > deg(Q)={Q.degree()} -- K_ft is not '
+                f'causal/proper.')
+            if P.degree() == Q.degree():
+                data[i][j] = (complex(P.leading_coefficient())
+                              / complex(Q.leading_coefficient()))
+    return matrix(SR, data)
+
+
+def _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out, verbose):
+    """Near-degenerate / repeated poles (``daedalus.api._pole_clusters``): run the
+    exact cluster analysis, record it in ``cluster_out['analysis']`` and
+    return the tier-1 triple ``(pole_vals, C_mats, D_delta)`` with the
+    residues to 50 digits (exact root membership per entry; the tier-1 loop
+    below attributes double-precision roots to the exact factors, which
+    cannot separate close roots), else ``None`` (the caller keeps its old
+    path): when the deformation is switched off, when the analysis failed,
+    and for an unresolved repeated root.  Never raises."""
+    from daedalus.api import _pole_clusters as _pc
+    try:
+        an = _pc.analyze(G_ft_F, Q_poly, nf, tau_max=tau_max)
+    except Exception as exc:
+        # unknown cancellation factor: assume the worst (never silent)
+        try:
+            sqf = bool(Q_poly.is_squarefree())
+        except Exception:
+            sqf = False
+        an = _pc.ClusterAnalysis(
+            status='unresolved', kappa_max=float('inf'), jordan=not sqf,
+            reason=f'cluster analysis failed ({type(exc).__name__}: '
+                   f'{exc!s:.120})')
+    if cluster_out is not None:
+        cluster_out['analysis'] = an
+    if an.nominal is None or (
+            an.status == 'unresolved' and an.jordan):
+        return None
+    pole_vals, C_mats = an.nominal
+    D_delta = _d_delta_exact(G_ft_F, nf)
+    if verbose:
+        print(f'[propagator] polynomial-fracfield: {len(an.clusters)} pole '
+              f'cluster(s) ({an.status}), kappa {an.kappa_max:.3g}: residues '
+              f'to 50 digits'
+              + (f'; Phase J averages {an.deformation.n_nodes} deformed '
+                 f'node(s).' if an.deformation is not None else '.'))
+    return pole_vals, C_mats, D_delta
+
+
+#: Root attribution in the exact tier (``_entry_pole_membership``): a
+#: computed root of Q is attributed to the coprime factor with the smallest
+#: Newton distance |b(p)/b'(p)| only when that distance is below this
+#: fraction of every other factor's.  The owning factor's distance is the
+#: root finder's error; any other factor's is at least (distance to its
+#: nearest root) / (its degree), so the gap is the root separation over the
+#: root error, many orders of magnitude for any root the exact tier keeps
+#: (close roots of different factors go to ``daedalus.api._pole_clusters``).
+_MEMBERSHIP_GAP = 1e-3
+
+#: Accuracy certificate of the exact tier's double-precision poles and
+#: residues (``_residue_error``): the poles Newton-refined on the exact Q and
+#: the residues recomputed at ``_CERT_DPS`` digits; a root that moves, or a
+#: residue that differs, by more than ``_RESIDUE_RTOL`` relative (per entry,
+#: to its largest residue) sends the whole propagator to the exact 50-digit
+#: route.  High-degree denominators (long rational kernels) lose digits in
+#: double precision: monomial-basis roots and Horner sums of huge
+#: coefficients.  The bound is conservative: C(tau) errors measured 10 to
+#: 100 times below it (Erlang / Pade kernels up to degree 24), so the
+#: certified double route stays within ~1e-12 of the exact one.
+_RESIDUE_RTOL = 1e-11
+_CERT_DPS = 30
+_CERT_NEWTON = 3
+
+
+class PoleResidueWarning(UserWarning):
+    """A pole or residue could not be computed reliably: the exact tier
+    failed (its root labelling and its high-precision route) and the
+    numerical tier was used, or the numerical tier met a vanishing
+    det'(omega_k) or fell back to its fixed-degree polynomial fit."""
+
+
+def _entry_pole_membership(Q_poly, dens, roots, to_cdf):
+    """Which roots of ``Q_poly`` are poles of which propagator entry.
+
+    ``Q_poly``: the squarefree lcm of the entry denominators; ``dens``:
+    ``{(i, j): denominator}`` (monic, ``Frac(CF[omega])`` canonical form);
+    ``roots``: every computed root of ``Q_poly`` (complex); ``to_cdf``: the
+    CF -> CDF polynomial conversion.
+
+    Returns ``(member, how)``.  ``member[(i, j)]`` is the set of indices
+    into ``roots`` that are poles of entry (i, j), or ``None`` for all of
+    them; ``member`` itself is ``None`` when undecided.  ``how``:
+
+    * ``'shared'``: every entry's denominator is ``Q_poly``, so every root
+      is a pole of every entry (no numerical decision at all);
+    * ``'labelled'``: the entry denominators split ``Q`` into pairwise
+      coprime factors (gcd refinement over QQ[i]); which factors divide
+      which entry is exact.  Each computed root is attributed to one factor
+      by the Newton distance (``_MEMBERSHIP_GAP``), and every factor must
+      receive exactly its degree in roots;
+    * ``'undecided'``: the attribution was not clear-cut (``member is
+      None``); the caller uses the exact high-precision route.
+
+    Never decided by the magnitude of ``|Q_ij(p)|``: at high degree its
+    rounding alone exceeds any fixed threshold."""
+    import math
+    if all(d == Q_poly for d in dens.values()):
+        return {key: None for key in dens}, 'shared'
+    from daedalus.api._pole_clusters import _coprime_base
+    distinct = []
+    for d in dens.values():
+        if d != Q_poly and d not in distinct:
+            distinct.append(d)
+    base = _coprime_base(Q_poly, distinct)
+    if sum(b.degree() for b in base) != Q_poly.degree() or (
+            len(roots) != Q_poly.degree()):
+        return None, 'undecided'
+    divides = {key: frozenset(k for k, b in enumerate(base) if d % b == 0)
+               for key, d in dens.items()}
+    for key, d in dens.items():
+        if sum(base[k].degree() for k in divides[key]) != d.degree():
+            return None, 'undecided'
+    base_cdf = [to_cdf(b) for b in base]
+    base_der = [b.derivative() for b in base_cdf]
+    owner, count = [], [0] * len(base)
+    for p in roots:
+        nu = []
+        for b, db in zip(base_cdf, base_der):
+            v, dv = complex(b(p)), complex(db(p))
+            if dv == 0 or not (math.isfinite(abs(v)) and math.isfinite(abs(dv))):
+                nu.append(math.inf if v != 0 else 0.0)
+            else:
+                nu.append(abs(v) / abs(dv))
+        k = min(range(len(base)), key=nu.__getitem__)
+        others = [x for m, x in enumerate(nu) if m != k]
+        if not math.isfinite(nu[k]) or (
+                others and not nu[k] <= _MEMBERSHIP_GAP * min(others)):
+            return None, 'undecided'
+        owner.append(k)
+        count[k] += 1
+    if any(count[k] != b.degree() for k, b in enumerate(base)):
+        return None, 'undecided'
+    member = {key: frozenset(r for r, k in enumerate(owner)
+                             if k in divides[key])
+              for key in dens}
+    return member, 'labelled'
+
+
+def _exact_route(G_ft_F, Q_poly, nf, tau_max, verbose):
+    """The exact tier's residues by the high-precision route of
+    ``daedalus.api._pole_clusters`` (the roots of each exact coprime factor of Q,
+    membership exact, 50 digits): ``(pole_vals, C_mats, D_delta)``.
+    Raises on failure."""
+    from daedalus.api import _pole_clusters as _pc
+    an = _pc.analyze(G_ft_F, Q_poly, nf, tau_max=tau_max)
+    if an.nominal is None:
+        raise ArithmeticError('the exact route returned no residues')
+    pole_vals, C_mats = an.nominal
+    if verbose:
+        print(f'[propagator] polynomial-fracfield: residues by the exact '
+              f'route ({len(pole_vals)} retarded poles, 50 digits).')
+    return pole_vals, C_mats, _d_delta_exact(G_ft_F, nf)
+
+
+def _exact_route_fallback(G_ft_F, Q_poly, nf, tau_max, analysis_out,
+                          verbose, reason, cluster_out=None):
+    """The tier-1 double-precision residues are not usable (``reason``: the
+    poles could not be attributed to the entries, or the residues failed
+    their accuracy certificate): the exact high-precision route, else (it
+    failed too) a ``PoleResidueWarning`` and ``(None, None, None)`` so
+    the caller uses the numerical tier.  Recorded in
+    ``analysis_out['residue_route']`` (``'exact'`` / ``'failed'``) and
+    ``['residue_route_reason']`` for the analyzer's G3 gate; never
+    silent."""
+    import warnings
+    try:
+        res = None
+        if cluster_out is not None:
+            # the exact roots may form a cluster the double roots hid:
+            # record its analysis (and deformation) as _cluster_path does
+            res = _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out,
+                                verbose)
+        if res is None:
+            res = _exact_route(G_ft_F, Q_poly, nf, tau_max, verbose)
+        route = 'exact'
+    except Exception as exc:
+        res, route = (None, None, None), 'failed'
+        reason = (f'{reason}; the exact route failed too '
+                  f'({type(exc).__name__}: {exc!s:.120})')
+        warnings.warn(
+            f'the exact propagator tier could not compute the residues of '
+            f'Q(omega) (degree {Q_poly.degree()}): {reason}.  They come from '
+            f'the numerical cofactor tier.', PoleResidueWarning,
+            stacklevel=4)
+    if analysis_out:
+        analysis_out['residue_route'] = route
+        analysis_out['residue_route_reason'] = reason
+    return res
+
+
+def _residue_error(Q_poly, dens, nums, member, pole_idx, C_mats, nf):
+    """A posteriori relative error of the tier-1 double-precision residues
+    ``C_mats`` (stored unclipped):
+    each pole Newton-refined on the exact Q at ``_CERT_DPS`` digits, each
+    nonzero residue ``i P_ij(p) / Q_ij'(p)`` recomputed there, compared
+    with the double value; per entry relative to its largest residue.
+    ``inf`` when the refinement fails (no certificate)."""
+    import mpmath as mp
+    from daedalus.api._pole_clusters import _mpc, _polyval_asc
+    with mp.workdps(_CERT_DPS):
+        co = lambda poly: [_mpc(c) for c in poly.list()]
+        q = co(Q_poly)
+        dq = [k * q[k] for k in range(1, len(q))]
+        ev = _polyval_asc
+        dd = {key: co(d.derivative()) for key, d in dens.items()}
+        pp = {key: co(P) for key, P in nums.items()}
+        exact = []
+        for pk, r_idx in pole_idx:
+            p = mp.mpc(pk)
+            for _ in range(_CERT_NEWTON):
+                dv = ev(dq, p)
+                if dv == 0:
+                    return float('inf')
+                p -= ev(q, p) / dv
+            if abs(p - pk) > _RESIDUE_RTOL * abs(p):
+                return float('inf')        # a root error this large: refine
+            row = {}
+            for key in dens:
+                own = member[key]
+                if own is not None and r_idx not in own:
+                    continue
+                dv = ev(dd[key], p)
+                if dv == 0:
+                    return float('inf')
+                row[key] = 1j * ev(pp[key], p) / dv
+            exact.append(row)
+        err = 0.0
+        for key in dens:
+            vals = [row.get(key, 0) for row in exact]
+            scale = max((abs(v) for v in vals), default=0)
+            if scale == 0:
+                continue
+            for k, v in enumerate(vals):
+                i, j = key
+                err = max(err, float(abs(complex(C_mats[k][i, j]) - v)
+                                     / scale))
+    return err
+
+
+def _note_tier1_fallback(analysis_out, reason):
+    """Record why the exact tier returned no residues without its own
+    warning (``compute_poles_and_residues`` then warns once: the numerical tier was entered silently on these paths)."""
+    if analysis_out is not None:
+        analysis_out['_tier1_fallback_reason'] = reason
+
+
+def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
+                                                verbose=False,
+                                                analysis_out=None,
+                                                cluster_out=None,
+                                                tau_max=None):
+    """Compute (pole_vals, C_mats) via EXACT polynomial fraction-field
+    arithmetic in CyclotomicField(4)[ω] = QQ[i][ω].
+
+    Why this is the right path:
+
+      * K_ft entries (after num_params substitution) are rational
+        functions in ω with rational (or rationalizable) coefficients.
+      * CyclotomicField(4) is QQ extended by i = ζ₄; polynomials over
+        this field have reliable GCD, so when we invert the matrix in
+        Frac(CF[ω]) Sage returns each G_ft[i,j] in **canonical
+        irreducible form** P_ij(ω)/Q(ω).
+      * Every entry shares the same denominator Q(ω) (the polynomial
+        numerator of det(K_ft)), and roots of Q are exactly the system
+        poles — no spurious cancellable factors.
+      * Per-pole residue is then a clean polynomial evaluation:
+        C_k[i,j] = i · P_ij(ω_k) / Q'(ω_k).
+
+    Compared to the previous symbolic ``adj_ft.subs(omega=pk)`` path,
+    this has full machine precision (matched numpy.linalg.inv to ~3e-15
+    in testing) and no catastrophic cancellation near kernel poles.
+
+    Compared to a CDF[ω] (floating-point coefficient) path, this avoids
+    the unreliable numerical GCD that left degree-18 polynomials with
+    ~13 spurious roots; exact CF[ω] GCD reduces to the true degree-5
+    denominator directly.
+
+    Returns ``(pole_vals, C_mats)`` on success, ``(None, None)`` on
+    failure (caller falls back to numpy cofactor).
+
+    ``cluster_out`` (a dict): a repeated root of ``Q`` or a pair of roots
+    closer than ``daedalus.api._pole_clusters.CLUSTER_RTOL`` runs the exact cluster
+    analysis (``cluster_out['analysis']``); clusters it resolves return 50
+    digit residues and a deformation for Phase J (``tau_max``: the largest
+    time difference to be evaluated).  Nothing else changes.
+    """
+    try:
+        import numpy as np
+
+        CF = CyclotomicField(4, 'I_')
+        i_CF = CF.gen()
+        PR_exact = PolynomialRing(CF, 'om_exact')
+        F_exact  = PR_exact.fraction_field()
+
+        K_ft_num = K_ft.apply_map(lambda e: SR(e).subs(num_params))
+
+        def _sr_complex_to_CF(c):
+            c = SR(c)
+            re = _qq(c.real_part())
+            im = _qq(c.imag_part())
+            return CF(re) + CF(im) * i_CF
+
+        def _sr_to_F_exact(e):
+            e = SR(e)
+            if e.is_zero():
+                return F_exact(0)
+            num = SR(e.numerator())
+            den = SR(e.denominator())
+            n_coeffs = [_sr_complex_to_CF(c)
+                        for c in num.coefficients(omega, sparse=False)]
+            d_coeffs = [_sr_complex_to_CF(c)
+                        for c in den.coefficients(omega, sparse=False)]
+            return F_exact(PR_exact(n_coeffs)) / F_exact(PR_exact(d_coeffs))
+
+        K_ft_F_data = [[_sr_to_F_exact(K_ft_num[i, j])
+                        for j in range(nf)] for i in range(nf)]
+        K_ft_F = matrix(F_exact, K_ft_F_data)
+        # Wrap the inverse in a SIGALRM watchdog — spike-reset's K_ft
+        # structure has been observed to drive Sage's CF[ω] inverse into
+        # a multi-minute simplification cascade.  On budget expiry we
+        # let the caller fall through to the numpy-cofactor path.
+        G_ft_F = _run_with_timeout(
+            K_ft_F.inverse, _POLYNOMIAL_PATH_BUDGET_SEC)
+
+        # Convert CF[om] polynomials to CDF[om] for numerical root-finding.
+        PR_cdf = PolynomialRing(CDF, 'om_cdf')
+
+        def _cf_poly_to_cdf(p_cf):
+            return PR_cdf([complex(c)
+                           for c in p_cf.coefficients(sparse=False)])
+
+        # Shared denominator Q(ω) — for diagonally-dominant K_ft most
+        # entries share the same Frac(CF[ω])-canonical denominator
+        # (= the polynomial numerator of det(K_ft)).  Upper-triangular
+        # K_ft from the Markovian-embedding preprocessor produces
+        # entries with DIFFERENT canonical denominators (e.g. G[0,0]
+        # carries only one pole factor, G[0,1] carries the product of
+        # two), so picking the first nonzero entry's denominator
+        # under-counts the system poles.
+        #
+        # Robust path: take ``Q_poly = LCM(per-entry denominators)``.
+        # This is the universal denominator whose roots include every
+        # system pole.  Per-entry residue at a pole that does NOT
+        # divide the entry's own denominator evaluates to 0 (handled
+        # below via the ``Q_per_entry[i][j] == Q_poly`` branch / its
+        # else arm).
+        Q_poly = None
+        for i in range(nf):
+            for j in range(nf):
+                if G_ft_F[i, j] == 0:
+                    continue
+                d_ij = G_ft_F[i, j].denominator()
+                if Q_poly is None:
+                    Q_poly = d_ij
+                else:
+                    Q_poly = Q_poly.lcm(d_ij)
+        if Q_poly is None:
+            if analysis_out is not None:
+                _record_pole_analysis_safe(analysis_out, G_ft_F, None, nf)
+            return None, None, None
+
+        # Higher-multiplicity (Jordan-block) poles need the
+        # ``(τ·exp(-pt))`` derivative term, which the single-pole
+        # residue formula below can't represent.  When ``Q_poly`` is
+        # not squarefree (e.g. mu = 1/tauc in the Markovianized OU
+        # produces ``Q = (iω + mu)^2``), fail out of the polynomial
+        # path so the caller can fall back to the numpy-cofactor
+        # tier (which has the same limitation but is more robust to
+        # the numerical near-degeneracy CDF root-finders introduce).
+        # A v2 of the polynomial path should compute the m-th
+        # derivative residue and the downstream mode-sum integrator
+        # should learn how to absorb ``τ^k · exp(-pt)`` modes.
+        try:
+            if not Q_poly.is_squarefree():
+                if analysis_out is not None:
+                    _record_pole_analysis_safe(analysis_out, G_ft_F, Q_poly,
+                                               nf, squarefree=False)
+                if cluster_out is not None:
+                    # a repeated root: resolved by the pole-cluster
+                    # deformation when possible (daedalus.api._pole_clusters)
+                    res = _cluster_path(G_ft_F, Q_poly, nf, tau_max,
+                                        cluster_out, verbose)
+                    if res is not None:
+                        return res
+                if verbose:
+                    print(
+                        '[propagator] polynomial-fracfield: Q(ω) is '
+                        'non-squarefree (multi-pole) — single-pole '
+                        'residue formula does not apply.  Falling '
+                        'back to next tier.'
+                    )
+                if cluster_out is None:
+                    # (with the cluster route on, its own analysis reports
+                    # the unresolved cluster: G3_POLE_CLUSTER_UNRESOLVED)
+                    _note_tier1_fallback(analysis_out, 'Q(omega) has a '
+                                         'repeated root, which has no simple '
+                                         'residue: the values there are not '
+                                         'reliable')
+                return None, None, None
+        except (AttributeError, TypeError):
+            # ``is_squarefree`` may not be implemented on the field;
+            # silently continue and let downstream catch issues.
+            pass
+
+        Q_cdf = _cf_poly_to_cdf(Q_poly)
+        Q_prime_cdf = Q_cdf.derivative()
+
+        roots = Q_cdf.roots(CDF)
+        if analysis_out is not None:
+            _record_pole_analysis_safe(analysis_out, G_ft_F, Q_poly, nf,
+                                       roots=roots)
+        if cluster_out is not None:
+            from daedalus.api._pole_clusters import has_close_pair
+            if has_close_pair([complex(r) for r, _ in roots]):
+                res = _cluster_path(G_ft_F, Q_poly, nf, tau_max, cluster_out,
+                                    verbose)
+                if res is not None:
+                    return res
+        all_roots = [complex(r) for r, _ in roots]
+        # (pole, index into all_roots), retarded (decided per root, in
+        # high precision on the exact Q when near the axis:
+        # ``_exact_retarded_flags``), in the (Im, Re) order
+        ret_flags = _exact_retarded_flags(Q_poly, all_roots)
+        if ret_flags is None:
+            return _exact_route_fallback(
+                G_ft_F, Q_poly, nf, tau_max, analysis_out, verbose,
+                'a root near the real axis could not be placed in its half '
+                'plane in double precision', cluster_out)
+        pole_idx = sorted(((p, r) for r, p in enumerate(all_roots)
+                           if ret_flags[r]),
+                          key=lambda t: (t[0].imag, t[0].real))
+        pole_vals = [p for p, _ in pole_idx]
+
+        # Cache numerator polynomials per entry (CDF[om]) for evaluation.
+        P_cdf = [[PR_cdf(0)] * nf for _ in range(nf)]
+        Q_per_entry = [[None] * nf for _ in range(nf)]
+        for i in range(nf):
+            for j in range(nf):
+                e = G_ft_F[i, j]
+                if e == 0:
+                    continue
+                P_cdf[i][j] = _cf_poly_to_cdf(e.numerator())
+                Q_per_entry[i][j] = e.denominator()
+
+        # Cache per-entry denominator CDF polynomial and its derivative
+        # so the residue loop doesn't re-convert per pole.
+        Q_entry_cdf = [[None] * nf for _ in range(nf)]
+        Q_entry_prime_cdf = [[None] * nf for _ in range(nf)]
+        for i in range(nf):
+            for j in range(nf):
+                if Q_per_entry[i][j] is None:
+                    continue
+                if Q_per_entry[i][j] == Q_poly:
+                    Q_entry_cdf[i][j] = Q_cdf
+                    Q_entry_prime_cdf[i][j] = Q_prime_cdf
+                else:
+                    q_cdf = _cf_poly_to_cdf(Q_per_entry[i][j])
+                    Q_entry_cdf[i][j] = q_cdf
+                    Q_entry_prime_cdf[i][j] = q_cdf.derivative()
+
+        # Which poles belong to which entry: decided exactly (the entry
+        # denominators split Q into exact coprime factors), never by the
+        # size of |Q_ij(pk)| -- whose rounding alone exceeds any fixed
+        # threshold at high degree (every pole dropped, C = 0).
+        dens = {(i, j): Q_per_entry[i][j] for i in range(nf)
+                for j in range(nf) if Q_per_entry[i][j] is not None}
+        member, how = _entry_pole_membership(Q_poly, dens, all_roots,
+                                             _cf_poly_to_cdf)
+        if member is None:
+            return _exact_route_fallback(
+                G_ft_F, Q_poly, nf, tau_max, analysis_out, verbose,
+                'the poles of Q could not be attributed to the entries',
+                cluster_out)
+        if analysis_out:
+            analysis_out['membership'] = how
+
+        C_mats = []
+        C_raw = []      # before the noise clip: what the certificate checks
+        for pk, r_idx in pole_idx:
+            C_entries = [[0j] * nf for _ in range(nf)]
+            for i in range(nf):
+                for j in range(nf):
+                    if Q_per_entry[i][j] is None:
+                        continue
+                    own = member[(i, j)]
+                    if own is not None and r_idx not in own:
+                        continue        # pk is not a pole of this entry
+                    qijp = complex(Q_entry_prime_cdf[i][j](pk))
+                    if qijp == 0 or not np.isfinite(qijp):
+                        # a simple root of a squarefree Q: Q_ij'(pk) != 0
+                        # exactly, so only a numerical breakdown gets here
+                        return _exact_route_fallback(
+                            G_ft_F, Q_poly, nf, tau_max, analysis_out,
+                            verbose, 'a residue denominator vanished '
+                            'numerically', cluster_out)
+                    P_at = complex(P_cdf[i][j](pk))
+                    C_entries[i][j] = 1j * P_at / qijp
+            # No noise clip: membership is exact (a non-member entry is an
+            # exact 0 above) and a member residue i P_ij(pk)/Q_ij'(pk) of a
+            # reduced entry is exactly nonzero, so a small value here is a
+            # genuine residue -- the old 1e-12 clip relative to the LARGEST
+            # entry at pk dropped it when the fields have very different
+            # units.  Its accuracy is what _residue_error certifies.
+            C_np = np.array(C_entries)
+            C_raw.append(C_np)
+            C_mats.append(matrix(CDF, C_np.tolist()))
+
+        # accuracy certificate of the double-precision poles and residues
+        nums = {key: G_ft_F[key].numerator() for key in dens}
+        try:
+            err = _residue_error(Q_poly, dens, nums, member, pole_idx,
+                                 C_raw, nf)
+        except Exception:
+            err = float('inf')
+        if not err <= _RESIDUE_RTOL:
+            return _exact_route_fallback(
+                G_ft_F, Q_poly, nf, tau_max, analysis_out, verbose,
+                'the double-precision poles / residues failed their '
+                f'accuracy certificate (relative error {err:.2g} > '
+                f'{_RESIDUE_RTOL:g})', cluster_out)
+        if analysis_out:
+            analysis_out['residue_route'] = 'double'
+
+        # D_delta = lim_{ω→∞} G_ft(ω), computed entrywise as the limit of
+        # the entry's OWN reduced rational form P_ij / Q_ij:
+        #   deg(P_ij) <  deg(Q_ij)   →  D_delta[i,j] = 0        (strictly proper)
+        #   deg(P_ij) == deg(Q_ij)  →  D_delta[i,j] = lc(P_ij) / lc(Q_ij)
+        # NOTE: use the PER-ENTRY denominator Q_entry_cdf[i][j] (the same
+        # object the residue loop above uses), NOT the global common
+        # denominator Q_cdf.  With ≥2 distinct poles the global LCD has
+        # higher degree than an individual entry's own denominator, so
+        # comparing against Q_cdf.degree() / dividing by its leading coeff
+        # false-negatived every proper/constant entry and silently zeroed
+        # the whole D_delta matrix (dropping the instantaneous δ-part of
+        # the propagator → the δ×smooth tree cross-term).  See the
+        # per-entry cache built at the residue-loop setup above.
+        # Stored back into prop so downstream consumers always see a value
+        # (the symbolic build_propagator path may have left it None if its
+        # inverse exceeded budget).
+        D_delta_data = [[0j] * nf for _ in range(nf)]
+        for i in range(nf):
+            for j in range(nf):
+                q_entry = Q_entry_cdf[i][j]
+                if q_entry is None:          # zero entry / no denominator
+                    continue
+                P_pij = P_cdf[i][j]
+                dP, dQ = P_pij.degree(), q_entry.degree()
+                # Causal MSR-JD retarded propagator entries are proper
+                # (G(ω) → const or → 0 as ω → ∞); deg(P) > deg(Q) would be
+                # a δ'(t)-style growth, i.e. a malformed K_ft — surface it
+                # rather than silently returning 0.
+                assert dP <= dQ, (
+                    f'D_delta: improper propagator entry ({i},{j}): '
+                    f'deg(P)={dP} > deg(Q)={dQ} — K_ft is not causal/proper.')
+                if dP == dQ:
+                    D_delta_data[i][j] = (
+                        complex(P_pij.leading_coefficient())
+                        / complex(q_entry.leading_coefficient()))
+                # else deg(P) < deg(Q_ij): strictly proper → stays 0
+        D_delta = matrix(SR, D_delta_data)
+
+        if verbose:
+            print(f'[propagator] polynomial-fracfield: '
+                  f'Q(ω) degree {Q_cdf.degree()}, '
+                  f'{len(pole_vals)} retarded pole(s) found.')
+        return pole_vals, C_mats, D_delta
+
+    except _PolynomialPathTimeout:
+        if verbose:
+            print(f'[propagator] polynomial-fracfield exceeded '
+                  f'{_POLYNOMIAL_PATH_BUDGET_SEC}s budget — '
+                  f'falling back to numpy cofactor.')
+        _note_tier1_fallback(analysis_out, 'the exact inverse exceeded its '
+                             f'{_POLYNOMIAL_PATH_BUDGET_SEC} s budget')
+        return None, None, None
+    except Exception as exc:
+        if verbose:
+            print(f'[propagator] polynomial-fracfield failed '
+                  f'({type(exc).__name__}: {exc!s:.80}); falling back.')
+        _note_tier1_fallback(analysis_out, f'{type(exc).__name__}: '
+                             f'{exc!s:.120}')
+        return None, None, None
+
+
+def _trunc_str(s, maxlen=400):
+    s = str(s)
+    return s if len(s) <= maxlen else s[:maxlen - 3] + '...'
+
+
+def _print_matrix(label, M, resp_names, phys_names):
+    """Print non-zero entries of an SR matrix with row/col labels."""
+    print()
+    print(f'      ── {label} (shape {M.nrows()} × {M.ncols()}) ──')
+    print(f'        rows (response): {resp_names}')
+    print(f'        cols (physical): {phys_names}')
+    for i in range(M.nrows()):
+        for j in range(M.ncols()):
+            s = str(M[i, j])
+            if s == '0':
+                continue
+            print(f'        [{i},{j}] = {_trunc_str(s, 400)}')
+
+
+def _print_propagator_symbolic_stages(prop, resp_names, phys_names):
+    """Print D_omega, G_ft, adj_ft, D_delta (whichever are non-None)."""
+    if prop.get('D_omega') is not None:
+        print()
+        print('      ── D(ω) = det(K_ft) ──')
+        print(f'        {_trunc_str(prop["D_omega"], 600)}')
+    if prop.get('G_ft') is not None:
+        _print_matrix('G_ft = K_ft⁻¹', prop['G_ft'], resp_names, phys_names)
+    if prop.get('adj_ft') is not None:
+        _print_matrix('adj_ft = G_ft · D(ω)', prop['adj_ft'],
+                      resp_names, phys_names)
+    if prop.get('D_delta') is not None:
+        _print_matrix('D_delta = lim_{ω→∞} G_ft (instantaneous)',
+                      prop['D_delta'], resp_names, phys_names)
+
+
+def _print_propagator_stages(prop):
+    """Print everything available in a propagator dict (cache-loaded path).
+    resp/phys names are derived from ring_gen_names + nf.
+    """
+    ring_gen_names = prop.get('ring_gen_names') or []
+    nf = prop.get('nf') or len(ring_gen_names) // 2
+    resp_names = ring_gen_names[:nf]
+    phys_names = ring_gen_names[nf:]
+    if prop.get('K_ker') is not None:
+        _print_matrix('K_ker', prop['K_ker'], resp_names, phys_names)
+    if prop.get('K_ft') is not None:
+        _print_matrix('K_ft', prop['K_ft'], resp_names, phys_names)
+    _print_propagator_symbolic_stages(prop, resp_names, phys_names)
+
+
+def factor_propagator(prop, *,
+                      per_entry_timeout: float = 5.0,
+                      slow_entry_threshold: float = 0.5,
+                      verbose: bool = False):
+    """Return a copy of the propagator dict with the ``G_ft`` matrix
+    re-applied through ``_safe_factor``, producing a cosmetically
+    factored form for display in reports.
+
+    The pipeline's :func:`build_propagator` deliberately returns the
+    *raw* inverse because ``factor()`` is known to hang or segfault
+    on rich symbolic structures (Sage / Singular issue, not
+    interruptible from Python).  This helper applies factoring
+    after the fact, with two layers of protection:
+
+      1. Each ``factor()`` call is wrapped by ``_safe_factor``,
+         which uses a cysignals ``alarm()`` and catches Sage
+         signal-errors / timeouts to fall back to the unfactored
+         entry.  (Note: the alarm does not always interrupt
+         Singular's native loop — see (2).)
+      2. After any single entry takes longer than
+         ``slow_entry_threshold`` seconds (whether it succeeded or
+         not), a one-shot bail flag flips and the remaining entries
+         skip factoring entirely.  This caps the total cost to
+         roughly one slow-entry's worth of compute even when the
+         alarm fails to interrupt.
+
+    Returns a NEW dict with ``G_ft`` replaced; the input is untouched.
+    """
+    import time as _time
+    G_ft = prop.get('G_ft')
+    if G_ft is None:
+        return prop
+    bail = [False]
+    n_factored = [0]
+    n_skipped  = [0]
+    def _factor_with_bail(e):
+        if bail[0]:
+            n_skipped[0] += 1
+            return e
+        t0 = _time.perf_counter()
+        out = _safe_factor(e, timeout=per_entry_timeout)
+        dt = _time.perf_counter() - t0
+        if dt > slow_entry_threshold:
+            bail[0] = True
+        else:
+            n_factored[0] += 1
+        return out
+    G_ft_factored = G_ft.apply_map(_factor_with_bail)
+    if verbose:
+        print(f'[factor_propagator] factored={n_factored[0]} '
+              f'skipped={n_skipped[0]} bailed={bail[0]}')
+    out = dict(prop)
+    out['G_ft'] = G_ft_factored
+    return out
+
+
+def _safe_factor(e, timeout=5.0):
+    """Per-entry factor() that tolerates Maxima/Singular aborts on the
+    complex 6×6 inverse entries that bigger actions produce.  factor()
+    is purely cosmetic for display — the integrator does not require
+    factored form, so any failure just falls back to the unfactored
+    entry.
+
+    Wraps the call in :func:`cysignals.alarm.alarm` so a runaway
+    Singular routine (which can otherwise loop indefinitely while
+    spewing Flint divide-by-zero warnings, observed with spike-reset
+    models whose ``-n*v`` term enriches the kinetic matrix inverse)
+    is forcibly interrupted after ``timeout`` seconds.
+
+    Catches:
+      * the usual symbolic-error tuple,
+      * ``cysignals.signals.SignalError`` (Sage's wrapper around
+        native segfaults from Singular/Pynac),
+      * ``cysignals.alarm.AlarmInterrupt`` (the timeout firing).
+    """
+    from cysignals.alarm import alarm, cancel_alarm, AlarmInterrupt
+    try:
+        alarm(timeout)
+        try:
+            return e.factor()
+        finally:
+            cancel_alarm()
+    except (RuntimeError, ValueError, TypeError, ArithmeticError,
+            AlarmInterrupt):
+        return e
+    except BaseException as exc:
+        # cysignals.signals.SignalError isn't a subclass of Exception
+        # in some Sage builds — catch via BaseException + name check
+        # to avoid accidentally swallowing KeyboardInterrupt / SystemExit.
+        if exc.__class__.__name__ == 'SignalError':
+            return e
+        raise
+
+
+def _omega_inf_limit_fast(expr, omega_var):
+    """Fast computation of  lim_{ω → ∞} expr(ω)  for SR rational
+    expressions in ``omega_var``.
+
+    Avoids calling :func:`sage.limit` (which routes through Maxima
+    and is dramatically slow on raw cofactor/det rational entries —
+    triggers thousands of Flint divide-by-zero warnings + Singular
+    thrashing for rich models like spike-reset).  Instead, extract
+    numerator + denominator, compare their omega-degree, and return
+    the leading-coefficient ratio (matching the textbook recipe for
+    rational-function limits).
+
+    Returns:
+      * ``SR(0)`` when ``deg(num) < deg(den)``,
+      * ``num_lc / den_lc`` when ``deg(num) == deg(den)``,
+      * ``None`` when ``deg(num) > deg(den)`` (caller decides what
+        to do — for a physical propagator this branch shouldn't
+        fire, but the helper stays honest about it),
+      * ``None`` if the expression isn't cleanly a polynomial ratio
+        in ``omega_var`` (e.g. transcendental kernels left unevaluated)
+        so callers can fall back to ``sage.limit``.
+    """
+    expr = SR(expr)
+    try:
+        # Expand into FLAT polynomials in omega before reading degree and
+        # leading coefficients.  Sage's ``.numerator()`` can hand back an
+        # UNEXPANDED product (e.g. ``(I*w*t1 - w11 + 1)*(I*w*t2 + 1)`` from a
+        # cofactor whose cross-coupling cancels multiplicatively), and
+        # ``.coefficient(omega, deg)`` does NOT auto-distribute a product —
+        # it looks for a literal top-level ``omega^deg`` term, finds none,
+        # and returns a spurious 0.  That makes the ω→∞ limit come back 0
+        # instead of the true constant (dropping e.g. slave-field δ-identity
+        # entries of D_delta).  ``.expand()`` guarantees ``.coefficient()``
+        # sees a monomial sum; ``.degree()`` is already reliable either way.
+        num = expr.numerator().expand()
+        den = expr.denominator().expand()
+        num_deg = int(num.degree(omega_var))
+        den_deg = int(den.degree(omega_var))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if num_deg < den_deg:
+        return SR(0)
+    if num_deg > den_deg:
+        return None
+    # Same degree: leading-coefficient ratio.
+    try:
+        num_lc = (num.coefficient(omega_var, num_deg)
+                  if num_deg > 0 else SR(num))
+        den_lc = (den.coefficient(omega_var, den_deg)
+                  if den_deg > 0 else SR(den))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if _sr_is_zero(den_lc):
+        return None
+    return SR(num_lc) / SR(den_lc)
+
+
+#: Largest entry (``repr`` length) of the symbolic inverse for which
+#: :func:`build_propagator` takes the omega -> infinity limit symbolically
+#: (the model zoo's largest is ~800 characters).
+_SYMBOLIC_DDELTA_MAX_CHARS = 4000
+
+
+def _sr_is_zero(e) -> bool:
+    """``SR(e).is_zero()`` (the same verdict), with the certified nonzero
+    fast path of :func:`daedalus.engine.core.field_theory._sr_nonzero`: a float or
+    ``I*omega`` entry otherwise goes to Maxima on every test."""
+    return not _sr_nonzero(SR(e))
+
+
+def _sr_inverse(K):
+    """``K.inverse()`` for a square matrix over SR, step for step what Sage
+    does (``Matrix.__invert__``: augment with the identity, classical
+    in-place Gauss-Jordan elimination of ``Matrix_symbolic_dense``, then the
+    last-pivot check), so the entries are the same expressions.  Only the
+    truth tests of the pivot search and the elimination use
+    :func:`_sr_nonzero` (same verdict as ``bool``) instead of ``bool``,
+    which sends every float or ``I*omega`` entry to Maxima (183 s on a 3x3
+    jump-process kernel matrix; 0.5 s here)."""
+    n = K.nrows()
+    if K.ncols() != n:
+        raise ArithmeticError('self must be a square matrix')
+    if n == 0:
+        return K
+    A = [[SR(K[i, j]) for j in range(n)]
+         + [SR(1) if i == j else SR(0) for j in range(n)] for i in range(n)]
+    nc = 2 * n
+
+    def nz(e):
+        return not e.is_trivial_zero() and _sr_nonzero(e)
+
+    start = 0
+    for c in range(nc):
+        for r in range(start, n):
+            if nz(A[r][c]):
+                a_inv = ~A[r][c]
+                for j in range(c, nc):
+                    A[r][j] = A[r][j] * a_inv
+                A[r], A[start] = A[start], A[r]
+                for i in range(n):
+                    if i != start and nz(A[i][c]):
+                        minus_b = -A[i][c]
+                        for j in range(c, nc):
+                            A[i][j] = A[i][j] + minus_b * A[start][j]
+                start += 1
+                break
+    if not nz(A[n - 1][n - 1]):
+        raise ZeroDivisionError('input matrix must be nonsingular')
+    return matrix(SR, [row[n:] for row in A])
+
+
+def _to_kernel(c, Dt, delta_D, delta_Dp):
+    """Convert an SR free-action entry (which can contain Dt and ns.g)
+    into kernel form: c → c0·δ + c1·δ′  (so Fourier transforms cleanly).
+
+    Constants without δ_D or Dt get wrapped in δ_D so FT yields the
+    constant back (instead of a 2π·δ(ω) distribution).  Kernel symbols
+    (e.g. ns.g) survive untransformed; their frequency image is applied
+    after FT via the model's ``kernel_ft_image`` hook.
+
+    ASSUMES ``c`` is at most LINEAR in ``Dt`` — the split below is
+    exactly ``c = c(0) + Dt·c′``, and a ``Dt^2`` term would be mapped to
+    the meaningless ``δ′(t)²`` (whose Fourier transform Sage renders
+    with ``dirac_delta(0)`` factors).  That invariant is enforced
+    upstream by ``FieldTheory.check_first_order_in_dt()``, which runs at
+    the tail of every ``expand()`` and on every expand-cache load, so no
+    action reaching here can carry ``Dt``-degree ≥ 2.
+    """
+    c = SR(c)
+    if c.has(delta_D):
+        return c
+    p0   = c.subs({Dt: 0})
+    rest = (c - p0).subs({Dt: delta_Dp})
+    return p0 * delta_D + rest
+
+
+def model_cache_signature(model) -> str:
+    """The key a cached propagator or typed-diagram file must carry to be
+    served for ``model``: the model-text fingerprint (``spec_signature``,
+    ``None`` for a hand-written dict model) together with the members of
+    every index set.  The cache directories are keyed by the model NAME
+    only, and the text fingerprint does not see population sizes, so a
+    population resized under the same name would otherwise be served the
+    old size's diagrams."""
+    import hashlib
+    import json
+    sets = []
+    for name, members in sorted((model.get('index_sets') or {}).items(),
+                                key=lambda kv: str(kv[0])):
+        try:
+            members = [str(x) for x in members]
+        except TypeError:
+            members = str(members)
+        sets.append([str(name), members])
+    blob = json.dumps([model.get('spec_signature'), sets], default=str,
+                      sort_keys=True)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
+
+def cache_signature_stale(model, stored) -> str | None:
+    """Why a cache file whose recorded :func:`model_cache_signature` is
+    ``stored`` cannot be served for ``model`` (a message), or ``None``.  A
+    file without one (written before the signature, or by another writer)
+    is stale: rebuilding once is cheap, reusing another model's file is
+    not."""
+    if stored is None:
+        return 'written without a model signature'
+    expect = model_cache_signature(model)
+    if stored != expect:
+        return (f'written for another model text or population sizes '
+                f'(signature {stored}, expected {expect})')
+    return None
+
+
+def build_propagator(ft, model, cache_dir_root='saved_models',
+                     use_cache=True, verbose=True, force=False):
+    """
+    Build the symbolic propagator data dict for the given expanded
+    ``FieldTheory``.
+
+    Returns a dict with keys:
+      'K_ker', 'K_ft', 'G_ft', 'adj_ft', 'D_omega', 'D_delta',
+      't_var', 'omega', 'nf', 'ring_gen_names'
+
+    Cached under ``saved_models/<model_slug>/propagator.sobj``.
+    The propagator is taylor-order-independent: it depends only on
+    the bilinear (1,1) sector of the action, which is fully captured
+    at ``taylor_order >= 2``.  A precompute call at order 2 fills this
+    cache once; subsequent runs at any higher order skip the build.
+
+    Cache auto-invalidates if ``ft._n_tilde`` differs from the cached
+    ``nf`` (catches model field-list edits without renaming).
+    """
+    R  = ft.ring()
+    ns = ft._ns
+
+    # ── Cache lookup ──────────────────────────────────────────────
+    prop_tag = re.sub(r'[^A-Za-z0-9]+', '_', model['name']).strip('_').lower()
+    cache_dir = f"{cache_dir_root}/{prop_tag}"
+    cache = PipelineCache(cache_dir)
+
+    if use_cache and not force and cache.exists('propagator'):
+        try:
+            prop = cache.load('propagator')
+            cached_nf = prop.get('nf', None)
+            # Stale-cache guard: a spatial model whose cached propagator
+            # predates the spatial block (no ``G_tx_sym``) must rebuild
+            # — otherwise the heat-kernel propagator is silently absent.
+            stale_spatial = (bool(model.get('spatial'))
+                             and prop.get('G_tx_sym') is None)
+            # Model signature (action, equations, KERNEL images, population
+            # sizes): the cache directory is keyed by the model name only,
+            # so two models that differ only in a kernel's image would share
+            # it.  A file without a signature is stale.
+            stale_spec = cache_signature_stale(
+                model, prop.get('cache_signature'))
+            if stale_spec:
+                if verbose:
+                    print(f'[propagator] Cached propagator {stale_spec}; '
+                          f'rebuilding.')
+            elif cached_nf is not None and cached_nf != ft._n_tilde:
+                if verbose:
+                    print(f'[propagator] Cached nf={cached_nf} but model '
+                          f'has n_tilde={ft._n_tilde}; rebuilding.')
+            elif stale_spatial:
+                if verbose:
+                    print('[propagator] Cached propagator predates the '
+                          'spatial block (no G_tx_sym); rebuilding.')
+            else:
+                if verbose:
+                    print(f'[propagator] Loaded from cache: '
+                          f'{cache_dir}/propagator.sobj')
+                    _print_propagator_stages(prop)
+                # Rebuild the (unpicklable) spatial G_tx callables from
+                # the cached symbolic block.
+                if prop.get('G_tx_sym') is not None:
+                    from daedalus.engine.integration.spatial.heat_kernel import (
+                        make_g_tx_callables,
+                    )
+                    prop['G_tx'] = make_g_tx_callables(prop)
+                return prop
+        except Exception as e:
+            if verbose:
+                print(f'[propagator] Cache load failed ({e!r}); rebuilding.')
+
+    # ── Build K_ker from the (1,1) free action ────────────────────
+    S_free = ft.free_action()
+    ring_gen_names = [str(g) for g in R.gens()]
+
+    resp_names = ring_gen_names[:ft._n_tilde]
+    phys_names = ring_gen_names[ft._n_tilde:]
+    pos_to_row = {ring_gen_names.index(nm): i for i, nm in enumerate(resp_names)}
+    pos_to_col = {ring_gen_names.index(nm): j for j, nm in enumerate(phys_names)}
+
+    nf = len(resp_names)
+    K_data = [[SR(0)] * nf for _ in range(nf)]
+    for exp_vec, coeff in S_free.dict().items():
+        row = col = None
+        for idx in range(len(ring_gen_names)):
+            if exp_vec[idx] > 0:
+                if idx in pos_to_row:
+                    row = pos_to_row[idx]
+                if idx in pos_to_col:
+                    col = pos_to_col[idx]
+        if row is not None and col is not None:
+            K_data[row][col] += SR(coeff)
+    K_mat = matrix(SR, K_data)
+
+    if verbose:
+        _print_matrix('K_mat', K_mat, resp_names, phys_names)
+
+    Dt       = ns.Dt
+    delta_D  = ns.delta_D
+    delta_Dp = ns.delta_Dp
+
+    K_ker = matrix(
+        SR,
+        [[_to_kernel(K_mat[i, j], Dt, delta_D, delta_Dp)
+          for j in range(nf)] for i in range(nf)],
+    )
+
+    if verbose:
+        _print_matrix('K_ker', K_ker, resp_names, phys_names)
+
+    # ── Fourier transform K_ker → K_ft ────────────────────────────
+    t_var = SR.var('t')
+    omega = SR.var('omega', latex_name=r'\omega')
+    time_subs = {
+        delta_D:  dirac_delta(t_var),
+        delta_Dp: diff(dirac_delta(t_var), t_var),
+    }
+    K_ft_data = [[SR(0)] * nf for _ in range(nf)]
+    for i in range(nf):
+        for j in range(nf):
+            c = K_ker[i, j]
+            if not _sr_is_zero(c):
+                K_ft_data[i][j] = fourier_transform(
+                    SR(c).subs(time_subs), t_var, omega
+                )
+    K_ft = matrix(SR, K_ft_data)
+
+    # Apply model's kernel frequency-image hook (g → ĝ(ω)).
+    kft_hook = model.get('kernel_ft_image')
+    if kft_hook is not None:
+        kft_subs = kft_hook(ns, omega)
+        K_ft = K_ft.apply_map(lambda e: SR(e).subs(kft_subs))
+
+    if verbose:
+        _print_matrix('K_ft', K_ft, resp_names, phys_names)
+
+    # ── Propagator inverse / adjugate / det — budget-aware ────────
+    # Symbolic K_ft.inverse() on large matrices with many free
+    # symbols (kernel images + parameters + omega) is intractable —
+    # an 8×8 heterogeneous-pop K_ft with 32 kernel symbols and
+    # 16 weight-matrix symbols runs for minutes / hours in Sage's
+    # cofactor-based inverse.  Cleanest fix: SKIP the symbolic
+    # inverse / adjugate / det when the matrix is "rich" (many free
+    # symbols beyond omega), and let ``compute_poles_and_residues``
+    # do all three numerically AFTER ``num_params`` substitution
+    # (at that point every entry is a univariate rational in omega).
+    #
+    # For "lean" matrices (single-pop quad Hawkes, etc.) we still
+    # try the symbolic path with a wall-clock budget — if it
+    # completes in time the cache benefits from having G_ft / adj_ft
+    # / D_omega prebaked.  Models that exceed the budget defer all
+    # heavy work to the numerical stage.
+    import time as _time
+    G_ft = None
+    adj_ft = None
+    D_omega = None
+    D_delta = None
+
+    # Complexity gate.  Sage's ``K_ft.inverse()`` is cofactor-based —
+    # O(n!) in the matrix dimension ``nf``.  For nf=8 that's 40 320
+    # minor determinants × the cost-per-minor of simplifying the
+    # rational SR entries; in practice it runs for HOURS regardless
+    # of how lean the symbol set is.  Spike-reset (single-pop with
+    # ``population_size=2`` so nf=8 and only ~18 free symbols) was the
+    # case that exposed the symbol-count gate as the wrong metric.
+    # Switch to a matrix-size gate; keep the symbol-count threshold
+    # as a secondary trigger for the rare lean-but-symbol-rich case.
+    free_syms = set()
+    for i in range(nf):
+        for j in range(nf):
+            free_syms.update(SR(K_ft[i, j]).variables())
+    free_syms.discard(omega)
+    rich = nf >= 6 or len(free_syms) > 20
+    # daedalus.api.delay's Pade copies: the numbers are substituted before inverting
+    # (the symbolic inverse of a Pade-n kernel matrix is the slow part and
+    # nothing downstream needs it)
+    rich = rich or bool(model.get('_numeric_first_propagator'))
+
+    if not rich:
+        # Wall-time budget for the entire symbolic SR matrix-inverse +
+        # adj + det + D_delta block.  Quad-φ finishes in ~0.3s; spike-
+        # reset (with both vstar and nstar coupling in K_mat) gets
+        # stuck on the nested-fraction G_ft entries — the inverse
+        # itself is fast (<1s) but ``_omega_inf_limit_fast`` calling
+        # ``.numerator()`` / ``.denominator()`` on each entry triggers
+        # an expensive fraction-combination cascade.  Cap the whole
+        # block at 60s — if it busts, fall through to the rich/numerical
+        # path (compute_poles_and_residues uses the polynomial fracfield
+        # + numpy cofactor tiers, both of which give correct residues).
+        #
+        # Set to ``None`` to disable the timeout entirely (the symbolic
+        # block runs to completion no matter how long it takes — useful
+        # for cross-checking poles between the symbolic and polynomial
+        # fracfield paths).
+        _SYMBOLIC_INVERSE_BUDGET_SEC = 120
+
+        def _do_symbolic_inverse_block():
+            t0 = _time.perf_counter()
+            G    = _sr_inverse(K_ft)
+            D_om = K_ft.det()
+            # Adjugate via the identity ``adj(K) = K^(-1) · det(K)``.
+            # ``K_ft.adjugate()`` would re-expand all n² cofactor
+            # sub-determinants WITHOUT reusing the inverse's work —
+            # measured at 734 s on the 4×4 spike-reset K_ft vs ~11 s
+            # for the inverse itself.
+            adj  = G * D_om
+            if verbose:
+                print(f'      symbolic inverse/adj/det took '
+                      f'{_time.perf_counter() - t0:.2f}s')
+            # Symbolic D_delta via fast leading-coefficient ratio, for
+            # entries of moderate size: ``numerator()`` of a large nested
+            # entry is a full normalisation (minutes per entry on a 3x3
+            # jump-process kernel matrix with float rates); D_delta is then
+            # left to the exact tier of ``compute_poles_and_residues``.
+            if max(len(repr(e)) for e in G.list()) > _SYMBOLIC_DDELTA_MAX_CHARS:
+                if verbose:
+                    print('      symbolic D_delta skipped (large entries): '
+                          'compute_poles_and_residues fills it')
+                return G, D_om, adj, None
+            Dd_data = [[SR(0)] * nf for _ in range(nf)]
+            for i in range(nf):
+                for j in range(nf):
+                    entry = SR(G[i, j])
+                    if _sr_is_zero(entry):
+                        continue
+                    lim_val = _omega_inf_limit_fast(entry, omega)
+                    if lim_val is not None and not _sr_is_zero(lim_val):
+                        Dd_data[i][j] = lim_val
+            return G, D_om, adj, matrix(SR, Dd_data)
+
+        try:
+            G_ft, D_omega, adj_ft, D_delta = _run_with_timeout(
+                _do_symbolic_inverse_block, _SYMBOLIC_INVERSE_BUDGET_SEC)
+        except _PolynomialPathTimeout:
+            if verbose:
+                print(f'      symbolic inverse/D_delta block exceeded '
+                      f'{_SYMBOLIC_INVERSE_BUDGET_SEC}s budget — '
+                      f'compute_poles_and_residues will compute residues '
+                      f'numerically.')
+            G_ft = adj_ft = D_omega = D_delta = None
+        except Exception:
+            if verbose:
+                print('      symbolic inverse/adj/det bailed — '
+                      'compute_poles_and_residues will compute numerically.')
+            G_ft = adj_ft = D_omega = D_delta = None
+        except BaseException as exc:
+            if exc.__class__.__name__ == 'SignalError':
+                if verbose:
+                    print('      symbolic inverse aborted (SignalError) — '
+                          'compute_poles_and_residues will compute numerically.')
+                G_ft = adj_ft = D_omega = D_delta = None
+            else:
+                raise
+    else:
+        if verbose:
+            reason = (
+                f'nf={nf} ≥ 6 (cofactor inverse is O(nf!))'
+                if nf >= 6
+                else f'{len(free_syms)} free symbols > 20 threshold'
+            )
+            print(f'      K_ft skipped symbolic inverse/adj/det '
+                  f'({reason}).  Computation deferred to '
+                  f'compute_poles_and_residues (numerical, LU-based).')
+
+    prop = {
+        'K_ker':         K_ker,
+        'K_ft':          K_ft,
+        'G_ft':          G_ft,
+        'adj_ft':        adj_ft,
+        'D_omega':       D_omega,
+        'D_delta':       D_delta,
+        't_var':         t_var,
+        'omega':         omega,
+        'nf':            nf,
+        'ring_gen_names': ring_gen_names,
+        # Filled in later by compute_poles_and_residues():
+        'pole_vals':     None,
+        'C_mats':        None,
+    }
+
+    # ── Spatial stage (v1): build the (t, x) heat-kernel propagator ─
+    # When the model declares a spatial field, substitute the inert
+    # ``Laplacian`` operator with ``-k²`` and invert both transforms
+    # to real space.  Tier 1 (diagonal Allen-Cahn-like) is closed
+    # form; the Tier-2 numerical-inverse-FT fallback is deferred to
+    # v2, so a non-Tier-1 spatial model logs the reason and leaves the
+    # propagator time-domain-only (precompute still succeeds — the
+    # symbolic G_ft carries Laplacian for downstream use).
+    if model.get('spatial'):
+        try:
+            from daedalus.engine.integration.spatial.heat_kernel import (
+                build_spatial_propagator,
+            )
+            spatial_block = build_spatial_propagator(
+                K_ft, omega, ns, model, resp_names, phys_names,
+                verbose=verbose,
+            )
+            prop.update(spatial_block)
+        except Exception as e:
+            if verbose:
+                print(f'      spatial propagator (heat kernel) not built '
+                      f'(Tier-1 closed form inapplicable): '
+                      f'{type(e).__name__}: {e}')
+            prop['spatial_dim'] = int((model.get('spatial') or {}).get('dim', 0))
+            prop['G_tx'] = None
+            # Record that the Tier-1 spatial block is unavailable so the
+            # downstream spatial correlator can raise a CLEAR error
+            # (rather than a cryptic KeyError on 'G_tx_sym').  This fires
+            # for e.g. off-diagonal multi-field coupling (a Tier-2 / v2
+            # case — see SpatialPropagatorError).
+            prop['G_tx_sym'] = None
+            prop['spatial_tier1_error'] = f'{type(e).__name__}: {e}'
+
+    if verbose:
+        _print_propagator_symbolic_stages(prop, resp_names, phys_names)
+
+    if use_cache:
+        try:
+            # ``prop`` is picklable here — the spatial block stores only
+            # SR exprs + plain data; the G_tx callables are attached
+            # AFTER the save (closures don't pickle).
+            prop['spec_signature'] = model.get('spec_signature')
+            prop['cache_signature'] = model_cache_signature(model)
+            cache.save('propagator', prop)
+            if verbose:
+                print(f'[propagator] Cached to: '
+                      f'{cache_dir}/propagator.sobj')
+        except Exception as e:
+            if verbose:
+                print(f'[propagator] Cache save failed ({e!r}).')
+
+    # Attach the runtime spatial G_tx callables (post-cache-save so the
+    # cached artefact stays picklable).
+    if prop.get('G_tx_sym') is not None:
+        from daedalus.engine.integration.spatial.heat_kernel import (
+            make_g_tx_callables,
+        )
+        prop['G_tx'] = make_g_tx_callables(prop)
+
+    return prop
+
+
+def _horner(coeffs, x):
+    """Horner-rule polynomial evaluation: ``Σ coeffs[i]·x^i``.  Empty ⇒ 0j."""
+    if not coeffs:
+        return 0j
+    v = coeffs[-1]
+    for c in reversed(coeffs[:-1]):
+        v = v * x + c
+    return v
+
+
+def _warn_zero_residue(pk):
+    import warnings
+    warnings.warn(
+        f'the numerical propagator tier found det\'(omega) = 0 at the pole '
+        f'{complex(pk):.6g} (a repeated pole?): its residue is set to zero.',
+        PoleResidueWarning, stacklevel=3)
+
+
+#: Retarded-pole decisions are made per root, from that root's OWN accuracy
+#: An absolute floor (``Im omega > 1e-9``, the old rule) drops a
+#: stable slow mode in slow units, and a floor relative to the LARGEST |root|
+#: drops it next to a far root (the float model of a
+#: cancelling mass matrix has a far root ~1e16 times its pole, which emptied
+#: the pole list on the exact tier).  A root clearly off the real axis keeps
+#: its double-precision sign; a root within ``NEAR_AXIS_RTOL`` of the axis (or
+#: much smaller than the others) is decided in high precision on the exact
+#: polynomial (``_exact_retarded_flags``; undecidable ones go to the exact
+#: 50-digit route), or, on the numerical tiers, against its own first-order
+#: rounding error (``_numeric_retarded``).
+NEAR_AXIS_RTOL = 1e-3
+#: Numerical tiers: ``Im omega`` must exceed this many times the root's own
+#: rounding error estimate to count as retarded.
+RETARDED_NOISE_FACTOR = 1e2
+
+
+def _omega_scale(roots):
+    """The largest finite ``|root|`` (1.0 for no or only zero roots): used
+    only to flag a root much smaller than the others for a closer look,
+    never as a threshold on its own."""
+    s = max((a for a in (abs(complex(r)) for r in roots)
+             if math.isfinite(a)), default=0.0)
+    return s if s > 0 else 1.0
+
+
+def _median_scale(roots):
+    """The median ``|root|`` of the nonzero finite roots (1.0 for none): a
+    step-size unit that one far root cannot set."""
+    a = sorted(x for x in (abs(complex(r)) for r in roots)
+               if math.isfinite(x) and x > 0)
+    return a[len(a) // 2] if a else 1.0
+
+
+def _suspicious_roots(roots):
+    """Indices of the roots whose half plane double precision may not
+    decide: within ``NEAR_AXIS_RTOL`` of the real axis (relative), or
+    ``NEAR_AXIS_RTOL`` times smaller than the largest root (rounding of a
+    zero root)."""
+    roots = [complex(r) for r in roots]
+    big = _omega_scale(roots)
+    return [k for k, r in enumerate(roots)
+            if abs(r.imag) <= NEAR_AXIS_RTOL * abs(r)
+            or abs(r) <= NEAR_AXIS_RTOL * big]
+
+
+def _exact_retarded_flags(Q_poly, roots, dps=60):
+    """``[bool]`` -- which double-precision roots of the exact polynomial
+    ``Q_poly`` (over ``QQ[i]``) are retarded (Im omega > 0) -- or ``None``
+    when some root cannot be decided (the caller then takes the exact
+    route).  When no root is in ``_suspicious_roots`` every root keeps its
+    double sign.  Otherwise all roots of the exact ``Q`` are computed at
+    ``dps`` digits (``mpmath.workdps``: the global precision is restored)
+    and matched one to one to the double roots (nearest; ``None`` if the
+    matching is not a bijection); a suspicious root is then decided on its
+    high-precision partner: the smallest root of a ``Q`` with a zero
+    constant term IS 0 (marginal), any other is retarded when
+    ``Im > 1e-40 |r|`` (a real-axis root comes out ~1e-58 there).  A root
+    that is not suspicious keeps its double sign."""
+    import mpmath as _mp
+    from daedalus.api._pole_clusters import _mpc, _roots
+    roots = [complex(r) for r in roots]
+    out = [r.imag > 0 for r in roots]
+    sus = _suspicious_roots(roots)
+    if not sus:
+        return out
+    with _mp.workdps(dps):
+        try:
+            cs = [_mp.mpc(_mpc(c)) for c in Q_poly.list()]
+            hp = _roots(cs)
+        except Exception:
+            return None
+        if len(hp) != len(roots):
+            return None
+        match = []
+        for r in roots:
+            x0 = _mp.mpc(r.real, r.imag)
+            match.append(min(range(len(hp)), key=lambda j: abs(hp[j] - x0)))
+        if len(set(match)) != len(match):
+            return None
+        try:
+            zero_hp = (min(range(len(hp)), key=lambda j: abs(hp[j]))
+                       if Q_poly.constant_coefficient() == 0 else None)
+        except Exception:
+            return None
+        for k in sus:
+            j = match[k]
+            x = hp[j]
+            out[k] = (j != zero_hp
+                      and bool(x.imag > _mp.mpf(10) ** (-40) * abs(x)))
+    return out
+
+
+def _numeric_retarded(K_at, r, roots):
+    """Numerical tiers: is the verified zero ``r`` of det K a retarded pole.
+    Not suspicious (``_suspicious_roots`` of ``roots``): its sign.
+    Suspicious: ``Im r`` above ``RETARDED_NOISE_FACTOR`` times its own
+    first-order rounding error ``eps |u|^T |K| |v| / |u^H K' v|`` (``u``,
+    ``v``: the singular vectors of the smallest singular value of ``K(r)``,
+    ``K'`` by a central difference with a step 1e-4 of the distance to the
+    nearest other zero or of ``|r|``, the smaller) -- the root-sensitivity of the nonlinear eigenvalue
+    problem K(omega) v = 0, invariant under row / column scaling and
+    non-normality (a Hadamard-type bound of det K was not: it dropped
+    strongly damped poles of a non-normal system, review)."""
+    import numpy as np
+    r = complex(r)
+    if not r.imag > 0:
+        return False
+    rl = [complex(q) for q in roots]
+    try:
+        k = min(range(len(rl)), key=lambda j: abs(rl[j] - r))
+    except ValueError:
+        k = None
+    sus = set(_suspicious_roots(rl))
+    if k is None or abs(rl[k] - r) > 1e-9 * abs(r):
+        sus_r = (abs(r.imag) <= NEAR_AXIS_RTOL * abs(r)
+                 or abs(r) <= NEAR_AXIS_RTOL * _omega_scale(rl + [r]))
+    else:
+        sus_r = k in sus
+    if not sus_r:
+        return True
+    others = [abs(q - r) for q in rl if abs(q - r) > 1e-9 * max(abs(r), 1e-300)]
+    # local step: also at most 1e-4 |r| (a lone far zero must not set it)
+    h = 1e-4 * min(others + [abs(r)]) if abs(r) > 0 else 1e-4 * min(others or [1.0])
+    try:
+        M = np.asarray(K_at(r), dtype=complex)
+        U, S, Vh = np.linalg.svd(M)
+        u, v = U[:, -1], Vh[-1].conj()
+        Kp = (np.asarray(K_at(r + h), dtype=complex)
+              - np.asarray(K_at(r - h), dtype=complex)) / (2 * h)
+        den = abs(u.conj() @ Kp @ v)
+        num = float(np.abs(u) @ np.abs(M) @ np.abs(v))
+    except Exception:
+        return r.imag > 1e-12 * abs(r)
+    if not (np.isfinite(den) and np.isfinite(num)) or den == 0:
+        return r.imag > 1e-12 * abs(r)
+    err = np.finfo(float).eps * num / den
+    return r.imag > RETARDED_NOISE_FACTOR * err
+
+
+def _local_unit(om, scale=None):
+    """The length unit near ``om`` for difference steps and rings: ``|om|``,
+    floored at 1e-6 of the system's frequency ``scale`` (a root at the
+    origin); never an absolute constant."""
+    a = abs(complex(om))
+    if scale:
+        return max(a, 1e-6 * float(scale))
+    return a if a > 0 else 1.0
+
+
+def _singular_at(det_at, om, scale=None):
+    """Scale-free test that ``det K`` vanishes at ``om``: ``|det K(om)|`` at
+    most 1e-6 of its largest value on a small circle around ``om`` (radius
+    1e-3 ``_local_unit(om, scale)``, relative: this replaced the radius
+    1e-3 (1 + |om|), which in slow units encircled other roots).  An
+    absolute ``|det| < tol`` misfires both ways: a
+    high-degree det is huge everywhere (rounding at a true root exceeds any
+    fixed tol), a small-scale one is tiny everywhere.  Away from a zero the
+    ratio is O(1); at a Newton-refined zero it is the evaluation noise over
+    |det'| rho, below 1e-6 unless the root itself is ill-conditioned beyond
+    double precision (cond ~ 1e7 / rho)."""
+    import numpy as np
+    try:
+        d0 = abs(det_at(om))
+        rho = 1e-3 * _local_unit(om, scale)
+        ring = max(abs(det_at(om + rho * np.exp(2j * np.pi * k / 8)))
+                   for k in range(8))
+    except Exception:
+        return False
+    return bool(np.isfinite(d0) and np.isfinite(ring) and ring > 0
+                and d0 <= 1e-6 * ring)
+
+
+def _newton_det(det_at, om, max_iter=30, scale=None):
+    """Newton on ``det K`` from ``om``, with a difference step and a step
+    tolerance relative to ``_local_unit(om, scale)``; ``None`` on a
+    vanishing or non-finite derivative or value.  The one Newton of the
+    numerical tiers (three drifted copies had absolute
+    ``|det| < 1e-13`` exits, which in slow units return the unrefined
+    candidate, and absolute steps 1e-7 (1 + |om|))."""
+    import numpy as np
+    om = complex(om)
+    for _ in range(max_iter):
+        d = det_at(om)
+        if not np.isfinite(d):
+            return None
+        if d == 0:
+            return om
+        u = _local_unit(om, scale)
+        h = 1e-7 * u
+        dp = (det_at(om + h) - det_at(om - h)) / (2 * h)
+        if dp == 0 or not np.isfinite(dp):
+            return None
+        step = d / dp
+        om -= step
+        if abs(step) <= 1e-14 * u:
+            break
+    return om
+
+
+def _dedup_roots(roots, rtol):
+    """``roots`` without near-duplicates: ``r`` is dropped when a kept ``q``
+    has ``|r - q| <= rtol * max(|r|, |q|)`` (pairwise relative)."""
+    kept = []
+    for r in roots:
+        if any(abs(r - q) <= rtol * max(abs(r), abs(q)) for q in kept):
+            continue
+        kept.append(r)
+    return kept
+
+
+def _verified_roots(candidates, det_at):
+    """Newton-refine every candidate root of det K(omega) and keep the
+    distinct TRUE zeros (``_singular_at``), in every half plane, with the
+    frequency scale of that verified set.  No threshold depends on an
+    unverified root (a spurious root ~1e16 times the true
+    scale, from a noise leading coefficient just above the trim, set the
+    retarded floor above every genuine pole).  First pass: steps relative to
+    each root (``scale=None``); a root much smaller than the others, whose
+    relative step drowns in the evaluation noise, is retried with the scale
+    of the roots the first pass verified.  Returns ``(roots, rejected,
+    scale)`` (``scale``: the median |zero|, a step unit only)."""
+    def one(r0, scale):
+        try:
+            r = _newton_det(det_at, r0, scale=scale)
+            if r is not None and _singular_at(det_at, r, scale):
+                return r
+        except Exception:
+            pass
+        return None
+    first = [one(complex(r0), None) for r0 in candidates]
+    scale0 = _median_scale([r for r in first if r is not None])
+    roots, rejected = [], []
+    for r0, r in zip(candidates, first):
+        if r is None:
+            r = one(complex(r0), scale0)
+        if r is None:
+            rejected.append(complex(r0))
+            continue
+        if any(abs(r - q) <= 1e-7 * max(abs(r), abs(q)) for q in roots):
+            continue
+        roots.append(r)
+    return roots, rejected, _median_scale(roots)
+
+
+def _refine_retarded_poles(candidates, K_at, verbose=False):
+    """The numerical tiers' one pole rule (one copy replaced the drifted copies
+    of the rich and legacy paths): the verified zeros of det K
+    (``_verified_roots``) that are retarded beyond their own rounding error
+    (``_numeric_retarded``), sorted by (Im, Re).  Returns ``(poles, roots,
+    scale)`` (``roots``: every verified zero; ``scale``: their median
+    modulus, a step unit)."""
+    import numpy as np
+
+    def det_at(om):
+        return complex(np.linalg.det(K_at(om)))
+    roots, rejected, scale = _verified_roots(candidates, det_at)
+    poles = sorted((r for r in roots if _numeric_retarded(K_at, r, roots)),
+                   key=lambda r: (r.imag, r.real))
+    if verbose:
+        print(f'      Newton-refined: {len(roots)} zeros of det K '
+              f'({len(poles)} retarded), {len(rejected)} candidate(s) '
+              f'rejected')
+        for r0 in rejected:
+            print(f'        omega = {r0.real:+.6g}{r0.imag:+.6g}i: '
+                  f'not a zero of det K')
+    return poles, roots, scale
+
+
+def _structural_zero_entries(nonzero):
+    """``Z[i][j]`` True when ``G = K^{-1}``'s entry ``(i, j)`` is a
+    STRUCTURAL zero: the cofactor of ``K[j, i]`` vanishes for every value of
+    the nonzero entries, i.e. ``K`` without row ``j`` and column ``i`` has no
+    perfect matching on its nonzero pattern (``nonzero[a][b]``: ``K[a, b]``
+    is not identically zero).  Exact, unit-free."""
+    n = len(nonzero)
+
+    def has_perfect_matching(rows, cols):
+        match = {}
+
+        def augment(a, seen):
+            for b in cols:
+                if nonzero[a][b] and b not in seen:
+                    seen.add(b)
+                    if b not in match or augment(match[b], seen):
+                        match[b] = a
+                        return True
+            return False
+        return all(augment(a, set()) for a in rows)
+    Z = [[False] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            rows = [a for a in range(n) if a != j]
+            cols = [b for b in range(n) if b != i]
+            Z[i][j] = not has_perfect_matching(rows, cols)
+    return Z
+
+
+#: A numerical-tier residue entry below this fraction of the SAME entry's
+#: size near its pole (``_numerical_residues``) is rounding noise.
+NUMERIC_RESIDUE_RTOL = 1e-10
+
+
+def _numerical_residues(pole_vals, K_at, nonzero, roots, nf, scale=None):
+    """Residue matrices ``C_k = i adj K(omega_k) / det'(omega_k)`` of the
+    numerical tiers (cofactor adjugate, central-difference det').
+
+    Noise entries are decided per ENTRY, never against the largest entry of
+    the matrix (that clip, 1e-12 of the largest, zeroed a
+    genuine 1e-14 coupling residue -- a field in other units -- on every
+    engine's ``propagator['C_mats']``): a structural zero of ``G``
+    (``_structural_zero_entries``) is an exact 0; any other entry is noise
+    when ``|C_k[i, j]|`` is at most ``NUMERIC_RESIDUE_RTOL`` of
+    ``rho_k max |G_ij|`` on a circle of radius ``rho_k`` (a quarter of the
+    distance to the nearest other root, at most half ``|omega_k|``) around
+    the pole -- by Cauchy that
+    bounds the entry's residue there, so the test is relative to the entry
+    itself in any field or time unit.  It zeroes the rounding residue of an
+    entry at a pole it does not have (a pure delta entry at every pole).
+    ``roots``: the verified zeros of det K (``_verified_roots``; an
+    unrefined copy of a pole would shrink the circle to nothing)."""
+    import numpy as np
+    from sage.all import CDF, matrix as _matrix
+    Z = _structural_zero_entries(nonzero)
+    # steps and circles are relative to each pole (``scale`` only floors a
+    # pole at the origin, which is never retarded): no far root sets them
+
+    def det_at(om):
+        return complex(np.linalg.det(K_at(om)))
+
+    def cofactor_adj(M):
+        n = M.shape[0]
+        A = np.zeros_like(M)
+        for i in range(n):
+            for j in range(n):
+                minor = np.delete(np.delete(M, j, axis=0), i, axis=1)
+                A[i, j] = ((-1) ** (i + j)) * np.linalg.det(minor)
+        return A
+
+    C_mats = []
+    for pk in pole_vals:
+        adj = cofactor_adj(K_at(pk))
+        h = 1e-6 * _local_unit(pk, scale)
+        d_prime = (det_at(pk + h) - det_at(pk - h)) / (2 * h)
+        if d_prime == 0 or not np.isfinite(d_prime):
+            # Shouldn't happen for non-degenerate poles: a zero
+            # residue matrix, never silently
+            _warn_zero_residue(pk)
+            C_mats.append(_matrix(CDF, [[0j] * nf for _ in range(nf)]))
+            continue
+        C_np = 1j * adj / d_prime
+        others = [abs(complex(r) - pk) for r in roots
+                  if abs(complex(r) - pk) > 1e-7 * _local_unit(pk, scale)]
+        # a LOCAL circle: a quarter of the distance to the nearest other zero,
+        # and at most half the pole's own modulus -- on a circle as wide as a
+        # far zero (1e16 x the pole: a cancelling mass matrix) the Cauchy
+        # bound is set by G's constant part and the far pole, and a genuine
+        # residue was clipped as noise.
+        rho = 0.25 * min(others + [2.0 * abs(pk)])
+        ring = np.zeros((nf, nf))
+        for k in range(8):
+            try:
+                G = np.linalg.inv(K_at(pk + rho * np.exp(2j * np.pi * (k + 0.5) / 8)))
+            except np.linalg.LinAlgError:
+                continue
+            ring = np.maximum(ring, np.abs(G))
+        keep = np.abs(C_np) > NUMERIC_RESIDUE_RTOL * rho * ring
+        for i in range(nf):
+            for j in range(nf):
+                if Z[i][j]:
+                    keep[i, j] = False
+        C_np = np.where(keep, C_np, 0)
+        C_mats.append(_matrix(CDF, [[complex(C_np[i, j]) for j in range(nf)]
+                                    for i in range(nf)]))
+    return C_mats
+
+
+def _restore_trimmed_roots(coeffs_full, roots_trim, K_at, verbose=False):
+    """The numerical tiers trim leading coefficients of num(det K) below
+    1e-12 of the largest as noise.  For a high-degree det (a long rational
+    kernel: coefficients ~ (d/n)^n) they are genuine, and the trim drops
+    poles (Erlang-16: degree 17 -> 13, most poles lost).  The retarded roots
+    of the untrimmed polynomial are Newton-refined on det K(omega) and
+    returned when K is singular there (``_singular_at``) and the trimmed
+    candidates have nothing within 1e-7 (relative); a noise coefficient's
+    roots are not zeros of det K, so a true noise trim is unchanged.  The
+    retarded test and the steps are relative to the frequency scale of the
+    verified roots.  Returns ``(extra, full)``: the restored
+    poles and the untrimmed polynomial's roots (the caller's candidates when
+    ``extra`` is not empty: one per root, so an ill-conditioned root does
+    not come back twice, from the trimmed and the untrimmed polynomial,
+    with Newton noise wider than the dedup)."""
+    import numpy as np
+    from sage.all import PolynomialRing, CDF
+    try:
+        full = [complex(r) for r, _ in
+                PolynomialRing(CDF, 'w_full')(coeffs_full).roots(CDF)]
+    except Exception:
+        return [], []
+
+    def det_at(om):
+        return complex(np.linalg.det(K_at(om)))
+    poles, _roots, _scale = _refine_retarded_poles(full, K_at)
+    extra = []
+    for r in poles:
+        if any(abs(r - q) <= 1e-7 * max(abs(r), abs(q))
+               for q in list(roots_trim) + extra):
+            continue
+        extra.append(r)
+    if verbose and extra:
+        print(f'      the leading-coefficient trim dropped {len(extra)} '
+              f'genuine pole(s); restored')
+    return extra, full
+
+
+def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
+                               resolve_clusters=False):
+    """
+    Given a propagator dict (from build_propagator) and a num_params
+    substitution dict (SR.var → float), find the retarded poles of
+    G_ft and the residue matrices.  Mutates ``prop`` in place to fill
+    ``prop['pole_vals']`` and ``prop['C_mats']``.
+
+    Three-tier strategy:
+
+      1. **Polynomial fraction-field (CyclotomicField(4)[ω])** — the
+         primary path.  Exact QQ[i] arithmetic, canonical irreducible
+         P_ij(ω)/Q(ω) form per entry, machine-precision residues.
+         Works for any model whose num_params can be QQ-rationalized
+         (most cases — params are typically floats convertible to QQ).
+      2. **Numpy cofactor on numerical K(pk)** — fallback when the
+         polynomial path fails (e.g. non-rationalizable parameters).
+         Same numerical cofactor algorithm the rich path already uses.
+      3. **Legacy symbolic adj_ft.subs** — final fallback, kept for
+         historical reasons.  Has the catastrophic-cancellation
+         precision bug fixed by my earlier patch (now uses numpy
+         cofactor in the lean path too), so tier-2 and tier-3 are
+         numerically equivalent in current code.
+
+    Implementation follows the notebook cell 23 deferred pole/residue
+    computation: characteristic polynomial extracted as the highest-
+    degree denominator across G_ft entries, residue at each pole
+    computed as ``i · adj(ω_k) / det'(ω_k)``.
+
+    Near-degenerate or repeated poles (``daedalus.api._pole_clusters``), with
+    ``resolve_clusters`` (``compute_cumulants`` sets it; other callers get
+    the old behaviour): ``prop['pole_clusters']`` (a report dict, or ``None``
+    when no two poles are close) and ``prop['pole_deformation']`` (the
+    deformation Phase J averages over, or ``None``).  ``tau_max``: the
+    largest time difference the caller will evaluate (it bounds the
+    deformation radius).
+    """
+    from sage.all import CDF, PolynomialRing, matrix as _matrix
+    import time as _time
+
+    K_ft   = prop['K_ft']
+    adj_ft = prop.get('adj_ft')
+    G_ft   = prop.get('G_ft')
+    nf     = prop['nf']
+    omega  = prop['omega']
+
+    # ── Tier 1: exact polynomial fraction-field path ──────────────
+    pole_analysis = {}
+    cluster_out = {} if resolve_clusters else None
+    prop['pole_clusters'] = None
+    prop['pole_deformation'] = None
+    prop.pop('jordan_incomplete', None)
+    pole_vals_tier1, C_mats_tier1, D_delta_tier1 = (
+        _compute_residues_via_polynomial_fracfield(
+            K_ft, omega, num_params, nf, verbose=verbose,
+            analysis_out=pole_analysis, cluster_out=cluster_out,
+            tau_max=tau_max))
+    # the exact pole record for the analyzer's G3 gate (empty when the
+    # exact path failed before Q(omega); bookkeeping only)
+    tier1_why = pole_analysis.pop('_tier1_fallback_reason', None)
+    if (pole_vals_tier1 is None and tier1_why is not None
+            and pole_analysis.get('residue_route') != 'failed'):
+        import warnings
+        warnings.warn(
+            f'the exact propagator tier returned no residues ({tier1_why}): '
+            'the poles and residues come from the numerical cofactor tier '
+            '(double precision, no accuracy certificate).',
+            PoleResidueWarning, stacklevel=2)
+        if 'degree' in pole_analysis:
+            # the analyzer's G3 gate reports it (G3_RESIDUES_NUMERICAL_TIER)
+            pole_analysis['residue_route'] = 'failed'
+            pole_analysis['residue_route_reason'] = tier1_why
+    prop['pole_analysis'] = pole_analysis or None
+    _an = cluster_out.get('analysis') if cluster_out else None
+    if _an is not None:
+        prop['pole_clusters'] = _an.report()
+        prop['pole_deformation'] = _an.deformation
+        if _an.deformation is not None and _an.jordan:
+            # the nominal residues of a repeated pole do not represent the
+            # propagator (no t exp(lambda t) term): Phase J must never be
+            # handed them directly (final_integral / pipeline guard)
+            prop['jordan_incomplete'] = True
+    if pole_vals_tier1 is not None:
+        prop['pole_vals'] = pole_vals_tier1
+        prop['C_mats']    = C_mats_tier1
+        # Fill D_delta if build_propagator left it None (its symbolic
+        # inverse may have exceeded its own budget for complex models).
+        if prop.get('D_delta') is None and D_delta_tier1 is not None:
+            prop['D_delta'] = D_delta_tier1
+        if verbose:
+            print(f'[propagator] {len(pole_vals_tier1)} retarded poles '
+                  f'(Im(ω) > 0) — exact polynomial path:')
+            for k, p in enumerate(pole_vals_tier1):
+                print(f'  ω_{k+1} = {p.real:+.6f} + ({p.imag:+.6f}) i')
+            print()
+            print(f'      ── C_mats (residue matrix at each pole) ──')
+            ring_gen_names = prop.get('ring_gen_names') or []
+            resp_names = ring_gen_names[:nf]
+            phys_names = ring_gen_names[nf:]
+            print(f'        rows (response): {resp_names}')
+            print(f'        cols (physical): {phys_names}')
+            for k_p, C in enumerate(C_mats_tier1):
+                print(f'      C_mats[{k_p}]  (residue at ω_{k_p+1} = '
+                      f'{pole_vals_tier1[k_p].real:+.4f}'
+                      f'{pole_vals_tier1[k_p].imag:+.4f}i):')
+                try:
+                    for ii in range(C.nrows()):
+                        for jj in range(C.ncols()):
+                            v = complex(C[ii, jj])
+                            if abs(v) > 1e-15:
+                                print(f'        [{ii},{jj}] = '
+                                      f'{v.real:+.6e}{v.imag:+.6e}j')
+                except Exception as e:
+                    print(f'        (error displaying: {e})')
+        return prop
+
+    if verbose:
+        print('[propagator] polynomial fraction-field unavailable; '
+              'falling back to numpy cofactor.')
+
+    # Substitute num_params into K_ft.  Entries become univariate
+    # rational functions in omega.
+    K_ft_num = K_ft.apply_map(lambda e: SR(e).subs(num_params))
+
+    PR = PolynomialRing(CDF, 'omega')
+    FR = PR.fraction_field()
+    from sage.all import matrix as _matrix
+    import numpy as np
+
+    trimmed_full = None     # num(det K) before a leading-coefficient trim
+    if adj_ft is None or G_ft is None:
+        # ── Heterogeneous / rich path ────────────────────────────
+        # Architecture (determinant-first, global poles, entrywise
+        # numerators evaluated numerically):
+        #
+        #   1. Symbolic det(K_ft_num) → SR rational N(ω)/D(ω); the
+        #      retarded poles are the zeros of N in the upper-half
+        #      plane.  Cheap (~0.4s for nf=8 multipop).
+        #   2. Cache K's entrywise polynomial coefficients (numerator
+        #      + denominator) ONCE so that K(ω) can be evaluated as
+        #      a numpy complex matrix at any ω in microseconds.
+        #   3. Residues via numerical Laurent extraction:
+        #        C_k = i · eps · G(ω_k + eps)
+        #      where ε is small relative to the pole separation.
+        #      Now that pole_vals are TRUE zeros of det N (not
+        #      polyfit artefacts), this captures the ε·(Res/ε) → Res
+        #      blowup correctly.  Skips the costly SR adjugate
+        #      (~10s) and per-pole SR .subs() calls (each ~50–500ms
+        #      on 25k-char adj entries → 16 poles × 64 entries ≈
+        #      50–500s before).
+        #   4. D_delta = lim_{ω→∞} G(ω) extracted from two large-|ω|
+        #      probes, distinguishing constant vs. 1/ω-vanishing
+        #      entries by their scaling.
+        if verbose:
+            print('      symbolic det(K_ft_num) for pole finding...')
+        t0 = _time.perf_counter()
+        K_det_sr = SR(K_ft_num.det())
+        # Sanity check: if K_ft_num still has free symbols beyond ω
+        # (e.g. unsubstituted saddle values or kernel symbols), the
+        # det coefficients won't be numerical and the polynomial
+        # root finder will silently return 0 roots.  Surface this
+        # mode explicitly.
+        free_syms = set()
+        for i in range(nf):
+            for j in range(nf):
+                free_syms.update(SR(K_ft_num[i, j]).variables())
+        free_syms.discard(omega)
+        if free_syms and verbose:
+            print(f'      WARNING: K_ft_num has free symbols beyond ω: '
+                  f'{sorted(str(s) for s in free_syms)}.  Pole-finding '
+                  f'will likely return 0 roots.  Make sure all kernel '
+                  f'symbols are substituted via the model\'s '
+                  f'``kernel_ft_image`` hook and all saddle values are '
+                  f'in num_params.')
+        det_num_sr = K_det_sr.numerator()
+        try:
+            coeffs_asc = [complex(c)
+                          for c in det_num_sr.coefficients(omega,
+                                                           sparse=False)]
+        except Exception as exc:
+            if verbose:
+                print(f'      coefficient extraction failed: {exc!r}')
+                # Show what variables remain so the user can see why.
+                try:
+                    raw_coeffs = det_num_sr.coefficients(omega,
+                                                         sparse=False)
+                    for k, c in enumerate(raw_coeffs):
+                        cv = SR(c).variables()
+                        if cv:
+                            print(f'        ω^{k} coeff free vars: '
+                                  f'{[str(s) for s in cv]}')
+                except Exception:
+                    pass
+            coeffs_asc = []
+        # Strip trailing near-zero leading-degree coefficients (sometimes
+        # the polynomial degree is over-reported with noise).
+        coeffs_asc_trim = list(coeffs_asc)
+        if coeffs_asc_trim:
+            tol_lead = 1e-12 * max(abs(c) for c in coeffs_asc_trim)
+            while len(coeffs_asc_trim) > 1 and \
+                  abs(coeffs_asc_trim[-1]) < tol_lead:
+                coeffs_asc_trim.pop()
+        if len(coeffs_asc_trim) < len(coeffs_asc):
+            trimmed_full = list(coeffs_asc)     # checked below
+        char_poly = PR(coeffs_asc_trim)
+        # Use Sage's polynomial root finder (MPS / PARI under the
+        # hood) rather than numpy.roots — empirically more accurate
+        # for moderate-degree polynomials with mixed-magnitude
+        # coefficients.  numpy.roots on the multipop test produced
+        # 8 spurious roots in the upper half plane that were NOT
+        # zeros of det(K) (|det| up to 1e+5 at the spurious "poles").
+        try:
+            roots_all = [complex(r) for r, _ in char_poly.roots(CDF)]
+        except Exception:
+            # Fallback to numpy if Sage's root finder fails.
+            coeffs_desc = list(reversed(coeffs_asc_trim))
+            roots_all = ([complex(r) for r in np.roots(coeffs_desc)]
+                         if len(coeffs_desc) > 1 else [])
+        if verbose:
+            print(f'      det + roots took '
+                  f'{_time.perf_counter() - t0:.2f}s; '
+                  f'{len(roots_all)} candidate roots')
+
+        # Cache K's entrywise polynomial-coefficient form for fast
+        # numerical evaluation at any ω.  Each K[i,j] = n(ω)/d(ω)
+        # where n,d are SR polynomials in ω (degree ≤ ~ N_kernel).
+        # Extracting coefficients once per entry: ~64 small ops.
+        t1 = _time.perf_counter()
+        K_num_coeffs = [[None] * nf for _ in range(nf)]
+        K_den_coeffs = [[None] * nf for _ in range(nf)]
+        for i in range(nf):
+            for j in range(nf):
+                e = SR(K_ft_num[i, j])
+                if e.is_zero():
+                    K_num_coeffs[i][j] = [0j]
+                    K_den_coeffs[i][j] = [1+0j]
+                    continue
+                try:
+                    n = e.numerator()
+                    d = e.denominator()
+                    K_num_coeffs[i][j] = [complex(c)
+                        for c in n.coefficients(omega, sparse=False)]
+                    K_den_coeffs[i][j] = [complex(c)
+                        for c in d.coefficients(omega, sparse=False)]
+                except Exception:
+                    K_num_coeffs[i][j] = [complex(e)]
+                    K_den_coeffs[i][j] = [1+0j]
+        if verbose:
+            print(f'      K polynomial-coeff cache took '
+                  f'{_time.perf_counter() - t1:.2f}s')
+
+        def _K_at(omega_val):
+            K_at = np.zeros((nf, nf), dtype=complex)
+            for i in range(nf):
+                for j in range(nf):
+                    n = _horner(K_num_coeffs[i][j], omega_val)
+                    d = _horner(K_den_coeffs[i][j], omega_val)
+                    K_at[i, j] = n / d if d != 0 else 0j
+            return K_at
+
+        def _G_at(omega_val):
+            try:
+                return np.linalg.inv(_K_at(omega_val))
+            except np.linalg.LinAlgError:
+                return np.zeros((nf, nf), dtype=complex)
+
+        # ── Fallback pole-finder ────────────────────────────────────
+        # If the symbolic det route returned 0 roots (because some
+        # entry in ``K_ft_num`` still has free symbols beyond ω, or
+        # because the polynomial-coefficient extraction silently
+        # threw), fall back to Vandermonde-polyfit-and-Newton-refine
+        # on the NUMERICAL ``det(K_at(ω))``.  ``_K_at`` is already
+        # cached entrywise so this is fast and doesn't depend on the
+        # symbolic det succeeding.
+        if not roots_all:
+            if verbose:
+                print('      symbolic root-finding produced 0 roots — '
+                      'falling back to numerical polyfit + Newton refine')
+            import warnings
+            warnings.warn(
+                'symbolic pole finding produced no roots: the poles come from '
+                f'a degree-{4 * nf} polynomial fit of det K(omega), which '
+                'misses any beyond that degree.', PoleResidueWarning,
+                stacklevel=2)
+
+            def _det_at(om):
+                return complex(np.linalg.det(_K_at(om)))
+
+            deg_max = 4 * nf
+            n_samples = deg_max + 1
+            radius = 2.0
+            thetas = np.linspace(0, 2 * np.pi, n_samples, endpoint=False)
+            sample_omegas = radius * np.exp(1j * thetas)
+            det_samples = np.array([_det_at(om) for om in sample_omegas])
+            char_coeffs = np.polyfit(sample_omegas, det_samples, deg_max)
+            tol = 1e-9 * np.max(np.abs(char_coeffs))
+            while len(char_coeffs) > 1 and abs(char_coeffs[0]) < tol:
+                char_coeffs = char_coeffs[1:]
+            char_poly = PR(list(reversed([complex(c)
+                                          for c in char_coeffs])))
+            try:
+                candidate_roots = [complex(r) for r, _ in
+                                   char_poly.roots(CDF)]
+            except Exception:
+                candidate_roots = []
+
+            refined = _refine_retarded_poles(candidate_roots, _K_at)[0]
+            roots_all = refined
+            if verbose:
+                print(f'      numerical fallback: '
+                      f'{len(roots_all)} refined candidate poles')
+
+        # We don't have a symbolic adj/G_ft, so set to None.  Downstream:
+        #   * type_assignment skips zero-check when G_ft is None
+        #   * D_delta is provided directly below
+        prop['adj_ft'] = None
+        prop['G_ft']   = None
+
+        # D_delta from two-probe scaling test.
+        G_big  = _G_at(1e8 * (1 + 0j))
+        G_huge = _G_at(1e10 * (1 + 0j))
+        D_delta_data = []
+        # an entry below 1e-12 is noise only when it is noise relative to
+        # the matrix (rounding of the inverse); a model whose G is small
+        # everywhere keeps its delta part
+        g_noise = 1e-12 * float(np.max(np.abs(G_big))) if G_big.size else 0.0
+        for i in range(nf):
+            row = []
+            for j in range(nf):
+                a, b = G_big[i, j], G_huge[i, j]
+                ma = abs(a)
+                if ma == 0 or (ma < 1e-12 and ma <= g_noise):
+                    row.append(SR(0))
+                elif abs(a - b) / ma < 1e-3:
+                    row.append(SR(complex(b)))
+                else:
+                    row.append(SR(0))
+            D_delta_data.append(row)
+        prop['D_delta'] = _matrix(SR, D_delta_data)
+    else:
+        # ── Legacy symbolic path ────────────────────────────────
+        # Determinant-first: poles are zeros of num(det(K(ω))).  We do
+        # NOT use the largest entry-wise denominator of G_ft here —
+        # that polynomial can be a strict divisor of num(det(K)) when
+        # mode-i,j decouples from adj(K)[i,j] for all (i,j) (the
+        # entry-wise simplifier cancels those factors out), or it can
+        # be polluted by lingering filter-denominator artefacts.
+        # Either way the resulting roots disagree with the residue
+        # formula (which uses K_det_sr.derivative), giving missing or
+        # bogus poles and a magnitude error in C(τ).
+        adj_ft_num = adj_ft.apply_map(lambda e: SR(e).subs(num_params))
+        G_ft_num   = G_ft.apply_map(lambda e: SR(e).subs(num_params))
+        K_det_sr   = SR(K_ft_num.det())
+        det_num_sr = SR(K_det_sr.numerator())
+        det_den_sr = SR(K_det_sr.denominator())
+        try:
+            coeffs_asc = [complex(c) for c in
+                          det_num_sr.coefficients(omega, sparse=False)]
+        except Exception as exc:
+            if verbose:
+                print(f'      det-num coeff extraction failed: {exc!r}; '
+                      f'falling back to entrywise-denominator method')
+            coeffs_asc = []
+        # Trim trailing near-zero leading coefficients (polynomial-degree
+        # noise from symbolic simplification).
+        if coeffs_asc:
+            coeffs_untrimmed = list(coeffs_asc)
+            tol_lead = 1e-12 * max(abs(c) for c in coeffs_asc)
+            while len(coeffs_asc) > 1 and \
+                  abs(coeffs_asc[-1]) < tol_lead:
+                coeffs_asc.pop()
+            if len(coeffs_asc) < len(coeffs_untrimmed):
+                trimmed_full = coeffs_untrimmed     # checked below
+        if coeffs_asc and len(coeffs_asc) > 1:
+            char_poly = PR(coeffs_asc)
+        else:
+            # Fallback to old entrywise-denominator approach if the
+            # determinant coefficient extraction failed (e.g.
+            # K_det_sr still has free symbols beyond ω).
+            char_poly = PR(1)
+            for i in range(nf):
+                for j in range(nf):
+                    entry = SR(G_ft_num[i, j])
+                    if entry.is_zero():
+                        continue
+                    try:
+                        den_p = PR(entry.denominator())
+                    except Exception:
+                        try:
+                            rat = FR(entry)
+                            den_p = rat.denominator()
+                        except Exception:
+                            continue
+                    if den_p.degree() > char_poly.degree():
+                        char_poly = den_p
+        if verbose:
+            try:
+                deg_dnum = PR(det_num_sr).degree()
+            except Exception:
+                deg_dnum = -1
+            print(f'      char_poly degree = {char_poly.degree()}, '
+                  f'num(det K) degree = {deg_dnum}')
+        roots_all = [complex(r) for r, _ in char_poly.roots(CDF)]
+
+        # Cache K's entrywise polynomial-coefficient form for fast
+        # numerical evaluation at any ω — needed for the spurious-root
+        # filter below.  Same construction as the rich path.
+        K_num_coeffs = [[None] * nf for _ in range(nf)]
+        K_den_coeffs = [[None] * nf for _ in range(nf)]
+        for i in range(nf):
+            for j in range(nf):
+                e = SR(K_ft_num[i, j])
+                if e.is_zero():
+                    K_num_coeffs[i][j] = [0j]
+                    K_den_coeffs[i][j] = [1+0j]
+                    continue
+                try:
+                    n = e.numerator()
+                    d = e.denominator()
+                    K_num_coeffs[i][j] = [complex(c)
+                        for c in n.coefficients(omega, sparse=False)]
+                    K_den_coeffs[i][j] = [complex(c)
+                        for c in d.coefficients(omega, sparse=False)]
+                except Exception:
+                    K_num_coeffs[i][j] = [complex(e)]
+                    K_den_coeffs[i][j] = [1+0j]
+
+        def _K_at(omega_val):
+            K_at = np.zeros((nf, nf), dtype=complex)
+            for i in range(nf):
+                for j in range(nf):
+                    n = _horner(K_num_coeffs[i][j], omega_val)
+                    d = _horner(K_den_coeffs[i][j], omega_val)
+                    K_at[i, j] = n / d if d != 0 else 0j
+            return K_at
+
+    # a leading-coefficient trim may have dropped genuine poles
+    if trimmed_full is not None:
+        extra, full = _restore_trimmed_roots(trimmed_full, roots_all, _K_at,
+                                             verbose)
+        if extra:
+            # the trimmed coefficients were genuine: the untrimmed
+            # polynomial's roots are the candidates (its noise roots, if
+            # any, are not zeros of det K and are rejected below)
+            roots_all = list(full)
+
+    # Retarded convention: Im(ω) > 0 in this codebase's FT
+    # (fourier_transform uses e^{-iωt} → poles in upper half plane
+    # → causal closure of the inverse-FT contour).  Every root is Newton-
+    # refined on det K(omega) and kept only when det K vanishes there; the
+    # retarded test, the dedup and the residue circles are relative to the
+    # frequency scale of those verified zeros (``_refine_retarded_poles``,
+    # shared by both paths).  An absolute 1e-9 retarded
+    # floor, a 1e-5 pre-Newton dedup and probe frequencies max(1, Im omega)
+    # lost a pole of the same model written in slow units.
+    try:
+        pole_vals, zeros_all, w_scale = _refine_retarded_poles(
+            roots_all, _K_at, verbose)
+    except Exception as exc:
+        if verbose:
+            print(f'      Newton refinement skipped ({exc!r})')
+        zeros_all = _dedup_roots(list(roots_all), 1e-5)
+        w_scale = _median_scale(zeros_all)
+        pole_vals = sorted((r for r in zeros_all
+                            if _numeric_retarded(_K_at, r, zeros_all)),
+                           key=lambda r: (r.imag, r.real))
+
+    # ── Residues ────────────────────────────────────────────────
+    # Numerical residue extraction using the cofactor adjugate on the
+    # numerical K(omega_k) (``_numerical_residues``), for both paths:
+    #   Res G(ω_k) = adj(K(ω_k)) / det'(K(ω_k)),  C_k = i · Res G(ω_k).
+    # The rich path never had a symbolic inverse; on the lean path the
+    # symbolic adj_ft / G_ft are NOT used either: Sage stores adj_ft
+    # entries as sum-of-rationals whose terms catastrophically cancel near
+    # kernel poles (11–42% relative error measured), while numpy LU on the
+    # numerical K builds the minors directly.  (A Laurent extraction
+    # ``C_k = i·ε·G(ω_k+ε)`` leaks O(ε) from nearby poles.)
+    nonzero = [[bool(any(c != 0 for c in K_num_coeffs[i][j]))
+                for j in range(nf)] for i in range(nf)]
+    C_mats = _numerical_residues(pole_vals, _K_at, nonzero, zeros_all, nf)
+
+    prop['pole_vals'] = pole_vals
+    prop['C_mats']    = C_mats
+    if resolve_clusters and prop.get('pole_clusters') is None:
+        # the numerical tiers: close poles with a large cancellation factor
+        # cannot be deformed (no exact rational propagator) -- say so
+        from daedalus.api._pole_clusters import numeric_screen
+        try:
+            _an = numeric_screen(pole_vals, C_mats)
+        except Exception:
+            _an = None
+        if _an is not None:
+            prop['pole_clusters'] = _an.report()
+    if verbose:
+        print(f'[propagator] {len(pole_vals)} retarded poles (Im(ω) > 0):')
+        for k, p in enumerate(pole_vals):
+            print(f'  ω_{k+1} = {p.real:+.6f} + ({p.imag:+.6f}) i')
+        print()
+        print(f'      ── C_mats (residue matrix at each pole) ──')
+        ring_gen_names = prop.get('ring_gen_names') or []
+        resp_names = ring_gen_names[:nf]
+        phys_names = ring_gen_names[nf:]
+        print(f'        rows (response): {resp_names}')
+        print(f'        cols (physical): {phys_names}')
+        for k, C in enumerate(C_mats):
+            print(f'      C_mats[{k}]  (residue at ω_{k+1} = '
+                  f'{pole_vals[k].real:+.4f}{pole_vals[k].imag:+.4f}i):')
+            try:
+                nr, nc = C.nrows(), C.ncols()
+                for i in range(nr):
+                    for j in range(nc):
+                        v = complex(C[i, j])
+                        if abs(v) > 1e-15:
+                            print(f'        [{i},{j}] = '
+                                  f'{v.real:+.6e}{v.imag:+.6e}j')
+            except Exception as e:
+                print(f'        (error displaying: {e})')
+    return prop

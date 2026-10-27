@@ -32,11 +32,11 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                   # noqa: E402
-from api.model import TemporalModelBuilder                          # noqa: E402
-from engine.core.vertices import ConvVertexType                     # noqa: E402
-import engine.integration.time_domain.final_integral as FI          # noqa: E402
-import engine.integration.time_domain.dbm_integral as DBM           # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                          # noqa: E402
+from daedalus.engine.core.vertices import ConvVertexType                     # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI          # noqa: E402
+import daedalus.engine.integration.time_domain.dbm_integral as DBM           # noqa: E402
 
 TAU = np.array([0.0, 0.5, 2.0, 5.0])
 PARAMS = (('mu', 1.0), ('nu', 0.7), ('eps', 0.3), ('h', 0.5), ('hx', 0.4),

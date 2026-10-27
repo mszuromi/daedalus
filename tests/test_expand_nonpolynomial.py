@@ -26,8 +26,8 @@ sage = pytest.importorskip('sage.all')
 from sage.all import (SR, RealField, PolynomialRing, taylor, exp, log, sin,
                       cos, tanh, function, heaviside, sqrt, assume, forget)
 
-import engine.core.field_theory as F
-from api.model import TemporalModelBuilder
+import daedalus.engine.core.field_theory as F
+from daedalus.api.model import TemporalModelBuilder
 from tests._cputime import CpuClock  # noqa: E402
 
 _SIG = {'exp': '(1/(1+exp({u})))',
@@ -105,7 +105,7 @@ def test_matches_hand_expanded_polynomial_form(order, monkeypatch):
 
 
 def test_retired_legacy_switch_warns_and_changes_nothing(monkeypatch):
-    from engine import _env
+    from daedalus.engine import _env
     order = 2
     model = _model('exp')
     tn = _table(_expand(model, order, monkeypatch=monkeypatch))
@@ -155,7 +155,7 @@ def test_time_budget_order4(monkeypatch):
 def test_expand_cache_roundtrip_fast(monkeypatch, tmp_path):
     """Loading the cached expansion re-tests every coefficient; with the
     legacy ``R(dict)`` that was ~100 s on a model like this one."""
-    from api import _expand_cache as EC
+    from daedalus.api import _expand_cache as EC
     monkeypatch.chdir(tmp_path)
     model = _model('exp')
     ft = _expand(model, 4, monkeypatch=monkeypatch)

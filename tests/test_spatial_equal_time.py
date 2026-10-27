@@ -31,11 +31,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR
 
-from api.model import ModelBuilder
-from api import compute_cumulants
-from engine.integration.spatial import full_integrator as FI
+from daedalus.api.model import ModelBuilder
+from daedalus.api import compute_cumulants
+from daedalus.engine.integration.spatial import full_integrator as FI
 
-_MODELS = os.path.join(os.path.dirname(__file__), '..', 'models')
+_MODELS = os.path.join(os.path.dirname(__file__), '..', 'daedalus', 'models')
 
 
 def _ac():
@@ -88,12 +88,12 @@ def test_allen_cahn_one_loop_equal_time_is_the_exact_mass_shift():
 
 
 def _records(model, params, field, ell, k=2):
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.diagrams.symmetry import external_wick_compensation
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.symmetry import external_wick_compensation
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
     ft = FieldTheory(model, taylor_order=4)
     ft.expand()
@@ -215,7 +215,7 @@ def test_derivative_vertex_loop_is_approximate_with_its_spread():
     (KPZ C-C bubble at q = 0.5, tau = 1: 2.81e-3 / 2.70e-3 / 2.68e-3 at
     22/24, 44/48, 66/72).  Such a result is 'approximate' with the measured
     0.7x-coarser spread, a G6 finding, and strict policy raises."""
-    from api.compute import SpatialAccuracyError
+    from daedalus.api.compute import SpatialAccuracyError
     kw = dict(k=2, max_ell=1, external_fields=[('p', 1)] * 2,
               tau_grid=np.array([0.0, 1.0]), spatial_grid=np.array([0.5]),
               use_cache=False, parallel=False, spatial_parallel=False,
@@ -240,11 +240,11 @@ def test_uv_count_includes_the_form_factor_powers():
     form-factor degree along the subgraph's loop directions: the KPZ C-C
     bubble l^2 (l+q)^2 is finite (omega = +1/2); the same record with the
     square of that form factor (r = 8) is divergent."""
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
     m = _kpz()
     ft = FieldTheory(m, taylor_order=4)
@@ -295,10 +295,10 @@ def test_plain_diagrams_of_a_mixed_model_have_no_form_factor():
     """Allen-Cahn + Model B + KPZ: a diagram whose nodes are all phi^3 is a
     plain diagram (no constant form factor: radial-simplex rule at equal
     times, plain sigma grid, not counted as a derivative loop)."""
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable,
         diagram_form_factor)
     spec = importlib.util.spec_from_file_location(

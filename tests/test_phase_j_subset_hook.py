@@ -77,8 +77,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
 import daedalus as dd                                            # noqa: E402
-from api import compute_cumulants                                # noqa: E402
-import engine.integration.time_domain.final_integral as FI       # noqa: E402
+from daedalus.api import compute_cumulants                                # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI       # noqa: E402
 from tests.tools import phase_j_subset_diff as PSD               # noqa: E402
 
 _SPIKE_PARAMS = {'Em': [3.5, 3.5], 'tau': [10.0, 9.0], 'a': [2.5, 2.5],
@@ -88,11 +88,11 @@ _OU_PARAMS = {'mu': 1.0, 'D': 1.0, 'eps': 0.02}
 
 
 def _spike_reset_one_population():
-    """``models/single_population_spike_reset_test.model.py`` with ONE
+    """``daedalus/models/single_population_spike_reset_test.model.py`` with ONE
     population (the repo model has two): the same fields, kernel, action
     and mean-field equations.  Same δ / zero-normal-row structure at a
     fifth of the fresh-cache setup cost."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (
         TemporalModelBuilder('Single population Spike Reset Test')
         .population('E', size=1, description='Excitatory')
@@ -262,7 +262,7 @@ def _hooked_run(cfg, **run_kw):
                   parameters=cfg['parameters'], tau_grid=cfg['tau_grid'],
                   keep_live=False, **run_kw)
     assert FI._SUBSET_HOOK is None            # restored on exit
-    from api.compute import _tau0_lag
+    from daedalus.api.compute import _tau0_lag
     by_ell = {}
     for (ell, pt), v in run['pipeline'].items():
         by_ell.setdefault(ell, {})[pt] = v
@@ -666,7 +666,7 @@ def test_harness_row_kind_tag_flags_constant_rows():
 def test_harness_reports_a_wrong_production_tie_order(monkeypatch):
     """A production tie order flipped at exact ties is caught: the harness
     keeps its own verdict and logs the divergence."""
-    from engine.integration.time_domain import _light
+    from daedalus.engine.integration.time_domain import _light
     real = _light._tie_order_sign            # its one definition (FI re-exports)
     monkeypatch.setattr(_light, '_tie_order_sign',
                         lambda *a, **k: -real(*a, **k))

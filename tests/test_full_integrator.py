@@ -1,7 +1,7 @@
 """
 tests/test_full_integrator.py
 =============================
-The genuine full-diagram integrator (``engine.integration.spatial.full_integrator``)
+The genuine full-diagram integrator (``daedalus.engine.integration.spatial.full_integrator``)
 at the **tree** and **2-loop (ell=2)** level, in ``d=1`` AND ``d=2``.
 
   * tree ``Γ == C₀(q,τ)`` to machine precision;
@@ -29,21 +29,21 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 _REPO = os.path.join(os.path.dirname(__file__), '..')
 
-from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-from engine.integration.spatial.full_integrator import (
+from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+from daedalus.engine.integration.spatial.full_integrator import (
     diagram_value, diagram_kinematic, external_times_2pt,
 )
-from engine.integration.spatial.pipeline_bridge import (
+from daedalus.engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
-from engine.diagrams.type_assignment import build_field_index_map
+from daedalus.engine.diagrams.type_assignment import build_field_index_map
 from tests._diagram_order import (
     CC_BUBBLE, RC_BUBBLE_C_LEG, RC_BUBBLE_CHAIN, _pick_live,
 )
 
 
 def _allen_cahn():
-    path = os.path.join(_REPO, 'models',
+    path = os.path.join(_REPO, 'daedalus', 'models',
                         'allen_cahn_1d_subcritical_infinite.model.py')
     spec = importlib.util.spec_from_file_location('ac', path)
     mod = importlib.util.module_from_spec(spec)
@@ -54,8 +54,8 @@ def _allen_cahn():
 @pytest.fixture(scope='module')
 def ac_records():
     from sage.all import SR
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
     b = _allen_cahn()
     ft = FieldTheory(b, taylor_order=6)            # k + 2·ell = 2 + 4
     ft.expand()
@@ -165,16 +165,16 @@ def test_formfactor_bubble_vs_oracle():
     import importlib.util
     import numpy as np
     from sage.all import SR
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from engine.integration.spatial.full_integrator import diagram_correlator
+    from daedalus.engine.integration.spatial.full_integrator import diagram_correlator
     from tests.oracles import loop_dyson
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
-    path = os.path.join(_REPO, 'models',
+    path = os.path.join(_REPO, 'daedalus', 'models',
                         'reaction_diffusion_conserved_1d.model.py')
     spec = importlib.util.spec_from_file_location('crd', path)
     mod = importlib.util.module_from_spec(spec)
@@ -212,7 +212,7 @@ def test_formfactor_average_convolution_kernel():
     brute Gaussian average ``∫ŵ·G/∫G``: a Gaussian kernel ~exact, a Lorentzian to
     ~1e-3.  (See ``docs/spatiotemporal_convolutions.md``.)"""
     import numpy as np
-    from engine.integration.spatial.full_integrator import _formfactor_average
+    from daedalus.engine.integration.spatial.full_integrator import _formfactor_average
 
     D, q = 0.8, 0.7
     a = np.array([1.0, 1.0]); b = np.array([0.0, -1.0]); w = np.array([0.6, 0.9])
@@ -243,16 +243,16 @@ def test_diagram_form_factor_ell2_momentum():
     import importlib.util
     import numpy as np
     from sage.all import SR
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         _momentum_factor_batch, _formfactor_average)
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
-    path = os.path.join(_REPO, 'models',
+    path = os.path.join(_REPO, 'daedalus', 'models',
                         'reaction_diffusion_conserved_1d.model.py')
     spec = importlib.util.spec_from_file_location('crd', path)
     mod = importlib.util.module_from_spec(spec)
@@ -311,16 +311,16 @@ def test_perleg_and_complex_form_factor():
     import importlib.util
     import numpy as np
     from sage.all import SR
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         _momentum_factor_batch, _formfactor_average)
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
-    path = os.path.join(_REPO, 'models',
+    path = os.path.join(_REPO, 'daedalus', 'models',
                         'reaction_diffusion_conserved_1d.model.py')
     spec = importlib.util.spec_from_file_location('crd', path)
     mod = importlib.util.module_from_spec(spec)
@@ -369,7 +369,7 @@ def test_perleg_and_complex_form_factor():
 
 def _build_ff_model(kind, d):
     """Model B ∇²(φ²) (composite Lap) or KPZ (∇h)²=Σ_i(∂_i h)² (per-leg) at dim d."""
-    from api.model import ModelBuilder
+    from daedalus.api.model import ModelBuilder
     tb = (ModelBuilder(kind, n_populations=0).physical_field('phi', spatial_dim=d)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
@@ -394,14 +394,14 @@ def test_formfactor_d_ge_2_vs_brute(kind, d, tol):
     d=2 is exact, d=3 to the (coarse) brute grid."""
     import numpy as np
     from sage.all import SR
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         _momentum_factor_batch, _formfactor_average)
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
     b = _build_ff_model(kind, d)
     ft = FieldTheory(b, taylor_order=4); ft.expand()
@@ -455,8 +455,8 @@ def test_spatial_parallel_matches_serial():
     serial — same diagram-summation order, q-points independent.  Mirrors the
     temporal test_phase_J_total_C_batch_parallel_matches_serial."""
     import numpy as np
-    from api.model import ModelBuilder
-    from api.compute import compute_cumulants
+    from daedalus.api.model import ModelBuilder
+    from daedalus.api.compute import compute_cumulants
     ac = (ModelBuilder('ac-par', n_populations=0).physical_field('phi', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
           .parameter('D', default=1.0, domain='positive')
@@ -484,15 +484,15 @@ def test_analytic_ift_vs_numerical_ft():
     the q_cut→∞ limit, with NO q-grid.  Allen-Cahn φ⁴ 1-loop (φ³ Hartree)."""
     import numpy as np, math
     from sage.all import SR
-    from api.model import ModelBuilder
-    from api.compute import FieldTheory
-    from api._propagator import build_propagator
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api.model import ModelBuilder
+    from daedalus.api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         correlator_2pt, correlator_2pt_x)
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
     ac = (ModelBuilder('ac', n_populations=0).physical_field('phi', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -548,15 +548,15 @@ def test_analytic_ift_derivative_vs_numerical_ft(kind, action, xs, qcut, nq, nt,
     comparison exact while staying fast — the time-quadrature error cancels."""
     import numpy as np, math
     from sage.all import SR
-    from api.model import ModelBuilder
-    from api.compute import FieldTheory
-    from api._propagator import build_propagator
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api.model import ModelBuilder
+    from daedalus.api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _formfactor_callable)
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_correlator, diagram_correlator_x)
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
     tb = (ModelBuilder(kind, n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -610,14 +610,14 @@ def test_mc_integrator_matches_grid_plain():
     not asserted — see docs/spatial_loop_integral_analytic_mc.md.)"""
     import numpy as np
     from sage.all import SR
-    from api.model import ModelBuilder
-    from api.compute import FieldTheory
-    from api._propagator import build_propagator
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.api.model import ModelBuilder
+    from daedalus.api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx)
-    from engine.integration.spatial.full_integrator import diagram_kinematic
-    from engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.full_integrator import diagram_kinematic
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
     tb = (ModelBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -653,7 +653,7 @@ def test_mc_integrator_matches_grid_plain():
 
 
 @pytest.mark.filterwarnings(
-    'ignore::engine.integration.spatial.full_integrator.BesselUnequalTimesWarning')
+    'ignore::daedalus.engine.integration.spatial.full_integrator.BesselUnequalTimesWarning')
 @pytest.mark.parametrize('backend', ['mc', 'bessel'])
 def test_sampling_backends_do_not_depend_on_the_diagram_order(backend,
                                                               monkeypatch):
@@ -665,7 +665,7 @@ def test_sampling_backends_do_not_depend_on_the_diagram_order(backend,
     seed moved it by MC noise, ~4e-4 at N=2e4.)  This checks the order
     independence only: at τ = 0.5 the ``bessel`` values themselves are
     biased (see ``test_bessel_matches_grid_at_unequal_external_times``)."""
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     from tests._diagram_order import apply_diagram_order
 
     monkeypatch.setenv('SPATIAL_INTEGRATOR', backend)
@@ -698,7 +698,7 @@ def test_bessel_warns_only_at_unequal_external_times(ac_records):
     tree at any τ, do not."""
     import warnings
 
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         BesselUnequalTimesWarning,
     )
     dd = _ac_tadpole(ac_records)
@@ -727,7 +727,7 @@ class _BesselUnequalTimesBias(Exception):
 
 
 @pytest.mark.filterwarnings(
-    'ignore::engine.integration.spatial.full_integrator.BesselUnequalTimesWarning')
+    'ignore::daedalus.engine.integration.spatial.full_integrator.BesselUnequalTimesWarning')
 @pytest.mark.xfail(strict=True, raises=_BesselUnequalTimesBias, reason=(
     'bessel is exact only at equal external times: on the one-loop '
     'Allen-Cahn tadpole at x=1, tau=0.5 it is 65% (leaf at tau on the R '
@@ -766,9 +766,9 @@ def _kpz_one_loop_records():
     """KPZ ``(c/2)(∂_x h)²`` in d=1 at ``max_ell=1``: the ell=1 records, the
     parameter point and the operator-IR vertex table the form factors need."""
     from sage.all import SR
-    from api.model import ModelBuilder
-    from api.compute import FieldTheory
-    from api._propagator import build_propagator
+    from daedalus.api.model import ModelBuilder
+    from daedalus.api.compute import FieldTheory
+    from daedalus.api._propagator import build_propagator
 
     tb = (ModelBuilder('kpz', n_populations=0).physical_field('h', spatial_dim=1)
           .parameter('mu', default=1.0, domain='positive')
@@ -794,7 +794,7 @@ def _kpz_one_loop_records():
 
 def _kpz_bessel_vs_grid(td, vt, mc_n=4_000_000):
     """(bessel, grid) KPZ derivative-vertex δC(x=2) of one diagram."""
-    from engine.integration.spatial.pipeline_bridge import _formfactor_callable
+    from daedalus.engine.integration.spatial.pipeline_bridge import _formfactor_callable
     dd = diagram_to_cstack(td); ff = _formfactor_callable(td, vt, d=1)
     assert getattr(ff, 'moment_bessel', None) is not None, 'no moment_bessel built'
     et = {0: 0.0, 1: 0.0}

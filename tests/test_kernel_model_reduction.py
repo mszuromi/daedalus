@@ -1,8 +1,8 @@
 """
 tests/test_kernel_model_reduction.py
 ====================================
-Balanced truncation of the per-entry realizations (``api._realization``,
-item 45) and the delay route's order controller (``api.delay``).  Inline
+Balanced truncation of the per-entry realizations (``daedalus.api._realization``,
+item 45) and the delay route's order controller (``daedalus.api.delay``).  Inline
 public models only:
 
 * ``balanced_truncation`` on systems with known Hankel singular values: the
@@ -34,13 +34,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, I, matrix                                      # noqa: E402
 
-from api import compute_cumulants                                      # noqa: E402
-from api import _realization as RZ                                     # noqa: E402
-from api import delay as DL                                            # noqa: E402
-from api.delay import pade_coefficients                                # noqa: E402
-from api.noise import Gaussian                                         # noqa: E402
-from api.sde import SDE                                                # noqa: E402
-import engine.integration.time_domain.statespace as SS                 # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api import _realization as RZ                                     # noqa: E402
+from daedalus.api import delay as DL                                            # noqa: E402
+from daedalus.api.delay import pade_coefficients                                # noqa: E402
+from daedalus.api.noise import Gaussian                                         # noqa: E402
+from daedalus.api.sde import SDE                                                # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS                 # noqa: E402
 
 ENV = RZ.TRUNCATION_ENV
 
@@ -329,7 +329,7 @@ def test_stiffness_is_the_taylor_driver():
 
 
 def test_prediction_from_the_realizations_and_fallbacks():
-    from api import analyze as AN
+    from daedalus.api import analyze as AN
     m = _ou_delayed('red45 delayed ou ctx')
     _rep, ctx = AN.analyze_with_context(
         m, AN.Question(k=2, external_fields=(('x', 1), ('x', 1)), max_ell=1), None,
@@ -445,7 +445,7 @@ def test_tiny_tolerance_is_floored_and_kept():
 
 
 def test_symbolic_loop_refuses_a_truncated_reference():
-    from api import symbolic_loop as SL
+    from daedalus.api import symbolic_loop as SL
     m = _ou_delayed('red45 symbolic ref')        # not a symbolic-route model: only the guard
     r = _cc(m, 0, delay={'order': 16, 'tree': 'pade', 'truncation': 0})
     with RZ.truncation_scope(1e-3):

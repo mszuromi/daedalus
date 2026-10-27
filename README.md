@@ -74,47 +74,58 @@ The conda environment registers a Jupyter kernel named `sagemath`; if a notebook
    (`brew install graphviz` / `apt install graphviz`); it is only used for optional
    diagram plots, with a graceful fallback if absent.
 
-## Get the code
+## Install Daedalus
+
+With SageMath set up (Option A or B above), install the package into Sage's Python from PyPI. The
+distribution is called `daedalus-msrjd`; the import name is `daedalus`:
+
+```bash
+sage -pip install daedalus-msrjd          # in the conda environment of Option A: pip install daedalus-msrjd
+```
+
+Then `import daedalus as dd` works from any directory. SageMath itself stays an external prerequisite;
+the package adds nothing to the Sage environment beyond itself.
+
+To work on the code, or to run the notebooks, clone the repository and install it editable instead:
 
 ```bash
 git clone https://github.com/mszuromi/daedalus.git
 cd daedalus
+sage -pip install -e .
 ```
 
-It runs straight from the clone — the notebooks add the repo to the Python path automatically
-(each opens with a depth-robust cell that locates the repo root). To import it from anywhere
-with **no path setup**, optionally install it editable into Sage's Python:
-
-```bash
-sage -pip install -e .      # then `import daedalus` / `import api` work from any directory
-```
-
-(SageMath itself stays an external prerequisite — this only registers the in-repo packages.)
-From a script without installing, see *Using it from a script* below.
+The notebooks also run straight from a clone without installing: each opens with a depth-robust cell
+that puts the repository root on the Python path.
 
 ## Package layout
 
+Everything lives in one package, `daedalus`:
+
 | path | what it is |
 |---|---|
-| [`daedalus.py`](daedalus.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
-| [`api/`](api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `ModelBuilder`, `generate_report`, `save_npz`) |
-| [`engine/`](engine/) | the core engine: symbolic field theory → diagram enumeration → loop integration |
-| [`simulations/`](simulations/) | independent numerical simulators used to validate the analytic results |
-| [`models/`](models/) | `*.model.py` specs loaded by `dd.load_model(name)` |
+| [`daedalus/__init__.py`](daedalus/__init__.py) | the `dd` front-end — `import daedalus as dd`; the entry point for notebooks **and** scripts |
+| [`daedalus/api/`](daedalus/api/) | the user-facing layer `dd` wraps (`compute_cumulants`, `ModelBuilder`, `generate_report`, `save_npz`) |
+| [`daedalus/engine/`](daedalus/engine/) | the core engine: symbolic field theory → diagram enumeration → loop integration |
+| [`daedalus/simulations/`](daedalus/simulations/) | independent numerical simulators used to validate the analytic results |
+| [`daedalus/models/`](daedalus/models/) | the shipped `*.model.py` specs loaded by `dd.load_model(name)` |
+
+`dd.load_model(name)` also finds your own `<name>.model.py` files in the directories listed in
+`DAEDALUS_MODELS_PATH` (separated like `PATH`) and, in a clone, in a top-level `models/` folder; a path
+to a `*.model.py` file works too. The former top-level packages `api`, `engine` and `simulations` are
+now `daedalus.api`, `daedalus.engine` and `daedalus.simulations`. For one release the old names still
+import (with a `DeprecationWarning`) and give the same modules.
 
 ## Using it from a script
 
-`dd` runs from a plain `sage -python` script, not just notebooks — put the repo root and its
-`notebooks/` directory on the path:
+`dd` runs from a plain `sage -python` script, not just notebooks:
 
 ```python
-import sys; sys.path[:0] = ['/path/to/daedalus', '/path/to/daedalus/notebooks']
 import daedalus as dd
 model, mod = dd.load_model('kpz_1d')
 res = dd.run(model, dd.Config(k=2, max_ell=1, chi_grid=(-6, 6, 49)), mod)
 ```
 
-For lower-level access the API layer is importable directly, e.g. `from api import compute_cumulants`.
+For lower-level access the API layer is importable directly, e.g. `from daedalus.api import compute_cumulants`.
 
 External fields (`external_fields`, the `k` legs) are written with the plain field names: `['x', 'x']` for a field
 with one unit, `[('v', 1), ('v', 2)]` for two units of a population (`'dx'`, the fluctuation name, is an accepted
@@ -123,14 +134,14 @@ tree level: the mean is `res['mf_values']['xstar']` plus the sum of the shifts, 
 gives the loop-corrected mean directly (`res['moment']`). In `noise(..., into={'x': c})` the value `c` is the
 coupling coefficient of the noise in the equation of `x` (`dx = ... + c dW`), not a population index.
 
-Models can also be declared line by line, without writing the action (`api/sde.py`): each line
+Models can also be declared line by line, without writing the action (`daedalus/api/sde.py`): each line
 contributes its own action term (`.drift` / `.equation`, `.noise`, `.point_process`). A spike-only
 exponential Hawkes network whose rates filter the spike trains themselves:
 
 ```python
-from api.sde import SDE
-from api.delay import Kernel
-from api import compute_cumulants
+from daedalus.api.sde import SDE
+from daedalus.api.delay import Kernel
+from daedalus.api import compute_cumulants
 m = (SDE('Hawkes').population('E', size=2)
      .parameter('a', default=[1.0, 1.0], indexed_by=['E'])
      .parameter('Em', default=[-1.5, -1.5], indexed_by=['E'])
@@ -142,7 +153,7 @@ res = compute_cumulants(m.build(), k=2, max_ell=1, external_fields=[('n', 1), ('
 rec = m.simulate(T=500, dt=0.01, n_paths=200, bin=0.25)      # a simulator of the same model
 ```
 
-Equations name their operators (`api/operators.py`). The time derivative is `Dt` by default, so the models above
+Equations name their operators (`daedalus/api/operators.py`). The time derivative is `Dt` by default, so the models above
 need no declaration (`∂t` in an equation is the same operator); `.operator('D_t', TimeDerivative())` renames it.
 An operator is written in product style (`(tau*Dt + 1)*v`, `D*lap*u`) or call style (`Dt(v)`, `lap(u)`). An operator
 name may not collide with a field, parameter or function, nor with an increment of the paper-style syntax below
@@ -151,10 +162,10 @@ with space-time white noise `Gaussian(var=..., space='white')`. It builds the sa
 `SpatialModelBuilder` action. One-loop stochastic Allen-Cahn, $\partial_t\phi = D\nabla^2\phi - \mu\phi - \lambda\phi^3 + \eta$:
 
 ```python
-from api.sde import SDE
-from api.operators import Laplacian
-from api.noise import Gaussian
-from api import compute_cumulants
+from daedalus.api.sde import SDE
+from daedalus.api.operators import Laplacian
+from daedalus.api.noise import Gaussian
+from daedalus.api import compute_cumulants
 m = (SDE('Allen-Cahn', space=1)                      # space=d: an SPDE in d dimensions
      .operator('lap', Laplacian())
      .parameter('mu', default=1.0, domain='positive').parameter('D', default=1.0, domain='positive')
@@ -184,8 +195,8 @@ expression is refused when it is declared, with a caret under the failing charac
 to, and a hint:
 
 ```python
-from api.sde import SDE
-from api.noise import Gaussian
+from daedalus.api.sde import SDE
+from daedalus.api.noise import Gaussian
 m = (SDE('OU quartic').parameter('mu', default=1.0, domain='positive')
      .parameter('eps', default=0.02, domain='positive').parameter('D', default=1.0, domain='positive')
      .field('x').drift('x', '-mu*x - eps*x^3').noise('xi', Gaussian(var='2*D'), into={'x': 1}))
@@ -207,7 +218,7 @@ equation('x') rhs: undeclared symbol 'epsilon'
     hint: did you mean 'eps'? (otherwise declare 'epsilon')
 ```
 
-Equations can also be written as in a paper, one per line (`m.sde(...)`, `api/sde_paper.py`). Each term ends in
+Equations can also be written as in a paper, one per line (`m.sde(...)`, `daedalus/api/sde_paper.py`). Each term ends in
 `dt` (the drift), `dW` (a standard Wiener process), `dN(rate)` (a Poisson process) or `d<X>_<name>` for a source passed
 in `noises=`; the factor in front is the coupling, and a subscript names a process shared by several equations. A
 circle before the differential (`∘ dW`, ASCII `o dW`) makes that term Stratonovich (Gaussian) or Marcus (jump); a plain
@@ -220,12 +231,12 @@ noise source is exposed as a field with `as_field=` (`couples=` and `expose=` ar
 `c dW/dt`: `(tau*Dt + 1)*v = E + sum(w[i,j]*v[j] for j in pop) + s dW/dt`. A second- or higher-order left side, such as
 `(m*Dt^2 + gamma*Dt + k)*x` (in a line or in `.equation`), is embedded as a first-order system with the velocity
 `xdot` declared for you, and a pure integrator (`dx = v dt`, `.drift('x', 'v')`) takes its mean field from the whole
-system. Coloured noise is `Gaussian(var, kernel=Kernel.exponential('tau'))` (with `from api.delay import Kernel`; any
+system. Coloured noise is `Gaussian(var, kernel=Kernel.exponential('tau'))` (with `from daedalus.api.delay import Kernel`; any
 rational `Kernel`), embedded as extra fields, and `GaussianVector(cov=[[1, 'rho'], ['rho', 2]])` with `into={'x': [1, 0], 'y': [0, 1]}` is
 correlated white noise:
 
 ```python
-from api.sde import SDE
+from daedalus.api.sde import SDE
 m = (SDE('Mixed noise').parameter('mu', default=1.0, domain='positive')
      .parameter('s', default=0.5, domain='positive').parameter('g', default=0.3, domain='positive')
      .sde('dx = (-mu*x) dt + s dW_a + g*x ∘ dW_b'))          # dW_a is Ito, dW_b Stratonovich
@@ -243,9 +254,9 @@ orders are refused). `m.to_text()` writes the model as the YAML `sde:` block of 
 
 ```python
 import numpy as np
-from api import compute_cumulants
-from api.noise import Gaussian
-from api.sde import SDE
+from daedalus.api import compute_cumulants
+from daedalus.api.noise import Gaussian
+from daedalus.api.sde import SDE
 m = (SDE('Delayed network').population('E', size=2)
      .connectivity('w', np.array([[0.0, 0.4], [0.3, 0.0]]))            # w[i,j]: onto unit i from unit j
      .parameter('d', default=0.5, domain='positive').parameter('D', default=0.05, domain='positive')
@@ -262,7 +273,7 @@ text = m.to_text()                     # the YAML sde: block; SDE.from_text(text
 
 The exact time integrator needs rational, causal kernels, so a Gaussian density is refused as a kernel. On an
 EXOGENOUS input (a point process, or an exposed noise source, whose rate holds no field), `Kernel.gaussian(sigma,
-tol=1e-6)` (`api/delay.py`, `api/_gaussian_fit.py`) is allowed: shifting a stationary input in time changes no
+tol=1e-6)` (`daedalus/api/delay.py`, `daedalus/api/_gaussian_fit.py`) is allowed: shifting a stationary input in time changes no
 stationary statistic of the network it drives, so the density is shifted by `T` (5.25 sigma at `tol = 1e-6`), fitted
 by a rational kernel with L1 error at most `tol` (16 states at `1e-6`, 27 at `1e-9`), and the shift is dropped. The mean
 is exact. `result['input_jitter']` and the ledger entry `jitter:<input>` report the fit and a relative error bound per
@@ -272,9 +283,9 @@ breaks the shift), a jitter on a field that is not such a source, a use of the i
 another jitter, the input itself as an external leg (its cross-cumulants would move by `T`), and switch-on runs:
 
 ```python
-from api.sde import SDE
-from api.delay import Kernel
-from api import compute_cumulants
+from daedalus.api.sde import SDE
+from daedalus.api.delay import Kernel
+from daedalus.api import compute_cumulants
 m = (SDE('Jittered input')
      .parameter('tau', default=1.0, domain='positive').parameter('tauX', default=0.5, domain='positive')
      .parameter('lam', default=2.0, domain='positive').parameter('p', default=0.7)
@@ -290,12 +301,12 @@ bounds = res['input_jitter']['n']['fit']['bound_by_order']             # {1: 0.0
 ### Spectra and integrated correlators (k = 2)
 
 `spectra=` asks for exact spectral and integrated outputs, computed from the state-space triples of the run with no
-lag grid and no quadrature (`api/spectra.py`). They are given per loop order and in total:
+lag grid and no quadrature (`daedalus/api/spectra.py`). They are given per loop order and in total:
 
 ```python
 import numpy as np
 import daedalus as dd
-from api import compute_cumulants
+from daedalus.api import compute_cumulants
 model = dd.load_model('ou_quartic')[0]
 res = compute_cumulants(model, k=2, max_ell=1, external_fields=['x', 'x'],
                         tau_grid=np.array([0.0]),             # the equal-time point is enough
@@ -321,7 +332,7 @@ sp['tau_c']               # int_0^inf C / C(0)
 
 ### Exact master-equation oracle for jump models
 
-`dd.master_equation(transitions, ...)` (`api/master_equation.py`) solves a lattice jump process exactly: the stationary
+`dd.master_equation(transitions, ...)` (`daedalus/api/master_equation.py`) solves a lattice jump process exactly: the stationary
 law, the cumulants `kappa_1..kappa_4` and the lag correlations `C(tau)` (sparse LU and Krylov `e^{tau Q}`), each with a
 residual, a truncation flux and a Krylov error. It extrapolates to the diffusion limit and, for string rates, builds the
 matching SDE-front-end model and tabulates `compute_cumulants` against the exact values (`compare_with_daedalus`).
@@ -338,7 +349,7 @@ match.
 
 ### Reaction / transition builder for jump processes
 
-`dd.JumpProcess` (`api/jump_process.py`) maps chemical-kinetics and shot-noise models straight to the jump-noise action.
+`dd.JumpProcess` (`daedalus/api/jump_process.py`) maps chemical-kinetics and shot-noise models straight to the jump-noise action.
 Declare species, parameters, a system size `Omega` and either mass-action reactions (`'A + B -> C'`, `'2A -> B'`,
 `'-> A'`, `'A <-> B'`, with a choice of combinatorial convention) or general `transition(rate, jump)` channels. It builds
 the SDE-front-end model (zero drift and one state-dependent `Poisson` source of size `1/Omega` per transition, the jump
@@ -359,7 +370,7 @@ See `docs/jump_process.md` for the conventions and refusals.
 ### Covariance matrix over many fields, and parameter derivatives (k = 2)
 
 `dd.covariance_matrix` returns `Sigma[n, i, j] = <dx_i(0) dx_j(tau_n)>` for every pair of a list of fields in one call
-(`api/covariance.py`). The mean field, propagator and poles are computed once for the whole matrix, and each pair's
+(`daedalus/api/covariance.py`). The mean field, propagator and poles are computed once for the whole matrix, and each pair's
 diagrams are enumerated and evaluated once. Every computed entry is the separate `compute_cumulants` result on the
 same grid, bit for bit:
 
@@ -388,7 +399,7 @@ d['dmf']                       # dx*/dJ1 of the saddle (implicit differentiation
 ### Resummation at strong coupling (opt-in, k = 2)
 
 The loop series is asymptotic: for OU quartic it is already 15-20 % off at `g = eps D / mu^2 = 0.1` and diverges
-beyond. Two opt-in resummations stay accurate there (`api/hartree.py`, `api/resum.py`). Without `resum=` nothing
+beyond. Two opt-in resummations stay accurate there (`daedalus/api/hartree.py`, `daedalus/api/resum.py`). Without `resum=` nothing
 changes.
 
 ```python
@@ -424,14 +435,14 @@ The `daedalus run` command takes a YAML file instead of a script (needs PyYAML, 
 ```bash
 sage -python -m daedalus run config.yaml --dry-run   # validate, print the resolved config and the analyzer report, compute nothing
 sage -python -m daedalus run config.yaml             # compute and write the outputs
-daedalus run config.yaml                             # the same, after `sage -pip install -e .` (console script `daedalus`)
+daedalus run config.yaml                             # the same, once installed (console script `daedalus`)
 ```
 
-Run these from the repository root, or from anywhere after `sage -pip install -e .` (see *Get the code*); otherwise Python cannot find the `daedalus` module.
+Run these from anywhere once the package is installed (see *Install Daedalus*), or from the root of a clone; otherwise Python cannot find the `daedalus` module.
 
 ```yaml
 # config.yaml: the connected 2-point function of the OU quartic model, tree + 1 loop
-model: ou_quartic                  # a models/<name>.model.py, or a path to a *.model.py
+model: ou_quartic                  # a model name (dd.list_models()), or a path to a *.model.py
 parameters:                        # numbers, or lists of numbers for indexed parameters
   mu: 1.0
   eps: 0.02
@@ -467,8 +478,8 @@ written like `tau_grid`: a `{start, stop, num}` mapping is a range, a list is li
 `outputs:` entry wins for its kind. A list-valued parameter must have the shape the model declares (the sizes of
 its populations), otherwise the run stops with the line number.
 
-An inline SDE can replace `model:` (built with `api.sde.SDE`, which derives the action and the mean-field
-equations; the noise `type` is a class of `api.noise`, the other keys are its arguments):
+An inline SDE can replace `model:` (built with `daedalus.api.sde.SDE`, which derives the action and the mean-field
+equations; the noise `type` is a class of `daedalus.api.noise`, the other keys are its arguments):
 
 ```yaml
 sde:
@@ -491,7 +502,7 @@ and `SDE.from_text()` reads it.
 `--dry-run` also prints the model analyzer's report table for the question (gates G0-G5: structure, mean
 field, poles, noise class, the loop-parameter estimate `g_eff` and the Taylor check; no diagram
 enumeration, no integrals) as YAML comments, so the output is still a valid config. The same table is
-`api.analyze.analyze(model).table()` (or `result['analysis'].table()` after a run) and `dd.run` prints it when
+`daedalus.api.analyze.analyze(model).table()` (or `result['analysis'].table()` after a run) and `dd.run` prints it when
 `verbose=True`:
 
 ```text
@@ -562,7 +573,7 @@ Then open one of:
 |---|---|
 | [`notebooks/model_builder_tutorial.ipynb`](notebooks/model_builder_tutorial.ipynb) | guided tour — build a temporal model and run it |
 | [`notebooks/model_builder.ipynb`](notebooks/model_builder.ipynb) | point-and-click model builder (the `ModelUI` form) |
-| [`notebooks/model_runner.ipynb`](notebooks/model_runner.ipynb) | load and run any saved `models/*.model.py` |
+| [`notebooks/model_runner.ipynb`](notebooks/model_runner.ipynb) | load and run any saved `daedalus/models/*.model.py` |
 | [`notebooks/examples/`](notebooks/examples/) | one notebook per capability, each with a simulation overlay |
 
 If a notebook reports its kernel (`sagemath-10.9`) is missing — e.g. your Sage registered a

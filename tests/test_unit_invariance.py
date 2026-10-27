@@ -31,11 +31,11 @@ import pytest
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                                 # noqa: E402
-from api import compute_cumulants                                     # noqa: E402
-from api._mean_field_dae import solve_mean_field_dae                  # noqa: E402
-from api.noise import (CompoundPoisson, GammaProcess, Gaussian,       # noqa: E402
+from daedalus.api import compute_cumulants                                     # noqa: E402
+from daedalus.api._mean_field_dae import solve_mean_field_dae                  # noqa: E402
+from daedalus.api.noise import (CompoundPoisson, GammaProcess, Gaussian,       # noqa: E402
                        Hyperexponential, PhaseType, Poisson)
-from api.sde import SDE                                               # noqa: E402
+from daedalus.api.sde import SDE                                               # noqa: E402
 
 FIELD = (1e-9, 1e-6, 1e-3, 1e3, 1e6)
 TIME = (1e-6, 1e-3, 1e3, 1e6)
@@ -147,7 +147,7 @@ def test_linear_stability_of_a_stiff_model(a):
     absolute 1e-9 called the slow mode of the slow twin marginal; a tolerance
     relative to the largest eigenvalue would call the slow mode of every twin
     marginal)."""
-    from api._mean_field_dae import linear_stability
+    from daedalus.api._mean_field_dae import linear_stability
     m = (SDE('w4a_stiff').parameter('r1', default=0.5 * a).parameter('r2', default=1e10 * a)
          .field('x').field('y').drift('x', '-r1*x').drift('y', '-r2*y + x')
          .noise('xi', Gaussian(var='1'), couples={'x': 1, 'y': 1}).build())
@@ -239,7 +239,7 @@ _ROT_EXT = ((('x', 1), ('x', 1)), (('y', 1), ('x', 1)))
 
 
 def _rotation_runs(T, engine):
-    import engine.integration.time_domain.statespace as SS
+    import daedalus.engine.integration.time_domain.statespace as SS
     import os
     old = os.environ.get(SS.ENGINE_ENV)
     if engine is None:
@@ -323,7 +323,7 @@ def test_mixed_field_units_keep_the_stable_saddle(power):
     pencil's entries span ~1e-11 .. 1e11 and QZ on it called the stable saddle
     unstable (an eigenvalue +0.76: G2_UNSTABLE_SADDLE); it is equilibrated
     first now.  Same saddle (rescaled), same eigenvalues, same analyzer codes."""
-    from api._mean_field_dae import linear_stability
+    from daedalus.api._mean_field_dae import linear_stability
     s = {f: v ** power for f, v in _S3.items()}
     one = {f: 1.0 for f in _S3}
     ext = (('xa', 1),)
@@ -483,7 +483,7 @@ def _ou_slow(a):
 def test_analyzer_verdict_is_time_unit_invariant(a):
     """Every rate times ``a``: the analyzer's codes are the codes at a = 1 (a
     floor of 1.0 on the eigenvalue scale called a = 1e-9 marginal)."""
-    from api.analyze import analyze
+    from daedalus.api.analyze import analyze
     codes = lambda m: sorted(f.code for f in _quiet(analyze, m, use_cache=False).findings
                              if f.level in ('error', 'warning'))
     assert codes(_ou_slow(a)) == codes(_ou_slow(1.0))
@@ -491,7 +491,7 @@ def test_analyzer_verdict_is_time_unit_invariant(a):
 
 @pytest.mark.parametrize('a', (1e-12, 1e-9, 1.0, 1e6, 1e12))
 def test_classify_eigs_is_scale_free(a):
-    from api.analyze import _classify_eigs
+    from daedalus.api.analyze import _classify_eigs
     for eigs in ([-1.0], [-1.0, -3.0 + 2j, -3.0 - 2j], [0.0, -1.0], [2.0, -1.0],
                  [1e-12j - 1e-11, -1.0]):
         assert _classify_eigs(np.asarray(eigs) * a) == _classify_eigs(np.asarray(eigs))
@@ -509,7 +509,7 @@ def test_lambert_w_branch_is_time_unit_invariant(a):
     ``d / a``): same status, same number of right-half-plane roots, roots
     times ``a``, and a branch count that does not grow with ``a`` (it was
     8e7 at a 1e9 rescaling)."""
-    from api._kernel_stability import kernel_stability, lambert_roots
+    from daedalus.api._kernel_stability import kernel_stability, lambert_roots
     for b, g, d in ((1.0, -2.0, 0.5), (0.5, 0.3, 1.0), (-1.0, 0.5, 2.0), (1e-10, 1.5e-10, 1.0)):
         K0, om = _delay_K(1.0, b, g, d)
         K1, _ = _delay_K(1.0, b * a, g * a, d / a)
@@ -524,7 +524,7 @@ def test_lambert_w_unstable_outranks_marginal():
     """An exact axis root at +-7i next to real roots at 8.03 and 0.32: the
     characteristic function is unstable, as the argument principle says (it
     was reported 'marginal')."""
-    from api._kernel_stability import kernel_stability
+    from daedalus.api._kernel_stability import kernel_stability
     b, g = -7 / math.tan(7), 7 / math.sin(7)
     K, om = _delay_K(1.0, b, g, 1.0)
     st = kernel_stability(K, om, {})
@@ -537,7 +537,7 @@ def test_lambert_w_unstable_outranks_marginal():
 
 @pytest.fixture(scope='module')
 def hawkes_cumulant():
-    from api.cumulant import Cumulant
+    from daedalus.api.cumulant import Cumulant
     m = (SDE('w4a_c0').parameter('Em', default=0.5).parameter('tau', default=2.0)
          .parameter('a', default=1.0).parameter('w', default=0.4)
          .define_function('phi', args=['v'], expression='a*v')
@@ -552,7 +552,7 @@ def test_delta_contact_jump_is_judged_relative_to_the_kernel(hawkes_cumulant, sc
     """A kernel that jumps at 0 is refused (contact=None) at any amplitude
     (below 1e-14 it was taken for round-off and L(0+) used silently), and
     the explicit 'mid' rule scales with it."""
-    from api import symbolic_out as so
+    from daedalus.api import symbolic_out as so
     L = so.PairingKernel.two_sided_exponential(scale, 0.7, -0.5 * scale, 1.3)
     with pytest.raises(ValueError, match='jumps at 0'):
         hawkes_cumulant.integrate_against(L)
@@ -568,7 +568,7 @@ def test_numeric_inverse_transform_time_twin(g):
     of g = 1, C(tau) = exp(-g |tau|).  The contact was estimated at an
     absolute w = 1e9 and the quadrature ran in absolute w: tau = 0 was off by
     100 % for g >= 1e6 and g <= 1e-6, tau = 0.5/g returned 3e307 at 1e-9."""
-    from api.symbolic_out import numeric_inverse_transform
+    from daedalus.api.symbolic_out import numeric_inverse_transform
     f = lambda w: 2 * g / (w * w + g * g) + 0.5 / g
     for x in (0.0, 0.5, 2.0):
         q = _quiet(numeric_inverse_transform, f, x / g)

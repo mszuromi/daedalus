@@ -18,8 +18,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.enumeration.loop_diagram_enumeration as L
-from engine.enumeration import prediagram_cache as pdc
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
+from daedalus.engine.enumeration import prediagram_cache as pdc
 
 
 def test_every_shipped_file_is_stamped_and_consistent():

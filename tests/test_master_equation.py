@@ -1,4 +1,4 @@
-"""The exact master-equation oracle (api/master_equation.py, ``dd.master_equation``).
+"""The exact master-equation oracle (daedalus/api/master_equation.py, ``dd.master_equation``).
 
 Checks, each against an independent closed form:
   * immigration-death: Poisson law, every cumulant = lambda/mu, C(tau) = (lambda/mu) e^{-mu |tau|},
@@ -22,7 +22,7 @@ from scipy.linalg import expm, solve_continuous_lyapunov
 from scipy.stats import poisson
 
 import daedalus as dd
-from api.master_equation import (MasterEquation, MasterEquationError, TruncationWarning,
+from daedalus.api.master_equation import (MasterEquation, MasterEquationError, TruncationWarning,
                                  Transition)
 
 

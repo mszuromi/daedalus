@@ -2,7 +2,7 @@
 tests/test_fix_spatialfilter.py
 ===============================
 Regression test for the spatial live-prefactor diagram filter
-(``engine.integration.spatial.pipeline_bridge``).
+(``daedalus.engine.integration.spatial.pipeline_bridge``).
 
 The diagram loop substitutes the supplied params into each diagram's scalar
 prefactor and converts to a float::
@@ -42,10 +42,10 @@ from sage.all import SR
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 _REPO = os.path.join(os.path.dirname(__file__), '..')
 
-from api.compute import FieldTheory
-from api._propagator import build_propagator
-from engine.integration.spatial.heat_kernel import SpatialPropagatorError
-from engine.integration.spatial.pipeline_bridge import (
+from daedalus.api.compute import FieldTheory
+from daedalus.api._propagator import build_propagator
+from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
+from daedalus.engine.integration.spatial.pipeline_bridge import (
     compute_spatial_correlator_generic,
 )
 
@@ -59,7 +59,7 @@ def _allen_cahn_model():
     quadratic propagator, so the propagator builds fine even when ``lam`` is
     omitted.  That is exactly the seam the fix guards.
     """
-    path = os.path.join(_REPO, 'models',
+    path = os.path.join(_REPO, 'daedalus', 'models',
                         'allen_cahn_1d_subcritical_infinite.model.py')
     spec = importlib.util.spec_from_file_location('ac_thy', path)
     mod = importlib.util.module_from_spec(spec)

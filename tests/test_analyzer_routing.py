@@ -25,15 +25,15 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR, sin                                                  # noqa: E402
 
-import api.compute as C                                                       # noqa: E402
-from api import compute_cumulants, load_npz, load_provenance, routing         # noqa: E402
-from api import analyze as A                                                  # noqa: E402
-from api.analyze import (AnalyzerError, FINDING_CODES, Policy, Question,      # noqa: E402
+import daedalus.api.compute as C                                                       # noqa: E402
+from daedalus.api import compute_cumulants, load_npz, load_provenance, routing         # noqa: E402
+from daedalus.api import analyze as A                                                  # noqa: E402
+from daedalus.api.analyze import (AnalyzerError, FINDING_CODES, Policy, Question,      # noqa: E402
                          analyze)
-from api.model import SpatialModelBuilder, TemporalModelBuilder              # noqa: E402
-from api.save import save_csv, save_npz                                       # noqa: E402
+from daedalus.api.model import SpatialModelBuilder, TemporalModelBuilder              # noqa: E402
+from daedalus.api.save import save_csv, save_npz                                       # noqa: E402
 
-MODELS = Path(__file__).resolve().parent.parent / 'models'
+MODELS = Path(__file__).resolve().parent.parent / 'daedalus' / 'models'
 
 
 def _load(name):
@@ -57,7 +57,7 @@ def no_enumeration(monkeypatch):
     def tripwire(*a, **kw):
         calls.append(1)
         raise AssertionError('the diagram enumeration was reached')
-    import api._diagrams as _diagrams
+    import daedalus.api._diagrams as _diagrams
     monkeypatch.setattr(C, 'enumerate_unique_diagrams', tripwire)          # temporal (module-level import)
     monkeypatch.setattr(_diagrams, 'enumerate_unique_diagrams', tripwire)  # spatial bridge (local import)
     return calls
@@ -137,7 +137,7 @@ STOPS = {
     'unpaired field':       (lambda: _ou('D2 gallery unpaired', 'xt*((Dt+mu)*x) - D*xt^2 - D*yt^2',
                                          eqs=(('(Dt+mu)*x', '0'), ('mu*y', '0')), fields=('x', 'y'), stab=False),
                              {}, 'G1_UNPAIRED_FIELD', 'expanded'),
-    # an advance exp(+i omega d) is acausal (a delay exp(-i omega d) is routed: api.delay)
+    # an advance exp(+i omega d) is acausal (a delay exp(-i omega d) is routed: daedalus.api.delay)
     'advance kernel':       (lambda: _kernel('D2 gallery advance', 'exp(I*omega*d)/(1 + I*omega*tg)'), {},
                              'G3_ACAUSAL_POLE', 'delay'),
     'sqrt kernel':          (lambda: _kernel('D2 gallery sqrt', '1/sqrt(1 + I*omega*tg)'), {},
@@ -573,7 +573,7 @@ def test_g6_bound_and_verdicts_on_synthetic_counters():
 
 
 def test_g6_real_runs_and_counter_restoration():
-    import engine.integration.time_domain.final_integral as FI
+    import daedalus.engine.integration.time_domain.final_integral as FI
     FI._reset_runtime_counters()
     FI._RUNTIME_COUNTERS['dd_err_ratio_max'] = 123.0       # a caller's earlier maximum
     res = _run(_load('ou_quartic')[0], max_ell=1)
@@ -600,7 +600,7 @@ def test_g6_stiff_without_cancellation_is_quiet():
 
 def test_g6_flags_the_digits_lost_to_near_degenerate_poles(monkeypatch):
     """Two poles 1e-4 apart (colored OU with tauc = 1/(mu (1 + 1e-4))): the residues ~ 1/gap cancel in the
-    pole-residue sums.  Since item 21 compute_cumulants averages deformed propagators (api._pole_clusters):
+    pole-residue sums.  Since item 21 compute_cumulants averages deformed propagators (daedalus.api._pole_clusters):
     the one-loop value at tau = 0 is the exact 3 eps C0(0) dC0/dmu = -0.0900074997 and G6 stays quiet.  With
     the deformation switched off the old rounding noise of order 1 comes back, and G3_POLE_CLUSTER_UNRESOLVED
     and G6_ACCURACY_LOW say so (R of order 10); the default gap 1 (tauc = 0.5) stays at rounding level."""
@@ -617,7 +617,7 @@ def test_g6_flags_the_digits_lost_to_near_degenerate_poles(monkeypatch):
     assert not rep.has('G6_ACCURACY_LOW') and rep.diagnostics['accuracy_estimate'] < 1e-10
     # an unresolved cluster: the exact residue tier unavailable (before
     # audit W7: the deformation switched off, DAEDALUS_POLE_CLUSTERS=0)
-    from api import _propagator as PR
+    from daedalus.api import _propagator as PR
     with monkeypatch.context() as mp_:
         mp_.setattr(PR, '_compute_residues_via_polynomial_fracfield',
                     lambda *a, **k: (None, None, None))
@@ -697,7 +697,7 @@ def test_finding_code_gallery(code):
 
 
 def test_rational_spectrum_classification():
-    from api.analyze import _exp_poly_form
+    from daedalus.api.analyze import _exp_poly_form
     tau, c, w = SR.var('tau'), SR.var('c'), SR.var('w')
     rational = [SR('exp(-abs(tau)/c)'), SR('cos(w*tau)*exp(-abs(tau)/c)'), SR('tau*exp(-abs(tau)/c)'),
                 SR('abs(tau)*exp(-abs(tau)/c) + 3*exp(-2*abs(tau)/c)'), SR('heaviside(tau)*exp(-tau/c)'),
@@ -713,9 +713,9 @@ def test_g3_residues_numerical_tier(monkeypatch):
     labelling undecided, its 50-digit route failing): the numerical tier
     runs, with a PoleResidueWarning and G3_RESIDUES_NUMERICAL_TIER."""
     import warnings
-    from api import _propagator as PR
-    from api.noise import Gaussian
-    from api.sde import SDE
+    from daedalus.api import _propagator as PR
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE
     monkeypatch.setattr(PR, '_entry_pole_membership', lambda *a, **k: (None, 'undecided'))
 
     def boom(*a, **k):
@@ -744,7 +744,7 @@ def test_g6_reports_the_state_space_route_and_its_fallbacks(monkeypatch):
     """S3: on the default (state-space) route G6 records the engine census (G6_PHASE_J_ENGINE, the ledger) and its
     own accuracy estimate; a call-time fallback on the pole route (here forced: every segment refused as stiff) is
     G6_SS_FALLBACK, recorded and never raised (also under the strict policy)."""
-    import engine.integration.time_domain.statespace as SS
+    import daedalus.engine.integration.time_domain.statespace as SS
     monkeypatch.delenv('DAEDALUS_PHASE_J_ENGINE', raising=False)
     model = _load('ou_quartic')[0]
     kw = dict(ext=[('dx', 1), ('dx', 1)], parameters={'mu': 1.0, 'eps': 0.02, 'D': 1.0})
@@ -813,8 +813,8 @@ def test_massless_spatial_is_a_warning_not_a_marginal_error():
 def test_expand_cache_validity_is_one_shared_check(tmp_path, monkeypatch):
     """``load_expand`` and the analyzer's read-only reader call the same ``bundle_stale_reason``: forcing it
     either way flips both."""
-    from api import _expand_cache as EC
-    from engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as EC
+    from daedalus.engine.core.field_theory import FieldTheory
     monkeypatch.chdir(tmp_path)
     model = _load('ou_quartic')[0]
     _run(model, max_ell=0)                       # writes saved_models/<model>/expand_taylor2.sobj here
@@ -859,7 +859,7 @@ def test_n_poles_convention_wired_equals_standalone(name, q):
 # ── dd run config path ────────────────────────────────────────────────────────────────────────
 
 def test_config_policy_reaches_the_analyzer(tmp_path):
-    from api.config_run import ConfigError, run_config
+    from daedalus.api.config_run import ConfigError, run_config
     cfg = tmp_path / 'c.yaml'
     cfg.write_text('model: ou_quartic\nquestion: {k: 2, max_ell: 0, external_fields: [[x, 1], [x, 1]], '
                    'tau_grid: [0.0, 1.0]}\npolicy: {mode: strict, downgrade: [G4_NEGATIVE_VARIANCE]}\n'
@@ -883,11 +883,11 @@ def test_config_policy_reaches_the_analyzer(tmp_path):
 
 
 def test_g6_names_an_ill_conditioned_realization():
-    """A realization refused as 'ill_conditioned' (api._realization: exactly
+    """A realization refused as 'ill_conditioned' (daedalus.api._realization: exactly
     Hurwitz, unusable once rounded) is a counted, named fallback: G6 warning
     G6_SS_ILL_CONDITIONED and a ledger assertion (end to end: the slow test in
     tests/test_delay_kernels.py, a Pade-24 kernel on a 4-field cycle)."""
-    from api.analyze import _Ctx, _g6_engine, Question, Policy
+    from daedalus.api.analyze import _Ctx, _g6_engine, Question, Policy
     ctx = _Ctx({}, Question(), Policy())
     census = {'engine': 'statespace', 'covers_run': False, 'reason': 'realization_ill_conditioned',
               'ss_subsets': 0, 'ss_declined': 2,
@@ -905,7 +905,7 @@ def test_spatial_accuracy_findings():
     loop, G6_SPATIAL_EQUAL_TIME for a coupled loop at tau = 0 (product grid)."""
     import warnings
     import numpy as np
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     kpz = (SpatialModelBuilder('kpz g6', n_populations=0).physical_field('p', spatial_dim=1)
            .parameter('mu', default=1.0, domain='positive').parameter('D', default=0.7, domain='positive')
            .parameter('c', default=0.3, domain='real').parameter('T', default=1.0, domain='positive')

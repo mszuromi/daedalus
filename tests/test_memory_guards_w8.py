@@ -9,8 +9,8 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-from engine.enumeration import prediagram_cache as pc
-from engine.integration.time_domain import final_integral as fi
+from daedalus.engine.enumeration import prediagram_cache as pc
+from daedalus.engine.integration.time_domain import final_integral as fi
 from tests._cputime import CpuClock  # noqa: E402
 
 
@@ -101,8 +101,8 @@ def test_growth_guard_stops_compute_cumulants_in_typing(monkeypatch):
     """A run whose footprint grows past the budget is stopped with a
     refusal, here at the first typing checkpoint (fake footprint)."""
     import numpy as np
-    from api.compute import compute_cumulants
-    from api.model import TemporalTheoryBuilder
+    from daedalus.api.compute import compute_cumulants
+    from daedalus.api.model import TemporalTheoryBuilder
     model = (TemporalTheoryBuilder('growth guard ou').population('pop', size=1)
              .physical_field('x', population='pop')
              .parameter('eps', default=0.1)
@@ -126,7 +126,7 @@ def test_growth_guard_stops_compute_cumulants_in_typing(monkeypatch):
 # ── item 57 Q4: forked workers share the remaining budget ────────────────
 
 def test_forked_workers_get_a_share_of_the_budget():
-    from engine.integration.time_domain import pipeline as pl
+    from daedalus.engine.integration.time_domain import pipeline as pl
     assert pl._worker_share(4) == {}             # no scope: no initializer
     with fi.phase_j_memory_scope(budget=1000, rule='set', use_env=False):
         with fi._PLAN_MEM_LOCK:
@@ -158,7 +158,7 @@ def test_pp_simulate_refuses_an_oversized_output():
 # ── MEM-05: the pre-pass's cheap branch and stateless delta lines ─────────
 
 def test_prepass_cheap_branch_counts_only_subsets_built():
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine.integration.time_domain import statespace as SS
     # two stateless delta lines (n = 0: always contracted) and two with states
     args = (4, 0b1001, ((1, 2, 0, True), (2, 3, 0, True), (1, 3, 1, True),
                         (0, 1, 1, True)), 8)
@@ -179,7 +179,7 @@ def test_prepass_cheap_branch_counts_only_subsets_built():
 # ── MEM-06: an edge whose residues are all exactly zero ───────────────────
 
 def test_all_zero_residue_edge_builds_no_plan(monkeypatch):
-    from engine.integration.time_domain.final_integral import EdgeModeSum
+    from daedalus.engine.integration.time_domain.final_integral import EdgeModeSum
     lams = [complex(-(j + 1), 0.3 * j) for j in range(6)]
     zero = EdgeModeSum(0, 0, 0j, tuple((0j, lam) for lam in lams))
     full = EdgeModeSum(0, 0, 0j, tuple((complex(0.5 + j, 0.1), lam)
@@ -200,7 +200,7 @@ def test_all_zero_residue_edge_builds_no_plan(monkeypatch):
 def test_me_form_cache_is_capped_and_released(monkeypatch):
     import gc
     import numpy as np
-    from api import me_output as me
+    from daedalus.api import me_output as me
 
     class Owner:
         pass
@@ -222,7 +222,7 @@ def test_me_form_cache_is_capped_and_released(monkeypatch):
 # ── MEM-07: the dense map between moving segments of a chain output ───────
 
 def test_chain_dense_map_refused_before_allocation(monkeypatch):
-    from engine.integration.time_domain import statespace as SS
+    from daedalus.engine.integration.time_domain import statespace as SS
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1')
     SS._check_dense_map(2000, 2000)                  # 64 MB: fine
     with pytest.raises(fi.PhaseJResourceError, match='6.40 GB'):
@@ -233,7 +233,7 @@ def test_chain_dense_map_refused_before_allocation(monkeypatch):
 
 def test_dense_triple_and_decomposition_cache_are_bounded(monkeypatch):
     import numpy as np
-    from api import me_output as me
+    from daedalus.api import me_output as me
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', '1')
     me._check_dense_bytes(16 * 2000 ** 2, 'small')          # 64 MB
     with pytest.raises(fi.PhaseJResourceError, match='6.40 GB'):
@@ -272,8 +272,8 @@ def test_shipped_xz_cell_copied_compressed(tmp_path, monkeypatch):
 
 def test_simulators_bounded():
     import numpy as np
-    from simulations import spatial_field_2d_sim as S2
-    from simulations.coupled_rd_1d_sim import simulate_coupled_rd_1d
+    from daedalus.simulations import spatial_field_2d_sim as S2
+    from daedalus.simulations.coupled_rd_1d_sim import simulate_coupled_rd_1d
     rng = np.random.default_rng(3)
     snaps = rng.standard_normal((150, 8, 8))           # > one chunk
     meta = {'L': 4.0, 'N': 8, 'k_max': 3.0}

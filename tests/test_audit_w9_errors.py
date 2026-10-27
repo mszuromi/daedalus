@@ -11,44 +11,44 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import daedalus as dd                               # noqa: E402
-from engine.errors import DaedalusError             # noqa: E402
+from daedalus.engine.errors import DaedalusError             # noqa: E402
 
 # class -> the builtin it has always been (existing except-clauses keep working)
 _KEPT = {
-    'api._realization.RealizationRefused': ValueError,
-    'api.symbolic_out.SymbolicOutError': ValueError,
-    'api.symbolic_out.NonRationalPropagatorError': ValueError,
-    'api.symbolic_out.ClosedFormUnavailable': ValueError,
-    'api.symbolic_out.AssumptionViolation': ValueError,
-    'api.config_run.ConfigError': ValueError,
-    'api._delay_exact.ExactTreeUnavailable': ValueError,
-    'api.sde.SDEError': ValueError,
-    'api.pp_simulate.PPSimulationError': ValueError,
-    'api.noise.NoiseError': ValueError,
-    'api.observables.ObservableError': ValueError,
-    'api.me_output.MEUnavailable': ValueError,
-    'api.symbolic_loop.SymbolicLoopRefused': ValueError,
-    'api.routing.NoBackendError': Exception,
-    'api.analyze.AnalyzerError': ValueError,
-    'api._mean_field_dae.UnstableSaddleError': ValueError,
-    'api.compute.SpatialAccuracyError': RuntimeError,
-    'api.covariance.CovarianceDerivativeError': RuntimeError,
-    'api.compute.PhaseJIncompleteError': RuntimeError,
-    'engine.integration.time_domain.pipeline.DiscardedDiagramsError': RuntimeError,
-    'engine.core.dt_order.NonlinearDtError': ValueError,
-    'engine.core.field_theory.DerivativeAtomTaylorError': Exception,
-    'engine.integration.time_domain.expdd.DivergentIntegralError': ValueError,
-    'engine.integration.spatial.heat_kernel.SpatialPropagatorError': Exception,
-    'engine.integration.time_domain.statespace.SSIneligible': Exception,
-    'engine.integration.time_domain.statespace.SSLateRefusal': RuntimeError,
-    'engine.integration.time_domain.statespace.SSNoPoleFallback': RuntimeError,
-    'engine.integration.time_domain.statespace.SwitchOnUnsupported': ValueError,
-    'engine.integration.spatial.full_integrator.SpatialMemoryBudgetError': MemoryError,
-    'engine.integration.spatial.full_integrator.SpatialUVDivergenceError': NotImplementedError,
-    'engine.integration.time_domain.final_integral.PoleFreePropagatorError': ValueError,
-    'engine.integration.time_domain.final_integral.PhaseJResourceError': MemoryError,
-    'engine.integration.time_domain.final_integral.PhaseJDivergenceError': ArithmeticError,
-    'engine.integration.time_domain.final_integral.DeltaSolveValidationError': AssertionError,
+    'daedalus.api._realization.RealizationRefused': ValueError,
+    'daedalus.api.symbolic_out.SymbolicOutError': ValueError,
+    'daedalus.api.symbolic_out.NonRationalPropagatorError': ValueError,
+    'daedalus.api.symbolic_out.ClosedFormUnavailable': ValueError,
+    'daedalus.api.symbolic_out.AssumptionViolation': ValueError,
+    'daedalus.api.config_run.ConfigError': ValueError,
+    'daedalus.api._delay_exact.ExactTreeUnavailable': ValueError,
+    'daedalus.api.sde.SDEError': ValueError,
+    'daedalus.api.pp_simulate.PPSimulationError': ValueError,
+    'daedalus.api.noise.NoiseError': ValueError,
+    'daedalus.api.observables.ObservableError': ValueError,
+    'daedalus.api.me_output.MEUnavailable': ValueError,
+    'daedalus.api.symbolic_loop.SymbolicLoopRefused': ValueError,
+    'daedalus.api.routing.NoBackendError': Exception,
+    'daedalus.api.analyze.AnalyzerError': ValueError,
+    'daedalus.api._mean_field_dae.UnstableSaddleError': ValueError,
+    'daedalus.api.compute.SpatialAccuracyError': RuntimeError,
+    'daedalus.api.covariance.CovarianceDerivativeError': RuntimeError,
+    'daedalus.api.compute.PhaseJIncompleteError': RuntimeError,
+    'daedalus.engine.integration.time_domain.pipeline.DiscardedDiagramsError': RuntimeError,
+    'daedalus.engine.core.dt_order.NonlinearDtError': ValueError,
+    'daedalus.engine.core.field_theory.DerivativeAtomTaylorError': Exception,
+    'daedalus.engine.integration.time_domain.expdd.DivergentIntegralError': ValueError,
+    'daedalus.engine.integration.spatial.heat_kernel.SpatialPropagatorError': Exception,
+    'daedalus.engine.integration.time_domain.statespace.SSIneligible': Exception,
+    'daedalus.engine.integration.time_domain.statespace.SSLateRefusal': RuntimeError,
+    'daedalus.engine.integration.time_domain.statespace.SSNoPoleFallback': RuntimeError,
+    'daedalus.engine.integration.time_domain.statespace.SwitchOnUnsupported': ValueError,
+    'daedalus.engine.integration.spatial.full_integrator.SpatialMemoryBudgetError': MemoryError,
+    'daedalus.engine.integration.spatial.full_integrator.SpatialUVDivergenceError': NotImplementedError,
+    'daedalus.engine.integration.time_domain.final_integral.PoleFreePropagatorError': ValueError,
+    'daedalus.engine.integration.time_domain.final_integral.PhaseJResourceError': MemoryError,
+    'daedalus.engine.integration.time_domain.final_integral.PhaseJDivergenceError': ArithmeticError,
+    'daedalus.engine.integration.time_domain.final_integral.DeltaSolveValidationError': AssertionError,
 }
 
 
@@ -61,15 +61,15 @@ def test_every_error_class_is_a_daedalus_error_and_keeps_its_builtin(path, built
 
 
 def test_no_public_exception_class_was_left_out():
-    """Any exception class defined in api/ or engine/ (a public name) is
+    """Any exception class defined in daedalus/api/ or daedalus/engine/ (a public name) is
     covered: a new one must join the base, not forget it."""
     import pkgutil
     seen = set()
-    for pkg in ('api', 'engine'):
+    for pkg in ('daedalus.api', 'daedalus.engine'):
         root = importlib.import_module(pkg)
         for info in pkgutil.walk_packages(root.__path__, pkg + '.'):
-            if info.name.startswith(('api.examples', 'api.tests', 'api.ui',
-                                     'engine.enumeration._fast')):
+            if info.name.startswith(('daedalus.api.examples', 'daedalus.api.tests', 'daedalus.api.ui',
+                                     'daedalus.engine.enumeration._fast')):
                 continue
             try:
                 mod = importlib.import_module(info.name)
@@ -82,16 +82,17 @@ def test_no_public_exception_class_was_left_out():
                         and not n.startswith('_')
                         and obj is not DaedalusError):
                     seen.add((info.name, n, issubclass(obj, DaedalusError)))
+    assert len(seen) > 20, f'only {len(seen)} exception classes found: has the package moved?'
     missing = sorted(f'{m}.{n}' for m, n, ok in seen if not ok)
     assert not missing, missing
 
 
 def test_catching_the_base_catches_a_real_refusal_and_not_a_bug():
-    from api.noise import Gaussian, NoiseError
+    from daedalus.api.noise import Gaussian, NoiseError
     with pytest.raises(DaedalusError):
         Gaussian(var='-1')
     assert dd.DaedalusError is DaedalusError
-    import api
+    import daedalus.api as api
     assert api.DaedalusError is DaedalusError
     try:
         {}['missing']
@@ -104,7 +105,7 @@ def test_catching_the_base_catches_a_real_refusal_and_not_a_bug():
 
 
 def test_population_sum_message_no_longer_blames_a_noise_parameter():
-    from api.noise import parse_expr, NoiseError
+    from daedalus.api.noise import parse_expr, NoiseError
     with pytest.raises(NoiseError) as ei:
         parse_expr('-mu*x[i] + sum(w[i,j]*x[j] for j in E)', what="rhs of x")
     msg = str(ei.value)
@@ -113,8 +114,8 @@ def test_population_sum_message_no_longer_blames_a_noise_parameter():
 
 
 def test_kernel_is_the_shape_builder_and_pairing_kernel_has_its_own_name():
-    import api.delay as D
-    import api.symbolic_out as so
+    import daedalus.api.delay as D
+    import daedalus.api.symbolic_out as so
     assert dd.Kernel is D.Kernel and dd.PairingKernel is so.PairingKernel
     assert dd.Kernel is not so.PairingKernel and not hasattr(so, 'Kernel')   # the old alias is gone
     L = so.PairingKernel.two_sided_exponential(1.0, 0.7, -0.5, 1.3)

@@ -3,7 +3,7 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "daedalus"
+name = "daedalus-msrjd"                 # the PyPI distribution; the import name is `daedalus`
 version = "0.3.3"
 description = "Stationary statistics of It\u00f4 SDEs/SPDEs via automated Feynman-diagram evaluation of perturbative MSR-JD field theories, on SageMath."
 readme = "README.md"
@@ -21,7 +21,8 @@ classifiers = [
 ]
 # SageMath supplies the scientific stack (numpy / scipy / sympy / matplotlib / networkx / mpmath
 # / cysignals / the Jupyter stack) and is an EXTERNAL prerequisite — it is not pip-installable
-# here. Install SageMath 10.9 first (see the README), then:  sage -pip install -e .
+# here. Install SageMath 10.9 first (see the README), then:  sage -pip install daedalus-msrjd
+# (or, from a clone,  sage -pip install -e .)
 # The only pip extras Daedalus layers on top of Sage are below.
 dependencies = []
 
@@ -29,8 +30,8 @@ dependencies = []
 extras = ["numba>=0.61,<0.69", "pydot>=4,<5"]
 
 [project.scripts]
-# `daedalus run config.yaml [--dry-run]` (api/config_run.py); the interpreter must be Sage's
-# (sage -pip install -e .), `sage -python -m daedalus run ...` works without installing.
+# `daedalus run config.yaml [--dry-run]` (daedalus/api/config_run.py); the interpreter must be
+# Sage's. `sage -python -m daedalus run ...` works without installing (from the repo root).
 daedalus = "daedalus:main"
 
 [project.urls]
@@ -38,12 +39,20 @@ Homepage = "https://github.com/mszuromi/daedalus"
 Repository = "https://github.com/mszuromi/daedalus"
 
 [tool.setuptools]
-# daedalus.py is the front-end module (import daedalus as dd); api/engine/simulations are the packages.
-py-modules = ["daedalus"]
+# Installed unpacked: the shipped data is read from disk and pyximport compiles next to it.
+zip-safe = false
 
 [tool.setuptools.packages.find]
-include = ["api*", "engine*", "simulations*"]
+# Only the `daedalus` package. The top-level api/, engine/, simulations/ folders of a source
+# checkout are deprecated forwarding packages for the old import names and are not installed.
+include = ["daedalus*"]
 
-# models/*.model.py are loaded by path (dd.load_model), not imported. An editable install
-# (sage -pip install -e .) resolves them from the repo via daedalus.repo_root(); they are not
-# packaged as importable modules.
+[tool.setuptools.package-data]
+# The model files (daedalus/models/*.model.py, loaded by path with dd.load_model, not
+# imported), the Cython sources pyximport compiles on first use, and the shipped prediagram
+# cells with their manifests.
+"daedalus" = ["models/*.model.py"]
+"daedalus.engine.enumeration" = [
+    "*.pyx", "*.pyxbld", "fetch_manifest.json",
+    "shipped_prediagrams/*.json", "shipped_prediagrams/*.pkl", "shipped_prediagrams/*.pkl.xz",
+]

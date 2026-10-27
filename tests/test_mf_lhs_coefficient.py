@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.model import TemporalModelBuilder
+from daedalus.api.model import TemporalModelBuilder
 
 
 def _derived(b):
@@ -96,7 +96,7 @@ def test_pure_time_derivative_is_accepted_like_the_moved_form():
     """A pure integrator (item 35): ``Dt*m = a - u`` fixes u* = a through
     0 = a - u, and m* = u*/r through the other equation (DAE solve)."""
     import numpy as np
-    from api._mean_field_dae import solve_mean_field_dae
+    from daedalus.api._mean_field_dae import solve_mean_field_dae
     b = _pure_builder(('Dt*m[i]', 'a - u[i]'))
     assert _derived(b) == _derived(_pure_builder(('Dt*m[i] - (a - u[i])',
                                                   '0')))

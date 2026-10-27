@@ -14,9 +14,9 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import daedalus as dd                                   # noqa: E402
-from api import compute_cumulants                       # noqa: E402
-from api import config_run                              # noqa: E402
-from api.config_run import ConfigError, load_config     # noqa: E402
+from daedalus.api import compute_cumulants                       # noqa: E402
+from daedalus.api import config_run                              # noqa: E402
+from daedalus.api.config_run import ConfigError, load_config     # noqa: E402
 
 _KW = dict(k=2, max_ell=0, external_fields=[('dx', 1), ('dx', 1)])
 
@@ -60,7 +60,7 @@ def test_literal_array_of_three_points_is_fine_everywhere():
 
 
 def test_config_carries_the_numeric_options_to_compute_cumulants(monkeypatch):
-    import api
+    import daedalus.api as api
     seen = {}
     real = api.compute_cumulants
 
@@ -109,7 +109,7 @@ def test_yaml_carries_accuracy_backend_and_discard(tmp_path, monkeypatch):
     resolved = load_config(str(p))[0]
     assert resolved['question']['accuracy'] == 1e-8
     assert resolved['policy']['discard'] == 'auto'
-    import api
+    import daedalus.api as api
     seen = {}
     real = api.compute_cumulants
 
@@ -133,8 +133,8 @@ def test_yaml_rejects_bad_accuracy_with_its_line(tmp_path):
 # ---------------------------------------------------------------- CON-07 ----
 
 def _sde():
-    from api.noise import Gaussian
-    from api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE
     return (SDE('w9 ou')
             .parameter('mu', default=1.0, domain='positive')
             .parameter('D', default=0.5, domain='positive')
@@ -160,7 +160,7 @@ def test_every_entry_point_accepts_an_unbuilt_sde():
                                0.5 * np.exp(-taus), rtol=1e-10)
     with contextlib.redirect_stdout(io.StringIO()):
         assert 'w9 ou' in dd.describe_model(_sde())
-    from api.symbolic_loop import symbolic_cumulant
+    from daedalus.api.symbolic_loop import symbolic_cumulant
     sc = symbolic_cumulant(_sde(), k=2, max_ell=0,
                            external_fields=[('x', 1), ('x', 1)])
     assert sc is not None
@@ -197,9 +197,9 @@ def test_spatial_k2_result_carries_status_and_ell_increments():
 # ---------------------------------------------------------------- CON-09 ----
 
 def _delayed_ou_pade():
-    from api.delay import pade_model
-    from api.noise import Gaussian
-    from api.sde import SDE
+    from daedalus.api.delay import pade_model
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE
     m = (SDE('w9 delayed ou').parameter('a', default=1.0)
          .parameter('c', default=-2.0)
          .parameter('d', default=0.5, domain='positive')
@@ -215,9 +215,9 @@ def test_balanced_truncation_enters_the_g6_estimate_and_the_reference_guard():
     truncated result is refused as a symbolic reference.  Reference: the
     untruncated run (tolerance 0)."""
     import warnings
-    from api import _realization as RZ
-    from api.symbolic_loop import SymbolicLoopRefused, _refuse_truncated_reference
-    import engine.integration.time_domain.statespace as SS
+    from daedalus.api import _realization as RZ
+    from daedalus.api.symbolic_loop import SymbolicLoopRefused, _refuse_truncated_reference
+    import daedalus.engine.integration.time_domain.statespace as SS
     taus = np.array([0.0, 0.5, 1.0, 2.0, 4.0])
     runs = {}
     for tol in (0.0, 1e-3):

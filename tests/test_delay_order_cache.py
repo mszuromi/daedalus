@@ -7,10 +7,10 @@ import warnings
 import numpy as np
 import pytest
 
-from api import compute_cumulants
-from api import delay as dl
-from api.noise import Gaussian
-from api.sde import SDE
+from daedalus.api import compute_cumulants
+from daedalus.api import delay as dl
+from daedalus.api.noise import Gaussian
+from daedalus.api.sde import SDE
 
 TAUS = np.array([0.0, 0.5, 1.0, 2.0])
 OPTS = dict(tol=1e-6)
@@ -142,7 +142,7 @@ def test_strictly_proper_approximant_is_replayed(monkeypatch):
     """A hard delay at a vertex leg that Phase J cannot dress falls back on the
     [n-1/n] approximant; the cache remembers the approximant, so the replay
     runs it directly (one run, not the (n, n) pass first)."""
-    from engine.integration.time_domain import final_integral as FI
+    from daedalus.engine.integration.time_domain import final_integral as FI
     from tests.test_delay_nonlinear import EXT, TAU, _product_model
     monkeypatch.setattr(FI, 'DRESS_CONV_KERNELS', False)
     m = _product_model('dnl order cache proper')

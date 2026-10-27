@@ -10,7 +10,7 @@ import pytest
 from scipy.integrate import quad
 from scipy.linalg import expm, solve_continuous_lyapunov
 
-from engine.integration.spatial.dyson_dressing import _exp_phi_batch, dressed_tree_C_x
+from daedalus.engine.integration.spatial.dyson_dressing import _exp_phi_batch, dressed_tree_C_x
 
 
 @pytest.mark.parametrize('m0,nus', [(2.0, [-1.5]), (4.0, [-3.0, -2.5]), (1.0, [3.0]), (1.3, [0.0, -0.9])])

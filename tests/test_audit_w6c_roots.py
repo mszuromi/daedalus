@@ -33,10 +33,10 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                          # noqa: E402
-from api.noise import Gaussian                             # noqa: E402
-from api.sde import SDE                                    # noqa: E402
-from api._mean_field_dae import (                          # noqa: E402
+from daedalus.api import compute_cumulants                          # noqa: E402
+from daedalus.api.noise import Gaussian                             # noqa: E402
+from daedalus.api.sde import SDE                                    # noqa: E402
+from daedalus.api._mean_field_dae import (                          # noqa: E402
     UnstableSaddleError, solve_mean_field_dae)
 
 RUN = dict(parallel=False, verbose=False, use_cache=False)
@@ -99,7 +99,7 @@ def test_unstable_selection_is_refused_by_name(s):
             compute_cumulants(_cubic(s), k=2, max_ell=0, external_fields=[('x', 1)] * 2,
                               tau_grid=np.array([0.0]), preflight=False,
                               fixed_point_index=2, **RUN)
-        from api.analyze import AnalyzerError
+        from daedalus.api.analyze import AnalyzerError
         with pytest.raises(AnalyzerError, match='G2_UNSTABLE_SADDLE'):
             compute_cumulants(_cubic(s), k=2, max_ell=0, external_fields=[('x', 1)] * 2,
                               tau_grid=np.array([0.0]), fixed_point_index=2, **RUN)
@@ -113,7 +113,7 @@ def test_voltage_and_spike_only_forms_select_the_same_stable_saddle():
     unstable upper root once the voltage was searched as an unknown on its
     non-negative box; the .equation form raised NameError on the kernel.)"""
     import tests.test_conv_leg_operator_hawkes as H
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
 
     def equation_form(n_pop, p):
         """The voltage form with .equation rows (the full system; the kernel

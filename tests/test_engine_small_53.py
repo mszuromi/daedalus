@@ -1,7 +1,7 @@
 """
 Item 53: the tier-1 residue clip and the RAM-aware memory guards.
 
-1. Tier-1 residues (``api._propagator``) were clipped below 1e-12 of the
+1. Tier-1 residues (``daedalus.api._propagator``) were clipped below 1e-12 of the
    LARGEST entry at their pole.  With exact pole membership every member
    residue is exactly nonzero, so the clip could only drop a genuine residue
    -- the off-diagonal entry of two fields whose units differ by 1e14.  On
@@ -33,10 +33,10 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                   # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE                                             # noqa: E402
-from engine.integration.time_domain import final_integral as FI     # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
+from daedalus.engine.integration.time_domain import final_integral as FI     # noqa: E402
 
 GB = 1e9
 TAU = np.array([0.0, 0.5, 1.0, 2.0])
@@ -193,7 +193,7 @@ def test_process_footprint_is_measured():
     # the allocator can serve 200 MB from memory the process already holds
     # (glibc keeps freed arenas resident), so the footprint need not grow.
     import subprocess
-    code = ('import numpy as np, engine.integration.time_domain.final_integral '
+    code = ('import numpy as np, daedalus.engine.integration.time_domain.final_integral '
             'as FI\nfp = FI.process_footprint_bytes()\n'
             'big = np.ones(25_000_000)\n'               # 200 MB, touched
             'print(FI.process_footprint_bytes() - fp)\n')
@@ -280,7 +280,7 @@ def test_run_reads_the_budget_once(monkeypatch):
 
 def _allen_cahn():
     import importlib.util
-    path = os.path.join(os.path.dirname(__file__), '..', 'models',
+    path = os.path.join(os.path.dirname(__file__), '..', 'daedalus', 'models',
                         'allen_cahn_1d_subcritical_infinite.model.py')
     spec = importlib.util.spec_from_file_location('ac53', path)
     mod = importlib.util.module_from_spec(spec)
@@ -298,7 +298,7 @@ def _spatial_loop():
 
 
 def test_spatial_guard_uses_the_default_rule(machine, monkeypatch):
-    from engine.integration.spatial.heat_kernel import SpatialPropagatorError
+    from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
     machine(8 * GB, 1.5 * GB)
     monkeypatch.setenv('PHASE_J_MEM_BUDGET_GB', 'off')     # the spatial guard
     monkeypatch.setattr(FI, 'MEM_BUDGET_CAP_GB', 1e-12)
@@ -335,7 +335,7 @@ def _full_lattice(q, Cq, xs, d, L):
 @pytest.mark.parametrize('d', [1, 2, 3])
 @pytest.mark.parametrize('L', [4.0, 9.0])
 def test_slab_sum_equals_the_whole_lattice(d, L):
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         periodic_inverse_ft)
     q = np.linspace(20.0 / 8000, 20.0, 2000)
     Cq = (1.0 + 0.3j) / (1.0 + q * q)
@@ -351,7 +351,7 @@ def test_slab_sum_equals_the_whole_lattice(d, L):
 def test_slab_sum_memory_is_a_slab_not_the_lattice():
     """d=3, n_cut = 193: the whole lattice is 387^3 doubles = 464 MB per
     array (~9 arrays before); the slab sum holds a few 387^2 arrays."""
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         periodic_inverse_ft)
     q = np.linspace(60.0 / 24000, 60.0, 6000)
     Cq = 1.0 / (1.0 + q * q)

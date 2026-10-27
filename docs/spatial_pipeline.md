@@ -63,7 +63,7 @@ there is no place left to silently drop one.
 ## Data flow
 
 ```
-compute_cumulants(model, k=2, max_ell=ℓ, spatial_grid=xs, …)        [api/compute.py]
+compute_cumulants(model, k=2, max_ell=ℓ, spatial_grid=xs, …)        [daedalus/api/compute.py]
   │  [1/7] expand action → vertices/sources     [2/7] propagator     [3/7] mean field
   │       (shared with the temporal path — same code)
   ▼  [4/7] momentum stays symbolic (Laplacian) → skip ω pole-finder + Phase J
@@ -85,11 +85,11 @@ and the back half diverges into the integrator instead of the ω-domain Phase J.
 
 | File | Role |
 |---|---|
-| `engine/integration/spatial/full_integrator.py` | THE integrator: `diagram_correlator`/`_value`/`_kinematic` (momentum-space, ret+adv, Symanzik chamber quadrature); the analytic-IFT analogues `diagram_correlator_x`/`_value_x` + `_symanzik_kernel_batch` (per-sample heat-kernel) + `_formfactor_average_x` (derivative-vertex moment); `diagram_kinematic(method='grid'|'mc', mc_n, mc_seed)` (switchable backend); `_momentum_factor_batch` (Symanzik, vectorized). |
-| `engine/integration/spatial/causal_chambers.py` | enumerate the retarded-poset chambers; the smooth nested-time quadrature primitive. |
-| `engine/integration/spatial/diagram_descriptor.py` | `diagram_to_cstack(td)` — typed diagram → C-stack (contract noise sources, classify edges). |
-| `engine/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator: analytic-IFT vs numerical-FT gate, the memory guard, the `SPATIAL_INTEGRATOR` backend switch), `_formfactor_callable` + `_build_wick_moment` (the joint-`(ℓ,q)` Wick form-factor moment → `ff.moment_x`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
-| `api/compute.py` | `compute_cumulants` spatial branch + the `q→x` transforms. |
+| `daedalus/engine/integration/spatial/full_integrator.py` | THE integrator: `diagram_correlator`/`_value`/`_kinematic` (momentum-space, ret+adv, Symanzik chamber quadrature); the analytic-IFT analogues `diagram_correlator_x`/`_value_x` + `_symanzik_kernel_batch` (per-sample heat-kernel) + `_formfactor_average_x` (derivative-vertex moment); `diagram_kinematic(method='grid'|'mc', mc_n, mc_seed)` (switchable backend); `_momentum_factor_batch` (Symanzik, vectorized). |
+| `daedalus/engine/integration/spatial/causal_chambers.py` | enumerate the retarded-poset chambers; the smooth nested-time quadrature primitive. |
+| `daedalus/engine/integration/spatial/diagram_descriptor.py` | `diagram_to_cstack(td)` — typed diagram → C-stack (contract noise sources, classify edges). |
+| `daedalus/engine/integration/spatial/pipeline_bridge.py` | `compute_spatial_correlator_generic` (the loop orchestrator: analytic-IFT vs numerical-FT gate, the memory guard, the `SPATIAL_INTEGRATOR` backend switch), `_formfactor_callable` + `_build_wick_moment` (the joint-`(ℓ,q)` Wick form-factor moment → `ff.moment_x`), `_via_pipeline` (tree + (A,B,N) certification), `build_pipeline_records` (same `enumerate_unique_diagrams` as temporal). |
+| `daedalus/api/compute.py` | `compute_cumulants` spatial branch + the `q→x` transforms. |
 
 **Oracle-only (NOT on the production path)**, kept as independent cross-checks in
 `tests/oracles/` (moved out of the library in audit W7): `loop_dyson.py`,
@@ -334,6 +334,6 @@ Foundational check (local prototype script): plain integrand = a single Bessel-K
   `pipeline_linear_field_2d_sim_compare.ipynb`,
   `pipeline_reaction_diffusion_2d_loop_sim_compare.ipynb` — earlier spatial validations.
 
-Model files: `models/allen_cahn_1d_subcritical_infinite.model.py` (and a local quintic
-variant of it). Simulators: `simulations/spatial_field_1d_sim.py`,
-`simulations/spatial_field_2d_sim.py` (and a local φ⁶ variant of the 1-D one).
+Model files: `daedalus/models/allen_cahn_1d_subcritical_infinite.model.py` (and a local quintic
+variant of it). Simulators: `daedalus/simulations/spatial_field_1d_sim.py`,
+`daedalus/simulations/spatial_field_2d_sim.py` (and a local φ⁶ variant of the 1-D one).

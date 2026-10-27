@@ -2,7 +2,7 @@
 tests/test_shipped_prediagrams.py
 =================================
 The prediagram cells shipped with the package
-(``engine/enumeration/shipped_prediagrams/``) must (i) exist for every cell in
+(``daedalus/engine/enumeration/shipped_prediagrams/``) must (i) exist for every cell in
 ``SHIPPED_CELLS`` with the Table I prediagram count, (ii) agree, up to
 isomorphism, with a fresh enumeration by the current code, so the files cannot
 drift from the algorithm, and (iii) be found by ``load_prediagrams`` from any
@@ -19,8 +19,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.enumeration.loop_diagram_enumeration as L
-from engine.enumeration import prediagram_cache as pdc
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
+from daedalus.engine.enumeration import prediagram_cache as pdc
 
 TABLE_I = {(1, 1): 1, (1, 2): 15, (1, 3): 434, (1, 4): 22332,
            (2, 0): 1, (2, 1): 9, (2, 2): 283, (2, 3): 14928, (2, 4): 1152032,

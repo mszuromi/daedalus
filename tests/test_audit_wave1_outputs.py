@@ -2,8 +2,8 @@
 tests/test_audit_wave1_outputs.py
 =================================
 Regression tests for the Oct 2026 audit's fix wave 1, outputs
-(``api.symbolic_out``, ``api.symbolic_loop``, ``api.me_output``,
-``api.save``).  Inline public models only; each case is the audit's
+(``daedalus.api.symbolic_out``, ``daedalus.api.symbolic_loop``, ``daedalus.api.me_output``,
+``daedalus.api.save``).  Inline public models only; each case is the audit's
 reproducer (it fails on the code before the fix).
 """
 import math
@@ -20,8 +20,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, I, matrix                                     # noqa: E402
 
-from api import symbolic_out as so                                     # noqa: E402
-from api.symbolic_out import SymbolicOutError                          # noqa: E402
+from daedalus.api import symbolic_out as so                                     # noqa: E402
+from daedalus.api.symbolic_out import SymbolicOutError                          # noqa: E402
 
 omega, mu, D, tau, a, b = SR.var('omega mu D tau a b')
 
@@ -103,8 +103,8 @@ def test_modesum_refuses_misspelled_names():
 
 def test_tree_covariance_refuses_unknown_values():
     """G1-symbolic 6: a misspelled values= name was dropped."""
-    from api.noise import Gaussian
-    from api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE
     m = (SDE('aw1 sym ou').parameter('mu', default=1.0).parameter('D', default=0.5).field('x')
          .drift('x', '-mu*x').noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
     with warnings.catch_warnings():
@@ -117,7 +117,7 @@ def test_tree_covariance_refuses_unknown_values():
 
 def test_symbolic_loop_saddle_floor_is_relative():
     """G1-symbolic 7: the floor max(1, |x|) made the saddle checks absolute."""
-    from api.symbolic_loop import _value_floor
+    from daedalus.api.symbolic_loop import _value_floor
     assert _value_floor({'a': 1e-6, 'b': -2e-6}) == pytest.approx(2e-12, rel=1e-12, abs=0)
     assert _value_floor({'a': 3e4}) == pytest.approx(3e-2, rel=1e-12)
     # the audit's case: a 1e-6 saddle moved by 1.4 % is a move
@@ -127,7 +127,7 @@ def test_symbolic_loop_saddle_floor_is_relative():
 
 def test_side_me_refuses_beyond_its_chamber():
     """G2-outputs 1: a finite chamber's side answered beyond u_max."""
-    from api.me_output import SideME
+    from daedalus.api.me_output import SideME
     s = SideME('(0, 1)', [], 0, u_max=1.0)
     assert s(np.array([0.0, 1.0])).shape == (2,)
     with pytest.raises(ValueError, match='beyond'):
@@ -137,17 +137,17 @@ def test_side_me_refuses_beyond_its_chamber():
 
 def test_slice_me_refuses_a_nan_base_lag():
     """G2-outputs 3: a NaN base lag was pinned at the left limit."""
-    from api.me_output import slice_me
+    from daedalus.api.me_output import slice_me
     with pytest.raises(ValueError, match='finite'):
         slice_me({'config': {'k': 3}}, 1, base=[0.0, float('nan')])
 
 
 def test_save_csv_round_trips(tmp_path):
     """G2-outputs 2: 10 significant digits."""
-    from api import compute_cumulants
-    from api.noise import Gaussian
-    from api.save import save_csv
-    from api.sde import SDE
+    from daedalus.api import compute_cumulants
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.save import save_csv
+    from daedalus.api.sde import SDE
     m = (SDE('aw1 csv ou').parameter('mu', default=1.3).parameter('D', default=0.7).field('x')
          .drift('x', '-mu*x').noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
     with warnings.catch_warnings():

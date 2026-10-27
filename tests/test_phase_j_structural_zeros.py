@@ -68,7 +68,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__),
                                                 '..')))
 
-import engine.integration.time_domain.final_integral as FI       # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI       # noqa: E402
 
 VARIANTS = ('plan', 'noplan')
 
@@ -406,7 +406,7 @@ def test_forced_delta_edges_need_an_omega_free_g_ft_entry():
 def _td(edges, leaves, internal, prediagram=None):
     """A TypedDiagram on ``edges`` = {(u, v): entry letter}."""
     from sage.all import DiGraph
-    from engine.diagrams.type_assignment import TypedDiagram
+    from daedalus.engine.diagrams.type_assignment import TypedDiagram
     if prediagram is None:
         D = DiGraph(multiedges=True)
         D.add_vertices(sorted(set(leaves) | set(internal)))
@@ -672,7 +672,7 @@ def ld_model(private_cwd):
 
 def _run(model, *, k, points=None, tau=None, max_ell=1,
          params=None, fields=None):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     FI._reset_runtime_counters()
     res = compute_cumulants(
         model, k=k, max_ell=max_ell,
@@ -765,7 +765,7 @@ def test_public_massless_spatial_mode_raises_the_named_error(tmp_path):
     builder drops as non-retarded, so the pole list is empty although the
     propagator 1/(−iω) has a smooth part.  Phase J raises
     ``PoleFreePropagatorError`` (before M2a: a bare IndexError)."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     from tests.tools import phase_j_zoo_baseline as Z
     e = next(x for x in Z.ZOO
              if x['name'] == 'spatial-edwards_wilkinson_1d-massless-l0')

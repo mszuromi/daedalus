@@ -43,10 +43,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from sage.all import SR
 from scipy.special import erfc
 
-from api.model import ModelBuilder
-from api import compute_cumulants
-from engine.integration.spatial.heat_kernel import SpatialPropagatorError
-from engine.integration.spatial.pipeline_bridge import (
+from daedalus.api.model import ModelBuilder
+from daedalus.api import compute_cumulants
+from daedalus.engine.integration.spatial.heat_kernel import SpatialPropagatorError
+from daedalus.engine.integration.spatial.pipeline_bridge import (
     _drift_velocity, _legs_to_phys_idx)
 
 
@@ -127,7 +127,7 @@ def _op_model(term):
 
 
 def test_kill_means_treats_parameters_as_constants():
-    from api.spatial_operator_ir import Lap, kill_means
+    from daedalus.api.spatial_operator_ir import Lap, kill_means
     pbar, dp, lam, x = SR.var('pbar dp lam x')
     keep = [dp, x]
     # structural checks (a symbolic `!= 0` depends on the Sage assumptions
@@ -286,11 +286,11 @@ def test_drift_velocity_rules_are_unit_invariant():
 # ── MEM-04: one calibrated memory guard inside every chamber ──────────
 def _records(action, d, ell, rhs='0'):
     from sage.all import SR as _SR
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _formfactor_callable)
     m = (ModelBuilder('mem', n_populations=0).physical_field('p', spatial_dim=d)
          .parameter('mu', default=1.0, domain='positive')
@@ -321,7 +321,7 @@ def _records(action, d, ell, rhs='0'):
 
 def _peak_and_estimate(dd, ff, d, xs, n_t, n_s, q=0.8):
     import tracemalloc
-    from engine.integration.spatial import full_integrator as FI
+    from daedalus.engine.integration.spatial import full_integrator as FI
     et = FI.external_times_2pt(dd, 0.5)
     n_V = len(dd.internal_vertices)
     n_C = sum(1 for e in dd.edges if e.kind == 'C')
@@ -350,7 +350,7 @@ def test_chamber_estimate_covers_the_measured_peak(monkeypatch):
     """Plain x-path (n_x = 30) and the d = 2 form-factor q-path (its
     Gauss–Hermite grid): the per-chamber estimate is above the tracemalloc
     peak and not wildly above it."""
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial.full_integrator import (
         uv_divergent_subgraphs)
     dd, ff = _records('pt*(Dt(p)+mu*p-D*Lap(p)+c*p^3)-T*pt^2', 1, 1,
                       rhs='-c*p^3')[0]
@@ -362,7 +362,7 @@ def test_chamber_estimate_covers_the_measured_peak(monkeypatch):
     dd, ff = max(recs, key=lambda r: getattr(r[1], 'gh_order_needed', 1))
     # array sizes only: the d = 2 derivative bubble is log-divergent once the
     # form factor's momentum powers are counted (ω = 0; refused in a run)
-    from engine.integration.spatial import full_integrator as _FI
+    from daedalus.engine.integration.spatial import full_integrator as _FI
     monkeypatch.setattr(_FI, '_refuse_uv_divergent', lambda *a, **k: None)
     peak, est = _peak_and_estimate(dd, ff, 2, None, 22, 24)
     assert 0.3 * est <= peak <= est, (peak, est)
@@ -371,8 +371,8 @@ def test_chamber_estimate_covers_the_measured_peak(monkeypatch):
 def test_kpoint_and_gh_paths_are_guarded(monkeypatch):
     """The k-point driver and the d >= 2 form-factor q-path used to run with
     no guard (> 5 GB measured at k = 3, one loop, two points)."""
-    from engine.integration.spatial import full_integrator as FI
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.integration.spatial import full_integrator as FI
+    from daedalus.engine.integration.spatial.full_integrator import (
         SpatialMemoryBudgetError, uv_divergent_subgraphs)
     monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', '0.01')
     m = (ModelBuilder('k3 guard', n_populations=0)
@@ -406,7 +406,7 @@ def test_laguerre_gauss_transform_closed_form():
     branches (images / dual modes) against each other."""
     from scipy.integrate import quad
     from scipy.special import j0
-    from engine.integration.spatial.dyson_dressing import _F_p, _periodic_1d
+    from daedalus.engine.integration.spatial.dyson_dressing import _F_p, _periodic_1d
     a = 0.37
     for p in range(4):
         for r in (0.0, 0.6, 1.7):
@@ -452,7 +452,7 @@ def test_dressed_tree_x_converges_to_the_exact_unequal_D_tree():
     """The x-space Dyson tree vs the exact Lyapunov tree on the line and on
     a periodic box (image sum of the line): the truncation error falls
     geometrically with the order; no fixed-grid floor."""
-    from engine.integration.spatial.dyson_dressing import dressed_tree_C_x
+    from daedalus.engine.integration.spatial.dyson_dressing import dressed_tree_C_x
     M = np.array([[1.5, 0.4], [-0.3, 1.2]])
     Dm = np.diag([0.6, 1.0])
     D0 = 0.8
@@ -507,10 +507,10 @@ def test_kpoint_applies_the_derivative_form_factor():
     # every tree record: the multivariate moment exists and each external
     # symbol q_j is read from q[j] (by index, not by position)
     from sage.all import SR as _SR
-    from engine.core.field_theory import FieldTheory
-    from api._propagator import build_propagator
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _formfactor_callable, diagram_form_factor)
     m = _k3_model(*_MB)
     ft = FieldTheory(m, taylor_order=5)

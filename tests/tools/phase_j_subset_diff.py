@@ -120,7 +120,7 @@ routes (bail reasons, nquad counts) and ulp-level values, so path censuses
 and nquad counts are only comparable between runs with the same sources.
 
 τ convention: the k=2 grid point τ=0 is evaluated by the pipeline at
-t1 = ``api.compute._tau0_lag()``: 0.0 (the exact tie, the default since Oct
+t1 = ``daedalus.api.compute._tau0_lag()``: 0.0 (the exact tie, the default since Oct
 2026) or -``_ITO_EPS`` (DAEDALUS_TAU0=nudge, or the legacy Θ(0) mode).
 Records and pipeline totals are keyed by the external times actually passed
 to ``contribution()``, so the "τ=0" entries carry that lag.
@@ -203,7 +203,7 @@ FIXTURE_NAMES = ('spike_reset_k1_ell1', 'spike_reset_k2_ell0',
 # ═══════════════════════════════════════════════════════════════════════
 
 def _fi():
-    import engine.integration.time_domain.final_integral as FI
+    import daedalus.engine.integration.time_domain.final_integral as FI
     return FI
 
 
@@ -405,7 +405,7 @@ class NquadStub:
 
 def _grid_point(k, t, lag0):
     """The external-time tuple compute_cumulants evaluates for grid τ=t
-    (``lag0``: its τ = 0 lag, ``api.compute._tau0_lag()``)."""
+    (``lag0``: its τ = 0 lag, ``daedalus.api.compute._tau0_lag()``)."""
     t = float(t)
     if k == 1:
         return (t,)
@@ -438,8 +438,8 @@ def recorded_diagram_sources():
     string ``load_prediagrams`` returned.  Wraps the module attributes the
     pipeline looks up at call time; restored on exit.
     """
-    from engine.core import cache as _cache_mod
-    from engine.enumeration import prediagram_cache as _pc
+    from daedalus.engine.core import cache as _cache_mod
+    from daedalus.engine.enumeration import prediagram_cache as _pc
     seen = []
     orig_load_pd = _pc.load_prediagrams
     orig_cache_load = _cache_mod.PipelineCache.load
@@ -487,8 +487,8 @@ def run(model, *, k, max_ell, external_fields, parameters=None,
     ``stub_level`` ('entry' | 'quadrature') selects what ``stub_nquad``
     replaces (module docstring, item 5).
     """
-    from api import compute_cumulants
-    from api.compute import _ITO_EPS, _tau0_lag
+    from daedalus.api import compute_cumulants
+    from daedalus.api.compute import _ITO_EPS, _tau0_lag
     FI = _fi()
     rec = SubsetRecorder(keep_live=keep_live)
     stub = NquadStub(stub_level) if stub_nquad else None
@@ -1339,7 +1339,7 @@ def main(argv=None):
     ap.add_argument('--k', type=int, default=2)
     ap.add_argument('--max-ell', type=int, default=1)
     ap.add_argument('--taus', default=None,
-                    help='comma list; k in {1,2} grid (τ=0 -> api.compute._tau0_lag()); '
+                    help='comma list; k in {1,2} grid (τ=0 -> daedalus.api.compute._tau0_lag()); '
                          "default '0,0.5' unless --points is given")
     ap.add_argument('--points', default=None,
                     help="explicit k-tuples 'a,b;c,d' (raw per-ell "

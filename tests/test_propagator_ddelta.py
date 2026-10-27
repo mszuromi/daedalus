@@ -3,7 +3,7 @@ tests/test_propagator_ddelta.py
 ===============================
 Regression test for the ``D_delta`` (instantaneous / δ(t) part of the
 retarded propagator) per-entry-denominator bug in
-``api/_propagator.py::_compute_residues_via_polynomial_fracfield``.
+``daedalus/api/_propagator.py::_compute_residues_via_polynomial_fracfield``.
 
 The bug (fixed): the ``D_delta = lim_{ω→∞} G(ω)`` block compared each
 entry's numerator degree against the **global** common-denominator degree
@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import numpy as np
 from sage.all import SR, I, matrix
 
-from api._propagator import _compute_residues_via_polynomial_fracfield
+from daedalus.api._propagator import _compute_residues_via_polynomial_fracfield
 
 
 def _synthetic_two_pole_propagator():
@@ -112,9 +112,9 @@ def test_ddelta_omega_inf_limit_expands_unevaluated_products():
     """
     import daedalus as dd
     from sage.all import SR
-    from api._propagator import build_propagator
-    from api._mean_field import solve_mean_field
-    from engine.core.field_theory import FieldTheory
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api._mean_field import solve_mean_field
+    from daedalus.engine.core.field_theory import FieldTheory
 
     model, _ = dd.load_model('single_population_linear_delta_spikes_test')
     ft = FieldTheory(model, taylor_order=2); ft.expand()

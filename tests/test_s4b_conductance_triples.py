@@ -1,7 +1,7 @@
 """
 tests/test_s4b_conductance_triples.py
 =====================================
-S4b: matrix-exponential triples (``api/me_output.py``) for models with
+S4b: matrix-exponential triples (``daedalus/api/me_output.py``) for models with
 field x Conv (conductance) vertices and delay kernels.  A conductance diagram
 whose kernel slots can be filled in several ways is integrated as the
 average of its placements (``final_integral._average_conv_placements``); its
@@ -32,12 +32,12 @@ pytest.importorskip('sage.all')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import daedalus as dd                                                # noqa: E402
-from api import compute_cumulants                                    # noqa: E402
-from api import me_output as ME                                      # noqa: E402
-from api.noise import Gaussian                                       # noqa: E402
-from api.sde import SDE                                              # noqa: E402
-from api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
-import engine.integration.time_domain.statespace as SS               # noqa: E402
+from daedalus.api import compute_cumulants                                    # noqa: E402
+from daedalus.api import me_output as ME                                      # noqa: E402
+from daedalus.api.noise import Gaussian                                       # noqa: E402
+from daedalus.api.sde import SDE                                              # noqa: E402
+from daedalus.api.symbolic_out import PairingKernel as Kernel                                  # noqa: E402
+import daedalus.engine.integration.time_domain.statespace as SS               # noqa: E402
 
 TAUS = np.linspace(-5.0, 5.0, 201)
 TT = TAUS.copy()     # C_tau's τ = 0 point: the exact Itô left limit (at_zero='-')
@@ -85,7 +85,7 @@ def _cc(model, ext, ell=1, **kw):
 def _conductance(name, tau2):
     """x' = h - a x - b x (g * x) + noise, g = 1/((1 + iωτ)(1 + iωτ2)) (the
     alpha kernel at τ2 = τ)."""
-    from api.theory import TemporalTheoryBuilder
+    from daedalus.api.theory import TemporalTheoryBuilder
     P = dict(a=1.0, b=0.3, h=0.5, tau=0.7, tau2=tau2, D=0.15)
     b = (TemporalTheoryBuilder(name).population('E', size=1)
          .physical_field('x', population='E'))
@@ -103,7 +103,7 @@ def _conductance(name, tau2):
 
 def _alpha_embedding(name):
     """The alpha-kernel model with the kernel as two linear fields."""
-    from api.theory import TemporalTheoryBuilder
+    from daedalus.api.theory import TemporalTheoryBuilder
     P = dict(a=1.0, b=0.3, h=0.5, tau=0.7, tau2=0.7, D=0.15)
     b = (TemporalTheoryBuilder(name).population('E', size=1)
          .physical_field('x', population='E')

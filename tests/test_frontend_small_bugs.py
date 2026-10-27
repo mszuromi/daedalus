@@ -17,11 +17,11 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR, assumptions, var                           # noqa: E402
 
-import api.compute as AC                                            # noqa: E402
-from api.model_compiler import _is_single_function_call             # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE, SDEError                                   # noqa: E402
-from api.theory import TemporalTheoryBuilder                        # noqa: E402
+import daedalus.api.compute as AC                                            # noqa: E402
+from daedalus.api.model_compiler import _is_single_function_call             # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                   # noqa: E402
+from daedalus.api.theory import TemporalTheoryBuilder                        # noqa: E402
 
 TAU = np.array([-1.0, 0.0, 0.7])
 
@@ -43,7 +43,7 @@ def _same_run(a, b):
 
 
 def _action(model):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=4)
     ft.expand()
     return {bg: str(p) for bg, p in ft._by_tp.items()}
@@ -217,7 +217,7 @@ def test_scalar_conv_of_an_expression_in_the_field_equals_the_population_twin():
     tree level.  A NONLINEAR argument (``2*n + 0.1*n*n``) is refused by name in
     a hand-written action, scalar and population form alike: the kernel route
     cannot integrate a kernel of a product of legs (the SDE front end embeds it)."""
-    from engine.core.convolution import NonlinearConvError
+    from daedalus.engine.core.convolution import NonlinearConvError
     arg = '2*n + 0.1'
     ra = _compare(lambda: _scalar_hawkes(False, arg), lambda: _scalar_hawkes(True, arg),
                   [('dn', 1), ('dn', 1)], ell=0)
@@ -230,7 +230,7 @@ def test_scalar_conv_of_an_expression_in_the_field_equals_the_population_twin():
 
 
 def test_scalar_conv_still_validates_arity():
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     m = TemporalTheoryBuilder('bad').physical_field('n').parameter('a', default=1.0) \
         .define_kernel('g', freq_image='1/(1 + I*omega)') \
         .set_action_text('nt*n - (exp(nt) - 1)*a*Conv(n)').mf_residual(lhs='n', rhs='a').build()

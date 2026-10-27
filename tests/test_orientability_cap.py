@@ -7,7 +7,7 @@ offline check.  Here we lift the cap and assert the prediagram set is
 unchanged: every topology above the cap admits zero valid orientations.
 """
 import pytest
-import engine.enumeration.loop_diagram_enumeration as L
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
 
 
 def _prediagram_certs(k, ell):

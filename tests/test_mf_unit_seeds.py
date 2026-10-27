@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                                 # noqa: E402
-from api import compute_cumulants                                     # noqa: E402
+from daedalus.api import compute_cumulants                                     # noqa: E402
 
 
 def _run(model, params, ext, k=2):

@@ -70,7 +70,7 @@ theory (action with Lap,Dt,Dx + fields + BC + noise)
 
 ## 3. The operator IR (Phase 1 — landed)
 
-`api/spatial_operator_ir.py` (+ `tests/test_spatial_operator_ir.py`, 12
+`daedalus/api/spatial_operator_ir.py` (+ `tests/test_spatial_operator_ir.py`, 12
 tests). Operators are inert, argument-**binding** Sage function nodes
 (`Lap(phi)`, `Dt(phi)`, `Dx(phi,i)`); all semantics live in explicit passes:
 
@@ -168,8 +168,8 @@ the "generalized momentum." One interface, three backends:
 
 | module | role | status |
 |---|---|---|
-| `api/spatial_operator_ir.py` | operators, linearity, saddle, generators, form factors | ✅ Phase 1 |
-| `api/model.py` (parse) | author `Lap(phi)` syntax → IR | Phase 2 |
+| `daedalus/api/spatial_operator_ir.py` | operators, linearity, saddle, generators, form factors | ✅ Phase 1 |
+| `daedalus/api/model.py` (parse) | author `Lap(phi)` syntax → IR | Phase 2 |
 | `…/spatial/propagator_k.py` (new) | `K(ω,k)`, fold bilinear-`v`, `G=K⁻¹` | Phase 3 |
 | vertex extraction (form factors) | per-leg `𝔣ₗ(k)` from generators | Phase 3 |
 | `…/spatial/spatial_reduce.py` (new) | analytic `∫dᵈℓ` (generalize `loop_parametric`) | Phase 4 |

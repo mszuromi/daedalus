@@ -5,7 +5,7 @@ independent numerical cross-check — ``compute_cumulants`` does NOT use this mo
 
 tests.oracles.loop_dyson
 ========================
-Test-only reference (was ``engine.integration.spatial.loop_dyson``; moved out of
+Test-only reference (was ``daedalus.engine.integration.spatial.loop_dyson``; moved out of
 the library in audit W7: no production module imports it).
 
 1-loop Dyson assembly for the spatial bubble (Stage C.5) — turns the

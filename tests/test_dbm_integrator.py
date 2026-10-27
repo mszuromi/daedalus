@@ -1,4 +1,4 @@
-"""The exact DBM route (``engine/integration/time_domain/dbm_integral.py``,
+"""The exact DBM route (``daedalus/engine/integration/time_domain/dbm_integral.py``,
 Phase J milestone M3) and its ``final_integral`` wrapper
 ``_integrate_subset_dbm``.
 
@@ -34,9 +34,9 @@ from scipy import integrate
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.integration.time_domain.final_integral as FI  # noqa: E402
-from engine.integration.time_domain import dbm_integral as DBM  # noqa: E402
-from engine.integration.time_domain import expdd as X  # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI  # noqa: E402
+from daedalus.engine.integration.time_domain import dbm_integral as DBM  # noqa: E402
+from daedalus.engine.integration.time_domain import expdd as X  # noqa: E402
 
 
 def _expsum(rows, m, alphas, cap=200.0, C=1.0, E=0.0):

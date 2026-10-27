@@ -5,12 +5,12 @@ independent numerical cross-check — ``compute_cumulants`` does NOT use this mo
 
 tests.oracles.generic_evaluator
 ===============================
-Test-only reference (was ``engine.integration.spatial.generic_evaluator``; moved out of
+Test-only reference (was ``daedalus.engine.integration.spatial.generic_evaluator``; moved out of
 the library in audit W7: no production module imports it).
 
 Backend C — **Phase 2 of the generic spatial loop pipeline**
 (the internal design notes (not distributed)): evaluate one
-:class:`~engine.integration.spatial.diagram_descriptor.CStackDiagram`'s
+:class:`~daedalus.engine.integration.spatial.diagram_descriptor.CStackDiagram`'s
 contribution to the correlator, by the momentum-first route
 
     enumerate → map (Phase 1) → Symanzik ∫dᵈℓ (C0/C1) → causal-chamber ∫dt (C2).

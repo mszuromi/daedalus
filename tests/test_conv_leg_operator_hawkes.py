@@ -26,9 +26,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                   # noqa: E402
-from api.model import TemporalModelBuilder                          # noqa: E402
-import engine.integration.time_domain.final_integral as FI          # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                          # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI          # noqa: E402
 
 TAU = np.array([-3.0, -0.25, 0.25, 1.0, 6.0])
 

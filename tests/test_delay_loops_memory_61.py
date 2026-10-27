@@ -33,12 +33,12 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from api import compute_cumulants                                   # noqa: E402
-from api.delay import Kernel                                        # noqa: E402
-from api.sde import SDE                                             # noqa: E402
-from engine.integration.time_domain import final_integral as FI     # noqa: E402
-from engine.integration.time_domain import pipeline as PL           # noqa: E402
-from engine.integration.time_domain import statespace as SS         # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api.delay import Kernel                                        # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
+from daedalus.engine.integration.time_domain import final_integral as FI     # noqa: E402
+from daedalus.engine.integration.time_domain import pipeline as PL           # noqa: E402
+from daedalus.engine.integration.time_domain import statespace as SS         # noqa: E402
 from test_point_process_front_end import _delay_pp                  # noqa: E402
 
 TAU = np.array([-2.0, 0.0, 0.5, 3.0])
@@ -69,7 +69,7 @@ def _negative_feedback(kind='erlang', K=8):
     """The textbook delayed negative feedback as a chemical master equation
     (x = n / Om: creation Om c / (1 + (eps x(t - d))^2), degradation
     Om g x)."""
-    from api.theory import TemporalTheoryBuilder
+    from daedalus.api.theory import TemporalTheoryBuilder
     b = (TemporalTheoryBuilder(f'delayed negative feedback {kind}')
          .population('pop', size=1).physical_field('x', population='pop'))
     for k, v in dict(c=1.0, eps=0.4, g=1.0, d=5.0, Om=100.0).items():
@@ -131,7 +131,7 @@ def test_estimate_bounds_the_census_tightly(census, form, n_pop):
 
 def _prepass_only(monkeypatch, model, **kw):
     """The pre-pass's estimate; Phase J never starts."""
-    import api.compute as C
+    import daedalus.api.compute as C
 
     class _Stop(Exception):
         pass
@@ -337,7 +337,7 @@ def test_estimate_bounds_the_census_with_split_vertex_terms(census):
     """Item 60's split: ``-ee x x - c x Conv(h, x) - c2 x Conv(h2, x)`` has a
     vertex coefficient ``c z_h + c2 z_h2 + ee``; Phase J integrates each term
     on its own (a plain term has no kernel slot) and holds all of them."""
-    from api.noise import Gaussian
+    from daedalus.api.noise import Gaussian
     s = (SDE('mixed vertex terms').parameter('a', default=1.0)
          .parameter('b', default=1.0).parameter('c', default=0.5)
          .parameter('c2', default=0.3).parameter('ee', default=0.3)

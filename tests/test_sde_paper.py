@@ -1,4 +1,4 @@
-"""Paper-style equations for the SDE front end (``SDE.sde``, api/sde_paper.py) and per-source interpretations
+"""Paper-style equations for the SDE front end (``SDE.sde``, daedalus/api/sde_paper.py) and per-source interpretations
 (``noise(..., interpretation=)``).
 
 A paper-style line is read into the existing declarations, so each model here is compared with the explicit model
@@ -9,8 +9,8 @@ Stratonovich drift correction or the Marcus noise term written out by hand.
 import pytest
 from sage.all import SR
 
-from api.noise import CompoundPoisson, Exponential, Gaussian, GammaProcess, Poisson, parse_expr
-from api.sde import SDE, SDEError
+from daedalus.api.noise import CompoundPoisson, Exponential, Gaussian, GammaProcess, Poisson, parse_expr
+from daedalus.api.sde import SDE, SDEError
 from tests._sde_model_catalogue import digest
 from tests import _sde_model_catalogue as cat
 
@@ -85,7 +85,7 @@ def test_jumps_and_given_sources():
 
 
 def test_existing_fields_and_declared_time_derivative_names_are_used():
-    from api.operators import TimeDerivative
+    from daedalus.api.operators import TimeDerivative
     a = _p(SDE('o')).operator('dt_', TimeDerivative()).field('x', domain='positive') \
         .sde('dx = (mu - x) dt + sqrt(x) dW')
     assert a._eqs['x']['lhs_raw'] == 'dt_*x' and a._fields['x']['domain'] == 'positive'
@@ -217,7 +217,7 @@ def test_unrepresentable_combinations_are_refused():
         (_p(SDE('b', n_populations=2), lam=0.5).field('x').drift('x', '-x')
          .noise('j', Poisson(rate='lam'), into={'x': 'x[j]'}, interpretation='marcus').build())
     with pytest.raises(SDEError, match="noise\\('n'\\) is stratonovich"):
-        from api.operators import Laplacian
+        from daedalus.api.operators import Laplacian
         (SDE('s', space=1).operator('lap', Laplacian()).field('u').drift('u', 'lap(u) - u')
          .noise('n', Gaussian(var=1, space='white'), into={'u': 1}, interpretation='stratonovich')
          .build())

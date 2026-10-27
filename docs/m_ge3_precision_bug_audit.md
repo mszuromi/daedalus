@@ -31,7 +31,7 @@ Workaround available (`USE_GROUPED_PHASE_J = True`).
 ## Summary
 
 The per-diagram analytic m≥3 integrator (`_exp_over_chain_simplex` in
-`engine/integration/time_domain/final_integral.py:877`) suffers
+`daedalus/engine/integration/time_domain/final_integral.py:877`) suffers
 systematic precision loss when the theory's propagator has close-paired
 poles. At `spike_reset` k=2 ell=1 with canonical fixture params, the
 per-diag analytic stack overestimates the 1-loop value by **4×**
@@ -137,7 +137,7 @@ This rules out "fall back to scipy.nquad per-subset" as a fix path.
 
 ## Root cause
 
-`_exp_over_chain_simplex` ([final_integral.py:877](engine/integration/time_domain/final_integral.py:877))
+`_exp_over_chain_simplex` ([final_integral.py:877](daedalus/engine/integration/time_domain/final_integral.py:877))
 implements a recursive 2^N closed-form for the chain-simplex integral
 `∫dx_1∫dx_2…∫dx_N exp(α₁·x₁ + α₂·x₂ + …)`. The recursion produces
 2^(N-1) terms via repeated splitting:
@@ -147,7 +147,7 @@ Term A — upper-bound piece: coefficient C/b_inner, β = b_inner + β_outer
 Term B — lower-bound piece: coefficient −C · exp(b_inner · lower) / b_inner, β = β_outer
 ```
 
-The block comment at [final_integral.py:936-942](engine/integration/time_domain/final_integral.py:936)
+The block comment at [final_integral.py:936-942](daedalus/engine/integration/time_domain/final_integral.py:936)
 explicitly warns:
 
 > "The TRUE integral is finite — the individual large terms cancel —
@@ -568,15 +568,15 @@ unless one of:
 B_alpha construction and the chain-simplex integration call,
 information from typed-diagrams j > first_j is being silently
 dropped or canceled. The bug requires deeper code reading of:
-- `api/_grouped_phase_j.py (retired in audit W7):82-86` — group key uses
+- `daedalus/api/_grouped_phase_j.py (retired in audit W7):82-86` — group key uses
   `(id(td.prediagram), external_legs_signature)`. May be too
   coarse if multiple distinct prediagrams share the same id (Python
   object identity is fragile across re-enumeration).
-- `engine/integration/time_domain/grouped_integral.py (retired in audit W7):609` —
+- `daedalus/engine/integration/time_domain/grouped_integral.py (retired in audit W7):609` —
   `_lookup_prop_indices(td, ek)` per typed diagram. If different
   typed-diagrams in a group have aliased (ri, pi) values, they'd
   effectively yield the same residue array.
-- `engine/integration/time_domain/grouped_integral.py (retired in audit W7):911-924` — the
+- `daedalus/engine/integration/time_domain/grouped_integral.py (retired in audit W7):911-924` — the
   B_alpha summation loop itself.
 
 **Key conclusion**:
@@ -675,7 +675,7 @@ investigation are kept as dead code (all default False)
 
 Although none of them was the actual fix, each addresses a real
 concern that may become relevant for future theories.  They are
-preserved in ``engine/integration/time_domain/final_integral.py``:
+preserved in ``daedalus/engine/integration/time_domain/final_integral.py``:
 
 - ``USE_CHAIN_SIMPLEX_PRECISION_FIX`` (line ~1081) — mpmath
   dispatch for close-paired-pole chain simplex calls.  Documented

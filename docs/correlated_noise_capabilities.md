@@ -151,7 +151,7 @@ residues grow like 1/gap.  Phase J's single-pole residue sums cannot
 represent the `τ · exp(-pt)` mode of the exact case and lose about
 `E log10(1/gap)` digits near it.  `compute_cumulants` handles both:
 it averages Phase J over a deformation that splits such a pole cluster
-on a circle (`api._pole_clusters`; Cauchy mean value, trapezoid rule,
+on a circle (`daedalus.api._pole_clusters`; Cauchy mean value, trapezoid rule,
 `result['pole_clusters']` reports the clusters and an accuracy
 estimate), so `τc = 1/μ` and any nearby value give the exact result to
 about 1e-12.  A cluster it cannot resolve (no exact rational
@@ -246,7 +246,7 @@ of cumulants involving these vertices doesn't run.
    `NoiseSourceType` extraction to confirm n > 2 sources flow into
    the diagram enumerator the same way 2-leg sources do.
 2. *Phase B — integrator (1-2 weeks).*  Extend
-   `engine/integration/time_domain/grouped_integral.py (retired in audit W7)` +
+   `daedalus/engine/integration/time_domain/grouped_integral.py (retired in audit W7)` +
    `final_integral.py` to thread n − 1 relative-time variables per
    noise vertex through the diagram's time-integration plan.  Derive
    and implement 2D analytic mode-sum templates for the κ³ smooth
@@ -380,15 +380,15 @@ Is your noise stationary (time-translation invariant)?
 
 | Component | File | Lines (approx) |
 |---|---|---|
-| `make_correlated_noises_block` (text-row → callable) | `api/model_compiler.py` | `_build_cgf_kernel_callable` ~1500 |
-| `_build_cumulant_action` (action injection) | `engine/core/field_theory.py` | ~330–560 |
-| `extract_source_types` (diagram extraction) | `engine/core/vertices.py` | `NoiseSourceType` ~595 |
-| Phase J integrator hooks for κ² smooth | `engine/integration/time_domain/grouped_integral.py (retired in audit W7)`, `final_integral.py` | search for `kernel_fn` |
-| `declare_cgf_term` (ModelBuilder API) | `api/model.py` | ~654 |
-| CGF tab (UI) | `api/ui/main.py` | ~404 |
-| Spec serialize / parse | `api/model_serialize.py` | `_emit_cgf_term` ~227, load ~623 |
-| **Markovian embedding preprocessor (v1)** | `api/colored_to_markovian.py` | whole file |
-| Markovianize wiring into `build()` | `api/model.py` | search for `markovianize_spec` |
+| `make_correlated_noises_block` (text-row → callable) | `daedalus/api/model_compiler.py` | `_build_cgf_kernel_callable` ~1500 |
+| `_build_cumulant_action` (action injection) | `daedalus/engine/core/field_theory.py` | ~330–560 |
+| `extract_source_types` (diagram extraction) | `daedalus/engine/core/vertices.py` | `NoiseSourceType` ~595 |
+| Phase J integrator hooks for κ² smooth | `daedalus/engine/integration/time_domain/grouped_integral.py (retired in audit W7)`, `final_integral.py` | search for `kernel_fn` |
+| `declare_cgf_term` (ModelBuilder API) | `daedalus/api/model.py` | ~654 |
+| CGF tab (UI) | `daedalus/api/ui/main.py` | ~404 |
+| Spec serialize / parse | `daedalus/api/model_serialize.py` | `_emit_cgf_term` ~227, load ~623 |
+| **Markovian embedding preprocessor (v1)** | `daedalus/api/colored_to_markovian.py` | whole file |
+| Markovianize wiring into `build()` | `daedalus/api/model.py` | search for `markovianize_spec` |
 
 The warning that fires when you hit §1 (smooth n ≥ 3) is in
 `_build_cumulant_action`'s smooth-residual `if order == 2` branch's

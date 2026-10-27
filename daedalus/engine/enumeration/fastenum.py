@@ -1,0 +1,83 @@
+"""
+daedalus.engine.enumeration.fastenum
+====================================
+Loader for the compiled hot loops in ``_fastenum.pyx``.
+
+The extension is built on first import with ``pyximport`` (build cache in
+``<repo>/.pyxbld``, gitignored, or ``~/.cache/daedalus/pyxbld`` for an
+installed package: :func:`build_dir`) so no install step is needed; it requires a C
+compiler and takes a few seconds once.  It exports the compiled stages
+``tree_filter_sparse6`` (E1), ``tree_candidates`` (E2), ``prediagram_certs``
+and ``orientation_patterns`` (E3), and the certificate ``cert``: nauty's
+``densenauty`` from ``_fastnauty.pyx``, linked against Sage's bundled
+libnauty, when that builds (``cert_backend == 'nauty'``), else ``aux_cert``
+(Sage's ``search_tree`` on a DenseGraph, ``cert_backend == 'aux'``).  See the
+.pyx headers.  Certificates from the three backends (nauty, aux, Sage's
+``canonical_label``) are different bytes for the same isomorphism class.  If Cython or the compiler is missing, or ``DAEDALUS_FASTENUM=0``,
+``available`` is False and the callers fall back to the pure-Python code with
+identical output.  ``reason`` says why when it is unavailable.
+"""
+from __future__ import annotations
+
+import os
+import sys
+import warnings
+
+available = False
+reason = ''
+aux_cert = None
+orientation_patterns = None
+tree_candidates = None
+prediagram_certs = None
+tree_filter_sparse6 = None
+cert = None
+cert_backend = ''
+nauty_reason = ''
+
+#: The source checkout, when the package runs from one (it holds pyproject.toml).
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+
+
+def build_dir():
+    """Where pyximport builds the extensions: ``$DAEDALUS_BUILD_DIR``, else
+    ``<checkout>/.pyxbld`` in a source checkout, else
+    ``~/.cache/daedalus/pyxbld`` (an installed package's directory may not
+    be writable)."""
+    env = os.environ.get('DAEDALUS_BUILD_DIR', '').strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    if os.path.isfile(os.path.join(_ROOT, 'pyproject.toml')):
+        return os.path.join(_ROOT, '.pyxbld')
+    return os.path.join(os.path.expanduser('~'), '.cache', 'daedalus', 'pyxbld')
+
+
+from daedalus.engine import _env as _env_mod                       # noqa: E402
+
+if not _env_mod.flag('DAEDALUS_FASTENUM', True):
+    reason = 'disabled by DAEDALUS_FASTENUM=0'
+else:
+    try:
+        import pyximport
+        pyximport.install(build_dir=build_dir(), language_level=3,
+                          inplace=False, build_in_temp=True)
+        from daedalus.engine.enumeration import _fastenum as _ext      # noqa: E402
+        aux_cert = _ext.aux_cert
+        orientation_patterns = _ext.orientation_patterns
+        tree_candidates = _ext.tree_candidates
+        prediagram_certs = _ext.prediagram_certs
+        tree_filter_sparse6 = _ext.tree_filter_sparse6
+        cert = aux_cert
+        cert_backend = 'aux'
+        try:
+            from daedalus.engine.enumeration import _fastnauty as _nauty  # noqa: E402
+            cert = _nauty.nauty_cert
+            cert_backend = 'nauty'
+        except Exception as e:                                 # pragma: no cover
+            nauty_reason = f'{type(e).__name__}: {e}'
+        _ext.set_cert_fn(cert)
+        available = True
+    except Exception as e:                                     # pragma: no cover
+        reason = f'{type(e).__name__}: {e}'
+        warnings.warn(f'fastenum: compiled enumeration unavailable ({reason}); '
+                      'using the pure-Python path.')

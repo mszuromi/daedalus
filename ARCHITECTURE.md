@@ -1,27 +1,28 @@
 # Architecture
 
 Daedalus computes stationary statistics of Itô SDEs/SPDEs: it turns the MSR–JD action into
-mean fields, multi-point cumulants, and loop corrections — analytically. Four tiers:
+mean fields, multi-point cumulants, and loop corrections — analytically. One package, `daedalus`,
+in four tiers:
 
 ```
-dd  (daedalus.py)   notebook/script front-end: Config, run, plot, load_model, describe_model
+dd  (daedalus/__init__.py)   notebook/script front-end: Config, run, plot, load_model, describe_model
       │
-api/                user-facing orchestration: compute_cumulants, ModelBuilder, report, save
+daedalus/api/                user-facing orchestration: compute_cumulants, ModelBuilder, report, save
       │
-engine/             the core: symbolic field theory → diagram enumeration → loop integration
+daedalus/engine/             the core: symbolic field theory → diagram enumeration → loop integration
       │
-simulations/        independent numerical validators (NOT part of the analytic pipeline)
+daedalus/simulations/        independent numerical validators (NOT part of the analytic pipeline)
 ```
 
-## `dd` — `daedalus.py`
+## `dd` — `daedalus/__init__.py`
 
 The single entry point (`import daedalus as dd`). Wraps `api` with notebook-friendly helpers:
 `Config` (one dataclass holding every run choice), `run` (layers the config over the model and
 calls the engine), `plot_cumulant`, `load_model` / `list_models`, `describe_model`,
 `save_npz` / `save_csv`, the prediagram helpers, and the graphical `ModelUI`. Works from scripts
-too (`sage -pip install -e .`, or put the repo root on `sys.path`).
+too, once the package is installed (`sage -pip install daedalus-msrjd`, or `-e .` from a clone).
 
-## `api/`
+## `daedalus/api/`
 
 The orchestration layer `dd` drives:
 
@@ -83,7 +84,7 @@ The orchestration layer `dd` drives:
 - `report.py`, `save.py`, `access.py` — PDF reports, `.npz` / `.csv` output, natural-name accessors.
 - `ui/` — the `ModelUI` graphical builder.
 
-## `engine/`
+## `daedalus/engine/`
 
 The model-agnostic physics core:
 
@@ -99,7 +100,7 @@ The model-agnostic physics core:
     an explicit overflow status instead of a silent `inf`.
   - `statespace.py` — the state-space route for a Phase J integral: an integral of a product of
     propagator and kernel lines over a region of internal times is evaluated as a matrix
-    computation on the realizations of `api/_realization.py` (a sweep over the sub-orders of the
+    computation on the realizations of `daedalus/api/_realization.py` (a sweep over the sub-orders of the
     diagram, with no poles, residues or pole tuples), which stays accurate where poles come close.
     **Which engine runs.** It is the default engine: every subset it can take goes through it, and
     a subset it cannot take (a noise-kernel box, a spatial model, a symbolic prefactor) or that it
@@ -113,21 +114,22 @@ The model-agnostic physics core:
   - `dbm_integral.py` — the exact integral of an exponential-polynomial over a polytope whose
     rows are difference bounds (scalar bounds and shifted order rows).
 
-## `simulations/`
+## `daedalus/simulations/`
 
 From-scratch numerical integrators (Euler–Maruyama for SDEs, spectral ETD1 for SPDEs) used to
 validate the analytic results in the example notebooks. They are **not** consumed by the
 analytic pipeline.
 
-## `models/`
+## `daedalus/models/`
 
 `*.model.py` specs, each building a model dict via the `api` builder. Loaded by path with
-`dd.load_model(name)` (they are data, not importable packages).
+`dd.load_model(name)` (they are data, not importable packages), which also searches
+`DAEDALUS_MODELS_PATH` and a clone's top-level `models/` folder for the user's own files.
 
 ## Data flow of a run
 
 `dd.load_model(name)` → `(model, module)`. `dd.run(model, cfg, module)` layers `cfg` over the
-model's `DEFAULT_FUNDAMENTAL` / `METADATA` and calls `api.compute_cumulants`, which drives the
+model's `DEFAULT_FUNDAMENTAL` / `METADATA` and calls `daedalus.api.compute_cumulants`, which drives the
 `engine` and returns a result dict (`C_tau`, `tau_grid` / `chi_grid`, the mean field, the
 per-loop-order breakdown, the diagram records, the route and the analyzer report).
 `dd.plot_cumulant` renders it; `dd.save_npz` persists it with a version / Phase J convention /

@@ -34,7 +34,7 @@ _REPO = os.path.join(os.path.dirname(__file__), '..')
 
 
 def _load(model_file):
-    path = os.path.join(_REPO, 'models', model_file)
+    path = os.path.join(_REPO, 'daedalus', 'models', model_file)
     spec = importlib.util.spec_from_file_location('m', path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -43,7 +43,7 @@ def _load(model_file):
 
 def _compute(model, fundamental, spatial_grid, tau_max=2.0, tau_step=1.0,
              max_ell=0, k=2):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     return compute_cumulants(
         model=model, k=k, max_ell=max_ell, fundamental=fundamental,
         external_fields=[('phi', 1), ('phi', 2)],
@@ -179,7 +179,7 @@ def test_max_ell_above_2_raises():
 
 
 def test_k_not_2_raises():
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     model = _load('allen_cahn_1d_subcritical_infinite.model.py')
     # 3 external legs so we pass the len(external_fields)==k check and
     # reach the spatial k!=2 guard.
@@ -201,7 +201,7 @@ def test_radial_inverse_ft_matches_closed_form(d, tol):
     turns a self-energy-dressed δC(|q|,τ) into the real-space correlator in any d.
     (d=3 sinc converges more slowly under plain trapz — FFTLog would tighten it;
     the result is cutoff-limited, Regime 1.)"""
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         radial_inverse_ft, free_correlator_static_closed_form as oracle,
     )
     mu = D = T = 1.0
@@ -218,7 +218,7 @@ def test_periodic_inverse_ft_limits(d):
     """periodic_inverse_ft (discrete-momentum lattice sum on a period-L cubic
     box) reproduces the infinite-domain radial_inverse_ft at large L, and gives
     a LARGER correlator at small L (the field's periodic images add)."""
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         radial_inverse_ft, periodic_inverse_ft)
     mu = D = T = 1.0
     q = np.linspace(60.0 / 24000, 60.0, 6000)
@@ -236,8 +236,8 @@ def test_d2_periodic_through_compute_cumulants():
     """END-TO-END: a d=2 PERIODIC linear model runs through compute_cumulants;
     large L matches the infinite-domain value and small L exceeds it — via the
     d≥2 periodic lattice-sum path + the model-boundary fallback in _bc_from_prop."""
-    from api.compute import compute_cumulants
-    from api.model import ModelBuilder
+    from daedalus.api.compute import compute_cumulants
+    from daedalus.api.model import ModelBuilder
 
     def build(bc, L):
         b = (ModelBuilder('p2d', n_populations=0)
@@ -274,9 +274,9 @@ def test_d2_tree_through_compute_cumulants():
     max_ell=0) and the returned ``C(r,0)`` matches the exact d=2 free correlator
     (T/2πD)·K₀(r√(μ/D)).  Confirms the d=2 spatial dispatch (relaxed d≠1 gate +
     radial q→x transform) works through the public API."""
-    from api.compute import compute_cumulants
-    from api.model import ModelBuilder
-    from engine.integration.spatial.spatial_correlator import (
+    from daedalus.api.compute import compute_cumulants
+    from daedalus.api.model import ModelBuilder
+    from daedalus.engine.integration.spatial.spatial_correlator import (
         free_correlator_static_closed_form as oracle,
     )
     m = (ModelBuilder('lin2d', n_populations=0)
@@ -306,9 +306,9 @@ def test_d2_tadpole_loop_refuses_through_compute_cumulants():
     (⟨φ²⟩₀, log-divergent in d=2).  Its value used to be set by the smallest
     Schwinger quadrature node (it grew without limit with SPATIAL_GRID_NS);
     the spatial integrator now refuses the UV-divergent subgraph."""
-    from api.compute import compute_cumulants
-    from api.model import ModelBuilder
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.api.compute import compute_cumulants
+    from daedalus.api.model import ModelBuilder
+    from daedalus.engine.integration.spatial.full_integrator import (
         SpatialUVDivergenceError)
 
     m = (ModelBuilder('rd2', n_populations=0)

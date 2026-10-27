@@ -1,7 +1,7 @@
 """
 tests/test_vertices.py
 ======================
-Tests for engine.core.vertices — vertex decomposition (Build Phase B).
+Tests for daedalus.engine.core.vertices — vertex decomposition (Build Phase B).
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -13,19 +13,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, PolynomialRing
 
-from engine.core.vertices import (
+from daedalus.engine.core.vertices import (
     VertexType, SourceType, _parse_field_name,
     decompose_sector, extract_vertex_types, extract_source_types,
     available_degrees,
 )
-from engine.core.field_theory import FieldTheory
+from daedalus.engine.core.field_theory import FieldTheory
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _load_hawkes():
     """Load the Hawkes model and expand at taylor_order=4."""
-    models_dir = os.path.join(os.path.dirname(__file__), '..', 'simulations')
+    models_dir = os.path.join(os.path.dirname(__file__), '..', 'daedalus', 'simulations')
     sys.path.insert(0, models_dir)
     from hawkes_sage import HAWKES_MODEL
     ft = FieldTheory(HAWKES_MODEL, taylor_order=4)

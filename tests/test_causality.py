@@ -1,7 +1,7 @@
 """
 tests/test_causality.py
 =======================
-Tests for engine.diagrams.causality — Build Phase F.
+Tests for daedalus.engine.diagrams.causality — Build Phase F.
 
 Run with:
     cd "Automated Feynman Calculations"
@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, I, DiGraph
 
-from engine.diagrams.causality import check_pole_structure, check_causality, filter_causal
-from engine.diagrams.type_assignment import TypedDiagram
+from daedalus.engine.diagrams.causality import check_pole_structure, check_causality, filter_causal
+from daedalus.engine.diagrams.type_assignment import TypedDiagram
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

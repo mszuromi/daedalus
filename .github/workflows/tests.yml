@@ -28,7 +28,7 @@ jobs:
         run: |
           python -c "import sys, numpy, scipy, sympy, numba, mpmath; print('python', sys.version.split()[0], '| numpy', numpy.__version__, '| scipy', scipy.__version__, '| sympy', sympy.__version__, '| numba', numba.__version__, '| mpmath', mpmath.__version__)"
           python -c "import sage.version; print('sage', sage.version.version)"
-          python -c "import engine.enumeration.fastenum as f; print('compiled enumeration:', f.available, f.cert_backend or f.reason)"
+          python -c "import daedalus.engine.enumeration.fastenum as f; print('compiled enumeration:', f.available, f.cert_backend or f.reason)"
 
       - name: Run the test suite (slow tests deselected via pytest.ini)
         run: python -m pytest tests/ -q     # the activated conda env's python already has Sage

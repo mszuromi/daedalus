@@ -1,7 +1,7 @@
 """
 tests/test_dt_first_order.py
 ============================
-Pins the first-order-in-time guard (``engine/core/dt_order.py``).
+Pins the first-order-in-time guard (``daedalus/engine/core/dt_order.py``).
 
 The framework models Itô SDEs/SPDEs/DAEs, which must be FIRST ORDER in
 the time-derivative symbol ``Dt``.  A residual of ``Dt``-degree ≥ 2 used
@@ -33,14 +33,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.model import TemporalModelBuilder            # noqa: E402
-from api._mean_field_dae import (                     # noqa: E402
+from daedalus.api.model import TemporalModelBuilder            # noqa: E402
+from daedalus.api._mean_field_dae import (                     # noqa: E402
     linear_stability, solve_mean_field_dae,
 )
-from engine.core.dt_order import (                    # noqa: E402
+from daedalus.engine.core.dt_order import (                    # noqa: E402
     NonlinearDtError, dt_degree_exceeds_one,
 )
-from engine.core.field_theory import FieldTheory      # noqa: E402
+from daedalus.engine.core.field_theory import FieldTheory      # noqa: E402
 
 
 # ── Model fixtures ───────────────────────────────────────────────────

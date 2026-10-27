@@ -1,4 +1,4 @@
-"""Declarations of the SDE front end return Sage symbols (api/sde_symbols.py), and the renamed keywords
+"""Declarations of the SDE front end return Sage symbols (daedalus/api/sde_symbols.py), and the renamed keywords
 (``noise(into=, as_field=)``, formerly ``couples=`` / ``expose=``).
 
 A model written with symbols and Sage expressions is compared with the string model whose text is the expression's
@@ -12,10 +12,10 @@ import pytest
 from sage.all import SR
 from sage.symbolic.expression import Expression
 
-from api.noise import Gaussian, Poisson
-from api.operators import Laplacian, TimeDerivative
-from api.sde import SDE, SDEError
-from api.sde_symbols import Conv, Symbol
+from daedalus.api.noise import Gaussian, Poisson
+from daedalus.api.operators import Laplacian, TimeDerivative
+from daedalus.api.sde import SDE, SDEError
+from daedalus.api.sde_symbols import Conv, Symbol
 from tests import _sde_model_catalogue as cat
 from tests._sde_model_catalogue import digest
 
@@ -44,7 +44,7 @@ def test_a_symbol_is_a_sage_symbol():
     assert x.operator() is None                       # Sage's Expression.operator() without arguments
     i, j = SR.var('i j')
     w = m.parameter('w', default=[[1.0]], indexed='matrix')
-    from api.noise import expr_to_text
+    from daedalus.api.noise import expr_to_text
     assert expr_to_text(w[i, j] * x[j]) == 'w[i,j]*x[j]'
     with pytest.raises(TypeError, match='not callable'):
         w(x)
@@ -169,7 +169,7 @@ def test_every_catalogue_model_is_byte_identical_under_the_new_keywords(monkeypa
 
 
 def _cfg(tmp_path, noise_line):
-    from api.config_run import load_config
+    from daedalus.api.config_run import load_config
     text = ('sde:\n  name: OU\n  parameters:\n    mu: {default: 1.0, domain: positive}\n'
             '    D: {default: 1.0, domain: positive}\n  fields: [x]\n  drift: {x: "-mu*x"}\n'
             f'  noise:\n    xi: {noise_line}\nquestion: {{k: 2, max_ell: 0}}\n')

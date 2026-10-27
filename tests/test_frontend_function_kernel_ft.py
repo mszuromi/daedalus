@@ -16,11 +16,11 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR, assumptions, exp, heaviside, I, var        # noqa: E402
 
-import api.compute as AC                                            # noqa: E402
-from api.model_compiler import causal_exponential_ft                # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE                                             # noqa: E402
-from api.theory import TemporalTheoryBuilder                        # noqa: E402
+import daedalus.api.compute as AC                                            # noqa: E402
+from daedalus.api.model_compiler import causal_exponential_ft                # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
+from daedalus.api.theory import TemporalTheoryBuilder                        # noqa: E402
 
 TAU = np.array([-1.0, 0.0, 0.7])
 
@@ -42,7 +42,7 @@ def _same_run(a, b):
 
 
 def _action(model):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=4)
     ft.expand()
     return {bg: str(p) for bg, p in ft._by_tp.items()}
@@ -50,7 +50,7 @@ def _action(model):
 
 def _raw_action(model):
     """The action before expansion (formal calls still visible)."""
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=2)
     ft.expand()                                                 # fills the namespace
     return str(model['action'](ft._ns))
@@ -120,7 +120,7 @@ def test_function_of_affine_expression_1pop():
 
 
 def _expanded(model):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=4)
     ft.expand()
     bg = {str(k): str(v) for k, v in model['mf_bg_conditions'](ft._ns).items()}
@@ -239,7 +239,7 @@ def test_sde_function_of_the_field_keeps_the_formal_path():
 def test_formal_call_site_rule():
     """Formal iff the arguments at zero fluctuation are all the saddles or all 0 (the two Taylor
     rename points); otherwise the body is inlined."""
-    from api.model_compiler import (_IndexedFormalFunction, _IndexedSaddleRename,
+    from daedalus.api.model_compiler import (_IndexedFormalFunction, _IndexedSaddleRename,
                                     _make_function_callable)
     vs, dv, c = SR.var('vstarQ1'), SR.var('dvQ1'), SR.var('cQ')
     spec = {'name': 'phiQ', 'args': ['v'], 'expression': 'c*exp(v)'}
@@ -267,7 +267,7 @@ def test_formal_call_site_rule():
 
 def test_mf_classification_of_inlined_calls():
     """A single call is an iteration (closure) saddle only when it has a rename target."""
-    from api.model_compiler import _call_has_rename_target as ok
+    from daedalus.api.model_compiler import _call_has_rename_target as ok
     fns = [{'name': 'phi', 'args': ['v']}, {'name': 'f', 'args': ['v', 'n']}]
     names = {'vstar', 'nstar'}
     assert ok('phi(vstar[i])', fns, names) and ok('phi[i]( (vstar[i]) )', fns, names)
@@ -332,7 +332,7 @@ def _kernel_model(kind, n, tau_g=1.0, te=None, fi=None, taug_domain='positive'):
 
 
 def _images(model):
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=2)
     ft.expand()                                                 # fills the namespace
     out = {str(k): v for k, v in model['kernel_ft_image'](ft._ns, SR.var('omega')).items()}
@@ -376,7 +376,7 @@ def test_time_expr_kernel_unsigned_parameter_refused_clearly():
 
 def test_single_exponential_time_expr_unchanged():
     """A kernel Sage already transforms keeps Sage's image (the structural rule is a fallback)."""
-    from engine.core.field_theory import fourier_transform
+    from daedalus.engine.core.field_theory import fourier_transform
     img = _images(_kernel_model('time', 1, te='exp(-t/taug[i])/taug[i]*heaviside(t)'))
     t, w = SR.var('t'), SR.var('omega')
     taug = next(v for v in img['z_r_1'].variables() if str(v) == 'taug1')   # the model's symbol

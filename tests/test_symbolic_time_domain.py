@@ -1,4 +1,4 @@
-"""Tests for stage C2 of ``api/symbolic_out.py``: the tree-level covariance in
+"""Tests for stage C2 of ``daedalus/api/symbolic_out.py``: the tree-level covariance in
 the time domain as a mode sum for any denominator degree, the stated
 assumptions (Routh/Sturm sign conditions, distinct poles), and time-domain
 kernel integrals.
@@ -29,10 +29,10 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
 import daedalus as dd  # noqa: E402
-from api import symbolic_out as so  # noqa: E402
-from api.compute import compute_cumulants  # noqa: E402
-from api.sde import SDE  # noqa: E402
-from api.noise import Gaussian, Poisson  # noqa: E402
+from daedalus.api import symbolic_out as so  # noqa: E402
+from daedalus.api.compute import compute_cumulants  # noqa: E402
+from daedalus.api.sde import SDE  # noqa: E402
+from daedalus.api.noise import Gaussian, Poisson  # noqa: E402
 
 warnings.filterwarnings('ignore')
 
@@ -584,7 +584,7 @@ def test_routh_count_matches_numeric_roots(seed):
     """Random integer polynomials of degree 1..6: the stated split of each
     irreducible factor equals the numeric left-half-plane count (or the
     factor is refused because a root sits on the imaginary axis)."""
-    from api.symbolic_out import _Bridge, _AlgCtx, _Family, _split_factor
+    from daedalus.api.symbolic_out import _Bridge, _AlgCtx, _Family, _split_factor
     rng = np.random.default_rng(seed)
     w = SR.var('omega')
     n_checked = 0
@@ -718,7 +718,7 @@ def test_G_ft_none_branch_gives_the_same_C0():
 
 
 def test_mean_field_symbols_follow_the_model_declarations():
-    from api.symbolic_out import _mf_symbols_only, _is_saddle_symbol
+    from daedalus.api.symbolic_out import _mf_symbols_only, _is_saddle_symbol
     model = {'parameters': [{'name': 'msad', 'mean_field': True},
                             {'name': 'kstar_gain'}, {'name': 'mu'}]}
     npar = {SR.var('msad1'): 0.25, SR.var('kstar_gain'): 3.0,
@@ -789,7 +789,7 @@ def _oscillator():
     """x'' + g x' + w0^2 x = xi, <xi xi> = 2 D delta: C0_xx is the C1
     spectrum 2D/((w^2 - w0^2)^2 + g^2 w^2) (the 2.39-not-2.06 case at
     g = 0.2, w0 = 1, 2D = 1, tau = 0.3)."""
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     return (TemporalModelBuilder('damped oscillator', n_populations=1)
             .physical_field('x').physical_field('v')
             .parameter('w0', default=1.0).parameter('g', default=0.2)

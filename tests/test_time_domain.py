@@ -4,7 +4,7 @@ tests/test_time_domain.py
 Phase J (time-domain integration) MVP tests.
 
 Scope: only the Phase J evaluation layer — tree-level diagrams handled
-by `engine.integration.time_domain`. Loop kernel reduction, kernel
+by `daedalus.engine.integration.time_domain`. Loop kernel reduction, kernel
 caching, and parent-diagram contraction are NOT yet implemented and
 those paths should raise or be marked 'skipped'.
 
@@ -27,7 +27,7 @@ import pytest
 
 _LINUX_FORK_ONLY = pytest.mark.skipif(
     sys.platform == 'darwin',
-    reason='macOS never forks (engine.fork_safety); Linux CI covers the fork path')
+    reason='macOS never forks (daedalus.engine.fork_safety); Linux CI covers the fork path')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -35,14 +35,14 @@ from sage.all import (
     SR, I, matrix, DiGraph, solve as sage_solve, heaviside, exp,
 )
 
-from engine.diagrams.type_assignment import TypedDiagram
-from engine.core.vertices import VertexType, SourceType
+from daedalus.engine.diagrams.type_assignment import TypedDiagram
+from daedalus.engine.core.vertices import VertexType, SourceType
 from tests.oracles.symbolic import (
     build_integrand_stationary,
     group_diagrams_by_kernel,
     integrate_to_time_domain,
 )
-from engine.integration.time_domain import (
+from daedalus.engine.integration.time_domain import (
     build_G_t_matrix,
     G_t_entry,
     identify_loop_subgraphs,
@@ -734,7 +734,7 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     produces a pure δ(t₁ - t₂) shot-noise spike at τ = 0. The
     continuous Phase J callable cannot represent this; instead, the
     spike is returned as a structured `delta_contributions` entry
-    that the caller can insert into a discrete τ grid (``api.cumulant``
+    that the caller can insert into a discrete τ grid (``daedalus.api.cumulant``
     does so for ``compute_cumulants`` results).
 
     This test:
@@ -809,9 +809,9 @@ def test_phase_J_autocorrelator_delta_spike_at_origin():
     assert abs(coeff_val.imag) < 1e-12
 
     # Discretize onto a τ grid in the user-facing bin convention
-    # (``api.cumulant``; the old eval_delta_contributions_on_tau_grid
+    # (``daedalus.api.cumulant``; the old eval_delta_contributions_on_tau_grid
     # helper is retired) and check the spike integrates correctly
-    from api.cumulant import _bin_deposits
+    from daedalus.api.cumulant import _bin_deposits
     tau_grid = np.linspace(-5.0, 5.0, 501)
     deposits = _bin_deposits(tau_grid, float(tau_fire))
     assert len(deposits) == 1, (
@@ -883,7 +883,7 @@ def test_phase_J_2d_polytope_decays_at_large_tau():
     internal vertices (forcing `m = 2` polytope integration) and
     verifies the result decays at large |τ|.
     """
-    # VertexType is imported from engine.core.vertices at the top of this file
+    # VertexType is imported from daedalus.engine.core.vertices at the top of this file
 
     # Build a 2×2 propagator with two retarded poles
     omega = SR.var('omega')
@@ -1006,7 +1006,7 @@ def test_phase_J_nd_polytope_preserves_deferred_constraints():
                                          -5 to 0 by the deferred-
                                          inner constraint `s_1 > s_0`)
     """
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1065,7 +1065,7 @@ def test_phase_J_nd_polytope_simplex_gaussian():
     up to ~1e-7 tail corrections.
     """
     import math
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1121,7 +1121,7 @@ def test_phase_J_heaviside_filter_kills_overshoot():
     would give a different and CAP-sensitive answer.
     """
     import math
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1197,7 +1197,7 @@ def test_phase_J_2d_polytope_pure_external_constraint():
     Exact: `(1 - exp(-0.5))² / 0.01 ≈ 15.485`
     """
     import math
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _integrate_polytope,
     )
 
@@ -1267,7 +1267,7 @@ def test_phase_J_fix_D_vectorized_bound_fn_matches_scalar():
     silent regression of the vectorised path would move the integral
     by at least one simplex-edge worth of volume.
     """
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _integrate_nd_polytope,
     )
 
@@ -1339,7 +1339,7 @@ def test_phase_J_fix_D_heaviside_filter_sparse_path():
       3. For a mixed constraint, the filter correctly evaluates
          `a_int · s_vals + c_eff` using only the nonzero entries.
     """
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _make_heaviside_filtered_integrand,
     )
 
@@ -1407,7 +1407,7 @@ def test_phase_J_fix_E_fast_evaluator_matches_fast_callable():
       2. The per-point values match the fast_callable path to
          absolute tolerance 1e-10 (double-precision roundoff).
     """
-    from engine.integration.time_domain.final_integral import (
+    from daedalus.engine.integration.time_domain.final_integral import (
         _build_fast_subset_evaluator,
     )
     pd = _propagator_data_2pop_nondiagonal()
@@ -1634,8 +1634,8 @@ def test_phase_J_fork_guard_macos_never_forks(monkeypatch):
     keeps the fork path.  ``sys.platform`` is patched, so the test is
     deterministic on any host and never forks.
     """
-    import engine.fork_safety as fs
-    from engine.integration.time_domain import pipeline as P
+    import daedalus.engine.fork_safety as fs
+    from daedalus.engine.integration.time_domain import pipeline as P
 
     monkeypatch.setattr(sys, 'platform', 'linux')
     assert P._fork_unsafe('fork') is False and P._fork_unsafe('spawn') is False
@@ -1667,7 +1667,7 @@ def test_phase_J_fork_guard_macos_never_forks(monkeypatch):
 def test_phase_J_parallel_kill_switch(monkeypatch):
     """``DAEDALUS_PARALLEL=0``: no pool on any platform, no warning, the
     serial numbers."""
-    import engine.fork_safety as fs
+    import daedalus.engine.fork_safety as fs
     monkeypatch.setattr(sys, 'platform', 'linux')
     j_result, tau_points = _guard_fixture_batch()
     serial = j_result['total_C_batch'](tau_points, parallel=False)

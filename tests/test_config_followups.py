@@ -1,4 +1,4 @@
-"""Follow-ups of the YAML entry point (``api/config_run.py``), on top of ``test_config_run.py``.
+"""Follow-ups of the YAML entry point (``daedalus/api/config_run.py``), on top of ``test_config_run.py``.
 
 A  the ``daedalus`` console script (``[project.scripts] daedalus = "daedalus:main"``) and ``--dry-run`` printing the analyzer
    report table next to the resolved config (as YAML comments, so the output is still a valid config).
@@ -25,8 +25,8 @@ sys.path.insert(0, os.path.join(ROOT, 'notebooks'))
 
 import yaml  # noqa: E402
 import daedalus as dd  # noqa: E402
-from api import config_run  # noqa: E402
-from api.config_run import ConfigError, load_config, run_config  # noqa: E402
+from daedalus.api import config_run  # noqa: E402
+from daedalus.api.config_run import ConfigError, load_config, run_config  # noqa: E402
 
 
 def _write(tmp_path, text, name='cfg.yaml'):
@@ -71,7 +71,7 @@ def test_a_main_handles_run_and_exit_status(tmp_path, capsys):
 def test_a_dry_run_prints_the_resolved_config_and_the_report_table(tmp_path, monkeypatch, capsys):
     def boom(*a, **kw):
         raise AssertionError('--dry-run must not compute')
-    import api
+    import daedalus.api as api
     monkeypatch.setattr(api, 'compute_cumulants', boom)
     path = _write(tmp_path, "model: ou_quartic\nparameters: {eps: 0.5}\nquestion: {k: 2, max_ell: 1}\n")
     dd.main(['run', path, '--dry-run'])
@@ -277,7 +277,7 @@ def test_c_spatial_points_k3_matches_direct(tmp_path):
 
 
 TEMPORAL_K3 = '''\
-from api.model import TemporalModelBuilder
+from daedalus.api.model import TemporalModelBuilder
 
 
 def build():
@@ -349,8 +349,8 @@ question:
 
 
 def _python_sde():
-    from api.noise import Gaussian
-    from api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE
     s = SDE('OU quartic inline')
     s.parameter('mu', default=1.0, domain='positive')
     s.parameter('eps', default=0.02, domain='positive')

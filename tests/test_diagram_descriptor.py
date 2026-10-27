@@ -27,19 +27,19 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-from engine.integration.spatial.pipeline_bridge import (
+from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+from daedalus.engine.integration.spatial.pipeline_bridge import (
     build_pipeline_records, _legs_to_phys_idx,
 )
-from engine.diagrams.type_assignment import build_field_index_map
+from daedalus.engine.diagrams.type_assignment import build_field_index_map
 
 
 @pytest.fixture(scope='module')
 def rd_records():
     """Reaction-diffusion (φ̃φ²) d=1: built once, ell=0 and ell=1 records."""
-    from api.model import ModelBuilder
-    from api._propagator import build_propagator
-    from api.compute import FieldTheory
+    from daedalus.api.model import ModelBuilder
+    from daedalus.api._propagator import build_propagator
+    from daedalus.api.compute import FieldTheory
 
     model = (ModelBuilder('rd1', n_populations=0)
              .physical_field('phi', spatial_dim=1)

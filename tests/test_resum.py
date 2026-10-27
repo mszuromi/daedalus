@@ -1,7 +1,7 @@
 """
 tests/test_resum.py
 ===================
-The screened (optimized-perturbation) loop series, ``api/resum.py``
+The screened (optimized-perturbation) loop series, ``daedalus/api/resum.py``
 (``dd.Config(resum='screened')``).
 
 * the counterterm parameters shift the propagator and nothing else: a run of
@@ -36,8 +36,8 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
 import daedalus as dd  # noqa: E402
-from api.compute import compute_cumulants  # noqa: E402
-from api.resum import (screened_model, resolve_resum_options,  # noqa: E402
+from daedalus.api.compute import compute_cumulants  # noqa: E402
+from daedalus.api.resum import (screened_model, resolve_resum_options,  # noqa: E402
                        fd_weights, ResumWarning, _LogCheb)
 
 C_LOOP = [1.0, -3.0, 24.0, -297.0]      # <x^2> = (D/mu) sum_l c_l g^l
@@ -170,7 +170,7 @@ def test_order_one_at_hartree_mass_is_hartree(ou_quartic, tmp_path):
     assert np.allclose(info['A_trial'], h.A, rtol=1e-14)
     assert r['status'] == 'ok' and info['trial_runs_not_ok'] == []
     # a saved file says it is resummed and keeps the plain series
-    from api.save import save_npz
+    from daedalus.api.save import save_npz
     f = np.load(save_npz(r, str(tmp_path / 'screened.npz')))
     assert str(f['resum_method']) == 'screened'
     assert np.array_equal(f['C_total'], np.real(r['C_tau'])) or \

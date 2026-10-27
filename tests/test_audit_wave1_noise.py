@@ -2,7 +2,7 @@
 tests/test_audit_wave1_noise.py
 ===============================
 Regression tests for the Oct 2026 audit's fix wave 1, noise library front
-end (``api.noise``, ``api.sde``).  Inline public models only.
+end (``daedalus.api.noise``, ``daedalus.api.sde``).  Inline public models only.
 
 * the uniform jump's CGF enters the action as a Taylor polynomial: the built
   model records its order and compute_cumulants refuses (k, max_ell) that
@@ -22,10 +22,10 @@ pytest.importorskip('sage.all')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api import compute_cumulants                                      # noqa: E402
-from api import noise as N                                             # noqa: E402
-from api.noise import NoiseError                                       # noqa: E402
-from api.sde import SDE                                                # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api import noise as N                                             # noqa: E402
+from daedalus.api.noise import NoiseError                                       # noqa: E402
+from daedalus.api.sde import SDE                                                # noqa: E402
 
 
 def _uniform_ou(order, mu=1.3, lam=2.0, h=0.7):

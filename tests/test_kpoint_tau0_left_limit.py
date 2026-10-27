@@ -106,9 +106,9 @@ matplotlib.use('Agg')
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, _REPO)
 
-import api                                                  # noqa: E402
+import daedalus.api as api                                                  # noqa: E402
 import daedalus as dd                                       # noqa: E402
-from api.compute import _ITO_EPS                            # noqa: E402
+from daedalus.api.compute import _ITO_EPS                            # noqa: E402
 
 EPS = _ITO_EPS
 
@@ -358,12 +358,17 @@ def _pre_change_daedalus():
         return None
     name = 'daedalus_pre_kpoint_nudge'
     mod = types.ModuleType(name)
-    mod.__file__ = dd.__file__
+    # where that file lived (the repo root): its repo_root() walks up from
+    # here and puts the directory it finds on sys.path, so restore sys.path
+    old_file = os.path.join(_REPO, 'daedalus.py')
+    mod.__file__ = old_file
     sys.modules[name] = mod           # @dataclass resolves its module by name
+    saved_path = list(sys.path)
     try:
-        exec(compile(src.stdout, dd.__file__, 'exec'), mod.__dict__)
+        exec(compile(src.stdout, old_file, 'exec'), mod.__dict__)
     finally:
         del sys.modules[name]
+        sys.path[:] = saved_path
     return mod
 
 
@@ -400,13 +405,13 @@ def _run(which, k, grid, base=None):
         name, params, _legs = _MODELS[which]
         model, mod = dd.load_model(name)
         # multipopulation_test has two pole clusters, which compute_cumulants
-        # resolves by averaging node runs (api._pole_clusters; ~9 times the
+        # resolves by averaging node runs (daedalus.api._pole_clusters; ~9 times the
         # cost per k >= 3 evaluation, and the tree moves by up to 1.4e-4).
         # These tests are about the slice / tie machinery (self-consistency
         # of limits), so the clusters are left unresolved -- the exact
         # residue tier made unavailable -- for the old pole sums.  (Before
         # audit W7: the retired switch DAEDALUS_POLE_CLUSTERS=0.)
-        from api import _propagator as PR
+        from daedalus.api import _propagator as PR
         saved = PR._compute_residues_via_polynomial_fracfield
         if which == 'mp':
             PR._compute_residues_via_polynomial_fracfield = (

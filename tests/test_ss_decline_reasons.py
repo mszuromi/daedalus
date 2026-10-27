@@ -14,13 +14,13 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.integration.time_domain import statespace as SS     # noqa: E402
-import api._realization as R                                     # noqa: E402
+from daedalus.engine.integration.time_domain import statespace as SS     # noqa: E402
+import daedalus.api._realization as R                                     # noqa: E402
 
 _ROOT = os.path.join(os.path.dirname(__file__), '..')
-_SS = os.path.join(_ROOT, 'engine', 'integration', 'time_domain',
+_SS = os.path.join(_ROOT, 'daedalus', 'engine', 'integration', 'time_domain',
                    'statespace.py')
-_FI = os.path.join(_ROOT, 'engine', 'integration', 'time_domain',
+_FI = os.path.join(_ROOT, 'daedalus', 'engine', 'integration', 'time_domain',
                    'final_integral.py')
 
 # literal reasons handed to the decline / refusal constructors
@@ -103,9 +103,9 @@ def _alpha_conductance(embedded):
     """x' = h - a x - q x^2 - c x (g * x) + noise with the Erlang-2 (alpha)
     kernel g (a repeated rate); ``embedded``: its exact Markov twin (two
     auxiliary linear fields)."""
-    import api.noise as N
-    from api.sde import SDE
-    from api.delay import Kernel
+    import daedalus.api.noise as N
+    from daedalus.api.sde import SDE
+    from daedalus.api.delay import Kernel
     s = SDE('w7 alpha conductance' + (' embedded' if embedded else ''))
     for p, v in _P05.items():
         s = s.parameter(p, default=v,
@@ -122,7 +122,7 @@ def _alpha_conductance(embedded):
 
 def _run05(model):
     import numpy as np
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     return compute_cumulants(
         model, k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
         tau_grid=np.array([0.0, 0.5, 2.0]), parallel=False, verbose=False,
@@ -143,7 +143,7 @@ def test_alpha_kernel_loop_state_space_matches_markov_twin(monkeypatch):
 
 
 def test_alpha_kernel_loop_pole_engine_refuses_loudly(monkeypatch):
-    from api.compute import PhaseJIncompleteWarning
+    from daedalus.api.compute import PhaseJIncompleteWarning
     monkeypatch.setenv('DAEDALUS_PHASE_J_ENGINE', 'poles')
     with pytest.warns(PhaseJIncompleteWarning):
         r = _run05(_alpha_conductance(False))

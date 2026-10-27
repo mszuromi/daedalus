@@ -7,10 +7,10 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-from api import compute_cumulants                        # noqa: E402
-from api.noise import Gaussian                           # noqa: E402
-from api.sde import SDE                                  # noqa: E402
-from engine.integration.time_domain import statespace as SS   # noqa: E402
+from daedalus.api import compute_cumulants                        # noqa: E402
+from daedalus.api.noise import Gaussian                           # noqa: E402
+from daedalus.api.sde import SDE                                  # noqa: E402
+from daedalus.engine.integration.time_domain import statespace as SS   # noqa: E402
 
 
 def _cubic():
@@ -43,7 +43,7 @@ def test_discard_run_releases_the_resolvent_data_and_stays_bit_identical():
 
 
 def test_symbolic_cumulant_does_not_pin_the_pipeline_result():
-    from api import symbolic_loop as SL
+    from daedalus.api import symbolic_loop as SL
     r = SL.symbolic_cumulant(_cubic(), 2, 1, external_fields=[('x', 1)] * 2)
     gc.collect()
     assert 'result' not in r._ctx
@@ -53,7 +53,7 @@ def test_symbolic_cumulant_does_not_pin_the_pipeline_result():
 
 
 def test_editor_names_a_legacy_saddle_equation_by_the_declared_natural_name():
-    from api.ui.main import _legacy_mf_equation_rows
+    from daedalus.api.ui.main import _legacy_mf_equation_rows
     spec = {'physical_fields': [{'name': 'x', 'natural_name': 'x', 'population': 'E'},
                                 {'name': 'y', 'population': None}],
             'parameters': [{'name': 'rate_mf', 'natural_name': 'x'}],

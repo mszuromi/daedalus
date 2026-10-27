@@ -29,9 +29,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.core.field_theory import FieldTheory                  # noqa: E402
-from api._propagator import build_propagator                # noqa: E402
-from api.model import SpatialModelBuilder                 # noqa: E402
+from daedalus.engine.core.field_theory import FieldTheory                  # noqa: E402
+from daedalus.api._propagator import build_propagator                # noqa: E402
+from daedalus.api.model import SpatialModelBuilder                 # noqa: E402
 
 _MUA, _MUB, _D, _TA, _TB = 1.5, 1.2, 0.8, 1.0, 0.7
 
@@ -77,15 +77,15 @@ def _setup(model):
 ])
 def test_tree_anchor_assignment_machinery_equals_lyapunov(legs, qv, tau):
     """ell=0 record × spectral assignments == coupled_two_point (q-space)."""
-    from engine.diagrams.type_assignment import build_field_index_map
-    from engine.integration.spatial.diagram_descriptor import diagram_to_cstack
-    from engine.integration.spatial.full_integrator import (
+    from daedalus.engine.diagrams.type_assignment import build_field_index_map
+    from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
+    from daedalus.engine.integration.spatial.full_integrator import (
         diagram_kinematic_spectral, spectral_rows, external_times_2pt)
-    from engine.integration.spatial.pipeline_bridge import (
+    from daedalus.engine.integration.spatial.pipeline_bridge import (
         build_pipeline_records, _legs_to_phys_idx, _norm_sr)
-    from engine.integration.spatial.spatial_correlator import extract_noise_matrix
-    from engine.integration.spatial.heat_kernel import reaction_diffusion_matrices
-    from engine.integration.spatial.spectral_propagator import (
+    from daedalus.engine.integration.spatial.spatial_correlator import extract_noise_matrix
+    from daedalus.engine.integration.spatial.heat_kernel import reaction_diffusion_matrices
+    from daedalus.engine.integration.spatial.spectral_propagator import (
         build_reference, coupled_two_point, spectral_projectors)
     from sage.all import SR, var
 
@@ -167,7 +167,7 @@ def test_decoupled_limit_matches_single_field_loop(monkeypatch):
     window scale is min Re eig (=μ_b) while the scalar path's is μ_a.  At
     n_t=40 both are within ~5e-4 of the n_t=60 converged value (probed); at
     equal (n_t,n_s,mu_scale) they agree bit-for-bit."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     monkeypatch.setenv('SPATIAL_GRID_NT', '40')
     monkeypatch.setenv('SPATIAL_GRID_NS', '40')
@@ -217,7 +217,7 @@ def test_cross_correlator_loop_vs_hartree_oracle(monkeypatch):
     correlator is genuinely τ-ASYMMETRIC; the old symmetrized double-count
     would fail this at both signs and by 2× at τ=0)."""
     from scipy.linalg import expm, solve_continuous_lyapunov
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     monkeypatch.setenv('SPATIAL_GRID_NT', '40')
     monkeypatch.setenv('SPATIAL_GRID_NS', '40')
@@ -271,7 +271,7 @@ def test_cross_correlator_loop_vs_hartree_oracle(monkeypatch):
 def test_coupled_nonlinear_loop_e2e_smoke():
     """Coupled (g,h≠0) cubic model at max_ell=1: runs through compute_cumulants,
     real output, and the stabilizing cubic REDUCES C_aa(0,0) vs tree."""
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     g, h, ga, gb = 0.4, 0.3, 0.3, 0.3
     model = _two_species(g, h, ga=ga, gb=gb)

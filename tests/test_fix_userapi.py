@@ -38,8 +38,8 @@ if _ROOT not in sys.path:
 import pytest  # noqa: E402
 
 import daedalus as dd  # noqa: E402
-from api.ui.main import ModelUI  # noqa: E402
-from api.model_serialize import (  # noqa: E402
+from daedalus.api.ui.main import ModelUI  # noqa: E402
+from daedalus.api.model_serialize import (  # noqa: E402
     render_model_file, load_spec_from_file,
 )
 
@@ -59,7 +59,7 @@ def test_legacy_indexed_survives_no_named_populations():
     (w).  The index dropdowns have no population names to hold, so the
     legacy value must round-trip through _collect() as a re-emitted
     ``indexed`` key — NOT silently degrade to scalar."""
-    out = _collected('models/linear_hawkes.model.py')
+    out = _collected('daedalus/models/linear_hawkes.model.py')
     by_name = {p['name']: p for p in out['parameters']}
 
     # Vector parameter E.
@@ -76,7 +76,7 @@ def test_legacy_indexed_survives_no_named_populations():
 def test_legacy_indexed_full_disk_round_trip():
     """The whole load → _collect → render → reload chain (i.e. what an
     actual UI 'Save' does) preserves the matrix/vector shape on disk."""
-    out = _collected('models/linear_hawkes.model.py')
+    out = _collected('daedalus/models/linear_hawkes.model.py')
     src = render_model_file(out)
     with tempfile.NamedTemporaryFile('w', suffix='.model.py',
                                      delete=False) as f:
@@ -117,7 +117,7 @@ def test_legacy_indexed_maps_to_dropdowns_when_named_pops_exist():
 def test_modern_indexed_by_still_round_trips():
     """The pre-existing modern path (named pops + indexed_by) is
     unaffected by the fix."""
-    out = _collected('models/multipopulation_test.model.py')
+    out = _collected('daedalus/models/multipopulation_test.model.py')
     by_name = {p['name']: p for p in out['parameters']}
     assert by_name['tauE'].get('indexed_by') == ['E']
     assert by_name['wEE'].get('indexed_by') == ['E', 'E']

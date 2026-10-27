@@ -22,8 +22,8 @@ from tests.oracles.symbolic import (
     integrate_tree_level,
     integrate_to_time_domain,
 )
-from engine.diagrams.type_assignment import TypedDiagram
-from engine.core.vertices import VertexType, SourceType
+from daedalus.engine.diagrams.type_assignment import TypedDiagram
+from daedalus.engine.core.vertices import VertexType, SourceType
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

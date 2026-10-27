@@ -10,10 +10,10 @@ import pytest
 
 pytest.importorskip('sage.all')
 
-from api import compute_cumulants
-from api.noise import Gaussian
-from api.sde import SDE
-from engine.integration.time_domain import final_integral as FI
+from daedalus.api import compute_cumulants
+from daedalus.api.noise import Gaussian
+from daedalus.api.sde import SDE
+from daedalus.engine.integration.time_domain import final_integral as FI
 
 
 def _cubic():

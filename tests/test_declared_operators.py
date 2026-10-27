@@ -1,4 +1,4 @@
-"""Declared operators (api/operators.py) in the SDE front end, and the SDE -> SPDE bridge (api/sde.py).
+"""Declared operators (daedalus/api/operators.py) in the SDE front end, and the SDE -> SPDE bridge (daedalus/api/sde.py).
 
 A. Temporal models are unchanged: every model of tests/_sde_model_catalogue.py gives the action text, mean-field
    equations, notes and built model dict of the snapshot taken before declared operators existed; renaming ``Dt``
@@ -19,10 +19,10 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR                                                       # noqa: E402
 
-from api.model import SpatialModelBuilder                                     # noqa: E402
-from api.noise import (Gaussian, NoiseError, Poisson, parse_expr)             # noqa: E402
-from api.operators import Laplacian, Operator, TimeDerivative                 # noqa: E402
-from api.sde import SDE, SDEError                                             # noqa: E402
+from daedalus.api.model import SpatialModelBuilder                                     # noqa: E402
+from daedalus.api.noise import (Gaussian, NoiseError, Poisson, parse_expr)             # noqa: E402
+from daedalus.api.operators import Laplacian, Operator, TimeDerivative                 # noqa: E402
+from daedalus.api.sde import SDE, SDEError                                             # noqa: E402
 
 from tests._sde_model_catalogue import CATALOGUE, digest                      # noqa: E402
 
@@ -193,7 +193,7 @@ def test_operator_declared_twice_and_non_operators_are_refused():
     s = SDE('m').operator('lap', Laplacian())
     with pytest.raises(SDEError, match='is declared'):
         s.operator('lap', Laplacian())
-    with pytest.raises(SDEError, match='an operator from api.operators'):
+    with pytest.raises(SDEError, match='an operator from daedalus.api.operators'):
         s.operator('L2', 'Laplacian')
     assert isinstance(SDE('m').operator('L2', Laplacian)._operators['L2'], Operator)   # a class is instantiated
 
@@ -212,7 +212,7 @@ def test_operator_shadowing_a_function_is_refused_in_either_order():
 # ── B: the SPDE bridge against the tracked spatial models ───────────────────────────────────
 
 def _tracked(name):
-    spec = importlib.util.spec_from_file_location(f'decl_ops_{name}', ROOT / 'models' / f'{name}.model.py')
+    spec = importlib.util.spec_from_file_location(f'decl_ops_{name}', ROOT / 'daedalus' / 'models' / f'{name}.model.py')
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -338,7 +338,7 @@ def _canon(v):
 
 def _expanded(model):
     """The expanded action by (response, physical) grade, printed (the polynomial ring's canonical form)."""
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=4)
     ft.expand()
     return {tp: str(v) for tp, v in ft._by_tp.items()}
@@ -401,7 +401,7 @@ def test_product_and_call_style_laplacian_are_the_same_model():
 
 
 def _run(model, max_ell, spatial_grid=None, **kw):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     return compute_cumulants(model=model, k=2, max_ell=max_ell,
                              fundamental={'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
                              external_fields=[('phi', 1), ('phi', 2)], tau_max=1.0, tau_step=0.5,
@@ -465,7 +465,7 @@ def test_spatial_refusals_are_unchanged_through_the_bridge():
 
 def test_uv_divergent_loop_refused_through_the_bridge():
     """phi^4 in d=2: the one-loop tadpole is UV-divergent; the bridge model is refused as the hand-written one."""
-    from engine.integration.spatial.full_integrator import SpatialUVDivergenceError
+    from daedalus.engine.integration.spatial.full_integrator import SpatialUVDivergenceError
 
     def hand():
         return (SpatialModelBuilder('AC d=2', n_populations=0).physical_field('phi', spatial_dim=2)
@@ -493,7 +493,7 @@ def test_uv_divergent_loop_refused_through_the_bridge():
     (dict(k=2, max_ell=0, spatial_grid=None), Exception),        # a spatial model needs spatial_grid
 ])
 def test_spatial_k_and_loop_gates_unchanged_through_the_bridge(kw, exc):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     def call(m):
         args = dict(model=m, fundamental={'mu': 1.0, 'D': 1.0, 'lam': 0.1, 'T': 1.0},
@@ -512,8 +512,8 @@ def test_spatial_k_and_loop_gates_unchanged_through_the_bridge(kw, exc):
 def test_derivative_vertex_loop_is_approximate_through_the_bridge():
     """``g*lap(phi^2)`` through the bridge: the one-loop derivative-vertex result is 'approximate' with the same
     accuracy record and the same numbers as the tracked operator-IR model, and strict policy raises for both."""
-    from api import compute_cumulants
-    from api.compute import SpatialAccuracyError
+    from daedalus.api import compute_cumulants
+    from daedalus.api.compute import SpatialAccuracyError
     kw = dict(k=2, max_ell=1, external_fields=[('phi', 1)] * 2, tau_grid=np.array([0.0, 1.0]),
               spatial_grid=np.array([0.5]), use_cache=False, parallel=False, spatial_parallel=False,
               verbose=False)

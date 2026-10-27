@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 def test_concurrent_cert_writers_do_not_clobber(tmp_path):
     """LOUD-03: two writers of one cell both succeed and leave a valid file
     and no stray temp files (the old fixed '<file>.tmp' name raced)."""
-    import engine.enumeration.prediagram_cache as P
+    import daedalus.engine.enumeration.prediagram_cache as P
     certs = {bytes([i, j]) for i in range(64) for j in range(64)}
     path = str(tmp_path / 'streaming_v2' / 'cell.pkl')
     errors = []
@@ -47,7 +47,7 @@ def test_concurrent_cert_writers_do_not_clobber(tmp_path):
 
 def test_failed_cert_write_leaves_no_temp_file(tmp_path, monkeypatch):
     import pickle
-    import engine.enumeration.prediagram_cache as P
+    import daedalus.engine.enumeration.prediagram_cache as P
     path = str(tmp_path / 'd' / 'cell.pkl')
 
     def boom(*a, **k):
@@ -62,7 +62,7 @@ def test_failed_cert_write_leaves_no_temp_file(tmp_path, monkeypatch):
 def test_shipped_cell_loads_from_a_read_only_cache_root(tmp_path, caplog):
     """LOUD-04: a shipped-cell hit is served from memory when the local root
     cannot be written (it used to raise PermissionError)."""
-    import engine.enumeration.prediagram_cache as P
+    import daedalus.engine.enumeration.prediagram_cache as P
     ro = tmp_path / 'ro'
     ro.mkdir()
     os.chmod(ro, stat.S_IRUSR | stat.S_IXUSR)
@@ -81,8 +81,8 @@ def test_shipped_cell_loads_from_a_read_only_cache_root(tmp_path, caplog):
 
 
 def _twin_model(y):
-    from api.noise import Gaussian
-    from api.sde import SDE
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE
     return (SDE('w9_twin_' + y)
             .parameter('mu', default=1.0, domain='positive')
             .parameter('nu', default=2.0, domain='positive')
@@ -99,8 +99,8 @@ def _twin_model(y):
 
 def _tikz_view(y):
     import re
-    from api import compute_cumulants
-    from engine.diagrams.tikz_export import (edge_style_map, to_tikz_feynman)
+    from daedalus.api import compute_cumulants
+    from daedalus.engine.diagrams.tikz_export import (edge_style_map, to_tikz_feynman)
     res = compute_cumulants(_twin_model(y), k=2, max_ell=1,
                             external_fields=[('x', 1), (y, 1)],
                             tau_grid=[0.0, 0.5], parallel=False,
@@ -133,7 +133,7 @@ def test_tikz_field_names_ending_in_t_and_real_edge_keys():
 
 
 def test_tikz_field_symbol_roles():
-    from engine.diagrams.tikz_export import _field_symbol
+    from daedalus.engine.diagrams.tikz_export import _field_symbol
     assert _field_symbol(('dinput', 1), 'physical') == 'input'
     assert _field_symbol(('inputt', 1), 'response') == 'input'
     assert _field_symbol(('inputt', 1), 'physical') == 'inputt'
@@ -148,7 +148,7 @@ def test_generate_report_reuses_result_without_parameters(tmp_path, monkeypatch)
     """The cover page is labelled from the result's config; no parameters=
     needed (it used to raise AttributeError on fundamental.items())."""
     import numpy as np
-    from api import compute_cumulants, report
+    from daedalus.api import compute_cumulants, report
     seen = {}
 
     def fake_cover(pdf, model, k, max_ell, fundamental, external_fields, result):
@@ -176,7 +176,7 @@ def test_bridge_accepts_exact_float_exponent_of_a_parameter():
     """D**0.5 is the rational power D**(1/2): scan and conversion agree
     (the old scan skipped floats, the conversion then blamed omega)."""
     from sage.all import I, SR, var
-    from api.symbolic_out import _Bridge
+    from daedalus.api.symbolic_out import _Bridge
     w, D, a = var('w D a')
     b_f = _Bridge([D**0.5 / (a + I * w)], w)
     b_q = _Bridge([D**(1 / SR(2)) / (a + I * w)], w)
@@ -187,7 +187,7 @@ def test_bridge_accepts_exact_float_exponent_of_a_parameter():
 
 def test_bridge_refuses_inexact_exponent_with_a_clear_message():
     from sage.all import I, pi, var
-    from api.symbolic_out import _Bridge, NonRationalPropagatorError
+    from daedalus.api.symbolic_out import _Bridge, NonRationalPropagatorError
     w, D, a = var('w D a')
     expr = D**pi / (a + I * w)
     with pytest.raises(NonRationalPropagatorError, match='rational'):
@@ -196,7 +196,7 @@ def test_bridge_refuses_inexact_exponent_with_a_clear_message():
 
 def test_default_values_failure_is_not_silent():
     import warnings
-    from api.symbolic_out import TreeCovariance
+    from daedalus.api.symbolic_out import TreeCovariance
     tc = TreeCovariance.__new__(TreeCovariance)
     tc._num_params = {}
     tc._cache = {}
@@ -217,7 +217,7 @@ def test_default_values_failure_is_not_silent():
 def test_finite_pmf_accepts_round_off_in_probabilities():
     """FinitePMF and Hyperexponential share one tolerance (1e-12)."""
     import numpy as np
-    from api.noise import FinitePMF, Hyperexponential, NoiseError
+    from daedalus.api.noise import FinitePMF, Hyperexponential, NoiseError
     p = (np.array([0.1, 0.2, 0.7]) * (1 + 2e-16)).tolist()
     assert sum(p) != 1.0
     FinitePMF([0, 1, 2], p)
@@ -227,7 +227,7 @@ def test_finite_pmf_accepts_round_off_in_probabilities():
 
 
 def test_cgf_non_analytic_names_the_problem():
-    from api.noise import CGF, NoiseError
+    from daedalus.api.noise import CGF, NoiseError
     with pytest.raises(NoiseError, match='analytic'):
         CGF('1/theta')
 
@@ -238,8 +238,8 @@ def test_cgf_non_analytic_names_the_problem():
 
 
 def _hawkes(w):
-    from api.delay import Kernel
-    from api.sde import SDE
+    from daedalus.api.delay import Kernel
+    from daedalus.api.sde import SDE
     return (SDE('w9_hawkes').population('E', size=2)
             .parameter('a', default=[1.0, 1.0], indexed_by=['E'])
             .parameter('Em', default=[-1.5, -1.5], indexed_by=['E'])
@@ -253,14 +253,14 @@ def _hawkes(w):
 def test_runaway_exponential_hawkes_refuses_loudly():
     """A supercritical exp-Hawkes diverges; the old run died inside numpy
     ('lam value too large') after producing garbage."""
-    from api.pp_simulate import PPSimulationError
+    from daedalus.api.pp_simulate import PPSimulationError
     m = _hawkes([[5.0, 5.0], [5.0, 5.0]])
     with pytest.raises(PPSimulationError, match='diverged'):
         m.simulate(T=50, dt=0.01, n_paths=4, bin=0.25, seed=0)
 
 
 def test_subcritical_hawkes_still_simulates_and_standard_errors_need_two_paths():
-    from api import pp_simulate as pp
+    from daedalus.api import pp_simulate as pp
     m = _hawkes([[0.1, 0.1], [0.1, 0.1]])
     rec = m.simulate(T=40, dt=0.01, n_paths=4, bin=0.25, seed=1, burn_in=10)
     rate, se = pp.mean_rate(rec, 'n', 0)
@@ -274,8 +274,8 @@ def test_subcritical_hawkes_still_simulates_and_standard_errors_need_two_paths()
 
 @pytest.mark.parametrize('mu', [0.0, -0.5])
 def test_spatial_simulators_refuse_non_positive_mass(mu):
-    from simulations.spatial_field_1d_sim import simulate
-    from simulations.spatial_field_2d_sim import simulate_2d
+    from daedalus.simulations.spatial_field_1d_sim import simulate
+    from daedalus.simulations.spatial_field_2d_sim import simulate_2d
     with pytest.raises(ValueError, match='positive mass'):
         simulate(L=4.0, N=16, mu=mu, n_steps=20, burn_in=5, record_every=5)
     with pytest.raises(ValueError, match='positive mass'):
@@ -285,8 +285,8 @@ def test_spatial_simulators_refuse_non_positive_mass(mu):
 
 def test_single_path_estimators_refuse_instead_of_returning_nan():
     import numpy as np
-    from simulations.delay_sde_sim import autocovariance
-    from simulations.spatial_field_1d_sim import third_cumulant_x
+    from daedalus.simulations.delay_sde_sim import autocovariance
+    from daedalus.simulations.spatial_field_1d_sim import third_cumulant_x
     with pytest.raises(ValueError, match='at least 2'):
         autocovariance(np.zeros((50, 1, 1)), 0, 0, [0, 1])
     with pytest.raises(ValueError, match='at least 2'):
@@ -299,7 +299,7 @@ def test_single_path_estimators_refuse_instead_of_returning_nan():
 
 
 def _driven_rd(h):
-    from api.model import SpatialModelBuilder
+    from daedalus.api.model import SpatialModelBuilder
     return (SpatialModelBuilder('w9 driven rd', n_populations=0)
             .physical_field('phi', spatial_dim=1, description='density')
             .parameter('mu', default=1.0, domain='positive')
@@ -314,7 +314,7 @@ def _driven_rd(h):
 
 
 def _count_k2_calls(monkeypatch):
-    import api
+    import daedalus.api as api
     real = api.compute_cumulants
     calls = []
 

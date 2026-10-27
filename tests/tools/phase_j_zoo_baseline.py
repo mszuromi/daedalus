@@ -12,7 +12,7 @@ For every zoo entry (model × config) it records:
 
 * values: the full per-loop-order arrays and their total.
   - k in {1, 2}: the pipeline's own τ-grid arrays (``C_tau_by_ell``).  The k=2
-    τ=0 grid point is evaluated at t1 = -``api.compute._ITO_EPS`` (Itô left
+    τ=0 grid point is evaluated at t1 = -``daedalus.api.compute._ITO_EPS`` (Itô left
     limit), exactly as ``compute_cumulants`` does.
   - k >= 3: the raw per-ell callables at explicit external-time points.  When
     a point has a non-anchor leg at 0, the API-nudged value (every such leg
@@ -170,7 +170,7 @@ DEFAULT_ZOO_EXTRA = (os.path.join(_REPO_ROOT, 'scratch', 'integration_plan',
 
 DEFAULT_TIMEOUT = 600.0
 LONG_TIMEOUT = 900.0
-ITO_NUDGE = -1e-6            # daedalus._args k>=3 full-grid nudge (== api.compute._ITO_EPS)
+ITO_NUDGE = -1e-6            # daedalus._args k>=3 full-grid nudge (== daedalus.api.compute._ITO_EPS)
 SPATIAL_CERTIFY_Q = (0.0, 0.7, 1.5)
 SEP = '::'                   # npz key separator: '<entry>::<array>'
 
@@ -474,7 +474,7 @@ def model_path(entry):
     """Absolute path of the file that defines the entry's model."""
     if entry.get('model_file'):
         return os.path.join(_REPO_ROOT, entry['model_file'].partition(':')[0])
-    return os.path.join(_REPO_ROOT, 'models', f"{entry['model']}.model.py")
+    return os.path.join(_REPO_ROOT, 'daedalus', 'models', f"{entry['model']}.model.py")
 
 
 def git_route(path):
@@ -502,7 +502,7 @@ def code_provenance():
     rc, head = _git('rev-parse', 'HEAD')
     _, branch = _git('rev-parse', '--abbrev-ref', 'HEAD')
     _, dirty = _git('status', '--porcelain', '--untracked-files=no')
-    fi = os.path.join(_REPO_ROOT, 'engine', 'integration', 'time_domain',
+    fi = os.path.join(_REPO_ROOT, 'daedalus', 'engine', 'integration', 'time_domain',
                       'final_integral.py')
     return {
         'git_head': head.strip() if rc == 0 else None,
@@ -528,7 +528,7 @@ def _library_versions():
 
 
 def _numeric_flags():
-    import engine.integration.time_domain.final_integral as FI
+    import daedalus.engine.integration.time_domain.final_integral as FI
     # (records made before audit W7 also list the retired switches
     # POLYGON_BBOX_CAP, USE_NUMBA_CHAIN_SIMPLEX,
     # USE_CHAIN_SIMPLEX_PRECISION_FIX, _HAVE_NUMBA, THETA0_CONST_ROW_MODE,
@@ -615,7 +615,7 @@ def _load_model(entry):
         return getattr(mod, fn or 'build')(), mod, entry['model_file']
     import daedalus as dd
     model, mod = dd.load_model(entry['model'])
-    return model, mod, f"models/{entry['model']}.model.py"
+    return model, mod, f"daedalus/models/{entry['model']}.model.py"
 
 
 def resolve_params(entry, model, module):
@@ -656,7 +656,7 @@ class _NquadStub:
 
     @contextlib.contextmanager
     def installed(self):
-        import engine.integration.time_domain.final_integral as FI
+        import daedalus.engine.integration.time_domain.final_integral as FI
         self._orig = saved = FI._integrate_polytope
         FI._integrate_polytope = self
         try:
@@ -707,9 +707,9 @@ def run_entry(entry, *, with_provenance=True):
     hours in scipy.nquad (fast poles at ℓ=2).
     """
     import numpy as np
-    import engine.integration.time_domain.final_integral as FI
-    from api import compute_cumulants
-    from api.compute import _ITO_EPS
+    import daedalus.engine.integration.time_domain.final_integral as FI
+    from daedalus.api import compute_cumulants
+    from daedalus.api.compute import _ITO_EPS
 
     res_out = {
         'name': entry['name'], 'entry': copy.deepcopy(entry),
@@ -743,7 +743,7 @@ def run_entry(entry, *, with_provenance=True):
     # identifies the MODEL independently of edits elsewhere in its file.
     res_out['model_spec_signature'] = model.get('spec_signature')
     try:
-        from api._expand_cache import cache_dir
+        from daedalus.api._expand_cache import cache_dir
         res_out['cache_dir_existed'] = os.path.isdir(
             os.path.join(_REPO_ROOT, cache_dir(model)))
     except Exception:                              # noqa: BLE001
@@ -768,7 +768,7 @@ def run_entry(entry, *, with_provenance=True):
     captured = []
     pb = None
     if entry['kind'] == 'spatial':
-        import engine.integration.spatial.pipeline_bridge as pb
+        import daedalus.engine.integration.spatial.pipeline_bridge as pb
         orig_certify = pb.certify_modes
 
         def _cap(modes, prop, records, external_fields, base_np_sr,

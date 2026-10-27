@@ -47,10 +47,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from sage.all import SR, var, integrate, dirac_delta, oo    # noqa: E402
 
 import daedalus as dd                                      # noqa: E402
-from api import compute_cumulants                          # noqa: E402
-from api.model import ModelBuilder                         # noqa: E402
-from api.sde import SDE                                    # noqa: E402
-from api.noise import Gaussian                             # noqa: E402
+from daedalus.api import compute_cumulants                          # noqa: E402
+from daedalus.api.model import ModelBuilder                         # noqa: E402
+from daedalus.api.sde import SDE                                    # noqa: E402
+from daedalus.api.noise import Gaussian                             # noqa: E402
 
 RUN = dict(parallel=False, verbose=False, use_cache=False)
 TAUS = np.array([-1.0, 0.0, 0.5, 3.0])
@@ -133,8 +133,8 @@ def test_gen02_set_mf_equation_models_get_every_root():
     assert np.allclose(got, roots, rtol=4e-16, atol=0)
     assert r0['mf_values']['xstar'][0] == pytest.approx(roots[0], rel=4e-16)
     # the other (unstable) root through the solver's front door
-    from engine.core.field_theory import FieldTheory
-    from api._mean_field import solve_mean_field
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._mean_field import solve_mean_field
     ft = FieldTheory(m)
     ft.expand()
     r1 = solve_mean_field(ft, m, {}, verbose=False, fixed_point_index=1)
@@ -159,7 +159,7 @@ def _ou(tname):
 
 
 def test_gen03_real_parameter_named_tstar_is_a_parameter():
-    from api.symbolic_out import _is_saddle_symbol
+    from daedalus.api.symbolic_out import _is_saddle_symbol
     m = _ou('tstar')
     assert 'tstar' in dd.param_names(m)
     assert dd.fundamental_from_model(m)['tstar'] == 1.0
@@ -182,8 +182,8 @@ def _named_saddle(sname):
 
 
 def test_gen04_saddle_named_without_star_reaches_every_consumer():
-    from api.naming import saddle_for_field, saddle_label, field_for_saddle
-    from api.symbolic_out import _is_saddle_symbol
+    from daedalus.api.naming import saddle_for_field, saddle_label, field_for_saddle
+    from daedalus.api.symbolic_out import _is_saddle_symbol
     ref_m, odd_m = _named_saddle('xstar'), _named_saddle('rate_mf')
     c_ref, r_ref = _C(ref_m, [('x', 1), ('x', 1)], max_ell=1)
     c_odd, r_odd = _C(odd_m, [('x', 1), ('x', 1)], max_ell=1)
@@ -200,7 +200,7 @@ def test_gen04_saddle_named_without_star_reaches_every_consumer():
 
 
 def test_gen04_access_has_no_builtin_letter_table():
-    from api.access import normalize_external_fields, MeanField
+    from daedalus.api.access import normalize_external_fields, MeanField
     assert normalize_external_fields([('n', 1)]) == [('n', 1)]
     conv = {'fluctuation_fields': {'r': 'dr'}, 'mean_field_saddles': {'r': 'rstar'}}
     assert normalize_external_fields([('r', 2)], conv) == [('dr', 2)]
@@ -209,7 +209,7 @@ def test_gen04_access_has_no_builtin_letter_table():
 
 # ── GEN-07 ────────────────────────────────────────────────────────────
 def test_gen07_field_symbol_names_round_trip():
-    from engine.core.vertices import field_symbol_name, _parse_field_name
+    from daedalus.engine.core.vertices import field_symbol_name, _parse_field_name
     for base in ('dn', 'dx1', 'dx', 'x_', 'a1_', 'dy12'):
         for idx in (1, 2, 11):
             assert _parse_field_name(field_symbol_name(base, idx)) == (base, idx)
@@ -234,8 +234,8 @@ def test_gen07_digit_field_names_equal_letter_twin():
 
 # ── GEN-17 ────────────────────────────────────────────────────────────
 def test_gen17_derived_symbols_are_not_free_parameters():
-    from api.symbolic_loop import _saddle_names
-    from api.naming import is_parameter_symbol
+    from daedalus.api.symbolic_loop import _saddle_names
+    from daedalus.api.naming import is_parameter_symbol
     m = _legacy_hawkes()
     nump = {SR.var(s): 1.0 for s in ('E1', 'E2', 'w12', 'tau', 'a', 'nstar1',
                                      'vstar2', 'phi0_1', 'phi2_1')}
@@ -246,7 +246,7 @@ def test_gen17_derived_symbols_are_not_free_parameters():
 
 # ── GEN-05 / GEN-06: templates ────────────────────────────────────────
 def _tmpl(order='ak', kernel='exp', names=None):
-    from api.model_templates import HawkesAction, ExpSynapticKernel, DeltaKernel
+    from daedalus.api.model_templates import HawkesAction, ExpSynapticKernel, DeltaKernel
     nm = dict(E='E', w='w', tau='tau', a='a', g='g', tau_g='tau_g')
     nm.update(names or {})
     b = (ModelBuilder('w6 tmpl ' + ' '.join(nm.values()) + order + kernel,
@@ -286,7 +286,7 @@ def test_gen06_delta_kernel_specialization_any_order():
 
 
 def test_gen06_gtas_parameters_are_not_invented():
-    from api.model_templates import GTaSNoise
+    from daedalus.api.model_templates import GTaSNoise
     m = _tmpl().add_gtas_noise(GTaSNoise()).build()
     decl = {p['name']: p for p in m['parameters']}
     for name in ('w_X', 'lambda_X', 'p_part', 'mu_shift_diff', 'sigma_shift_diff_sq'):
@@ -297,7 +297,7 @@ def test_gen06_gtas_parameters_are_not_invented():
 
 def test_gen05_gtas_cumulants_are_the_cluster_process():
     from types import SimpleNamespace
-    from api.model_templates import GTaSNoise
+    from daedalus.api.model_templates import GTaSNoise
     lam, p, mu, s2 = 1.7, 0.6, 0.5, 0.2
     ns = SimpleNamespace(lam=SR(lam), pp=SR(p), md=SR(mu), sd=SR(s2))
     blk = GTaSNoise(mother_rate='lam', participation='pp', mu_diff='md',
@@ -329,7 +329,7 @@ def test_gen05_gtas_cumulants_are_the_cluster_process():
 
 # ── W6 add-ons ────────────────────────────────────────────────────────
 def test_analyzer_extracts_spatial_drift_at_nonzero_saddle():
-    from api.analyze import analyze
+    from daedalus.api.analyze import analyze
     m = (ModelBuilder('w6 advected nz', n_populations=0)
          .physical_field('phi', spatial_dim=1)
          .parameter('mu', default=1.0, domain='positive')
@@ -384,7 +384,7 @@ def test_gtas_cross_covariance_is_the_cluster_process_in_both_orders(
     """<m1(t) m2(t+tau)> of the GTaS noise field equals lambda p^2 N(tau;
     mu, s2) (cell 2 fires mu after cell 1) and the reverse order its mirror:
     the asymmetric cross kernel is no longer symmetrized."""
-    from api.model_templates import GTaSNoise
+    from daedalus.api.model_templates import GTaSNoise
     lam, p, mu, s2 = 1.7, 0.6, 0.5, 0.2
     m = (_tmpl().parameter('w_X', default=0.25)
          .parameter('lambda_X', default=lam, domain='positive')
@@ -436,7 +436,7 @@ def test_loud02_cgmy_symbolic_exponent_mean_is_closed_form():
     """CGMY with a parameter-named Y: its mean carries Gamma functions (Sage
     prints gamma(1 - Y) as factorial(-Y)); the saddle solve evaluates them
     (it raised NameError 'factorial')."""
-    from api.noise import CGMY
+    from daedalus.api.noise import CGMY
     C_, G_, M_, Y_ = 0.2, 3.0, 2.0, 0.5
     s = SDE('w6 cgmy sym').parameter('mu', default=1.0)
     for nm, v in dict(cC=C_, cG=G_, cM=M_, cY=Y_).items():
@@ -455,14 +455,14 @@ def test_loud02_printed_factorial_is_sages_and_gamma_stays_a_parameter_name():
     own functions: a formal function of that name broke Sage 10.9's Maxima conversion. A bare
     ``gamma`` is still a symbol, so a parameter may be named gamma."""
     from sage.all import SR, factorial
-    from api.noise import parse_expr
+    from daedalus.api.noise import parse_expr
     e = parse_expr('cC*factorial(-cY) + gamma*x')
     assert not SR(e).is_zero()                        # Sage 10.9: RuntimeError (operator mismatch)
     assert e.subs(cC=1, cY=SR(1) / 2, gamma=0) == factorial(-SR(1) / 2)
     assert SR.var('gamma') in e.variables()
     # ... but not a user function name: its calls would mean Sage's function on some paths only
     # (a user function gamma(v) in a rate failed the saddle check on Sage 10.8 already).
-    from api.sde import SDE, SDEError
+    from daedalus.api.sde import SDE, SDEError
     for name in ('gamma', 'factorial'):
         with pytest.raises(SDEError, match='reserved'):
             SDE('w6 reserved fn').field('v').define_function(name, args=['v'], expression='v')
@@ -472,8 +472,8 @@ def test_gen02_deeply_negative_compound_saddle_falls_back_to_iteration_saddles()
     """A voltage saddle at -100 lies outside the default seed box of the full
     saddle system; the solver falls back to the iteration saddles alone (the
     compound one substituted), as the former iteration solver did."""
-    from engine.core.field_theory import FieldTheory
-    from api._mean_field import solve_mean_field
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api._mean_field import solve_mean_field
     E, w = -100.0, 0.3
     m = (ModelBuilder('w6 deep negative saddle')
          .population('P', size=2)
@@ -498,8 +498,8 @@ def test_gen02_deeply_negative_compound_saddle_falls_back_to_iteration_saddles()
 
 
 def test_gen04_custom_saddle_survives_save_and_load(tmp_path):
-    from api.model_serialize import load_spec_from_file, render_model_file
-    src = '''from api.model import ModelBuilder
+    from daedalus.api.model_serialize import load_spec_from_file, render_model_file
+    src = '''from daedalus.api.model import ModelBuilder
 
 
 def build():
@@ -527,7 +527,7 @@ def build():
 
 
 def test_permuted_cumulant_kernel_reads_the_rows_own_leg_order():
-    from engine.core.field_theory import _PermutedKernel
+    from daedalus.engine.core.field_theory import _PermutedKernel
     calls = []
 
     def k3(ns, i, j, k, t1, t2):

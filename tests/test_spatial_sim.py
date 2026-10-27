@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from simulations.spatial_field_1d_sim import (
+from daedalus.simulations.spatial_field_1d_sim import (
     simulate, structure_factor, lattice_sum_variance,
 )
 

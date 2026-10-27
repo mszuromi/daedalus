@@ -1,4 +1,4 @@
-"""``api.report`` matches each diagram page to its own Phase J callable.
+"""``daedalus.api.report`` matches each diagram page to its own Phase J callable.
 
 The per-diagram panel used to index a callable list by page number, which
 breaks as soon as the diagram list changes order (the prediagram source
@@ -28,9 +28,9 @@ _TAUS = np.array([0.0, 0.5, 1.0, 3.0])
 
 
 def _ou_quartic_result(max_ell=1):
-    from api.compute import compute_cumulants
+    from daedalus.api.compute import compute_cumulants
     spec = importlib.util.spec_from_file_location(
-        'ou_quartic_model', 'models/ou_quartic.model.py')
+        'ou_quartic_model', 'daedalus/models/ou_quartic.model.py')
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return compute_cumulants(mod.build(), k=2, max_ell=max_ell,
@@ -40,7 +40,7 @@ def _ou_quartic_result(max_ell=1):
 
 
 def _curves_by_signature(result):
-    from api.report import (_diagram_contribution_curve,
+    from daedalus.api.report import (_diagram_contribution_curve,
                             _per_diagram_contributions)
     contribs = _per_diagram_contributions(result)
     out = {}
@@ -58,7 +58,7 @@ def result():
 
 
 def test_every_diagram_has_its_callable_and_they_sum_to_the_slice(result):
-    from api.report import (_diagram_contribution_curve,
+    from daedalus.api.report import (_diagram_contribution_curve,
                             _per_diagram_contributions)
     contribs = _per_diagram_contributions(result)
     assert len(contribs) == len(result['diagrams']) == 5   # 1 tree + 4 loops
@@ -102,7 +102,7 @@ def test_per_diagram_curves_do_not_depend_on_record_order(result,
 
 def test_generate_report_hands_each_page_its_callable(result, tmp_path,
                                                       monkeypatch):
-    import api.report as report
+    import daedalus.api.report as report
     seen = []
     orig = report._draw_diagram_page
 
@@ -123,8 +123,8 @@ def test_generate_report_hands_each_page_its_callable(result, tmp_path,
 
 
 def test_canonical_view_key_is_the_diagram_signature(result):
-    from api.report import _canonical_view
-    from engine.diagrams.symmetry import diagram_signature
+    from daedalus.api.report import _canonical_view
+    from daedalus.engine.diagrams.symmetry import diagram_signature
     for rec in result['diagrams']:
         td = rec['typed_diagram']
         key, display_id = _canonical_view(td)
@@ -137,7 +137,7 @@ def test_canonical_view_key_is_the_diagram_signature(result):
 
 def _pages(result):
     """Everything a diagram page shows, in page order, as plain data."""
-    from api.report import (_assignment_lines, _diagram_contribution_curve,
+    from daedalus.api.report import (_assignment_lines, _diagram_contribution_curve,
                             _pages_in_canonical_order,
                             _per_diagram_contributions, _prediagram_layout)
     contribs = _per_diagram_contributions(result)
@@ -166,7 +166,7 @@ def test_report_pages_do_not_depend_on_the_prediagram_source(
     rounding.  The eager and streamed records are different labelled
     representatives (checked), so this exercises the canonical numbering,
     not just the sort."""
-    from engine.enumeration import prediagram_cache as pdc
+    from daedalus.engine.enumeration import prediagram_cache as pdc
     from tests._diagram_order import apply_diagram_order
 
     runs = []

@@ -22,7 +22,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.enumeration.loop_diagram_enumeration as L
+import daedalus.engine.enumeration.loop_diagram_enumeration as L
 
 
 def _prediagram_certs(k, ell, checker):

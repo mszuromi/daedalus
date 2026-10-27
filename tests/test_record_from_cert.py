@@ -13,7 +13,7 @@ import random
 import pytest
 
 pytest.importorskip("sage.all")
-from engine.enumeration import prediagram_cache as pdc            # noqa: E402
+from daedalus.engine.enumeration import prediagram_cache as pdc            # noqa: E402
 
 #: Cells compared in full; all are small, and (5,1) has graphs with more than
 #: 10 vertices, where Sage's backend orders ``vertices()`` non-trivially.

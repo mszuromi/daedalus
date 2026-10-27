@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.enumeration import prediagram_cache as pdc
+from daedalus.engine.enumeration import prediagram_cache as pdc
 
 CELL = (9, 9)                      # not a shipped cell
 FAKE_CERTS = {b'\x03\x00\x01\x00\x02', b'\x04\x00\x01\x00\x02\x01\x03', b'\x02\x00\x01'}

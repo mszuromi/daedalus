@@ -106,8 +106,8 @@ def test_readme_check_and_latex_example(capsys):
     assert '     1      2       3  interaction           1  xt1*dx1^2 -> 3*eps*xstar1' in out
     assert set(ns['tex']) == {'sde', 'noise', 'action', 'mean_field'}
     assert r'\sqrt{2 \, D}\,\mathrm{d}W_{\xi}' in ns['tex']['sde']
-    from api.noise import Gaussian
-    from api.sde import SDE, SDEError
+    from daedalus.api.noise import Gaussian
+    from daedalus.api.sde import SDE, SDEError
     bad = (SDE('OU quartic').parameter('mu', default=1.0).parameter('eps', default=0.02)
            .parameter('D', default=1.0).field('x').drift('x', '-mu*x - epsilon*x^3')
            .noise('xi', Gaussian(var='2*D'), couples={'x': 1}))
@@ -150,8 +150,8 @@ def test_readme_paper_style_example():
 def test_readme_model_ergonomics_example():
     """The one-loop mean of v^2 in a linear (delayed) network is its exact variance; the text rebuilds the model."""
     import numpy as np
-    from api import compute_cumulants
-    from api.sde import SDE
+    from daedalus.api import compute_cumulants
+    from daedalus.api.sde import SDE
     from tests._sde_model_catalogue import digest
     ns = _exec(_block("SDE('Delayed network')"), 'model ergonomics example')
     c = compute_cumulants(ns['m'], k=2, max_ell=0, external_fields=[('v', 1), ('v', 1)], tau_grid=[0.0],

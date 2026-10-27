@@ -1,6 +1,6 @@
 # Exact master-equation oracle (`dd.master_equation`)
 
-`api/master_equation.py` solves a lattice jump process exactly (to the box truncation, which it measures), so the jump
+`daedalus/api/master_equation.py` solves a lattice jump process exactly (to the box truncation, which it measures), so the jump
 models of the SDE front end can be checked against something sharper than a simulation. The solver uses numpy, scipy
 (sparse) and sympy (rate strings) only.
 

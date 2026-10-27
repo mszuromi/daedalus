@@ -23,8 +23,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from api.model import TemporalModelBuilder
-from api.model_serialize import normalize_equation_rows
+from daedalus.api.model import TemporalModelBuilder
+from daedalus.api.model_serialize import normalize_equation_rows
 
 # Immigration–death with explicit flux fields: input train n (rate f), decay
 # flux u (rate r*m), direct loss d*m.  Exact saddle m* = f/(r+d) = 1.25.
@@ -75,8 +75,8 @@ def test_stale_bundle_is_rejected_and_reexpansion_passes():
     """The reported sequence: first build with the MF rows lost (tadpole FAIL,
     bundle written), then the same model name with the rows present.  The
     second run must NOT be served the first run's expansion."""
-    from api import precompute
-    from api import _expand_cache as _ec
+    from daedalus.api import precompute
+    from daedalus.api import _expand_cache as _ec
     with tempfile.TemporaryDirectory() as tmp:
         cwd = os.getcwd()
         os.chdir(tmp)                                         # cache root is relative
@@ -88,7 +88,7 @@ def test_stale_bundle_is_rejected_and_reexpansion_passes():
             assert good['mf_check'] == 'PASS', good['mf_check']
             assert abs(float(good['mf_values']['mstar'][0]) - 1.25) < 1e-12
             # and a plain load of the (now refreshed) bundle for the wrong model text is refused
-            from api.compute import FieldTheory
+            from daedalus.api.compute import FieldTheory
             ft = FieldTheory(_model(ROWS[:1]), taylor_order=2)
             _ec.prepare_for_load(ft)
             assert _ec.load_expand(_model(ROWS[:1]), ft, target_order=2) is False

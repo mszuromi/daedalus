@@ -5,7 +5,7 @@ independent numerical cross-check — ``compute_cumulants`` does NOT use this mo
 
 tests.oracles.temporal_integrate
 ================================
-Test-only reference (was ``engine.integration.spatial.temporal_integrate``; moved out of
+Test-only reference (was ``daedalus.engine.integration.spatial.temporal_integrate``; moved out of
 the library in audit W7: no production module imports it).
 
 Backend C — **C2 (the causal time-simplex)**.  After the C0/C1 momentum

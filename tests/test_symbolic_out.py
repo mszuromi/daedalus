@@ -1,4 +1,4 @@
-"""Tests for ``api/symbolic_out.py``: symbolic tree-level covariance
+"""Tests for ``daedalus/api/symbolic_out.py``: symbolic tree-level covariance
 ``C0(omega) = G D G^dagger`` in the Fourier domain, its exports, the kernel
 pairing and the error paths.  Stage C1 of the internal SDE/δ feature plan (not distributed).
 
@@ -24,8 +24,8 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', 'notebooks')))
 
 import daedalus as dd  # noqa: E402
-from api import symbolic_out as so  # noqa: E402
-from api.compute import compute_cumulants  # noqa: E402
+from daedalus.api import symbolic_out as so  # noqa: E402
+from daedalus.api.compute import compute_cumulants  # noqa: E402
 
 warnings.filterwarnings('ignore')
 
@@ -544,12 +544,12 @@ def test_D_residue_refusals():
 def test_noise_extraction_non_local_kernel_is_refused():
     """A NoiseSourceType (cumulant kernel not Markov-embedded) has no Fourier
     noise *matrix*; refuse with a specific message."""
-    from engine.core.vertices import NoiseSourceType
+    from daedalus.engine.core.vertices import NoiseSourceType
     from unittest import mock
     m, mod = dd.load_model('ou_quartic')
     ft = so._expanded_theory(m, 2, False, False)
     fake = [NoiseSourceType(SR(1), [('xt', 1), ('xt', 1)], (2, 0), [])]
-    with mock.patch('engine.core.vertices.extract_source_types',
+    with mock.patch('daedalus.engine.core.vertices.extract_source_types',
                     return_value=fake):
         with pytest.raises(so.UnsupportedModelError, match='non-local'):
             so.noise_matrix_from_theory(ft, m)

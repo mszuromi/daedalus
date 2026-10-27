@@ -1,8 +1,8 @@
 """
 tests/test_delay_kernels.py
 ===========================
-Delay kernels (``api.delay``, ``api._kernel_stability``, ``api._delay_exact``,
-``simulations.delay_sde_sim``).  Inline public models only:
+Delay kernels (``daedalus.api.delay``, ``daedalus.api._kernel_stability``, ``daedalus.api._delay_exact``,
+``daedalus.simulations.delay_sde_sim``).  Inline public models only:
 
 * the front end: ``x(t - d)`` in an SDE drift, ``define_kernel(delay=...)``,
   ``kernel=Kernel.delay(d) * Kernel.exponential(tau)``, a shifted
@@ -38,17 +38,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, I, exp, matrix                                 # noqa: E402
 
-from api import compute_cumulants                                      # noqa: E402
-from api.analyze import (AnalyzerError, Question, analyze,             # noqa: E402
+from daedalus.api import compute_cumulants                                      # noqa: E402
+from daedalus.api.analyze import (AnalyzerError, Question, analyze,             # noqa: E402
                          analyze_with_context)
-from api.delay import (Kernel, delay_factors, pade_coefficients,       # noqa: E402
+from daedalus.api.delay import (Kernel, delay_factors, pade_coefficients,       # noqa: E402
                        pade_np, pade_substitute, split_shifted_time_expr)
-from api._delay_exact import DelayedStateSpace, ExactTree              # noqa: E402
-from api._kernel_stability import (count_rhp_roots, kernel_stability,  # noqa: E402
+from daedalus.api._delay_exact import DelayedStateSpace, ExactTree              # noqa: E402
+from daedalus.api._kernel_stability import (count_rhp_roots, kernel_stability,  # noqa: E402
                                    numeric_K)
-from api.model import TemporalModelBuilder                             # noqa: E402
-from api.noise import Gaussian                                         # noqa: E402
-from api.sde import SDE                                                # noqa: E402
+from daedalus.api.model import TemporalModelBuilder                             # noqa: E402
+from daedalus.api.noise import Gaussian                                         # noqa: E402
+from daedalus.api.sde import SDE                                                # noqa: E402
 
 A_, C_, D_, EPS = 1.0, -2.0, 0.1, 0.02
 TAUS = np.array([0.0, 0.5, 1.0, 2.0, 4.0])
@@ -313,7 +313,7 @@ def test_pade_tree_switch(monkeypatch):
 
 
 def test_simulator_against_exact_covariances():
-    from simulations.delay_sde_sim import simulate, autocovariance, em_linear_autocovariance
+    from daedalus.simulations.delay_sde_sim import simulate, autocovariance, em_linear_autocovariance
     d, dt = 0.5, 0.005
     taus = np.array([0.0, 0.5, 1.0, 2.0])
     rec = simulate(lambda x, xd: -A_ * x + C_ * xd[0], [d], [[math.sqrt(2 * D_)]], [0.0],
@@ -377,11 +377,11 @@ def test_k3_uses_the_pade_tree_and_converges():
     assert np.max(np.abs(vals[8] - vals[4])) < np.max(np.abs(vals[4] - vals[2]))
 
 
-# ── the state-space realization's a posteriori check (api._realization) ──
+# ── the state-space realization's a posteriori check (daedalus.api._realization) ──
 
 
 def test_aposteriori_check_flags_a_broken_realization():
-    from api._realization import _aposteriori_check
+    from daedalus.api._realization import _aposteriori_check
     A = np.array([[-1.0, 2.0], [0.0, -3.0]])
     B = np.array([[1.0, 0.0], [0.5, 1.0]])
     C = np.eye(2)
@@ -501,7 +501,7 @@ def test_long_delay_steps_up_the_order():
 
 
 def test_output_files_hold_the_final_numbers(tmp_path):
-    from api.save import load_npz
+    from daedalus.api.save import load_npz
     p = str(tmp_path / 'delay.npz')
     r = _cc(_ou('delay npz'), 0, delay={'order': 4}, output_npz=p)
     d = load_npz(p)
@@ -524,7 +524,7 @@ def test_indexed_delayed_kernel_and_caret_time_expr():
 
 
 def test_spatial_delay_is_refused_by_name():
-    from api.delay import compute_delayed
+    from daedalus.api.delay import compute_delayed
     with pytest.raises(ValueError, match='spatial'):
         compute_delayed({'name': 'x', 'spatial': {'dim': 1}}, {'k': 2}, {'z_g': ['d']})
 
@@ -546,7 +546,7 @@ def test_g2k_review_cases_real_roots_aliasing_long_delays():
     lw2 = matrix(SR, [[I * om + 1 + 2 * exp(-I * om * d)]])
     assert kernel_stability(lw2, om, {d: 300.0}).n_rhp == 166
     one = np.array([[1.0]])
-    from api._delay_exact import ExactTreeUnavailable
+    from daedalus.api._delay_exact import ExactTreeUnavailable
     with pytest.raises(ExactTreeUnavailable, match='not positive'):
         ExactTree(DelayedStateSpace(np.array([[-1.0]]), np.array([[-2.0]]), one, np.array([[0.0]]),
                                     one, np.array([[0.0]]), 1.4, np.array([[0.2]])), 0, 0)

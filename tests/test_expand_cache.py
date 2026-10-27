@@ -1,5 +1,5 @@
 """
-Unit tests for ``api/_expand_cache.py``.
+Unit tests for ``daedalus/api/_expand_cache.py``.
 
 Coverage:
   * Save → load round-trip at the same taylor_order produces identical
@@ -39,7 +39,7 @@ def model_and_fund():
     import importlib.util
 
     here = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(here, '..', 'models', MODEL_FILENAME)
+    model_path = os.path.join(here, '..', 'daedalus', 'models', MODEL_FILENAME)
     spec = importlib.util.spec_from_file_location('test_th', model_path)
     th = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(th)
@@ -65,7 +65,7 @@ def isolated_cache(monkeypatch, tmp_path):
 
 def _expand_fresh(model, taylor_order: int):
     """Build + expand a fresh ``FieldTheory`` at ``taylor_order``."""
-    from engine.core.field_theory import FieldTheory
+    from daedalus.engine.core.field_theory import FieldTheory
     ft = FieldTheory(model, taylor_order=taylor_order)
     ft.expand()
     return ft
@@ -77,8 +77,8 @@ def _expand_fresh(model, taylor_order: int):
 def test_round_trip_same_order(model_and_fund, isolated_cache):
     """Save and reload at the same order — ``_by_tp`` must match
     bigrade-by-bigrade."""
-    from engine.core.field_theory import FieldTheory
-    from api import _expand_cache as ec
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as ec
 
     model, _ = model_and_fund
     ft1 = _expand_fresh(model, taylor_order=4)
@@ -102,8 +102,8 @@ def test_round_trip_same_order(model_and_fund, isolated_cache):
 def test_downgrade_filter(model_and_fund, isolated_cache):
     """Save at order 4, load with target_order 2 — bigrades with
     total degree > 2 must be dropped."""
-    from engine.core.field_theory import FieldTheory
-    from api import _expand_cache as ec
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as ec
 
     model, _ = model_and_fund
     ft1 = _expand_fresh(model, taylor_order=4)
@@ -128,8 +128,8 @@ def test_find_best_cached_order_picks_smallest_above_target(
         model_and_fund, isolated_cache):
     """When multiple cached orders satisfy ``>= target``, pick the
     smallest one (least filter work)."""
-    from engine.core.field_theory import FieldTheory
-    from api import _expand_cache as ec
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as ec
 
     model, _ = model_and_fund
 
@@ -158,7 +158,7 @@ def test_compute_cumulants_warm_cache_speedup(
     and produces identical numerical output."""
     import time
     import numpy as np
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     model, fundamental = model_and_fund
 
@@ -198,8 +198,8 @@ def test_compute_cumulants_warm_cache_speedup(
 def test_precompute_populates_cache(model_and_fund, isolated_cache):
     """``precompute(model)`` writes expand_taylor2.sobj + propagator.sobj
     and reports PASS for a healthy model."""
-    from api import precompute
-    from api._expand_cache import cache_dir
+    from daedalus.api import precompute
+    from daedalus.api._expand_cache import cache_dir
 
     model, _ = model_and_fund
     result = precompute(model, verbose=False)
@@ -225,8 +225,8 @@ def test_default_taylor_order_matches_diagrammatic_minimum(
     a default-taylor compute_cumulants(k=2, max_ell=0) call must HIT
     that cache (and not produce expand_taylor4.sobj as a side effect).
     """
-    from api import compute_cumulants, precompute
-    from api._expand_cache import cache_dir
+    from daedalus.api import compute_cumulants, precompute
+    from daedalus.api._expand_cache import cache_dir
 
     model, fundamental = model_and_fund
 
@@ -283,7 +283,7 @@ def combined_model():
     import importlib.util
 
     here = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(here, '..', 'models', COMBINED_MODEL_FILENAME)
+    model_path = os.path.join(here, '..', 'daedalus', 'models', COMBINED_MODEL_FILENAME)
     spec = importlib.util.spec_from_file_location('combined_th', model_path)
     th = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(th)
@@ -314,8 +314,8 @@ def test_operator_ir_table_rebuilt_on_prepare_for_load(combined_model):
     A bare ``_build_namespace`` sets ``_operator_ir`` but NOT the table —
     that is what the cache-load path used to inherit.
     """
-    from engine.core.field_theory import FieldTheory
-    from api import _expand_cache as ec
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as ec
 
     # Reference: a fresh expand populates the table.
     ft_fresh = FieldTheory(combined_model, taylor_order=4)
@@ -346,8 +346,8 @@ def test_operator_ir_stale_unsigned_cache_rejected(combined_model,
     for a derivative-vertex model is the exact shape of the on-disk stale
     file that caused the bug.  ``load_expand`` must reject it (return
     ``False``) rather than load it with the form factors dropped."""
-    from engine.core.field_theory import FieldTheory
-    from api import _expand_cache as ec
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as ec
     from sage.all import save as sage_save, load as sage_load
 
     # 1) Save a healthy (signed) bundle.
@@ -374,8 +374,8 @@ def test_operator_ir_signed_cache_round_trips(combined_model, isolated_cache):
     """A bundle saved by the fix carries a matching signature, so a
     subsequent ``load_expand`` accepts it (the cache still works — the
     signature only rejects *mismatches*)."""
-    from engine.core.field_theory import FieldTheory
-    from api import _expand_cache as ec
+    from daedalus.engine.core.field_theory import FieldTheory
+    from daedalus.api import _expand_cache as ec
 
     ft = _expand_fresh(combined_model, taylor_order=4)
     ec.save_expand(combined_model, ft, cache_dir_root=isolated_cache)
@@ -400,7 +400,7 @@ def test_combined_operator_ir_cached_matches_uncached(combined_model,
     'composite+perleg' form factors (vertex_mode) rather than collapsing
     to the bare φ̃φ² value."""
     import numpy as np
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
 
     def _c00_mode(res):
         si = res.get('spatial_info') or {}
@@ -411,7 +411,7 @@ def test_combined_operator_ir_cached_matches_uncached(combined_model,
     # in d = 1 (the KPZ (dphi)^2 self-loop <(dphi)^2> = int dk k^2 C(k) feeding
     # the Allen-Cahn vertex) and compute_cumulants refuses it; the comparison
     # cached vs uncached does not need a finite answer.
-    from engine.integration.spatial import full_integrator as _FI
+    from daedalus.engine.integration.spatial import full_integrator as _FI
     monkeypatch.setattr(_FI, '_refuse_uv_divergent', lambda *a, **k: None)
 
     # Reference: cache fully bypassed.

@@ -11,10 +11,10 @@ import pytest
 pytest.importorskip('sage.all')
 
 import daedalus as dd                                             # noqa: E402
-from api import _diagrams as D                                    # noqa: E402
-from api.compute import compute_cumulants                         # noqa: E402
-from engine.enumeration import prediagram_cache as pdc            # noqa: E402
-import engine.enumeration.loop_diagram_enumeration as L           # noqa: E402
+from daedalus.api import _diagrams as D                                    # noqa: E402
+from daedalus.api.compute import compute_cumulants                         # noqa: E402
+from daedalus.engine.enumeration import prediagram_cache as pdc            # noqa: E402
+import daedalus.engine.enumeration.loop_diagram_enumeration as L           # noqa: E402
 
 
 def test_enumeration_procs_from_the_knob():

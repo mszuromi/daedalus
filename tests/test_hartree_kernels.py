@@ -2,7 +2,7 @@
 tests/test_hartree_kernels.py
 =============================
 Kernels and hard delays in the Gaussian closure and the screened series
-(``api/hartree.py``, ``api/resum.py``).
+(``daedalus/api/hartree.py``, ``daedalus/api/resum.py``).
 
 A kernel acts on the fields linearly, so the closure embeds it before it
 runs: a rational kernel exactly, as linear state fields realized by the
@@ -36,11 +36,11 @@ sys.path.insert(0, os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..')))
 
 import daedalus as dd  # noqa: E402
-from api.delay import Kernel  # noqa: E402
-from api.hartree import hartree, HartreeError, HartreeUnsupported  # noqa: E402
-from api.model import TemporalModelBuilder  # noqa: E402
-from api.noise import Gaussian  # noqa: E402
-from api.sde import SDE  # noqa: E402
+from daedalus.api.delay import Kernel  # noqa: E402
+from daedalus.api.hartree import hartree, HartreeError, HartreeUnsupported  # noqa: E402
+from daedalus.api.model import TemporalModelBuilder  # noqa: E402
+from daedalus.api.noise import Gaussian  # noqa: E402
+from daedalus.api.sde import SDE  # noqa: E402
 
 TAU = np.array([0.0, 0.5, 1.0])
 

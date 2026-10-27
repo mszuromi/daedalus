@@ -3,8 +3,8 @@ tests/test_save_version_stamp.py
 ================================
 Provenance stamp on saved results (0.2.0, CHANGELOG.md).
 
-``api.save.save_npz`` / ``save_csv`` record ``daedalus_version`` and
-``phase_j_convention``; ``api.save.load_npz`` warns once per file and
+``daedalus.api.save.save_npz`` / ``save_csv`` record ``daedalus_version`` and
+``phase_j_convention``; ``daedalus.api.save.load_npz`` warns once per file and
 process (``StaleResultWarning``) when the stamp is missing, older than
 0.2.0, or names the pre-0.2.0 Phase J convention.  Also pins that the three
 places stating the package version agree, and that ``CITATION.cff``
@@ -30,9 +30,9 @@ import warnings
 import numpy as np
 import pytest
 
-import api
-import api.save as save
-import engine.integration.time_domain.final_integral as FI
+import daedalus.api as api
+import daedalus.api.save as save
+import daedalus.engine.integration.time_domain.final_integral as FI
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -93,13 +93,13 @@ def _read(rel):
 def test_version_strings_in_sync():
     with open(os.path.join(_ROOT, 'pyproject.toml'), 'rb') as f:
         v_pyproject = tomllib.load(f)['project']['version']
-    v_dd = re.search(r"^__version__\s*=\s*'([^']+)'", _read('daedalus.py'), re.M)
+    v_dd = re.search(r"^__version__\s*=\s*'([^']+)'", _read(os.path.join('daedalus', '__init__.py')), re.M)
     v_api_src = re.search(r"^__version__\s*=\s*'([^']+)'",
-                          _read(os.path.join('api', '__init__.py')), re.M)
+                          _read(os.path.join('daedalus', 'api', '__init__.py')), re.M)
     assert v_dd and v_api_src
     versions = {'pyproject.toml': v_pyproject,
-                'daedalus.py': v_dd.group(1),
-                'api/__init__.py': v_api_src.group(1),
+                'daedalus/__init__.py': v_dd.group(1),
+                'daedalus/api/__init__.py': v_api_src.group(1),
                 'api.__version__': api.__version__}
     assert len(set(versions.values())) == 1, versions
     assert save._parse_version(api.__version__) >= save._STAMP_MIN_VERSION
@@ -137,10 +137,10 @@ def test_citation_describes_a_release():
 
 
 def test_version_lookup_without_the_package_imported(monkeypatch):
-    # Standalone use (numpy-only tests load api/save.py by path): the
-    # version comes from the api/__init__.py source, not an import.
+    # Standalone use (numpy-only tests load daedalus/api/save.py by path): the
+    # version comes from the daedalus/api/__init__.py source, not an import.
     expected = api.__version__
-    monkeypatch.delitem(sys.modules, 'api')
+    monkeypatch.delitem(sys.modules, 'daedalus.api')
     assert save._daedalus_version() == expected
 
 
@@ -304,7 +304,7 @@ from tests.test_phase_j_theta0 import (                    # noqa: E402,F401
 
 def test_compute_records_the_convention_it_used(spike1_model):
     """``compute_cumulants`` stamps ``config['phase_j_convention']`` with the
-    rule the numbers were computed with (``api.save`` copies it).  (The
+    rule the numbers were computed with (``daedalus.api.save`` copies it).  (The
     retired 'legacy_clip' mode stamped 'theta0_legacy_clip'.)"""
     res, _c = _spike1(spike1_model, 2, 1)
     label = save.PHASE_J_CONVENTION

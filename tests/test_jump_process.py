@@ -1,4 +1,4 @@
-"""The reaction / transition builder (api/jump_process.py, ``dd.JumpProcess``).
+"""The reaction / transition builder (daedalus/api/jump_process.py, ``dd.JumpProcess``).
 
   * the built model is the hand-written SDE-front-end model (identical action text, equations and
     mean-field equations): one state-dependent Poisson source of size 1/Omega per transition;
@@ -15,14 +15,14 @@ import pytest
 from scipy.linalg import solve_continuous_lyapunov
 
 import daedalus as dd
-from api.jump_process import JumpProcess, JumpProcessError
+from daedalus.api.jump_process import JumpProcess, JumpProcessError
 
 
 # ── the built model is the hand-written model ───────────────────────────────────────────────
 
 def _hand_written(rate_birth='Omega*lam', rate_death='Omega*mu*x'):
-    from api.sde import SDE
-    from api.noise import Poisson
+    from daedalus.api.sde import SDE
+    from daedalus.api.noise import Poisson
     s = SDE('imm-death')
     s.parameter('lam', default=2.0, domain='positive')
     s.parameter('mu', default=1.0, domain='positive')

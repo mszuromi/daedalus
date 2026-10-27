@@ -1,5 +1,5 @@
 """
-Residues of high-degree rational propagators (``api._propagator``).
+Residues of high-degree rational propagators (``daedalus.api._propagator``).
 
 The exact tier decided "pole p_k is not a pole of entry (i, j)" by an
 ABSOLUTE test ``|Q_ij(p_k)| > 1e-9`` on the monic denominator; at high degree
@@ -44,10 +44,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from sage.all import SR, var, matrix, I                             # noqa: E402
 
-from api import compute_cumulants                                   # noqa: E402
-from api import _propagator as PR                                   # noqa: E402
-from api.noise import Gaussian                                      # noqa: E402
-from api.sde import SDE                                             # noqa: E402
+from daedalus.api import compute_cumulants                                   # noqa: E402
+from daedalus.api import _propagator as PR                                   # noqa: E402
+from daedalus.api.noise import Gaussian                                      # noqa: E402
+from daedalus.api.sde import SDE                                             # noqa: E402
 
 A, C, D, TS = 1.0, -2.0, 0.1, 1.0
 TAU = np.array([0.0, 0.5, 1.0, 2.0, 4.0])
@@ -313,7 +313,7 @@ def test_numerical_tier_keeps_every_pole(monkeypatch, kind, n, rtol, path):
     C 25 % off; all-pass-16: 7 of 17)."""
     monkeypatch.setattr(PR, '_compute_residues_via_polynomial_fracfield', lambda *a, **k: (None, None, None))
     if path == 'rich':
-        import api.compute as CO
+        import daedalus.api.compute as CO
         orig = PR.compute_poles_and_residues
 
         def no_inverse(prop, *a, **k):

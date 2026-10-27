@@ -21,7 +21,7 @@ pytest.importorskip('sage.all')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from engine.integration.time_domain import final_integral as FI     # noqa: E402
+from daedalus.engine.integration.time_domain import final_integral as FI     # noqa: E402
 
 def test_freq_image_direct_split():
     from sage.all import I
@@ -69,7 +69,7 @@ def test_dressed_line_with_a_direct_term(D):
 
 def test_realize_kernel_direct_term():
     from sage.all import I
-    from api._realization import realize_kernel, RealizationRefused
+    from daedalus.api._realization import realize_kernel, RealizationRefused
     att = {'symbol': 'ap', 'kernel_ft_fn': lambda w: (1 - I * w) / (1 + I * w)}
     with pytest.raises(RealizationRefused) as exc:
         realize_kernel(att, {})
@@ -93,8 +93,8 @@ def test_statespace_kernel_edge_refuses_and_dressed_line_takes_a_direct_term():
     line is the series connection with C = [d2 c1, c2], whose impulse
     response is d2 G(t) + (g_smooth * G)(t)."""
     from sage.all import I
-    from engine.integration.time_domain import statespace as SS
-    from api._realization import EntryRealization
+    from daedalus.engine.integration.time_domain import statespace as SS
+    from daedalus.api._realization import EntryRealization
     import types
     a1, b1, c1 = np.array([[-0.5]]), np.array([1.0]), np.array([0.8])
     ent_g = EntryRealization(a=a1, b=b1, c=c1, d=0.0, n_states=1)
@@ -109,7 +109,7 @@ def test_statespace_kernel_edge_refuses_and_dressed_line_takes_a_direct_term():
     # ... but only where Phase J dresses it: a local c delta kernel (a time
     # image) and a time image c delta + smooth stay declined, as before
     from sage.all import SR, dirac_delta, exp
-    from engine.core.vertices import KernelTimeImage
+    from daedalus.engine.core.vertices import KernelTimeImage
     t = SR.var('dt56tt')
     for img in (2 * dirac_delta(t), dirac_delta(t) + exp(-t)):
         assert ops.kernel_route({'symbol': 'loc', 'kernel_td_fn': KernelTimeImage(img, t)}) \

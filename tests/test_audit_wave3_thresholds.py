@@ -34,14 +34,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-import engine.integration.time_domain.final_integral as FI   # noqa: E402
+import daedalus.engine.integration.time_domain.final_integral as FI   # noqa: E402
 
 
 # --- ACC-07 ---------------------------------------------------------------
 
 @pytest.mark.parametrize('r', [1e-6, 1.0, 3e5, 1e8, 1e12])
 def test_kernel_stability_finds_a_fast_unstable_root(r):
-    from api._kernel_stability import count_rhp_roots
+    from daedalus.api._kernel_stability import count_rhp_roots
     ks = count_rhp_roots(lambda s: np.asarray(s, complex) - r)
     assert ks.status == 'unstable' and ks.n_rhp == 1
     assert abs(ks.rightmost - r) <= 1e-12 * r
@@ -51,7 +51,7 @@ def test_kernel_stability_of_time_rescaled_delayed_cycle():
     """The two-population delayed cycle of tests/test_delay_kernels.py,
     rescaled in time by T: the same verdict, roots and radius x 1/T."""
     from sage.all import SR, I, exp, matrix
-    from api._kernel_stability import kernel_stability
+    from daedalus.api._kernel_stability import kernel_stability
     om, d = SR.var('omega'), SR.var('d')
     tau0, aa, W = [1.0, 1.5], [1.0, 1.0], [[0.3, -1.6], [1.4, 0.2]]
     ref = None
@@ -76,7 +76,7 @@ def test_kernel_stability_of_time_rescaled_delayed_cycle():
 # --- ACC-15 ---------------------------------------------------------------
 
 def _colored_ou(S):
-    from api.model import TemporalModelBuilder
+    from daedalus.api.model import TemporalModelBuilder
     b = (TemporalModelBuilder(f'w3c colored OU S{S:g}', n_populations=0)
          .physical_field('x', indexed=True, description='variable')
          .parameter('mu', default=1.0 / S, domain='positive')
@@ -97,7 +97,7 @@ def _colored_ou_closed(S, tau):
 
 @pytest.mark.parametrize('S', [1.0, 100.0, 1e4])
 def test_colored_noise_source_is_unit_invariant(S):
-    from api import compute_cumulants
+    from daedalus.api import compute_cumulants
     tau = np.array([0.0, 0.5 * S, 3.0 * S])
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
@@ -135,7 +135,7 @@ def _conv_exact(modes, kmodes, D):
     (((1, -1), (1e-6, -3)), [(1, -1 - 2e-6)], 1e-9),
 ])
 def test_dressing_keeps_modes_with_integral_weight(modes, kmodes, tol):
-    from engine.integration.time_domain.final_integral import EdgeModeSum
+    from daedalus.engine.integration.time_domain.final_integral import EdgeModeSum
     out = FI._dress_edge_modes(EdgeModeSum(0, 0, 0j, modes), kmodes)
     integ_exact = sum(C * c / (-l) / (-m) for (C, l) in modes for (c, m) in kmodes)
     integ_got = sum(complex(C) / -complex(l) for (C, l) in out.modes)
@@ -147,7 +147,7 @@ def test_dressing_keeps_modes_with_integral_weight(modes, kmodes, tol):
 
 
 def test_dressing_counts_a_dropped_rounding_mode():
-    from engine.integration.time_domain.final_integral import EdgeModeSum
+    from daedalus.engine.integration.time_domain.final_integral import EdgeModeSum
     FI._reset_runtime_counters()
     out = FI._dress_edge_modes(EdgeModeSum(0, 0, 0j, ((1, -1), (1e-20, -5))),
                                [(3, -3)])
@@ -157,8 +157,8 @@ def test_dressing_counts_a_dropped_rounding_mode():
 
 def _hand_built_conv_diagram(kernel):
     from sage.all import SR, DiGraph
-    from engine.core.vertices import ConvVertexType, SourceType
-    from engine.diagrams.type_assignment import TypedDiagram
+    from daedalus.engine.core.vertices import ConvVertexType, SourceType
+    from daedalus.engine.diagrams.type_assignment import TypedDiagram
     D = DiGraph(multiedges=True, loops=False)
     D.add_edge(2, 0, 'a')
     D.add_edge(3, 2, 'b')
@@ -245,7 +245,7 @@ def test_hardened_fallback_warns_per_diagram_and_parameter_point():
 def test_kernel_stability_zero_mode_is_marginal(T):
     """A conserved system (det K = s (s + 0.4/T)): a zero at s = 0, whatever
     the time unit."""
-    from api._kernel_stability import count_rhp_roots
+    from daedalus.api._kernel_stability import count_rhp_roots
 
     def chi(s):
         s = np.asarray(s, complex)
@@ -265,7 +265,7 @@ def test_noise_kernel_box_one_sided_and_delta_kernels():
 
 
 def test_dressing_with_an_undamped_kernel_mode_keeps_the_line():
-    from engine.integration.time_domain.final_integral import EdgeModeSum
+    from daedalus.engine.integration.time_domain.final_integral import EdgeModeSum
     out = FI._dress_edge_modes(EdgeModeSum(0, 0, 0j, ((1, -1),)), [(1, 0)])
     # (Θ * G)(Δ) = 1 - e^{-Δ}: both modes are kept
     assert len(out.modes) == 2

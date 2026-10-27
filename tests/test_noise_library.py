@@ -1,4 +1,4 @@
-"""The noise-source library (api/noise.py): every CGF against textbook cumulants, K(0) = 0, the
+"""The noise-source library (daedalus/api/noise.py): every CGF against textbook cumulants, K(0) = 0, the
 sign/normalisation convention of the hand-written actions, and the error cases."""
 from math import comb, factorial
 
@@ -7,7 +7,7 @@ import pytest
 pytest.importorskip('sage.all')
 from sage.all import SR, exp, function                                  # noqa: E402
 
-from api.noise import (THETA, CGF, Bernoulli, Binomial, CompoundPoisson,  # noqa: E402
+from daedalus.api.noise import (THETA, CGF, Bernoulli, Binomial, CompoundPoisson,  # noqa: E402
                        Cumulants, Dirac, Exponential, FinitePMF, Gamma, GammaProcess,
                        Gaussian, GaussianJump, InverseGaussianProcess, Laplace, NoiseError,
                        Poisson, Uniform, expr_to_text, parse_expr)

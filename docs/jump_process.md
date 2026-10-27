@@ -1,6 +1,6 @@
 # Reaction / transition builder (`dd.JumpProcess`)
 
-`api/jump_process.py` is a front end for jump processes (chemical kinetics, shot noise). It emits the Ito jump action the
+`daedalus/api/jump_process.py` is a front end for jump processes (chemical kinetics, shot noise). It emits the Ito jump action the
 SDE front end already supports and validates it against the exact master-equation oracle (`docs/master_equation.md`).
 
 ```python
