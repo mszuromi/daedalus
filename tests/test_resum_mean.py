@@ -166,6 +166,48 @@ def test_result_keys_and_the_mean_by_order():
         assert np.allclose(r['C_tau_loops_by_ell'][e], base['C_tau_by_ell'][e])
 
 
+def _shifted(two_fields):
+    """``dx = (a - mu x + g x^2 - eps x^3) dt + noise`` with a mean-field
+    saddle away from 0, optionally with a linear follower ``y``."""
+    m = SDE('shifted odd quartic')
+    for p, d in dict(mu=1.0, g=0.3, eps=0.2, D=0.5, a=0.8, nu=2.0).items():
+        m.parameter(p, default=d, domain='positive')
+    if two_fields:
+        m.field('y')
+    m.field('x')
+    if two_fields:
+        m.drift('y', '-nu*y + 0.1*x')
+        m.noise('eta', Gaussian(var='0.3'), into={'y': 1})
+    m.drift('x', 'a - mu*x + g*x^2 - eps*x^3' + (' + 0.05*y' if two_fields else ''))
+    m.noise('xi', Gaussian(var='2*D'), into={'x': 1})
+    return m.build()
+
+
+def _screened_mean(model, field, N=2):
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        return dd.run(model, dd.Config(
+            k=1, max_ell=N, resum='screened', tau_grid=TAU,
+            external_fields=[(field, 1)], verbose=False))
+
+
+def test_a_saddle_away_from_zero_and_a_second_field():
+    from scipy.integrate import quad
+    U = lambda x: (-0.8 * x + x * x / 2 - 0.3 * x ** 3 / 3
+                   + 0.2 * x ** 4 / 4) / 0.5
+    Z = quad(lambda x: math.exp(-U(x)), -15, 15, limit=400)[0]
+    ex = quad(lambda x: x * math.exp(-U(x)), -15, 15, limit=400)[0] / Z
+    r = _screened_mean(_shifted(False), 'x')
+    saddle = r['mean'] - float(np.real(r['C_tau'][0]))
+    assert abs(saddle - 0.897) < 1e-3                  # the absolute mean adds it
+    assert abs(r['mean'] - ex) < 0.01 * ex
+    # two fields, the follower y declared first: <y> = 0.1 <x> / nu exactly
+    rx = _screened_mean(_shifted(True), 'x', N=1)
+    ry = _screened_mean(_shifted(True), 'y', N=1)
+    assert ry['mean'] == pytest.approx(0.1 * rx['mean'] / 2.0, rel=1e-7)
+    assert rx['resummation']['kappa'] == ry['resummation']['kappa']
+
+
 def test_refusals_stay():
     with pytest.raises(ValueError, match='k = 1'):
         dd.Config(k=1, max_ell=1, resum='screened',
