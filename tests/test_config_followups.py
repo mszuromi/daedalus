@@ -289,7 +289,7 @@ def build():
             .parameter('c', default=1.0, domain='positive')
             .parameter('D', default=0.5, domain='positive')
             .set_action_text('sum(xt[i]*((Dt+mu)*x[i] - b*x[i]^2 - c) - D*xt[i]^2 for i in pop)')
-            .equation(lhs='(Dt+mu)*x[i]', rhs='b*x[i]^2 + c', population='pop')
+            .mf_residual(lhs='(Dt+mu)*x[i]', rhs='b*x[i]^2 + c', population='pop')
             .stability_analysis(True)
             .build())
 '''

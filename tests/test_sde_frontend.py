@@ -215,7 +215,7 @@ def test_to_builder_continues_by_hand_and_show_is_copyable(capsys):
     b.set_action_text(b._action_text + ' + 0')                    # the builder stays editable
     text = sde.show()
     assert 'set_action_text' in capsys.readouterr().out
-    assert sde.action_text() in text and ".equation(lhs='Dt*x[i] + mu*x[i]'" in text
+    assert sde.action_text() in text and ".mf_residual(lhs='Dt*x[i] + mu*x[i]'" in text
 
 
 # ── C: mean field and linear stability ──────────────────────────────────────────────────────

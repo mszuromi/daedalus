@@ -95,9 +95,9 @@ def _chain_model():
     for p, d in (('mu', 1.0), ('g1', 1.0), ('g2', 1.0), ('eps', 0.02), ('D', 1.0)):
         b.parameter(p, default=d, domain='positive')
     b.set_action_text('xt*((Dt+mu)*x - y + eps*x^3) + yt*((Dt+g1)*y - z) + zt*((Dt+g2)*z) - D*zt^2')
-    b.equation(lhs='(Dt+mu)*x', rhs='y - eps*x^3')
-    b.equation(lhs='(Dt+g1)*y', rhs='z')
-    b.equation(lhs='(Dt+g2)*z', rhs='0')
+    b.mf_residual(lhs='(Dt+mu)*x', rhs='y - eps*x^3')
+    b.mf_residual(lhs='(Dt+g1)*y', rhs='z')
+    b.mf_residual(lhs='(Dt+g2)*z', rhs='0')
     b.stability_analysis(True)
     return b.build()
 
@@ -217,8 +217,8 @@ def test_decoupled_near_equal_rates_are_exact():
     for p, d in (('mu1', 1.0), ('mu2', 1.0), ('D', 1.0)):
         b.parameter(p, default=d, domain='positive')
     b.set_action_text('xt*((Dt+mu1)*x) + yt*((Dt+mu2)*y) - D*xt^2 - D*yt^2')
-    b.equation(lhs='(Dt+mu1)*x', rhs='0')
-    b.equation(lhs='(Dt+mu2)*y', rhs='0')
+    b.mf_residual(lhs='(Dt+mu1)*x', rhs='0')
+    b.mf_residual(lhs='(Dt+mu2)*y', rhs='0')
     b.stability_analysis(True)
     model = b.build()
     for g in (1e-6, 1e-8, 1e-10):

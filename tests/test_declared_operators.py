@@ -472,7 +472,7 @@ def test_uv_divergent_loop_refused_through_the_bridge():
                 .parameter('mu', default=1.0, domain='positive').parameter('D', default=1.0, domain='positive')
                 .parameter('lam', default=0.1, domain='positive').parameter('T', default=1.0, domain='positive')
                 .set_action_text('phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
-                .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+                .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
                 .boundary('infinite').initial('stationary').build())
 
     def bridge():

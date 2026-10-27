@@ -41,7 +41,7 @@ def _ou_quartic():
             .parameter('eps', default=0.02, domain='positive')
             .parameter('D', default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu)*x + eps*x^3) - D*xt^2')
-            .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='-eps*x^3')
             .build())
 
 
@@ -56,9 +56,9 @@ def _chain(gap):
         b.parameter(p, default=d, domain='positive')
     b.set_action_text('xt*((Dt+mu)*x - y + eps*x^3) + yt*((Dt+g1)*y - z) '
                       '+ zt*((Dt+g2)*z) - D*zt^2')
-    b.equation(lhs='(Dt+mu)*x', rhs='y - eps*x^3')
-    b.equation(lhs='(Dt+g1)*y', rhs='z')
-    b.equation(lhs='(Dt+g2)*z', rhs='0')
+    b.mf_residual(lhs='(Dt+mu)*x', rhs='y - eps*x^3')
+    b.mf_residual(lhs='(Dt+g1)*y', rhs='z')
+    b.mf_residual(lhs='(Dt+g2)*z', rhs='0')
     b.stability_analysis(True)
     return b.build()
 

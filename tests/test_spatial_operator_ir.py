@@ -345,7 +345,7 @@ def test_operator_ir_end_to_end_matches_v1_through_compute_cumulants():
               .parameter('D', default=1.0, domain='positive')
               .parameter('g', default=0.35, domain='real')
               .parameter('T', default=1.0, domain='positive')
-              .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2'))
+              .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2'))
         if use_ir:
             tb = tb.set_action_text(
                 'phit*(Dt(phi) + mu*phi - D*Lap(phi) + g*phi^2) - T*phit^2'
@@ -388,7 +388,7 @@ def test_operator_ir_derivative_vertex_one_loop():
          .parameter('D', default=2.0, domain='positive')
          .parameter('g', default=0.3, domain='real')
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='g*Laplacian*phi^2')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='g*Laplacian*phi^2')
          .set_action_text(
              'phit*(Dt(phi) + mu*phi - D*Lap(phi) - g*Lap(phi^2)) - T*phit^2')
          .operator_ir().boundary('infinite').initial('stationary').build())
@@ -434,7 +434,7 @@ def test_operator_ir_multivertex_table_and_formfactor():
          .parameter('g', default=0.15, domain='real')
          .parameter('kpz', default=0.3, domain='real')
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='0')
          .set_action_text('phit*(Dt(phi) + mu*phi - D*Lap(phi) - g*Lap(phi^2) '
                           '- (kpz/2)*Dx(phi,0)^2) - T*phit^2')
          .operator_ir().boundary('infinite').initial('stationary').build())

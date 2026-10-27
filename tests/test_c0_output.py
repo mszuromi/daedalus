@@ -252,7 +252,7 @@ def ouq():
 
 
 def _kernels():
-    K = so.Kernel
+    K = so.PairingKernel
     return {
         'two_sided': K.two_sided_exponential(1.0, 0.7, -0.5, 1.3),
         'poly_exp': (K.exponential(1.0, -0.8, 'positive', power=2)
@@ -285,7 +285,7 @@ def test_rational_kernel_equals_its_partial_fractions(ouq):
     """L(s) = (s + 0.5)/((s + 1)(s + 2)) = -0.5 e^{-s} + 1.5 e^{-2s}."""
     _res, c = ouq
     r = c.integrate_against(ME.RationalKernel([1.0, 0.5], [1.0, 3.0, 2.0]))
-    K = so.Kernel
+    K = so.PairingKernel
     pf = (K.exponential(-0.5, -1.0, 'positive')
           + K.exponential(1.5, -2.0, 'positive'))
     assert abs(r.value - c.integrate_against(pf).value) <= 1e-14
@@ -295,7 +295,7 @@ def test_contact_rule_with_a_jump_at_zero(hawkes):
     res, c = hawkes
     assert c.deltas and c.me is not None and c.me.complete
     w0 = sum(d.weight for d in c.deltas if d.location == 0.0)
-    L = so.Kernel.two_sided_exponential(1.0, 0.7, -0.5, 1.3)  # L(0±) = 1, -0.5
+    L = so.PairingKernel.two_sided_exponential(1.0, 0.7, -0.5, 1.3)  # L(0±) = 1, -0.5
     with pytest.raises(ValueError, match='contact'):
         c.integrate_against(L)
     ex = c.integrate_against(L, contact='mid')
@@ -306,7 +306,7 @@ def test_contact_rule_with_a_jump_at_zero(hawkes):
         p = c.integrate_against(L, contact=rule)
         assert abs(p.value - (ex.smooth + w0 * l0)) <= 1e-14
     # a continuous kernel needs no rule
-    Lc = so.Kernel.two_sided_exponential(1.0, 0.7, 1.0, 1.3)
+    Lc = so.PairingKernel.two_sided_exponential(1.0, 0.7, 1.0, 1.3)
     p = c.integrate_against(Lc)
     assert abs(p.contact - w0) <= 1e-14
 
@@ -436,7 +436,7 @@ def test_dd_exports():
                  'CumulantME', 'RationalKernel', 'MEUnavailable',
                  'MEFallbackWarning', 'MEConditioningWarning', 'slice_me'):
         assert getattr(dd, name) is not None, name
-    assert dd.Kernel is so.Kernel and dd.tree_modes is so.tree_modes
+    assert dd.PairingKernel is so.PairingKernel and dd.tree_modes is so.tree_modes
 
 
 def test_generic_reference_retry_never_flips_the_split():

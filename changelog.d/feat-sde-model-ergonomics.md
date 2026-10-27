@@ -28,13 +28,15 @@
   block cannot record raises with the differing order.
 - **YAML `sde:` block**: new keys `n_populations`, `space`, `operators`, `populations`, `functions`, `kernels`
   (a `Kernel.gaussian` jitter as `{gaussian: {sigma: s, tol: 1e-6}}`, fitted again on reading),
-  `point_processes`, `extra_action`, `boundary`, `dyson`, `observables`; parameter keys `indexed`, `indexed_by`
+  `point_processes` (`rate`, `jump_size`, `population`, ...; the deprecated `size` is read with its warning),
+  `extra_action`, `boundary`, `dyson`, `observables`; parameter keys `indexed`, `indexed_by`
   (before: `indexed` was an unknown key); field entries with attributes (`- v: {population: E}`); an `equations`
   entry that is an expression is a drift, and an equation takes `velocity`; noise entries take `as_field`,
   `population`, `domain` and a Gaussian's `kernel` (an image, or `{freq_image: ...}`); `noise` is optional with
   `point_processes`, and `into` with `as_field`. Existing configs read as before.
 - Tests (`tests/test_sde_model_ergonomics.py`): delayed indexed fields and rates equal the explicit `Conv` forms, also in a
-  switch-on (`t_min`) run; a Gaussian jitter kernel round-trips; the
+  switch-on (`t_min`) run; a Gaussian jitter kernel round-trips; the text uses the current spellings
+  (`jump_size`, `loc`) and the round trip raises no `DeprecationWarning` (warnings as errors); the
   connectivity equals the parameter call, with its refusals; the one-loop mean of `exp(x/2) + x^2` vs the exact
   stationary density of a 1-d SDE (error ratio 3.9 when `D` halves, O(D^2); saddle only: ratio 2); the k = 2 tree
   `f_a C_ax`; a linear observable at one loop equals the sum of the field cumulants per loop order; a population

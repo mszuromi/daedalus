@@ -209,7 +209,7 @@ def sde_spec(sde) -> dict:
             d = sde._sources[f]['declared']
             e = {'rate': d['rate']}
             if str(d['size']).strip() != '1':
-                e['size'] = _coef(d['size'])
+                e['jump_size'] = _coef(d['size'])
             for k in ('population', 'domain'):
                 if info.get(k) is not None:
                     e[k] = info[k]

@@ -17,7 +17,7 @@ def build():
         .parameter('tauc', default=1.0, domain='positive')
         .declare_cgf_term('CXX', response_legs=['xt', 'xt'], order=2, coefficient='2*D/tauc', kernel='exp(-abs(tau)/tauc)')
         .set_action_text('xt*((Dt+mu)*x + eps*x^3)')
-        .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3')
+        .mf_residual(lhs='(Dt+mu)*x', rhs='-eps*x^3')
         .stability_analysis(True)
         .build()
     )

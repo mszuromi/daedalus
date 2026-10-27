@@ -28,7 +28,7 @@ def build():
         .parameter('L',   default=20.0, domain='positive')
         .set_action_text(
             'phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
-        .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
         .stability_analysis(True)
         .boundary('periodic', length='L')
         .initial('stationary')

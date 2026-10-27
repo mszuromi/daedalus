@@ -39,7 +39,7 @@ def build():
                    description='noise temperature')
         .set_action_text(
             'phit*((Dt + mu - D*Laplacian)*phi + g*phi^2) - T*phit^2')
-        .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2')
         .boundary('infinite')
         .initial('stationary')
         .build())

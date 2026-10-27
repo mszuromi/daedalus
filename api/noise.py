@@ -1081,15 +1081,29 @@ def _nonneg(x):
     return x >= 0
 
 
+def _renamed_keyword(who, old, new, old_value, new_value, default=0):
+    """The value of a keyword that was renamed ``old -> new``: ``new_value``,
+    or ``old_value`` with one ``DeprecationWarning`` (both given: an error)."""
+    if old_value is None:
+        return default if new_value is None else new_value
+    if new_value is not None:
+        raise NoiseError(f'{who}: give {new}= only ({old}= is its deprecated name).')
+    import warnings
+    warnings.warn(f'{who}({old}=) is renamed {new}= (the location parameter); {old}= is '
+                  f'accepted for one more release', DeprecationWarning, stacklevel=3)
+    return old_value
+
+
 class VarianceGamma(NoiseSource):
     """Variance-gamma process (Brownian motion with drift ``mu`` and volatility
     ``sigma`` run on a gamma clock of mean rate 1 and variance rate ``nu``),
-    plus an optional linear ``drift``:
-    ``K = drift*theta - log(1 - nu*mu*theta - nu*sigma^2*theta^2/2)/nu``.
-    Cumulant rates: ``kappa_1 = drift + mu``, ``kappa_2 = sigma^2 + nu*mu^2``."""
+    plus an optional linear location ``loc`` (``drift=`` is its deprecated name):
+    ``K = loc*theta - log(1 - nu*mu*theta - nu*sigma^2*theta^2/2)/nu``.
+    Cumulant rates: ``kappa_1 = loc + mu``, ``kappa_2 = sigma^2 + nu*mu^2``."""
 
-    def __init__(self, mu, sigma, nu, drift=0):
-        super().__init__(mu=mu, sigma=sigma, nu=nu, drift=drift)
+    def __init__(self, mu, sigma, nu, loc=None, *, drift=None):
+        super().__init__(mu=mu, sigma=sigma, nu=nu,
+                         loc=_renamed_keyword('VarianceGamma', 'drift', 'loc', drift, loc))
 
     def _check_domain(self):
         self._require('sigma', _pos, 'need sigma > 0')
@@ -1097,18 +1111,20 @@ class VarianceGamma(NoiseSource):
 
     def _cgf(self):
         P = self.params
-        return (P['drift'] * THETA
+        return (P['loc'] * THETA
                 - log(1 - P['nu'] * P['mu'] * THETA
                       - P['nu'] * P['sigma'] ** 2 * THETA ** 2 / 2) / P['nu'])
 
 
 class NormalInverseGaussian(NoiseSource):
-    """Normal-inverse-Gaussian process ``NIG(alpha, beta, delta, mu)`` per unit
-    time: ``K = mu*theta + delta*(sqrt(alpha^2 - beta^2) -
-    sqrt(alpha^2 - (beta + theta)^2))`` (need ``alpha > |beta|``, ``delta > 0``)."""
+    """Normal-inverse-Gaussian process ``NIG(alpha, beta, delta, loc)`` per unit
+    time: ``K = loc*theta + delta*(sqrt(alpha^2 - beta^2) -
+    sqrt(alpha^2 - (beta + theta)^2))`` (need ``alpha > |beta|``, ``delta > 0``;
+    ``mu=`` is the deprecated name of ``loc=``)."""
 
-    def __init__(self, alpha, beta, delta, mu=0):
-        super().__init__(alpha=alpha, beta=beta, delta=delta, mu=mu)
+    def __init__(self, alpha, beta, delta, loc=None, *, mu=None):
+        super().__init__(alpha=alpha, beta=beta, delta=delta,
+                         loc=_renamed_keyword('NormalInverseGaussian', 'mu', 'loc', mu, loc))
 
     def _check_domain(self):
         self._require('alpha', _pos, 'need alpha > 0')
@@ -1128,7 +1144,7 @@ class NormalInverseGaussian(NoiseSource):
         P = self.params
         a, b = P['alpha'], P['beta']
         g2 = a ** 2 - b ** 2
-        return P['mu'] * THETA + P['delta'] * sqrt(g2) * (
+        return P['loc'] * THETA + P['delta'] * sqrt(g2) * (
             1 - sqrt(1 - (2 * b * THETA + THETA ** 2) / g2))
 
 
@@ -1182,13 +1198,15 @@ class TemperedStableSubordinator(NoiseSource):
 
 
 class Meixner(NoiseSource):
-    """Meixner process ``Meixner(alpha, beta, delta, mu)`` per unit time:
-    ``K = mu*theta + 2*delta*(log cos(beta/2) - log cos((alpha*theta + beta)/2))``
-    (``alpha > 0``, ``|beta| < pi``, ``delta > 0``); ``kappa_1 = mu +
-    alpha*delta*tan(beta/2)``, ``kappa_2 = alpha^2*delta/(2*cos^2(beta/2))``."""
+    """Meixner process ``Meixner(alpha, beta, delta, loc)`` per unit time:
+    ``K = loc*theta + 2*delta*(log cos(beta/2) - log cos((alpha*theta + beta)/2))``
+    (``alpha > 0``, ``|beta| < pi``, ``delta > 0``); ``kappa_1 = loc +
+    alpha*delta*tan(beta/2)``, ``kappa_2 = alpha^2*delta/(2*cos^2(beta/2))``
+    (``mu=`` is the deprecated name of ``loc=``)."""
 
-    def __init__(self, alpha, beta, delta, mu=0):
-        super().__init__(alpha=alpha, beta=beta, delta=delta, mu=mu)
+    def __init__(self, alpha, beta, delta, loc=None, *, mu=None):
+        super().__init__(alpha=alpha, beta=beta, delta=delta,
+                         loc=_renamed_keyword('Meixner', 'mu', 'loc', mu, loc))
 
     def _check_domain(self):
         from math import pi
@@ -1199,7 +1217,7 @@ class Meixner(NoiseSource):
     def _cgf(self):
         P = self.params
         a, b, d = P['alpha'], P['beta'], P['delta']
-        return P['mu'] * THETA + 2 * d * (log(_cos(b / 2)) - log(_cos((a * THETA + b) / 2)))
+        return P['loc'] * THETA + 2 * d * (log(_cos(b / 2)) - log(_cos((a * THETA + b) / 2)))
 
 
 class BilateralGamma(NoiseSource):

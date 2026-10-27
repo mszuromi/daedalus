@@ -39,7 +39,7 @@ def build():
         # ``phi`` is spatial.
         .set_action_text(
             'phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
-        .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
         # φ⁴ at μ>0 has the single real saddle φ*=0; enable stability
         # filtering so ``fixed_point_index`` selects the stable origin
         # (harmless in the single-root regime).

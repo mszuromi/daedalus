@@ -47,8 +47,8 @@ def _noise_mixed():
             .set_action_text('at*((Dt+mua-D*Laplacian)*a) '
                              '+ bt*((Dt+mub-D*Laplacian)*b) '
                              '- Ta*at^2*(1 + c*b^2) - Tb*bt^2')
-            .equation(lhs='(Dt+mua-D*Laplacian)*a', rhs='0')
-            .equation(lhs='(Dt+mub-D*Laplacian)*b', rhs='0')
+            .mf_residual(lhs='(Dt+mua-D*Laplacian)*a', rhs='0')
+            .mf_residual(lhs='(Dt+mub-D*Laplacian)*b', rhs='0')
             .boundary('infinite').initial('stationary').build())
 
 
@@ -103,7 +103,7 @@ def test_periodic_loops_refuse():
          .parameter('T', default=1.0, domain='positive')
          .parameter('lam', default=0.1)
          .parameter('L', default=4.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi + lam*phi^3', rhs='0')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi + lam*phi^3', rhs='0')
          .set_action_text(
              'phit*((Dt + mu - D*Laplacian)*phi + lam*phi^3) - T*phit^2')
          .boundary('periodic', length='L').initial('stationary').build())
@@ -136,7 +136,7 @@ def _quad_rd(T):
          .parameter('DD', default=1.0, domain='positive')
          .parameter('g', default=0.1, domain='real')
          .parameter('T', default=T, domain='positive')
-         .equation(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
+         .mf_residual(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
          .set_action_text('pt*(Dt(p)+mu*p-DD*Lap(p)+g*p^2) - T*pt^2')
          .operator_ir().boundary('infinite').initial('stationary').build())
     ft = FieldTheory(b, taylor_order=5)

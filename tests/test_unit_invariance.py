@@ -553,11 +553,11 @@ def test_delta_contact_jump_is_judged_relative_to_the_kernel(hawkes_cumulant, sc
     (below 1e-14 it was taken for round-off and L(0+) used silently), and
     the explicit 'mid' rule scales with it."""
     from api import symbolic_out as so
-    L = so.Kernel.two_sided_exponential(scale, 0.7, -0.5 * scale, 1.3)
+    L = so.PairingKernel.two_sided_exponential(scale, 0.7, -0.5 * scale, 1.3)
     with pytest.raises(ValueError, match='jumps at 0'):
         hawkes_cumulant.integrate_against(L)
     ref = hawkes_cumulant.integrate_against(
-        so.Kernel.two_sided_exponential(1.0, 0.7, -0.5, 1.3), contact='mid')
+        so.PairingKernel.two_sided_exponential(1.0, 0.7, -0.5, 1.3), contact='mid')
     p = hawkes_cumulant.integrate_against(L, contact='mid')
     assert complex(p) == pytest.approx(scale * complex(ref), rel=1e-12)
 

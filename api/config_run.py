@@ -62,7 +62,7 @@ writes any model in this form and ``SDE.from_text()`` reads it)::
       kernels: {g: {freq_image: "1/(1 + I*omega*tau)", delay: d}}            # or time_expr
                                           # (or {gaussian: {sigma: s, tol: 1e-6}}: Kernel.gaussian)
       fields: [n, {v: {population: E}}]   # in order; a point process or a noise's field declares that
-      point_processes: {n: {rate: "phi(v)", population: E}}
+      point_processes: {n: {rate: "phi(v)", population: E}}       # jump_size: (default 1)
       equations: {v: {lhs: "(Dt + 1)*v", rhs: "sum(w[i,j]*v[j](t - d) for j in E)"}, y: "-y"}
                                       # an expression is a drift; velocity: [xdot] for a higher order
       noise: {eta: {type: Gaussian, var: 1, kernel: "1/(1 + I*omega*tau)", into: {v: 1}, as_field: z}}
@@ -106,7 +106,7 @@ SDE_FUNCTION_KEYS = ('args', 'expression', 'latex', 'description', 'population')
 SDE_KERNEL_KEYS = ('time_expr', 'freq_image', 'delay', 'latex_name', 'indexed', 'indexed_by',
                    'gaussian')
 SDE_GAUSSIAN_KEYS = ('sigma', 'tol')
-SDE_POINT_PROCESS_KEYS = ('rate', 'size', 'population', 'domain', 'description')
+SDE_POINT_PROCESS_KEYS = ('rate', 'jump_size', 'population', 'domain', 'description', 'size')
 SDE_OBSERVABLE_KEYS = ('expr', 'population', 'description')
 SDE_OPERATOR_TYPES = ('TimeDerivative', 'Laplacian')
 #: the ``type:`` of an inline noise source (classes of api.noise); a jump law
@@ -425,7 +425,7 @@ class _Parser:
                 if 'rate' not in sub:
                     self.fail(vnode, f'sde.point_processes.{name} needs rate')
                 entry = {k: self.py(v[1]) for k, v in sub.items()}
-                for k in ('rate', 'size'):
+                for k in ('rate', 'jump_size', 'size'):        # (size: the deprecated jump_size)
                     if k in sub:
                         entry[k] = self.expression(sub[k][1], f'sde.point_processes.{name}.{k}')
                 spec['point_processes'][name] = (entry, knode.start_mark.line + 1)
@@ -1182,7 +1182,7 @@ def resolve(raw, model, mod):
         raise ConfigError(
             src, qlines['external_fields'],
             f'k={k} (line {qlines["k"]}) but external_fields lists {len(ext)} '
-            f'leg(s); a k-point correlator needs exactly k legs')
+            f'leg(s); a k-point cumulant needs exactly k legs')
     if k is None:
         k = len(ext) if ext is not None else dd._meta(mod, 'k_default', 2)
     max_ell = q.get('max_ell')

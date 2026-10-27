@@ -31,8 +31,8 @@ def _coupled_cubic_model():
             .parameter('J1', default=0.5, domain='real').parameter('J2', default=0.3, domain='real')
             .parameter('D1', default=1.0, domain='positive').parameter('D2', default=0.6, domain='positive')
             .set_action_text('xt*((Dt+mu1)*x + eps*x^3 - J1*y) - D1*xt^2 + yt*((Dt+mu2)*y - J2*x) - D2*yt^2')
-            .equation(lhs='(Dt+mu1)*x', rhs='-eps*x^3 + J1*y')
-            .equation(lhs='(Dt+mu2)*y', rhs='J2*x')
+            .mf_residual(lhs='(Dt+mu1)*x', rhs='-eps*x^3 + J1*y')
+            .mf_residual(lhs='(Dt+mu2)*y', rhs='J2*x')
             .stability_analysis(True).build())
 
 
@@ -58,8 +58,8 @@ def _quadratic_drift_model(nst, q):
             .parameter('w', default=0.4, domain='real').parameter('nst', default=nst, domain='positive')
             .parameter('q', default=q, domain='real')
             .set_action_text('xt*((tau*Dt+1)*x - w*y) + yt*((taug*Dt+1)*y - nst*x - q*x^2) - (nst/2)*yt^2')
-            .equation(lhs='(tau*Dt+1)*x', rhs='w*y')
-            .equation(lhs='(taug*Dt+1)*y', rhs='nst*x + q*x^2')
+            .mf_residual(lhs='(tau*Dt+1)*x', rhs='w*y')
+            .mf_residual(lhs='(taug*Dt+1)*y', rhs='nst*x + q*x^2')
             .stability_analysis(True).build())
 
 

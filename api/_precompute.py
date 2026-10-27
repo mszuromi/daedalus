@@ -150,7 +150,7 @@ def precompute(model: dict, *, force: bool = False,
     if (not out['sanity_ok'] and 'mf_bg_conditions' not in model
             and 'mf_bg_conditions_action' not in model):
         _log('[precompute] HINT: this model carries no mean-field equations '
-             '(no .equation(...) / .set_mf_equation(...) reached build(); in '
+             '(no .mf_residual(...) / .set_mf_equation(...) reached build(); in '
              'the model-builder UI, check that every MF row has a left-hand '
              'side — an empty right-hand side is taken as 0).  Without them '
              'the saddle defaults to 0 and the tadpole sector cannot vanish.')

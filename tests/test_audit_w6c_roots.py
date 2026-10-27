@@ -125,9 +125,9 @@ def test_voltage_and_spike_only_forms_select_the_same_stable_saddle():
                         latex_name='g', indexed_by=['E', 'E'])
         b.set_action_text('sum(nt[i]*n[i] - (exp(nt[i])-1)*phi[i](v[i]) + vt[i]*((tau[i]*Dt + 1)*v[i]'
                           ' - Em[i] - sum(w[i,j]*g[i,j]*n[j] for j in E)) for i in E)')
-        b.equation(lhs='(tau[i]*Dt + 1)*v[i]', rhs='Em[i] + sum(w[i,j]*g[i,j]*n[j] for j in E)',
+        b.mf_residual(lhs='(tau[i]*Dt + 1)*v[i]', rhs='Em[i] + sum(w[i,j]*g[i,j]*n[j] for j in E)',
                    population='E')
-        b.equation(lhs='n[i]', rhs='phi[i](v[i])', population='E')
+        b.mf_residual(lhs='n[i]', rhs='phi[i](v[i])', population='E')
         return b.build()
     rates = []
     for mk in (H.voltage_form, H.spike_only_form, equation_form):

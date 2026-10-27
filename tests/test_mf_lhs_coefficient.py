@@ -1,7 +1,7 @@
 """
 tests/test_mf_lhs_coefficient.py
 ================================
-``ModelBuilder.equation(lhs, rhs)`` derives the legacy saddle text from
+``ModelBuilder.mf_residual(lhs, rhs)`` derives the legacy saddle text from
 ``LHS|_{Dt=0} = RHS``.  The derivation must honour the coefficient of the
 field on the LHS and the algebraic remainder, and must refuse a pure time
 derivative (whose saddle condition ``0 = RHS`` defines no ``xstar``) with a
@@ -36,7 +36,7 @@ def _ou(lhs, rhs):
             .parameter('mu', default=2.0).parameter('eps', default=0.02)
             .parameter('D', default=1.0)
             .set_action_text('sum(xt[i]*((Dt+mu)*x[i] + eps*x[i]^3) - D*xt[i]^2 for i in pop)')
-            .equation(lhs=lhs, rhs=rhs, population='pop'))
+            .mf_residual(lhs=lhs, rhs=rhs, population='pop'))
 
 
 def test_unit_coefficient_is_unchanged():
@@ -61,9 +61,9 @@ def test_algebraic_remainder_moves_to_rhs():
          .set_action_text('''sum( nt[i]*n[i] - (exp(nt[i])-1)*f
              + ut[i]*u[i] - (exp(ut[i])-1)*r*m[i]
              + mt[i]*(Dt*m[i] + u[i] - n[i]) - (exp(-mt[i])-1)*d*m[i] for i in pop)''')
-         .equation(lhs='n[i]', rhs='f', population='pop')
-         .equation(lhs='u[i]', rhs='r*m[i]', population='pop')
-         .equation(lhs='Dt*m[i] + u[i]', rhs='n[i] - d*m[i]', population='pop'))
+         .mf_residual(lhs='n[i]', rhs='f', population='pop')
+         .mf_residual(lhs='u[i]', rhs='r*m[i]', population='pop')
+         .mf_residual(lhs='Dt*m[i] + u[i]', rhs='n[i] - d*m[i]', population='pop'))
     d = _derived(b)
     assert d['nstar'] == 'f'
     # the third equation is linear in u with unit coefficient and no remainder
@@ -88,8 +88,8 @@ def _pure_builder(m_eq):
             .physical_field('u', population='pop').physical_field('m', population='pop')
             .parameter('a', default=0.5).parameter('r', default=0.4)
             .set_action_text('sum(ut[i]*u[i] - (exp(ut[i])-1)*r*m[i] + mt[i]*(Dt*m[i] + u[i]) - (exp(mt[i])-1)*a for i in pop)')
-            .equation(lhs='u[i]', rhs='r*m[i]', population='pop')
-            .equation(lhs=m_eq[0], rhs=m_eq[1], population='pop'))
+            .mf_residual(lhs='u[i]', rhs='r*m[i]', population='pop')
+            .mf_residual(lhs=m_eq[0], rhs=m_eq[1], population='pop'))
 
 
 def test_pure_time_derivative_is_accepted_like_the_moved_form():
@@ -112,7 +112,7 @@ def test_pure_integrator_without_a_linear_field_is_refused_with_guidance():
     b = (TemporalModelBuilder('pure-cubic').physical_field('x')
          .parameter('a', default=0.5).parameter('D', default=0.1)
          .set_action_text('xt*(Dt*x - a + x^3) - D*xt^2')
-         .equation(lhs='Dt*x', rhs='a - x^3'))
+         .mf_residual(lhs='Dt*x', rhs='a - x^3'))
     with pytest.raises(ValueError) as ei:
         b.build()
     msg = str(ei.value)
@@ -123,7 +123,7 @@ def test_scalar_form_without_population():
     b = (TemporalModelBuilder('scalar').physical_field('x')
          .parameter('mu', default=3.0).parameter('eps', default=0.1).parameter('D', default=1.0)
          .set_action_text('xt*((Dt+mu)*x + eps*x^3) - D*xt^2')
-         .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3'))
+         .mf_residual(lhs='(Dt+mu)*x', rhs='-eps*x^3'))
     d = _derived(b)
     assert d['xstar'] == '((-eps*xstar[i]^3) - (0))/(mu)'
 
@@ -135,9 +135,9 @@ def test_residual_form_as_entered_in_the_ui():
          .physical_field('n').physical_field('u').physical_field('m')
          .parameter('f', default=0.5).parameter('r', default=0.3).parameter('d', default=0.1)
          .set_action_text(_FLUX_ACTION)
-         .equation(lhs='n-f', rhs='0')
-         .equation(lhs='u-r*m', rhs='0')
-         .equation(lhs='Dt*m + u + d*m - n', rhs='0'))
+         .mf_residual(lhs='n-f', rhs='0')
+         .mf_residual(lhs='u-r*m', rhs='0')
+         .mf_residual(lhs='Dt*m + u + d*m - n', rhs='0'))
     d = _derived(b)
     assert set(d) == {'nstar', 'ustar', 'mstar'}
     assert d['nstar'] == '((0) - (-f))/(1)'
@@ -165,7 +165,7 @@ def test_unparseable_lhs_warns_instead_of_silently_guessing():
          .parameter('w', default=[[0.5]], indexed_by=['E', 'E'])
          .define_kernel('g', time_expr='exp(-t)*heaviside(t)', latex_name='g', indexed_by=['E', 'E'])
          .set_action_text('sum(vt[i]*((tau[i]*Dt + 1)*v[i] - Em[i] - sum(w[i,j]*Conv(g[i,j], v[j]) for j in E)) for i in E)')
-         .equation(lhs='(tau[i]*Dt + 1)*v[i] - sum(w[i,j]*v[j] for j in E)', rhs='Em[i]', population='E'))
+         .mf_residual(lhs='(tau[i]*Dt + 1)*v[i] - sum(w[i,j]*v[j] for j in E)', rhs='Em[i]', population='E'))
     with warnings.catch_warnings(record=True) as rec:
         warnings.simplefilter('always')
         d = _derived(b)

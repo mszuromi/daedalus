@@ -137,8 +137,8 @@ def _two_field_model():
             'phit*((Dt+mu1-D1*Laplacian)*phi) '
             '+ psit*((Dt+mu2-D2*Laplacian)*psi) '
             '- T1*phit^2 - T2*psit^2')
-        .equation(lhs='(Dt+mu1-D1*Laplacian)*phi', rhs='0')
-        .equation(lhs='(Dt+mu2-D2*Laplacian)*psi', rhs='0')
+        .mf_residual(lhs='(Dt+mu1-D1*Laplacian)*phi', rhs='0')
+        .mf_residual(lhs='(Dt+mu2-D2*Laplacian)*psi', rhs='0')
         .boundary('infinite').initial('stationary').build())
 
 
@@ -188,8 +188,8 @@ def test_bridge_coupled_scalar_diffusion_supported():
             'phit*((Dt+mu-D*Laplacian)*phi + g*psi) '
             '+ psit*((Dt+mu-D*Laplacian)*psi + g*phi) '
             '- T*phit^2 - T*psit^2')
-        .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-g*psi')
-        .equation(lhs='(Dt+mu-D*Laplacian)*psi', rhs='-g*phi')
+        .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-g*psi')
+        .mf_residual(lhs='(Dt+mu-D*Laplacian)*psi', rhs='-g*phi')
         .boundary('infinite').initial('stationary').build())
     ft = FieldTheory(model, taylor_order=2)
     ft.expand()
@@ -220,8 +220,8 @@ def test_bridge_coupled_unequal_diffusion_raises_clean():
             'phit*((Dt+mu-D1*Laplacian)*phi + g*psi) '
             '+ psit*((Dt+mu-D2*Laplacian)*psi + g*phi) '
             '- T*phit^2 - T*psit^2')
-        .equation(lhs='(Dt+mu-D1*Laplacian)*phi', rhs='-g*psi')
-        .equation(lhs='(Dt+mu-D2*Laplacian)*psi', rhs='-g*phi')
+        .mf_residual(lhs='(Dt+mu-D1*Laplacian)*phi', rhs='-g*psi')
+        .mf_residual(lhs='(Dt+mu-D2*Laplacian)*psi', rhs='-g*phi')
         .boundary('infinite').initial('stationary').build())
     ft = FieldTheory(model, taylor_order=2)
     ft.expand()

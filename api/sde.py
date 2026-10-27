@@ -707,7 +707,10 @@ class SDE:
     def parameter(self, name: str, default=None, indexed=False,
                   domain: Optional[str] = None, description: str = '',
                   indexed_by: Optional[list] = None):
-        """Declare a parameter; returns its :class:`~api.sde_symbols.Symbol`."""
+        """Declare a parameter; returns its :class:`~api.sde_symbols.Symbol`.
+        ``indexed_by=[population, ...]`` names the indexing; ``indexed=True``
+        is its shorthand for the model's single population (ambiguous, and
+        warned about at ``build()``, with several populations)."""
         if indexed_by is not None:
             indexed_by = [as_name(p) for p in indexed_by]
         _check_declarable(name, 'parameter')
@@ -1503,23 +1506,32 @@ class SDE:
         return bool(names & set(self._fields))
 
     def point_process(self, name: str, rate: str, *, population: Optional[str] = None,
-                      size='1', domain: Optional[str] = None, description: str = ''):
+                      jump_size=None, domain: Optional[str] = None, description: str = '',
+                      size=None):
         """Declare the spike train (counting process) ``name`` with
         conditional intensity ``rate``: ``P(spike of name[i] in dt) =
         rate_i dt``.  The field ``name`` (and its response ``<name>t``) is
-        declared, the action gains ``nt*n - (exp(size*nt) - 1)*rate`` and the
-        mean field ``n* = size*rate*`` (kernels at omega = 0).  ``rate`` is an
+        declared, the action gains ``nt*n - (exp(jump_size*nt) - 1)*rate`` and the
+        mean field ``n* = jump_size*rate*`` (kernels at omega = 0).  ``rate`` is an
         expression like a drift: fields, parameters, declared functions
         (``phi[i](v[i])``), population sums (``sum(w[i,j]*Conv(g[i,j], n[j])
         for j in E)``) and convolutions ``Conv(K, x)`` of ANY field, the spike
         train ``name`` itself included (a spike-only Hawkes process); a
         product of declared kernels inside ``Conv`` (``Conv(h[i]*g[i,j],
-        n[j])``) is their convolution.  ``size`` is the jump of ``name`` at a
-        spike (a deterministic mark, default 1).  A spike train enters a rate
+        n[j])``) is their convolution.  ``jump_size`` is the jump of ``name`` at a
+        spike (a deterministic mark, default 1; ``size=`` is its deprecated name).  A spike train enters a rate
         only through ``Conv`` (its instantaneous value is a delta); a delayed
         field ``x(t - d)`` is the delay kernel ``Conv(delay_d, x)``.  Returns
         the symbol of the spike train ``name``."""
-        rate, size, population = as_text(rate), as_text(size), as_name(population)
+        if size is not None:
+            warnings.warn('point_process(size=) is renamed jump_size= (population(size=), '
+                          'the number of units, is unchanged)', DeprecationWarning, stacklevel=2)
+            if jump_size is not None:
+                raise SDEError(f'point_process({name!r}): give jump_size= only (size= is its '
+                               f'deprecated name)')
+            jump_size = size
+        rate, size, population = (as_text(rate), as_text('1' if jump_size is None else jump_size),
+                                  as_name(population))
         self._check_new_name(name)
         _check_declarable(name, 'point process')
         if name in self._sources:
@@ -3313,7 +3325,7 @@ class SDE:
         return self._derive()['action']
 
     def equations(self) -> list[dict]:
-        """The derived ``.equation(lhs=..., rhs=..., population=...)`` calls."""
+        """The derived ``.mf_residual(lhs=..., rhs=..., population=...)`` calls."""
         return [{k: e[k] for k in ('lhs', 'rhs', 'population')}
                 for e in self._derive()['equations']]
 
@@ -3360,7 +3372,7 @@ class SDE:
                 b.set_mf_equation(sname, rhs)
         else:
             for e in d['equations']:
-                b.equation(lhs=e['lhs'], rhs=e['rhs'], population=e['population'])
+                b.mf_residual(lhs=e['lhs'], rhs=e['rhs'], population=e['population'])
         if self._stability is not None:
             b.stability_analysis(self._stability)
         return b
@@ -3391,7 +3403,7 @@ class SDE:
         if d['operator_ir']:
             b.operator_ir()
         for e in d['equations']:
-            b.equation(lhs=e['lhs'], rhs=e['rhs'])
+            b.mf_residual(lhs=e['lhs'], rhs=e['rhs'])
         if self._stability is not None:
             b.stability_analysis(self._stability)
         bd = dict(self._boundary or {'mode': 'infinite'})
@@ -3788,12 +3800,12 @@ class SDE:
             if d['operator_ir']:
                 lines.append('.operator_ir()')
             for e in d['equations']:
-                lines.append(f".equation(lhs={e['lhs']!r}, rhs={e['rhs']!r})")
+                lines.append(f".mf_residual(lhs={e['lhs']!r}, rhs={e['rhs']!r})")
         else:
             lines = [f"# SDE {self.name!r} ({self._interp_mode()})",
                      ".set_action_text('''", d['action'], "''')"]
             for e in d['equations']:
-                lines.append(f".equation(lhs={e['lhs']!r}, rhs={e['rhs']!r}, "
+                lines.append(f".mf_residual(lhs={e['lhs']!r}, rhs={e['rhs']!r}, "
                              f"population={e['population']!r})")
         for n in self.notes:
             lines.append(f'# note: {n}')

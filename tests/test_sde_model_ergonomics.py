@@ -17,7 +17,7 @@ from scipy.integrate import quad
 from api import compute_cumulants
 from api.config_run import ConfigError, run_config
 from api.delay import Kernel
-from api.noise import Gaussian, GaussianVector, Poisson
+from api.noise import Gaussian, GaussianVector, NormalInverseGaussian, Poisson
 from api.observables import ObservableError
 from api.operators import Laplacian, TimeDerivative
 from api.sde import SDE, SDEError
@@ -309,6 +309,30 @@ def test_gaussian_kernel_key_errors(bad, msg):
         SDE.from_text(f'parameters: {{s: 0.3}}\nkernels: {{g: {bad}}}\nfields: [x]\ndrift: {{x: "-x"}}\n'
                       f'noise: {{xi: {{type: Gaussian, var: 1, into: {{x: 1}}}}}}\n')
     assert e.value.line == 2
+
+
+def _renamed_keywords_model():
+    m = (SDE('renames').parameter('a', default=1.0).parameter('lam', default=0.5)
+         .population('E', size=2).field('v', population='E'))
+    m.point_process('n', 'lam + 0.1*v', population='E', jump_size='1/2')
+    return m.drift('v', '-a*v[i]').noise('jumps', NormalInverseGaussian(2.0, 0.5, 1.0, loc=0.3), into={'v': 1})
+
+
+def test_text_uses_the_current_spellings_and_warns_nothing():
+    """jump_size= and loc= round-trip through the text with every warning an error; the old keys still read."""
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        m = _renamed_keywords_model()
+        text = m.to_text()
+        back = SDE.from_text(text)
+        assert digest(back) == digest(m)
+    assert 'jump_size: 1/2' in text and 'loc: 0.3' in text and 'size: 1/2' not in text.replace('jump_size', '')
+    old = text.replace('jump_size:', 'size:').replace('loc: 0.3', 'mu: 0.3')
+    with pytest.warns(DeprecationWarning) as rec:
+        again = SDE.from_text(old)
+    assert digest(again) == digest(m)
+    msgs = sorted(str(w.message).split('(')[0] for w in rec if issubclass(w.category, DeprecationWarning))
+    assert msgs == ['NormalInverseGaussian', 'point_process'], msgs
 
 
 def test_from_text_errors_name_the_line():

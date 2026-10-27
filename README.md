@@ -278,7 +278,7 @@ m = (SDE('Jittered input')
      .parameter('w', default=1.3).parameter('sigma', default=0.3, domain='positive')
      .define_kernel('kX', kernel=Kernel.exponential('tauX'))
      .define_kernel('g', kernel=Kernel.gaussian('sigma', tol=1e-6))     # acausal: exogenous inputs only
-     .point_process('n', 'lam', size='p')                               # the Poisson mother events
+     .point_process('n', 'lam', jump_size='p')                             # the Poisson mother events
      .field('v').equation('v', lhs='(tau*Dt + 1)*v', rhs='w*Conv(kX*g, n)'))
 res = compute_cumulants(m.build(), k=2, max_ell=0, external_fields=[('v', 1), ('v', 1)])
 bounds = res['input_jitter']['n']['fit']['bound_by_order']             # {1: 0.0, 2: 3.9e-07, 3: 2.2e-06, ...}

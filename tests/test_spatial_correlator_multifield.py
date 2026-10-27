@@ -49,8 +49,8 @@ def _two_field_model():
             'phit*((Dt+mu1-D1*Laplacian)*phi) '
             '+ psit*((Dt+mu2-D2*Laplacian)*psi) '
             '- T1*phit^2 - T2*psit^2')
-        .equation(lhs='(Dt+mu1-D1*Laplacian)*phi', rhs='0')
-        .equation(lhs='(Dt+mu2-D2*Laplacian)*psi', rhs='0')
+        .mf_residual(lhs='(Dt+mu1-D1*Laplacian)*phi', rhs='0')
+        .mf_residual(lhs='(Dt+mu2-D2*Laplacian)*psi', rhs='0')
         .boundary('infinite').initial('stationary').build())
 
 
@@ -85,7 +85,7 @@ def _linear_model():
         .parameter('D', default=1.0, domain='positive')
         .parameter('T', default=1.0, domain='positive')
         .set_action_text('phit*((Dt+mu-D*Laplacian)*phi) - T*phit^2')
-        .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0')
+        .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0')
         .boundary('infinite').initial('stationary').build())
 
 
@@ -119,7 +119,7 @@ def _allen_cahn_model():
         .parameter('T', default=1.0, domain='positive')
         .set_action_text(
             'phit*((Dt+mu-D*Laplacian)*phi + lam*phi^3) - T*phit^2')
-        .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-lam*phi^3')
+        .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-lam*phi^3')
         .stability_analysis(True)
         .boundary('infinite').initial('stationary').build())
 
@@ -140,8 +140,8 @@ def test_coupled_multifield_scalar_diffusion_supported():
             'phit*((Dt+mu-D*Laplacian)*phi + g*psi) '
             '+ psit*((Dt+mu-D*Laplacian)*psi + g*phi) '
             '- T*phit^2 - T*psit^2')
-        .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-g*psi')
-        .equation(lhs='(Dt+mu-D*Laplacian)*psi', rhs='-g*phi')
+        .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi', rhs='-g*psi')
+        .mf_residual(lhs='(Dt+mu-D*Laplacian)*psi', rhs='-g*phi')
         .boundary('infinite').initial('stationary').build())
     th = compute_cumulants(
         model=model, k=2, max_ell=0,
@@ -171,8 +171,8 @@ def test_coupled_multifield_unequal_diffusion_raises_clean():
             'phit*((Dt+mu-D1*Laplacian)*phi + g*psi) '
             '+ psit*((Dt+mu-D2*Laplacian)*psi + g*phi) '
             '- T*phit^2 - T*psit^2')
-        .equation(lhs='(Dt+mu-D1*Laplacian)*phi', rhs='-g*psi')
-        .equation(lhs='(Dt+mu-D2*Laplacian)*psi', rhs='-g*phi')
+        .mf_residual(lhs='(Dt+mu-D1*Laplacian)*phi', rhs='-g*psi')
+        .mf_residual(lhs='(Dt+mu-D2*Laplacian)*psi', rhs='-g*phi')
         .boundary('infinite').initial('stationary').build())
     with pytest.raises(NotImplementedError, match='scalar-diffusion'):
         compute_cumulants(
@@ -200,8 +200,8 @@ def _mixed_dim_model():
         .set_action_text(
             'phit*((Dt+mu-D*Laplacian)*phi) + mt*((Dt+a)*m) '
             '- T*phit^2 - Tm*mt^2')
-        .equation(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0')
-        .equation(lhs='(Dt+a)*m', rhs='0')
+        .mf_residual(lhs='(Dt+mu-D*Laplacian)*phi', rhs='0')
+        .mf_residual(lhs='(Dt+a)*m', rhs='0')
         .boundary('infinite').initial('stationary').build())
 
 
@@ -254,7 +254,7 @@ def test_higher_derivative_k4_raises_clean():
         .parameter('T', default=1.0, domain='positive')
         .set_action_text(
             'phit*((Dt + mu - D*Laplacian + E*Laplacian^2)*phi) - T*phit^2')
-        .equation(lhs='(Dt + mu - D*Laplacian + E*Laplacian^2)*phi', rhs='0')
+        .mf_residual(lhs='(Dt + mu - D*Laplacian + E*Laplacian^2)*phi', rhs='0')
         .boundary('infinite').initial('stationary').build())
     with pytest.raises(NotImplementedError, match='higher-derivative'):
         compute_cumulants(
@@ -277,7 +277,7 @@ def test_negative_diffusion_raises_anti_diffusive_error():
         .parameter('D', default=1.0, domain='positive')
         .parameter('T', default=1.0, domain='positive')
         .set_action_text('phit*((Dt + mu + D*Laplacian)*phi) - T*phit^2')
-        .equation(lhs='(Dt + mu + D*Laplacian)*phi', rhs='0')
+        .mf_residual(lhs='(Dt + mu + D*Laplacian)*phi', rhs='0')
         .boundary('infinite').initial('stationary').build())
     from api.analyze import AnalyzerError
     kw = dict(model=model, k=2, max_ell=0,

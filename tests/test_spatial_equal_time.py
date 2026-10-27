@@ -53,7 +53,7 @@ def _q2(d=1):
             .parameter('D', default=0.7, domain='positive')
             .parameter('c', default=0.3, domain='real')
             .parameter('T', default=1.0, domain='positive')
-            .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='-c*p^2')
+            .mf_residual(lhs='(Dt + mu - D*Laplacian)*p', rhs='-c*p^2')
             .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)+c*p^2)-T*pt^2')
             .operator_ir().boundary('infinite').initial('stationary').build())
 
@@ -204,7 +204,7 @@ def _kpz():
             .parameter('D', default=0.7, domain='positive')
             .parameter('c', default=0.3, domain='real')
             .parameter('T', default=1.0, domain='positive')
-            .equation(lhs='(Dt + mu - D*Laplacian)*p', rhs='0')
+            .mf_residual(lhs='(Dt + mu - D*Laplacian)*p', rhs='0')
             .set_action_text('pt*(Dt(p)+mu*p-D*Lap(p)-(c/2)*Dx(p,0)^2)-T*pt^2')
             .operator_ir().boundary('infinite').initial('stationary').build())
 
@@ -345,7 +345,7 @@ def test_drift_boost_keeps_the_equal_time_record():
          .parameter('lam', default=0.1, domain='positive')
          .parameter('v', default=0.3, domain='real')
          .parameter('T', default=1.0, domain='positive')
-         .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
+         .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-lam*phi^3')
          .set_action_text('phit*(Dt(phi) + mu*phi - D*Lap(phi) + v*Dx(phi, 0)'
                           ' + lam*phi^3) - T*phit^2')
          .operator_ir().boundary('infinite').initial('stationary').build())

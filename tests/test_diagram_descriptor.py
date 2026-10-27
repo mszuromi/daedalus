@@ -47,7 +47,7 @@ def rd_records():
              .parameter('D', default=1.0, domain='positive')
              .parameter('g', default=0.3, domain='real')
              .parameter('T', default=1.0, domain='positive')
-             .equation(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2')
+             .mf_residual(lhs='(Dt + mu - D*Laplacian)*phi', rhs='-g*phi^2')
              .set_action_text('phit*((Dt + mu - D*Laplacian)*phi + g*phi^2) - T*phit^2')
              .boundary('infinite').initial('stationary').build())
     ft = FieldTheory(model, taylor_order=4)

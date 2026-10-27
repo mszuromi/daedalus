@@ -53,7 +53,7 @@ def _damped_oscillator():
             .parameter('mu', default=1.0, domain='positive')
             .parameter('T',  default=1.0, domain='positive')
             .set_action_text('xt*((m*Dt^2 + Dt + mu)*x) - T*xt^2')
-            .equation(lhs='(m*Dt^2 + Dt + mu)*x', rhs='0')
+            .mf_residual(lhs='(m*Dt^2 + Dt + mu)*x', rhs='0')
             .build())
 
 
@@ -65,7 +65,7 @@ def _ou_first_order():
             .parameter('eps', default=0.02, domain='positive')
             .parameter('T',   default=1.0, domain='positive')
             .set_action_text('xt*((Dt+mu)*x + eps*x^3) - T*xt^2')
-            .equation(lhs='(Dt+mu)*x', rhs='-eps*x^3')
+            .mf_residual(lhs='(Dt+mu)*x', rhs='-eps*x^3')
             .build())
 
 
@@ -84,8 +84,8 @@ def _dae_with_algebraic_row():
             .parameter('T',   default=1.0,  domain='positive')
             .set_action_text('vt*((tau*Dt + 1)*v - Em - w*n) '
                              '+ nt*(n - a*v) - T*vt^2')
-            .equation(lhs='(tau*Dt + 1)*v', rhs='Em + w*n')   # differential
-            .equation(lhs='n',              rhs='a*v')        # ALGEBRAIC
+            .mf_residual(lhs='(tau*Dt + 1)*v', rhs='Em + w*n')   # differential
+            .mf_residual(lhs='n',              rhs='a*v')        # ALGEBRAIC
             .build())
 
 
