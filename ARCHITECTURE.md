@@ -66,6 +66,9 @@ The orchestration layer `dd` drives:
   derivatives, the orders `C_N` and their spread.
 - `symbolic_out.py` — the tree-level covariance as symbolic expressions in the Fourier domain,
   with exports (sympy, LaTeX, a numpy callable, JSON) and its time-domain inverse.
+- `symbolic_mean.py` — the exact stationary mean relation (`dd.mean_relation`): `<dS/d xt> = 0` written with
+  `G(omega = 0)`, the drift vertices of the expanded action and connected-cumulant symbols, at all orders, and its
+  loop expansion order by order.
 - `_pole_clusters.py` — near-degenerate and repeated propagator poles: replaces a nearly
   cancelling pole sum by a contour average around the cluster, so close poles keep their precision.
 - `_expand_cache.py` — a disk cache for `FieldTheory.expand()` results (the dominant cost for
