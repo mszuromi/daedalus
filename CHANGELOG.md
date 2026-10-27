@@ -10,6 +10,367 @@ which still used the 0.1.0 rules. (The `DAEDALUS_PHASE_J_LEGACY` switch that
 reproduced it was retired in 0.3.0; those numbers survive as frozen test baselines.)
 "After" is the new default.
 
+## 0.4.0 (2026-10-27)
+
+**Breaking changes (each has a one-release deprecation path):**
+
+- **One `daedalus` package.** `api`, `engine`, `simulations` and the shipped `models/` now live under `daedalus/`. `import daedalus as dd` is unchanged. The old top-level names `import api`, `import engine.<...>` and `import simulations.<...>` still work for this release. They give the same module objects, with one `DeprecationWarning` per name. Old pickles load once `daedalus` is imported. Install from PyPI with `sage -pip install daedalus-msrjd`; the import name stays `daedalus`.
+- **`dd.Kernel` is now the kernel-shape builder** (`Kernel.exponential`, `Kernel.alpha`, `Kernel.delay`, `Kernel.gaussian`). The old alias of `PairingKernel` is removed; use `dd.PairingKernel`.
+- **One name per concept.** Five other spellings change and warn once:
+  - `mf_residual` (was the builder's `.equation`);
+  - `point_process(jump_size=)`;
+  - `parameter(indexed_by=)`;
+  - `loc=` for `NormalInverseGaussian`, `Meixner` and `VarianceGamma`;
+  - the wording "cumulant order".
+
+**No numbers move.** Every tracked model, Phase J zoo entry and frozen baseline gives the same values as 0.3.3.
+
+**New:**
+- Resummation now covers:
+  - Gaussian expectations over the nonlinear fields only;
+  - the screened series at k = 1 (the resummed mean);
+  - automatic embedding of rational kernels and Padé-approximated hard delays;
+  - exogenous inputs through kernels.
+- Gaussian-jittered exogenous inputs (`Kernel.gaussian`).
+- SDE front end: delayed fields `x(t - d)`, `connectivity`, `observable` and the text form `to_text` / `from_text`.
+- Switch-on transients (`t_min`) with delay kernels.
+- `python -m daedalus run config.yaml`.
+- `DAEDALUS_MODELS_PATH`.
+
+**Fixed:**
+- A mean-field sector check that refused a valid saddle whose closed form has a pole.
+- Conserved noise is now refused with its reason in every form.
+- mpmath >= 1.4 deprecation warnings.
+- On Linux, the automatic Phase J method no longer forks.
+
+Entries below are newest first, with the package move on top.
+
+### One `daedalus` package: `api`, `engine`, `simulations` and `models` move under it
+
+The library used to install three generic top-level packages (`api`, `engine`, `simulations`) next to a
+`daedalus.py` module. Those names clash with other packages in a shared `site-packages`, which blocked a PyPI
+release. Everything is now one package: `daedalus/__init__.py` is the former `daedalus.py` (`import daedalus as dd`
+is unchanged), and the library lives in `daedalus.api`, `daedalus.engine` and `daedalus.simulations`. The shipped
+model files are now in `daedalus/models/`. The PyPI distribution is named `daedalus-msrjd`
+(`sage -pip install daedalus-msrjd`); the import name stays `daedalus`.
+
+- **Deprecated old names, for one release.** `import api`, `import engine.<...>` and `import simulations.<...>` still
+  work, with one `DeprecationWarning` per name, and give the same module objects as `daedalus.<...>` (no second copy:
+  module state, classes and exceptions are shared). Old pickles and caches that name `engine.*` / `api.*` classes
+  still load once `daedalus` has been imported (a bare `pickle.load` in a fresh process does not import it, so `import
+  daedalus` first; the package's own loaders do). The modules keep their own `__spec__`, so `importlib.reload` and
+  autoreload work. A user's own top-level `api` / `engine` / `simulations` package always takes precedence (a bare
+  folder of that name does not count). In a source checkout, the top-level `api/`, `engine/` and `simulations/`
+  folders now hold only a forwarding `__init__.py` and are not installed; a local module git does not track in one of
+  them (`simulations/my_sim.py`) still imports under its old name.
+- **Model files.** `dd.load_model(name)` / `dd.list_models()` search, in order: the directories in the new
+  `DAEDALUS_MODELS_PATH` (separated like `PATH`), a clone's top-level `models/` folder (your own local model files
+  keep loading after the tracked ones moved), then the shipped `daedalus/models/`. A name found in two places
+  warns, and the first one wins. `load_model` also accepts a path to a `*.model.py` file. New: `dd.model_dirs()`,
+  `dd.MODELS_PATH_ENV`, `dd.PACKAGE_DIR`. `dd.MODELS_DIR` is now the shipped `daedalus/models/`, and
+  `dd.REPO_ROOT` is the folder that holds the package (the clone's root).
+- **Installed package.** The shipped prediagram cells, their manifests, the model files and the Cython sources
+  are package data, found through `importlib.resources`. pyximport builds the compiled enumerator into
+  `<clone>/.pyxbld` as before, or into `~/.cache/daedalus/pyxbld` for an installed package (override:
+  `DAEDALUS_BUILD_DIR`). It recompiles once after this change, because the module names changed.
+  `python -m daedalus run config.yaml` now works through `daedalus/__main__.py`. `import daedalus` no longer
+  imports `matplotlib.pyplot`; it is imported when a plot is first drawn.
+- **Generated model files** (`ModelUI`, `model_serialize`) now write `from daedalus.api.model import ...`. The
+  `ModelUI` Load list shows the models of every model directory (the shipped ones included), not only its save
+  folder.
+- **Tests.** `tests/test_namespace_compat.py` covers the alias (identity, one warning per name, a user's own `api`
+  package wins, old pickles, the forwarding folders), the packaging config (only `daedalus*`; every tracked data
+  file under `daedalus/` is listed as package data), the Sage-free and pyplot-free spawn-worker import,
+  `python -m daedalus`, and the model search path. The tests that walk the source tree (ticket-number guard, OBJC
+  fork-safety guard, error-class hierarchy) now assert a minimum number of files scanned, so a later move cannot
+  silently empty them.
+- No numbers move. 21 Phase J zoo entries (`tests/tools/phase_j_zoo_baseline.py`: OU quartic k = 2 to ℓ = 3, k = 3
+  and k = 4 to ℓ = 2, coupled and colored OU, spike reset, quadratic-exponential, linear Hawkes, multi-population,
+  delta spikes, dendritic, quadratic Hawkes alpha, spatial ℓ ≤ 1) give equal values, counters and diagram sources
+  before and after the move, and the same three refusals. `dd.run` on `ou_quartic` from an installed wheel matches
+  main byte for byte. Zoo records now show `daedalus/models/<name>.model.py` as the model path, and a new model
+  file hash (only its import line changed).
+
+### Conserved noise `div(eta)`: refused with the reason, in every form; two DeprecationWarnings removed
+
+- **Conserved noise** (the divergence of a white vector noise, noise spectrum `var |q|^2`, the noise of Model B) is
+  refused, and each refusal now says why: the spatial integrator takes momentum-independent noise only (its tree heat
+  kernels and its loop integral carry one constant noise vertex per correlation line), and the Model B dynamics
+  conserved noise belongs to also need the `k^4` propagator of `lap(lap(u))` and the conserved vertex `lap(u^3)`,
+  which the spatial pipeline refuses as well. The reason (`engine.integration.spatial.CONSERVED_NOISE_WHY`) is given by
+  `Gaussian(space='conserved')` (before: "not supported yet"; also on its line of a YAML `sde:` block), an operator in
+  a noise coefficient of an SPDE (before: only "operators act in the equations"), `div(eta)` / `grad` / `nabla` in an
+  SPDE (before: "declare the function"), an operator on a response field in `extra_action` (before: "acts on no
+  field"), `lap(dW)` in a paper-style equation (before: "has no differential"), and a hand-written action whose
+  response-field quadratic term holds a Laplacian, at every spatial driver (before: "momentum-dependent noise is not
+  supported by the spatial white-noise extractors"). Documented in `api/sde.py`, `api/noise.py`, the README and
+  `docs/spatial_pipeline.md`. No model or number changes; temporal models keep their messages.
+- **mpmath >= 1.4**: the pole root finder (`api._pole_clusters`) and the residue certificate (`api._propagator`) passed
+  descending coefficients to `mp.polyroots` / `mp.polyval` without `asc=`, which warns (`DeprecationWarning`) on every
+  pole-route and delay run. They now pass ascending coefficients with `asc=True` where mpmath takes it (older releases:
+  the descending call as before); the roots and values are the same numbers.
+- `tests/_sde_model_catalogue.py` uses `into=` / `as_field=` (was the deprecated `couples=` / `expose=`); the models
+  are unchanged.
+- Tests (`tests/test_sde_conserved_noise.py`): each form above refuses with the reason; temporal models keep the old
+  hints; the noise extractor keeps its old message for a missing value and returns white noise unchanged; the
+  hand-written conserved action is refused at the k = 2 tree, the k = 2 one-loop and the k = 3 drivers. The mpmath
+  helpers give the roots and values of the descending call with every warning an error.
+
+### Resummation: exogenous inputs (point processes, exposed noise, Gaussian jitter) through kernels
+
+A point process, or a noise source exposed as a field (`as_field=`), is a field without dynamics (`n = noise`), so the
+closure refused it ("singular Dt pencil") and a Poisson input through a synaptic kernel had to be written by hand, the
+jumps driving the first filter stage. The closure now eliminates the input: its rate is the mean drive (the mean-field
+saddle), a rate that depends on the fields is a drift (a Hawkes-type feedback through a kernel, with a linear or
+quadratic rate, works), and its second cumulant is white noise that drives the kernel states directly (the cumulants
+beyond the second are dropped, as everywhere in the closure). The input is not a field of the result
+(`info['kernel_states']['inputs']` names it).
+
+- A Poisson input through an alpha kernel, a Gaussian input exposed as a field (direct and through a kernel), a point
+  process coupled directly and a field-dependent (quadratic) rate through a kernel equal the model written by hand with
+  the filter stages and the jumps (Hartree mean, covariance, lag correlator and spectrum to 1e-12; observed rounding);
+  the screened series (k = 2, order 1) of the Poisson-input model equals the hand model's.
+- A Gaussian-jittered input goes through the rational fit of the density: for the README's jittered Poisson input into a
+  low-pass `v`, the closure's spectrum equals `lam p^2 |w H_tau H_X|^2 exp(-sigma^2 w^2)` within 1e-5 of its maximum and
+  the variance within 1e-5 relative (fit tolerance 1e-6); the mean is `w lam p` exactly.
+- Refused, with the reason: an input that enters a nonlinear term of another equation (`n*v`), an input whose rate holds
+  a kernel (a non-local noise cumulant), an algebraic field that depends on another algebraic field or a time
+  derivative. No number of a model without inputs moves.
+
+### Resummation: kernels and hard delays are embedded automatically
+
+`dd.hartree`, `Config(resum='hartree')` and `Config(resum='screened')` refused every model with a kernel (`Conv`) or a
+delay ("embed the kernel states as fields first"), so a filtered model had to be written stage by stage. A kernel acts
+on the fields linearly, so the closure now embeds it before it runs:
+
+- **Rational kernels** (exponential, alpha, sums of these, any rational frequency image) become linear state fields by
+  the engine's own exact state-space realization of the kernel entry (the one the state-space Phase J route uses, with
+  its diagonal balancing and balanced truncation), not a new embedder. The results are on the model's own fields; the
+  closure on the fields and the states is in `result.full`, the states in `result.info['kernel_states']`. The states
+  are linear, so they add no quadrature dimension. An alpha-synapse `Conv` equals the model written with its two filter
+  stages by hand (Hartree mean, covariance, lag correlator and spectrum to 1e-12; the screened series at k = 2 and
+  k = 1 to 1e-8 at one trial propagator).
+- **Hard delays** go through their Pade approximant. `delay=` (the keys of `Config.delay`) selects the order like the
+  loop path: `n_start`, doubling to `n_max`, the first order that agrees with the one before to `tol` (default 1e-8) in
+  the mean, the covariance and the spectra, with the order cached per model and parameter point (`'search'` /
+  `'replay'`). A target that is not reached is REFUSED (`HartreeError`: the estimate and the orders tried); an order
+  given explicitly is accepted without an estimate. `result.info['delay']` records the order, the estimate and the
+  source, and the advisory `HARTREE_DELAY_PADE` is always set (with the change of the lag correlator, which converges
+  only algebraically). For a linear model with a delay the closure is exact: its spectrum equals the delay spectrum
+  within the reported error (1e-8 relative at order 16). The screened series takes the same `delay=`; with
+  `delay={'order': n, 'tree': 'pade'}` its order 1 at the Hartree mass equals the Hartree curve to 5e-15.
+
+Still refused, by name: non-local noise cumulant kernels (declare the noise through its Markovian embedding), a kernel
+without a frequency image and spatial models. The closure's covariance test now accepts a
+rounding-size negative eigenvalue (a stiff kernel state can be numerically uncontrollable). No number of a model
+without kernels moves (the models of `tests/test_hartree.py` and `tests/test_resum.py` are unchanged).
+
+### Resummation: the screened series at k = 1 (the resummed mean)
+
+`dd.Config(k=1, max_ell=N, resum='screened')` resums the mean of one field, which was refused (`method='screened'`
+accepted `k = 2` only): a rate such as `<phi> = (<v>^2 + Var v) / a` needs the mean as well as the covariance. The
+mean uses the same variational trial propagator, the same order-`N` re-expansion and the same PMS choice as `k = 2`.
+The PMS criterion is the equal-time covariance for either `k` (`observable='trace_cov'` by default), so a `k = 1` run
+and a `k = 2` run of one model at one parameter point share `kappa`, `A_trial` and `Q_trial`; with `k = 1` the scan
+still runs the `k = 2` loop orders to find that propagator. The result has the keys of `k = 2` (`C_tau` is the shift
+about the saddle, with `C_tau_by_order`, `C_tau_spread`, `C_tau_loops`, `C_tau_loops_by_ell` and the
+`resummation` record), plus `mean` and `mean_by_order` (absolute). Against the exact stationary density of
+`dx = (-x + 0.3 x^2 - 0.2 x^3) dt + noise` (exact mean 0.09675), the plain series gives 0.150, 0.0638, 0.1056 at
+`N = 1, 2, 3` and the screened series 0.121, 0.0941, 0.0965; at `g = 1` (exact 2.608) the plain order 3 is 4.72 and
+the screened 2.02. `spectra=` and `covariance=` are refused at `k = 1`; `k >= 3`, kernels, delays, spatial models and
+derivative vertices are refused as before. `k = 2` results are unchanged. `api.resum.screened` takes `k=2`;
+`check_config` takes `spectra=`.
+
+### Resummation: Gaussian expectations over the nonlinear fields only
+
+`dd.hartree` (and the screened series built on it) took its Gaussian expectations as a tensor Gauss-Hermite rule over
+EVERY field, so a quadratic-rate model with 13 linear filter stages and two nonlinear voltages (15 fields) was refused
+at 3^15 = 14 348 907 points. A field that enters no drift monomial of degree two or more and no noise term contributes
+through its mean alone; the rule now runs over the fields that DO enter nonlinearly (`result.info['nonlinear_fields']`,
+a field multiplying another field or entering the noise counts), and the same 15-field model solves in about two
+seconds. The new `expectations` option of `dd.hartree` chooses the evaluation: `'quadrature'` (the tensor rule over the
+nonlinear fields, refused above `MAX_QUADRATURE_POINTS` points with a message naming the dimension and its fields),
+`'moments'` (the closed-form Gaussian moments of the polynomial drift and noise: no quadrature, no size limit) or
+`'auto'` (the default: quadrature while the rule has at most 20 000 points, moments beyond). `gaussian_closure` takes
+`nonlinear=` and `moments=` for numeric callables.
+
+No number moves: a model whose fields are all nonlinear runs the same rule bit for bit (the coupled quartic's
+covariance and mean are identical arrays); with linear fields the subspace rule, the moments and the old full-space
+rule agree to 1e-13 (relative to the largest value; checked against the previous release) on the quadratic-rate model with 0, 3 and 6 filter stages, and the 15-field solution
+equals an independent hand-written closure.
+
+### One name per concept: six spelling changes
+
+Six spelling changes. Every old spelling keeps working for one more release with exactly ONE `DeprecationWarning` and
+builds the byte-identical model (tests compare the model signatures, equations and parameters); only the `dd.Kernel`
+alias of `PairingKernel` is removed.
+
+- **`dd.Kernel` is the kernel-shape builder** (`api.delay.Kernel`: `Kernel.exponential('tau')`, `Kernel.delay(d)`).
+  The deprecated alias `Kernel` of `PairingKernel` is removed from `dd` and from `api.symbolic_out`; use
+  `dd.PairingKernel` / `api.symbolic_out.PairingKernel` (unchanged).
+- **`ModelBuilder.mf_residual(lhs=, rhs=, population=)`** declares one residual of the mean-field system. The builder's
+  `.equation(lhs=, rhs=)` is a deprecated alias; `SDE.equation(field, lhs, rhs)` (a field's dynamics) is unchanged. The
+  tracked models, notebooks, docs and the model-file writer use the new name; the model-file reader accepts both.
+- **`point_process(jump_size=)`** is the jump of the spike train at a spike; `size=` is the deprecated name.
+  `population(size=)` (number of units) and `Poisson(size=)` are unchanged.
+- **`parameter(indexed_by=[...])`** is the one way to name the indexing. `indexed=True` / `'vector'` / `'matrix'` stays as
+  the shorthand for the model's single population; with several named populations it is ambiguous, `build()` warns once
+  per parameter (it will be refused in a later release).
+- **Wording:** "correlator order" is "cumulant order" in the docs, notebooks and messages (function names such as
+  `compute_spatial_correlator_*` keep theirs).
+- **Noise vocabulary:** the location parameter is `loc=`: `NormalInverseGaussian(alpha, beta, delta, loc)`,
+  `Meixner(alpha, beta, delta, loc)` (was `mu=`) and `VarianceGamma(mu, sigma, nu, loc)` (was `drift=`; `mu` stays: it is
+  the drift of the Brownian motion on the gamma clock, not the location). Inline YAML `sde:` noise blocks accept the old
+  keys with the same warning. `mu` / `sigma` remain in `GaussianJump` and `LogNormal` (and `VarianceGamma`'s `mu`, `sigma`).
+- No numbers move.
+
+### Mean-field sector check: a saddle whose closed form has a pole at the default point
+
+`MasterEquation.to_sde()` of a process with a rate like `mu*x + c*x*(x - 1)` (and `a + b*x`) failed
+`FieldTheory.expand()` with "the MF action sector is non-zero at the saddle" at default parameters where the linear part
+of the drift cancels (`mu = b + c`, restoring coefficient exactly 0). The saddle (`x* = sqrt(a/c)`) was fine: the check
+substitutes a symbolic form of the saddle that divides by that coefficient, the substituted coefficient could not be
+evaluated (`N/A`), and an unevaluable check counted as a failure.
+
+- **Fix.** When the substituted coefficient cannot be evaluated, the numerical check evaluates the coefficient before
+  the substitution at the solver's numerical saddle (the same quantity, without the pole). A model whose saddle is wrong
+  is still refused (`tests/test_leftovers_39.py`, `tests/test_mf_saddle_fixes.py` unchanged and passing).
+- **Check against the exact master equation** (`tests/test_mf_sector_pole.py`, `a=1, b=0.2, mu=0.5, c=0.3`): the
+  one-loop `kappa_1`, `kappa_2` against `dd.master_equation` at system size 100 and 200: relative errors 8.2e-7, 9.6e-8
+  and 2.0e-7, 2.4e-8 (O(h^2): a factor 4 per doubling); the tree errors halve (1.9e-3 -> 9.4e-4, 5.0e-4 -> 2.5e-4).
+- Models that built before are unchanged.
+
+### Switch-on transients (`t_min`) now work with delay kernels
+
+`compute_cumulants(..., t_min=, times=)` refused models with delay kernels ("computed for the stationary state only").
+It now runs them: the fluctuations and the history of every delayed field are zero before `t_min`, and the tree and the
+loops both use the Pade approximant of the delay on the state-space route (the exact delayed tree is the *stationary*
+covariance, a boundary-value problem, so it has no transient counterpart here). The order search runs as for a
+stationary run on `result['C_times']`.
+
+- **Accuracy.** The Pade transient converges more slowly than the stationary result inside the first delay after
+  `t_min` (the delayed term is still zero there): relative to the Ornstein-Uhlenbeck closed form the tree is off by
+  7e-3, 2e-3 and 2e-4 at n = 4, 8 and 16 (delay 0.5, a = 1). Far from `t_min` it agrees with the stationary exact tree
+  (2e-4 at n = 16). With the default `tol = 1e-8` the search therefore ends at `n_max` with
+  `status = 'target_missed'` and a `DelayOrderWarning` carrying the estimate; give `delay={'tol': ...}` for the accuracy
+  you need or `delay={'order': n}` for a fixed order. `result['delay']['tree_note']` says the tree is the Pade one.
+- **Still refused:** `initial_covariance` with a delay kernel (`SwitchOnUnsupported`: the history of the delayed fields
+  before `t_min` is zero, and the Pade realization of a delay is not a first-order model with the identity response).
+- No stationary result changes.
+
+### Parallel: the automatic Phase J method no longer forks on Linux
+
+A Phase J τ batch used to fork a worker pool on Linux whenever it had many diagrams (CPython 3.12+ warns on every such
+fork of the multithreaded Sage process). The automatic method now takes threads (diagrams with large state blocks) or
+the Sage-free spawned workers (a batch a timing sample predicts at 3 s or more; scripts on every platform, notebooks
+on request with `DAEDALUS_SPAWN_IN_KERNEL=1`), as macOS and Windows already did. Fork is used on Linux only with
+`start_method='fork'`; macOS still never forks. The values are the same bytes as `parallel=False` for every method.
+
+- **Behaviour change (Linux).** A Linux batch of many small diagrams that forked before now runs on the main thread or
+  threads unless it is predicted to take 3 s or more (then spawned workers). Type assignment and the streamed
+  enumeration still fork on Linux: their workers need Sage (about 5 s and 350 MB each to start), so replacing them
+  would cost more than it saves.
+- **Tests.** The automatic method with fork allowed (`_fork_unsafe -> False`, i.e. the Linux decision, runs on every
+  platform) spawns real workers, never calls the fork path, and matches the serial batch byte for byte; an explicit
+  `'fork'` still forks where allowed. The spawn tests (`tests/test_parallel_fanout.py`) already run on the Linux CI.
+- No numbers move.
+
+### SDE front end: delayed fields, `connectivity`, `observable`, and the text form `to_text` / `from_text`
+
+- **Delayed fields** `x(t - d)` now also work for an indexed field in a population sum
+  (`sum(w[i,j]*v[j](t - d) for j in E)`, before: refused) and in a point-process rate (before: refused); each is
+  the hard-delay kernel `Conv(delay_d, x)` declared on the fly, as for a scalar field. `sde_text()` writes it back
+  as `x(t - d)` (before: `Conv(delay_d, x)`, which did not read back without the kernel). A delay in brackets,
+  `x(t - (d))`, is the delay `d`.
+- **`m.connectivity(name, W)`**: a weight matrix from a numpy array (nested lists, `tolist()` / `toarray()`
+  objects), `w[i,j]` onto unit `i` from unit `j`; `between=(post, pre)` for two populations. It is
+  `parameter(name, default=W.tolist(), indexed_by=[...])` (or `indexed='matrix'` for `SDE(n_populations=N)`), with
+  the shape checked against the population sizes and finite entries required.
+- **`m.observable(name, expr)`**: a function of the fields (and parameters, declared functions) taken by
+  `compute_cumulants` as an external leg (`['rate']`, `('rate', u)` for a unit of a population observable; field
+  legs may be mixed in). New `api/observables.py`: the composite-operator expansion
+  `f(x* + dx) = f* + f_a dx_a + f_ab dx_a dx_b / 2 + ...` assembled from field cumulants, exact at every `k` and loop
+  order for an observable linear in the fields; for a nonlinear one the mean to one loop
+  (`f_a <dx_a> + f_ab C_ab(0)/2`; `result['observable']['mean']` = `f*` + the shift) and the `k = 2` tree. Higher
+  orders need coincident-time cumulants of the composite operator, which the engine does not compute: refused with
+  that reason (an `ObservableError`, a `DaedalusError` and a `ValueError`), as are spectra / switch-on / file outputs with observable legs, SPDE observables, and a spike train or
+  exposed source entering nonlinearly. The built model gains an `observables` entry only when one is declared
+  (every other model is unchanged).
+- **`m.to_text()` / `SDE.from_text(text)`** (new `api/sde_text.py`): the model as the YAML `sde:` block of a
+  `daedalus run` config, read back through the config's own parser and builder (`api/config_run.py`:
+  `sde_block_from_text`, `sde_from_block`). The equations are kept as written (higher-order lhs with `velocity`,
+  delays as `x(t - d)`); derived things (velocities, coloured-noise states, delay kernels, the product kernels of
+  `Conv(a*b, x)`) are derived again.
+  `to_text()` reads its text back and compares action, equations and built dict; a model declared in an order the
+  block cannot record raises with the differing order.
+- **YAML `sde:` block**: new keys `n_populations`, `space`, `operators`, `populations`, `functions`, `kernels`
+  (a `Kernel.gaussian` jitter as `{gaussian: {sigma: s, tol: 1e-6}}`, fitted again on reading),
+  `point_processes` (`rate`, `jump_size`, `population`, ...; the deprecated `size` is read with its warning),
+  `extra_action`, `boundary`, `dyson`, `observables`; parameter keys `indexed`, `indexed_by`
+  (before: `indexed` was an unknown key); field entries with attributes (`- v: {population: E}`); an `equations`
+  entry that is an expression is a drift, and an equation takes `velocity`; noise entries take `as_field`,
+  `population`, `domain` and a Gaussian's `kernel` (an image, or `{freq_image: ...}`); `noise` is optional with
+  `point_processes`, and `into` with `as_field`. Existing configs read as before.
+- Tests (`tests/test_sde_model_ergonomics.py`): delayed indexed fields and rates equal the explicit `Conv` forms, also in a
+  switch-on (`t_min`) run; a Gaussian jitter kernel round-trips; the text uses the current spellings
+  (`jump_size`, `loc`) and the round trip raises no `DeprecationWarning` (warnings as errors); the
+  connectivity equals the parameter call, with its refusals; the one-loop mean of `exp(x/2) + x^2` vs the exact
+  stationary density of a 1-d SDE (error ratio 3.9 when `D` halves, O(D^2); saddle only: ratio 2); the k = 2 tree
+  `f_a C_ax`; a linear observable at one loop equals the sum of the field cumulants per loop order; a population
+  observable (`phi(v)` of the linear Hawkes model) is `n*` at the saddle; every catalogue model and nine adversarial
+  models round-trip through the text (digest identical); `to_text()` + a question section is a config whose run
+  equals the Python model bit for bit. README snippet registered.
+
+### Audit cleanups: builder messages without version jargon, stale docstrings, one dead table
+
+- **Builder refusals.** `boundary()`, `initial()` and `dyson()` named an internal "v1 / v1.5 / v2" roadmap and pointed at
+  design notes that are not distributed. They now say what is supported (`'infinite'` and `'periodic'`; `'stationary'`;
+  `'off'` and `'fixed'`) and what is not.
+- **Docstrings.** `phase_j_pipeline` no longer says loop diagrams are skipped (every diagram goes through
+  `integrate_diagram`); the `initial()` and `dyson(tol=)` docs lose the version labels.
+- **Dead code.** `api.noise._RESERVED` (never read) is removed.
+- **Test.** `slice_me` at the nominal lag grid equals `dd.run`'s slice to 1e-13 (the old 3e-7 mismatch came from nudged
+  pinned legs and went away with the exact tie).
+- No numbers move.
+
+### Gaussian-jittered exogenous inputs (`Kernel.gaussian`)
+
+- **`Kernel.gaussian(sigma, tol=1e-6)`** (`api/delay.py`, `api/_gaussian_fit.py`): the Gaussian density
+  `exp(-t^2/(2 sigma^2))/sqrt(2 pi sigma^2)` as a kernel of an EXOGENOUS input, e.g. Poisson mother events whose
+  shots are jittered, `Conv(kX*g, n)`. The density is acausal and its image is not rational; on a stationary input
+  no field feeds back into, a time shift of the whole input changes no stationary statistic, so the density is
+  shifted by `T` (`Phi(-T/sigma) <= tol/10`), fitted by a rational kernel with L1 error at most `tol`, and the shift is
+  dropped (never realized). The fit is universal in units of sigma: a Laguerre expansion of the shifted density,
+  balanced truncation for the poles, least-squares numerators with unit area; the kernel string is one fraction with
+  exact (dyadic) coefficients, so the mean is exact. Orders: 6 / 12 / 16 / 22 / 27 states at `tol` 1e-2 / 1e-4 / 1e-6
+  / 1e-8 / 1e-9 (`tol` in `[1e-9, 1e-2]`), about 0.8 s per `tol`, cached.
+- **Error report.** `result['input_jitter'][<input>]['fit']` and the ledger entry `jitter:<input>` (kind
+  `approximation`): `l1`, the sampled image error `sup`, the spectral error `sup |(|R|^2 - exp(-sigma^2 omega^2))|`
+  and `bound_by_order` (order 1: 0; order 2: the spectral error, relative to the variance driven by the unjittered
+  input; order `k >= 3`: `(1 + l1)^k - 1`). `SDE.check()` prints a jitter kernel as a one-line summary.
+- **Refusals (by name).** At the build: a jitter on a field that is not a point process / exposed source, a source
+  whose rate (or size, or noise parameters) depends on a field (feedback), a use of the input without the jitter or
+  with a different one (the shift must be common to every use), an indexed jitter kernel or sigma, two jitters in
+  one product. In `compute_cumulants`: the jittered input (or its response field) as an external leg, and switch-on
+  runs (`t_min` / `times` / `initial_covariance`). `TemporalModelBuilder.define_kernel(kernel=Kernel.gaussian(...))`
+  is refused (the builder cannot check exogeneity). A Gaussian written as `time_expr` is still refused
+  (`G3_NONRATIONAL_KERNEL`), whose remedy now points to `Kernel.gaussian`.
+- **Realization speed (`api/_realization.py`).** The exact Kalman reduction takes its Krylov ranks modulo a prime and
+  certifies them exactly (the pivot columns span an A-invariant subspace containing B iff two exact solves are
+  consistent; the echelon basis of that subspace is unique), falling back to the exact ranks otherwise. Results are
+  bit-identical; a two-population rate network with alpha synapses and a jittered input: tree 94 s -> 11 s (the
+  global observability reduction 80 s -> 0.23 s).
+- Tests: `tests/test_gaussian_jitter.py` (the fit's L1 error by an independent quadrature; k = 2 tree against the
+  frequency integral with the true `exp(-sigma^2 omega^2)` within the reported bound, at sigma = 0.5, 0.3 and the
+  narrow 0.01; k = 3 tree against a time-domain quadrature with exponentially modified Gaussians, within the bound,
+  and a loose fit whose error shows; the exact mean; a logistic rate model, tree + one loop, against a simulation
+  with the true Gaussian bumps; every refusal), and a README example in `tests/test_readme_snippets.py`.
+- Review fixes: the exogeneity check now also refuses an exposed input that drives a field directly (`into=`) next
+  to its jittered use, sees a jitter kernel however the `Conv` writes it (`Conv((g), u)`, an uncomposed
+  `Conv(kX*g, u)` in a noise coefficient), and refuses a sigma holding a field; the modular Kalman reduction falls
+  back to the exact ranks when a denominator is divisible by its prime (Sage raises `TypeError` there).
+- Merged with the nonlinear-Conv embedding (#113): a Gaussian jitter is never embedded; a jitter on a nonlinear argument of a field is refused by the exogeneity check.
+
 ## 0.3.3 (2026-10-26)
 
 **Important fix (silent wrong numbers in 0.3.2 and earlier):** loop corrections through a kernel acting on a NONLINEAR function of fields, `Conv(K, f(x))` (e.g. synaptic kernels on a rate nonlinearity, `Conv(k, v^2)`), were wrong by 10-25 % with status `ok`. The saddle and tree level were correct. Such terms are now realized as an exact linear filter (the Markov embedding), and a raw action with a nonlinear `Conv` argument is refused instead of mis-evaluated. No tracked model, example notebook or paper script used such a term; re-run any of your own models that do.
