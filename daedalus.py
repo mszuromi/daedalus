@@ -588,7 +588,7 @@ class Config:
     # dict {'method': 'screened', 'mass': 'pms' | 'hartree' | kappa,
     # 'observable': 'trace_cov' | 'C0' | [fields], 'step': 5e-3,
     # 'kappa_range': (0.25, 6.0), 'n_scan': 17}: the loop orders re-expanded
-    # around a variational trial propagator (k = 2, max_ell = the screened
+    # around a variational trial propagator (k = 1 or 2, max_ell = the screened
     # order N >= 1) -> result['C_tau'] (order N), ['C_tau_by_order'],
     # ['C_tau_spread'], ['C_tau_loops_by_ell'], ['resummation'].
     resum: Any = None
@@ -739,7 +739,8 @@ class Config:
                          k=self.k, max_ell=self.max_ell, output=self.output,
                          t_min=self.t_min, spatial_points=self.spatial_points,
                          covariance=resolve_covariance_options(
-                             self.covariance, 'Config.covariance'))
+                             self.covariance, 'Config.covariance'),
+                         spectra=self.spectra)
         if self.tau_step is not None and not float(self.tau_step) > 0:
             raise ValueError(
                 f"Config.tau_step must be > 0; got {self.tau_step!r}.")
@@ -908,7 +909,7 @@ def config_options(spatial=None):
             ('covariance', "None | True | {'fields': [...], 'pairs': 'upper'|'all', 'derivatives': [param, ...] or {'parameters': [...], 'step': 1e-3}, 'keep_entries': bool} → run() returns Sigma[n,i,j]=<dx_i(0) dx_j(τ_n)> over every pair (one shared MF/propagator/pole pass) and dSigma/dθ"),
         ]),
         ('resummation (api.hartree, api.resum)', [
-            ('resum', "None | 'hartree' (self-consistent Gaussian; max_ell 0) | 'screened' or {'method': 'screened', 'mass': 'pms'|'hartree'|kappa, 'observable': 'trace_cov'|'C0'|[fields], 'step', 'kappa_range', 'n_scan'} (k=2: loop orders re-expanded around a variational propagator, order N = max_ell) → C_tau, C_tau_by_order, C_tau_spread, resummation"),
+            ('resum', "None | 'hartree' (self-consistent Gaussian; max_ell 0) | 'screened' or {'method': 'screened', 'mass': 'pms'|'hartree'|kappa, 'observable': 'trace_cov'|'C0'|[fields], 'step', 'kappa_range', 'n_scan'} (k=1 the mean, k=2 the covariance: loop orders re-expanded around a variational propagator, order N = max_ell) → C_tau, C_tau_by_order, C_tau_spread, resummation"),
         ]),
         ('delay kernels (api.delay)', [
             ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
@@ -2165,7 +2166,7 @@ def _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental, opts, cov):
     from api.resum import check_config
     check_config(opts, k=k, max_ell=max_ell, output=cfg.output,
                  t_min=cfg.t_min, spatial_points=cfg.spatial_points,
-                 covariance=cov)
+                 covariance=cov, spectra=cfg.spectra)
     tau = kw.get('tau_grid')
     if tau is None:
         tau = np.arange(-kw['tau_max'], kw['tau_max'] + kw['tau_step'] * 0.5,
@@ -2191,7 +2192,7 @@ def _run_resummed(model, cfg, kw, k, max_ell, ext, fundamental, opts, cov):
                        options={key: v for key, v in opts.items()
                                 if key != 'method'},
                        tau_grid=tau, spectra=spec, covariance=cov,
-                       verbose=cfg.verbose, **mf_kw, **run_kw)
+                       verbose=cfg.verbose, k=k, **mf_kw, **run_kw)
     res['_cfg'] = cfg
     res['_model'] = model
     res['_resolved'] = dict(k=k, max_ell=max_ell, external_fields=ext,

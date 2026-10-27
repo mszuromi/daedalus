@@ -114,6 +114,19 @@ r['resummation']             # kappa, kappa_source, A_trial, Q_trial, pms_curve,
                              # hartree (the closure), counterterm, stencil, n_runs, wall
 ```
 
+**The resummed mean ($k = 1$).** `Config(k=1, max_ell=N, resum='screened')` resums the one-point function of one field
+with the same trial propagator, the same order-$N$ re-expansion and the same PMS choice. The counterterm is the
+two-point one above, so the loop orders of the mean (the tadpoles, $\ell \ge 1$) are evaluated at the trial
+propagator and re-expanded exactly like the loop orders of the covariance. The PMS criterion is the equal-time
+covariance, whatever $k$ is: `observable='trace_cov'` (the default) or `'C0'` (the variance of the requested field)
+are read off $k = 2$ loop orders. A $k = 1$ run and a $k = 2$ run of one model at one parameter point therefore have
+the same $\kappa$ and the same trial propagator (`resummation['kappa']`, `A_trial`, `Q_trial`, `pms_curve`). The
+result has the keys of $k = 2$ with the shift about the saddle in `C_tau`: `C_tau_by_order`, `C_tau_spread`,
+`C_tau_loops` and `C_tau_loops_by_ell` (the plain loop series), plus the absolute `mean` and `mean_by_order`. A mean
+has no `spectra=` and no `covariance=`: both are refused. For $dx = (-x + 0.3x^2 - 0.2x^3)\,dt + \sqrt{2D}\,dW$ with
+$D = 0.5$ (exact mean 0.09675 from the stationary density), the plain series gives 0.150, 0.0638, 0.1056 at
+$N = 1, 2, 3$ and the screened series 0.121, 0.0941, 0.0965.
+
 With `spectra=`, `result['spectra']` holds the screened values: `S`, `S0`, the integrals and `C0` by order (they are
 linear in $C$), and `tau_c` re-derived. With `covariance=True`, the covariance-matrix layout gains `Sigma_by_order`,
 `Sigma_spread` and `Sigma_loops_by_ell`. The analyzer gates run on the plain loop run only. The G5 loop-parameter
@@ -187,12 +200,13 @@ $g = 10$.
   exponentials, as in the downset sweep). They would replace the stencil with fewer runs and no step error.
 - **2PI at next-to-leading order.** The self-consistent sunset (non-local $\Sigma(\tau)$, stationary Kadanoff-Baym
   equations) is a research item. It does not reuse the Phase J engine directly.
-- **k ≥ 3.** The screened series is implemented for $k = 2$. Applied to $k = 4$, the research prototype's 0-D series
+- **k ≥ 3.** The screened series is implemented for $k = 1$ (the mean) and $k = 2$. Applied to $k = 4$, the research prototype's 0-D series
   recovered 87–99 % of $\kappa_4$ at the variance's PMS mass. Hartree alone has $\kappa_{k\ge3} = 0$.
 - **Not supported yet.** Kernel and delay models need their kernel states embedded first. Spatial models need a mass
   counterterm for the UV-divergent tadpole at $d \ge 2$.
 - **Mean shift.** The screened series keeps the expansion point at the mean-field saddle. Hartree's own mean shift
-  enters only through the loop tadpoles, so for an asymmetric model order 1 at $\kappa = 1$ is not exactly Hartree.
+  enters only through the loop tadpoles, so for an asymmetric model order 1 at $\kappa = 1$ is not exactly Hartree
+  (it agrees to the next order in the couplings, `test_order_one_at_the_hartree_mass_is_the_hartree_mean`).
 - **Multistability.** No single Gaussian, and no series around one, describes activated hopping.
 - **Cost.** Each run of the scan repeats the multi-start mean-field solve. For a model whose loop order $N$ takes
   minutes, the screened series takes about 25 times that.
