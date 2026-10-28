@@ -708,7 +708,8 @@ class OneLoopMean:
         key = ('rational', legs)
         if key in self._cache:
             return self._cache[key]
-        from daedalus.api.symbolic_loop import symbolic_cumulant
+        from daedalus.api.symbolic_loop import (symbolic_cumulant,
+                                                 SymbolicLoopRefused)
         ext = [_external_field(self.model, f) for f in legs]
         vals = self.relation.values
         fixed = {k: v for k, v in vals.items()
@@ -717,9 +718,17 @@ class OneLoopMean:
                   if _is_saddle_symbol(k, self.model)}
         params = _pack_parameters(self.model, self.parameters, fixed)
         symbols = [n for n in _expand_param_names(params) if n not in fixed]
-        sc = symbolic_cumulant(self.model, k=2, max_ell=0, external_fields=ext,
-                               parameters=params, symbols=symbols,
-                               saddle=saddle or 'symbol')
+        try:
+            sc = symbolic_cumulant(self.model, k=2, max_ell=0,
+                                   external_fields=ext, parameters=params,
+                                   symbols=symbols, saddle=saddle or 'symbol')
+        except SymbolicLoopRefused as exc:
+            if exc.reason != 'too_large':
+                raise
+            raise SymbolicLoopRefused(
+                'too_large', f'{exc._message}; pass some parameters as '
+                f'values= (written in as numbers, the saddle solve still '
+                f'sees them)') from exc
         # the external tie (the second leg earlier) is C_pq(0+): the Itô value
         # plus the response of p to the instantaneous part of q
         self._entry(legs)                                  # contact refusal

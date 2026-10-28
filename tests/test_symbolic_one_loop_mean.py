@@ -332,3 +332,35 @@ def test_alpha_kernel_values_that_move_the_saddle():
     for form in FORMS:
         got = lm.evaluate(form)
         _close({a: got[a] for a in want}, want)
+
+
+MOVED = 1.07
+MOVED_BUILTINS = [
+    ('single_population_quad_exp_test', {'Em': [MOVED, MOVED]}),
+    ('single_population_spike_reset_test',
+     {'Em': [MOVED, MOVED], 'tau': [10 * MOVED, 9 * MOVED],
+      'a': [0.5 * MOVED, 0.5 * MOVED],
+      'w': [[0.25 * MOVED, 0.25 * MOVED], [0.2 * MOVED, 0.3 * MOVED]]}),
+]
+
+
+@pytest.mark.parametrize('name, over', MOVED_BUILTINS)
+def test_built_at_moved_values_evaluates_without_values(name, over):
+    """Built with ``values=`` off the defaults, then ``evaluate()`` with no
+    values: the default fallback fills only what the build left free."""
+    model, _ = dd.load_model(name)
+    want, npar = _one_loop(model, [('n', 1), ('v', 2)], parameters=over)
+    lm = one_loop_mean(model, mean_field='solve', values=_params(npar))
+    for form in FORMS:
+        got = lm.evaluate(form)
+        _close({a: got[a] for a in want}, want)
+    with pytest.raises(SymbolicOutError, match='Em1 was fixed'):
+        lm.evaluate('rational', {'Em1': 1.0})
+
+
+def test_too_many_symbols_points_to_values():
+    """The rational equal-time parts beyond ``max_symbols``: the refusal
+    names the ways out."""
+    lm = one_loop_mean(rate_network(W3, [1.0, 2.0, 0.7]), mean_field='solve')
+    with pytest.raises(dd.SymbolicLoopRefused, match='as values='):
+        lm.evaluate('rational')

@@ -164,6 +164,21 @@ def test_alpha_kernel_model():
         _close(sp.evaluate(('n', 1), ('v', 2), OMEGA, c0=c0), want)
 
 
+@pytest.mark.parametrize('name, pair', [
+    ('single_population_quad_exp_test', (('n', 1), ('v', 2))),
+    ('single_population_spike_reset_test', (('v', 1), ('v', 2)))])
+def test_built_at_moved_values_evaluates_without_values(name, pair):
+    """Built with ``values=`` off the defaults (every one moving the saddle),
+    then evaluated with no values: the same as ``dd.run(parameters=...)``."""
+    from test_symbolic_one_loop_mean import MOVED_BUILTINS
+    model, _ = dd.load_model(name)
+    want, npar = _pipeline(model, *pair, parameters=dict(MOVED_BUILTINS)[name])
+    sp = one_loop_spectrum(model, mean_field='solve', values=npar)
+    _close(sp.evaluate(*pair, OMEGA), want)
+    with pytest.raises(SymbolicOutError, match='Em1 was fixed'):
+        sp.evaluate(*pair, OMEGA, values={'Em1': 1.0})
+
+
 @pytest.mark.parametrize('a, b', [(('n', 1), ('n', 1)), (('n', 1), ('v', 2))])
 def test_spike_reset_bubble_takes_the_ito_value(a, b):
     """The reset ``v n`` meets a spike train's ``delta(tau)`` times the

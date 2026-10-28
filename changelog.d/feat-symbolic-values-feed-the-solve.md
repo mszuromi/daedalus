@@ -21,6 +21,18 @@ Old and new values (new = `dd.run(parameters=...)`, and for the first model the 
   - one-loop mean `dn1 4.2637e-3 -> 5.6231e-3`;
   - `dv2 3.4225e-3 -> 4.5598e-3`.
 
+Now evaluated where main refused (no old number). These match `dd.run(parameters=...)` to <= 2e-15:
+- `single_population_quad_exp_test`, every parameter in `values=` with `Em = [1.07, 1.07]`:
+  - the one-loop spectrum `(n1, v2)`;
+  - the one-loop mean.
+  - On main: `saddle_mismatch`, `nstar1 0.340` vs `0.665`.
+- `single_population_spike_reset_test`, built with `values=` at `Em`, `tau`, `a` and `w` all scaled by 1.07, then
+  `evaluate()` with no values:
+  - the one-loop mean, every form;
+  - the spectrum `(v1, v2)`.
+  - On main: refused with "Em1 was fixed to 1.07 ... cannot be changed to 1.0".
+  - An explicit `evaluate` value for a symbol fixed at the build is still refused.
+
 Related changes:
 - `TreeCovariance.default_values()` also solves its reference saddle at the `values=` it was built with. Example:
   `dd.tree_covariance(model, values={'g': 0.5})` gives `x* 0.66667 -> 0.61245`.
@@ -29,5 +41,6 @@ Related changes:
   `evaluate` already assumed.
 - `MeanRelation.with_defaults` puts the symbols fixed at the build between the defaults and the values given.
 - A parameter that has no default may now be given in `values=` alone with `mean_field='solve'`.
+- The `too_large` refusal of the rational equal-time parts (more than `max_symbols` symbols) now suggests `values=`.
 
 Without `values=` naming such a parameter, nothing changes.
