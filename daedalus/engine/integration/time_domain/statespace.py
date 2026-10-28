@@ -494,6 +494,7 @@ _COUNTER_KEYS = (
     'ss_subsets_built', 'ss_subsets_declined', 'ss_evals',
     'ss_stationary_builds', 'ss_resolvent_solves', 'ss_refinements',
     'ss_segments_taylor', 'ss_taylor_matvecs', 'ss_segments_triangular',
+    'ss_segments_scaled',
     'ss_batch_points', 'ss_prefetch_hits',
     'ss_realizations_built', 'ss_realization_refused',
     'ss_fallback_evals', 'ss_fallback_subsets', 'ss_kernel_entries',
@@ -735,7 +736,9 @@ def _balance_siso(a, b, c):
     the entry as given, ``a`` balanced alone, and the augmented balancing,
     each followed by a power-of-two ``b``/``c`` equalisation; the one with the
     smallest ``max(|a|_1, |b|_1 |c|_inf)`` is kept.  A diagonal similarity
-    keeps a triangular ``a`` triangular."""
+    keeps a triangular ``a`` triangular.  Returns ``(a', b', c', s)``:
+    ``a' = a * s[None, :] / s[:, None]``, ``b' = b / s``, ``c' = c * s``
+    (``s`` powers of two)."""
     n = a.shape[0]
     # every comparison below is unit free: ``a`` (a rate) and ``b c`` (the
     # entry's own units) are each measured against their size as given (a
@@ -751,38 +754,43 @@ def _balance_siso(a, b, c):
     aug[:n, n] = b / rb
     aug[n, :n] = c / rb
     if not np.all(np.isfinite(aug)):
-        return a, b, c
-    cands = [_equalize_bc(a, b, c)]
+        return a, b, c, np.ones(n)
+
+    def equalized(a_, b_, c_, S):
+        sig = _equalize_sig(b_, c_)
+        if sig == 1.0:
+            return a_, b_, c_, S
+        return a_, b_ * sig, c_ / sig, S / sig
+    cands = [equalized(a, b, c, np.ones(n))]
     _ba, (sa, _pa) = sl.matrix_balance(a, permute=False, separate=True)
     sa = np.asarray(sa, dtype=float)
     if not np.all(sa == 1.0):                  # a alone (the realization's choice)
-        cands.append(_equalize_bc(a * (sa[None, :] / sa[:, None]), b / sa,
-                                  c * sa))
+        cands.append(equalized(a * (sa[None, :] / sa[:, None]), b / sa,
+                               c * sa, sa))
     _bal, (s, _p) = sl.matrix_balance(aug, permute=False, separate=True)
     s = np.asarray(s, dtype=float)
     if not np.all(s == 1.0):
         S, sn = s[:n], s[n]
-        cands.append(_equalize_bc(a * (S[None, :] / S[:, None]),
-                                  b * (sn / S), c * (S / sn)))
+        cands.append(equalized(a * (S[None, :] / S[:, None]),
+                               b * (sn / S), c * (S / sn), S / sn))
 
     # the augmented balancing can inflate ||a|| on a graded entry (3.9e3 vs
     # 4.9 measured): keep the candidate whose generator / firing norms are
     # smaller (both enter ||G|| and the Taylor step count)
-    def cost(abc):
-        a_, b_, c_ = abc
+    def cost(abcs):
+        a_, b_, c_, _s = abcs
         return max(float(np.abs(a_).sum(axis=0).max()) / ra,
                    float(np.abs(b_).sum()) * float(np.abs(c_).max()) / rbc)
     return min(cands, key=cost)
 
 
-def _equalize_bc(a, b, c):
-    """``b -> b σ``, ``c -> c / σ`` with ``σ`` the power of two closest to
-    ``sqrt(|c|_inf / |b|_1)`` (exact, ``c e^{at} b`` unchanged)."""
+def _equalize_sig(b, c):
+    """The power of two ``σ`` closest to ``sqrt(|c|_inf / |b|_1)`` (1 when
+    ``b`` or ``c`` vanishes)."""
     nb, nc = float(np.abs(b).sum()), float(np.abs(c).max())
     if not (nb > 0 and nc > 0):
-        return a, b, c
-    sig = 2.0 ** round(0.5 * math.log2(nc / nb))
-    return a, b * sig, c / sig
+        return 1.0
+    return 2.0 ** round(0.5 * math.log2(nc / nb))
 
 
 class _EntryOps:
@@ -793,15 +801,21 @@ class _EntryOps:
     """
     __slots__ = ('n', 'a', 'b', 'c', 'kind', 'T', 'U', 'Uh', 'dT', 'Nup',
                  'trace', 'norm1', 'cnorm', 'bnorm', 'lam', '_tay', 'bt',
-                 'ct')
+                 'ct', 'bal_s', 'seg_scale')
 
     def __init__(self, ent, dtype):
         self.n = n = int(ent.n_states)
         self.a = np.asarray(ent.a, dtype=dtype)
         self.b = np.asarray(ent.b, dtype=dtype).reshape(n)
         self.c = np.asarray(ent.c, dtype=dtype).reshape(n)
+        # ``bal_s``: the balancing's diagonal scaling of the entry as given;
+        # ``seg_scale``: an optional further power-of-two scaling of the
+        # states that a stiff segment may take (``set_seg_scale``)
+        self.bal_s = np.ones(n)
+        self.seg_scale = None
         if n:
-            self.a, self.b, self.c = _balance_siso(self.a, self.b, self.c)
+            self.a, self.b, self.c, self.bal_s = _balance_siso(
+                self.a, self.b, self.c)
         self.trace = complex(np.trace(self.a)) if n else 0j
         self.norm1 = float(np.abs(self.a).sum(axis=0).max()) if n else 0.0
         self.cnorm = float(np.abs(self.c).max()) if n else 0.0
@@ -837,6 +851,17 @@ class _EntryOps:
         self.bt = self.to_basis(self.b, 0)
         self.ct = (self.c @ self.U if self.kind == 'schur'
                    else self.c[::-1] if self.kind == 'lower' else self.c)
+
+    def set_seg_scale(self, s):
+        """Record the power-of-two diagonal scaling ``s`` of the states
+        (``a -> a * s[None, :] / s[:, None]``, ``b -> b / s``, ``c -> c * s``)
+        under which a segment's Taylor action needs fewer steps; with its
+        norms ``(|a|_1, |c|_inf, |b|_1)`` in that scaling."""
+        s = np.asarray(s, dtype=float)
+        a_ = self.a * (s[None, :] / s[:, None])
+        self.seg_scale = (s, float(np.abs(a_).sum(axis=0).max()),
+                          float(np.abs(self.c * s).max()),
+                          float(np.abs(self.b / s).sum()))
 
     def to_basis(self, x, ax):
         if self.kind == 'lower':
@@ -1062,6 +1087,16 @@ class _ModelOps:
             import types as _types
             out = _EntryOps(_types.SimpleNamespace(
                 a=A, b=B, c=C, n_states=A.shape[0]), dt)
+            if n1 and n2 and out.n == n1 + n2:
+                # the factors' own balancings, as a scaling of the cascade:
+                # its coupling block b2 c1 keeps the cascade's balancing from
+                # undoing the factors' grading (|b| ~ 1e16 on a propagator
+                # entry, |c| ~ 5e7 on a Pade-16 kernel: firing maps ~1e23, a
+                # segment of ~1e13 Taylor steps); a segment that is stiff as
+                # given takes it (``_Segment.action``)
+                s1 = _balance_siso(a1, b1, c1)[3]
+                s2 = _balance_siso(a2, b2, c2)[3]
+                out.set_seg_scale(np.concatenate([s1, s2]) / out.bal_s)
             _count('ss_dressed_entries')
         with self._lock:
             self._extra[key] = out
@@ -1446,8 +1481,12 @@ def _onenorm_powers(A, pmax=_P_MAX + 1):
         else:
             d[2] = _onenormest_power(A, 2)
     for p in range(3, pmax + 1):
-        n1, n2 = d[1] ** p, d[2] ** (2 * (p // 2)) * d[1] ** (p % 2)
-        d[p] = min(n1, n2) ** (1.0 / p)
+        try:
+            n1, n2 = d[1] ** p, d[2] ** (2 * (p // 2)) * d[1] ** (p % 2)
+            d[p] = min(n1, n2) ** (1.0 / p)
+        except OverflowError:
+            # a graded generator (norms ~1e40): the same bound root first
+            d[p] = min(d[1], d[2] ** (2 * (p // 2) / p) * d[1] ** ((p % 2) / p))
     return d
 
 
@@ -1510,6 +1549,8 @@ class _Segment:
         self.key = key
         self._sd = [sub.model.solve_data(en) for en in self.ents]
         self._dnorms_free = None
+        self._dnorms_scaled = None
+        self._seg_d = None
         self._adj = None
         self._graded = None
         # ``depth``: firings to the deepest block plus the orders at which the
@@ -1648,7 +1689,6 @@ class _Segment:
         ``expm_multiply`` does; a crude bound for every p would cost ~60x
         more steps on a graded realization."""
         if self._dnorms_free is None:
-            from scipy.sparse.linalg import LinearOperator
             mu = self.trace() / self.D if self.D else 0.0
             if self.sub.model.is_real:
                 mu = float(np.real(mu))
@@ -1658,39 +1698,104 @@ class _Segment:
             for (kI, kJ, fire) in self.trans:
                 col[kI] += fire.norm1
             nrm = max(col) if col else 0.0
-            dn = {1: nrm}
-            n = self.D
-            dt = complex if not self.sub.model.is_real else float
             A = lambda y: self.apply(y) - mu * y
             AH = lambda y: self.apply_adj(y) - np.conj(mu) * y
-            for p in range(2, _P_MAX + 2):
-                def mv(v, p=p):
-                    v = np.asarray(v).reshape(n, -1)
-                    out = np.empty_like(v, dtype=np.result_type(v, dt))
-                    for j in range(v.shape[1]):
-                        y = v[:, j]
-                        for _ in range(p):
-                            y = A(y)
-                        out[:, j] = y
-                    return out
-
-                def rmv(v, p=p):
-                    v = np.asarray(v).reshape(n, -1)
-                    out = np.empty_like(v, dtype=np.result_type(v, dt))
-                    for j in range(v.shape[1]):
-                        y = v[:, j]
-                        for _ in range(p):
-                            y = AH(y)
-                        out[:, j] = y
-                    return out
-                op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
-                                    matmat=mv, rmatmat=rmv, dtype=dt)
-                try:
-                    dn[p] = min(nrm, _seeded_onenormest(op) ** (1.0 / p))
-                except Exception:
-                    dn[p] = nrm
-            self._dnorms_free = (mu, dn)
+            self._dnorms_free = (mu, self._power_norms(nrm, A, AH))
         return self._dnorms_free
+
+    def _power_norms(self, nrm, A, AH):
+        """``{1: nrm, p: min(nrm, onenormest(A^p)^{1/p})}`` for the
+        matrix-free ``A`` (adjoint ``AH``)."""
+        from scipy.sparse.linalg import LinearOperator
+        dn = {1: nrm}
+        n = self.D
+        dt = complex if not self.sub.model.is_real else float
+        for p in range(2, _P_MAX + 2):
+            def mv(v, p=p):
+                v = np.asarray(v).reshape(n, -1)
+                out = np.empty_like(v, dtype=np.result_type(v, dt))
+                for j in range(v.shape[1]):
+                    y = v[:, j]
+                    for _ in range(p):
+                        y = A(y)
+                    out[:, j] = y
+                return out
+
+            def rmv(v, p=p):
+                v = np.asarray(v).reshape(n, -1)
+                out = np.empty_like(v, dtype=np.result_type(v, dt))
+                for j in range(v.shape[1]):
+                    y = v[:, j]
+                    for _ in range(p):
+                        y = AH(y)
+                    out[:, j] = y
+                return out
+            op = LinearOperator((n, n), matvec=mv, rmatvec=rmv,
+                                matmat=mv, rmatmat=rmv, dtype=dt)
+            try:
+                dn[p] = min(nrm, _seeded_onenormest(op) ** (1.0 / p))
+            except Exception:
+                dn[p] = nrm
+        return dn
+
+    def seg_scale(self):
+        """The stacked power-of-two scaling ``d`` of the states from the
+        entries' ``seg_scale`` (``None`` when no entry has one)."""
+        if self._seg_d is None:
+            if not any(e.seg_scale is not None
+                       for en in self.ents for e in en):
+                self._seg_d = False
+            else:
+                d = np.ones(self.D)
+                for k, en in enumerate(self.ents):
+                    dk = np.ones(1)
+                    for e in en:
+                        dk = np.kron(dk, e.seg_scale[0]
+                                     if e.seg_scale is not None
+                                     else np.ones(e.n))
+                    d[self.offs[k]:self.offs[k] + self.sizes[k]] = dk
+                self._seg_d = d
+        return None if self._seg_d is False else self._seg_d
+
+    def _scaled_norms(self, dtype, d):
+        """``(apply_A, mu, dnorms)`` of ``D^{-1} (G - mu I) D``, ``D =
+        diag(d)`` (exact: powers of two)."""
+        if self.D <= OP_DENSE_MAX:
+            key = ('Gs', self.key)
+            hit = _dense_get(key)
+            if hit is None:
+                _G, A, mu, _dn = self.dense(dtype)
+                As = A * (d[None, :] / d[:, None])
+                hit = (As, mu, _onenorm_powers(As))
+                _dense_put(key, hit, As.nbytes)
+            else:
+                hit = hit[0]
+            As, mu, dn = hit
+            return (lambda y: As @ y), mu, dn
+        if self._dnorms_scaled is None:
+            mu = self.free_norms()[0]
+            # the exact 1-norm bound in the scaled states: the entries' and
+            # the firings' norms in their segment scaling
+            def norms(e):
+                return (e.seg_scale[1:] if e.seg_scale is not None
+                        else (e.norm1, e.cnorm, e.bnorm))
+            col = [0.0] * len(self.blocks)
+            for k, en in enumerate(self.ents):
+                col[k] = sum(norms(e)[0] for e in en) + abs(mu)
+            ops = self.sub.edge_ops
+            for (kI, kJ, fire) in self.trans:
+                n1 = 1.0
+                for e in fire.ends:
+                    n1 *= norms(ops[e])[1]
+                for e in fire.starts:
+                    n1 *= norms(ops[e])[2]
+                col[kI] += n1
+            nrm = max(col) if col else 0.0
+            A = lambda y: self.apply(y * d) / d - mu * y
+            AH = lambda y: self.apply_adj(y / d) * d - np.conj(mu) * y
+            self._dnorms_scaled = (mu, self._power_norms(nrm, A, AH))
+        mu, dn = self._dnorms_scaled
+        return (lambda y: self.apply(y * d) / d - mu * y), mu, dn
 
     def tri(self):
         """The generator in the per-edge triangular basis with the blocks in
@@ -1766,7 +1871,9 @@ class _Segment:
         segment (more than ``TAYLOR_S_MAX`` scaling steps with exact
         triangular bases, ``TAYLOR_S_MAX_SCHUR`` with a unitary Schur basis)
         takes the triangular route up to ``TRI_DENSE_MAX`` states; beyond it,
-        more than ``TAYLOR_S_HARD`` steps raise."""
+        more than ``TAYLOR_S_HARD`` steps take the states in their segment
+        scaling (``seg_scale``: the dressed lines' factors balanced) and
+        raise if that still needs more."""
         if self.D <= OP_DENSE_MAX:
             G, A, mu, dn = self.dense(dtype)
             apply_A = (lambda y: A @ y)
@@ -1782,6 +1889,16 @@ class _Segment:
         if s_ > lim and self.D <= TRI_DENSE_MAX:
             return self._action_tri(v, L, dtype)
         if s_ > TAYLOR_S_HARD:
+            # the states in their segment scaling (an exact power-of-two
+            # similarity): a dressed line's firing maps graded as given
+            d = self.seg_scale()
+            if d is not None:
+                apply_s, mu_s, dn_s = self._scaled_norms(dtype, d)
+                _m, s2 = _taylor_params(dn_s, L)
+                if s2 <= TAYLOR_S_HARD:
+                    _count('ss_segments_scaled')
+                    return d * _taylor_action(apply_s, mu_s, dn_s, v / d, L,
+                                              self.min_terms)
             raise SSLateRefusal(
                 'stiff_segment', f'a stiff segment ({self.D:,} states, '
                 f'{s_:,} Taylor steps for length {L:g}) is beyond its accurate '
