@@ -158,11 +158,54 @@ def test_alpha_kernel_model():
     _close(sp.evaluate(('n', 1), ('v', 2), OMEGA), want)
 
 
-def test_loop_without_an_ito_value_is_refused():
-    """A spike train's delta(tau) times a retarded line that jumps at the
-    tie: the bubble converges only conditionally."""
+@pytest.mark.parametrize('a, b', [(('n', 1), ('n', 1)), (('n', 1), ('v', 2))])
+def test_spike_reset_bubble_takes_the_ito_value(a, b):
+    """The reset ``v n`` meets a spike train's ``delta(tau)`` times the
+    retarded ``G_vv``, which is zero at the tie (Itô); the bubble is the
+    integral of the parts that decay."""
     model, _ = dd.load_model('single_population_spike_reset_test')
-    with pytest.raises(UnsupportedModelError, match='no Itô value'):
+    want, npar = _pipeline(model, a, b)
+    sp = one_loop_spectrum(model, mean_field='solve', values=npar)
+    for c0 in ('rational', 'residues'):
+        _close(sp.evaluate(a, b, OMEGA, c0=c0), want)
+    assert any('_inf' in str(sp.sigma(l, r)) for l, r in sp.pairs())   # named delta weights
+
+
+def test_instantaneous_partner_bubble_and_tadpole():
+    """``y = h + c x + eta``: the contact term of ``C0_yy`` times ``G_xx``,
+    and the tadpole ``C0_xy(0)`` that jumps at the tie."""
+    from test_symbolic_one_loop_mean import _instantaneous_partner
+    model = _instantaneous_partner('x', 'y')
+    for a, b in ((('x', 1), ('x', 1)), (('x', 1), ('y', 1))):
+        want, _ = _pipeline(model, a, b)
+        sp = one_loop_spectrum(model, mean_field='solve')
+        for c0 in ('rational', 'integral', 'residues'):
+            _close(sp.evaluate(a, b, OMEGA, c0=c0), want)
+
+
+def test_dendritic_spike_train_spectrum():
+    model, _ = dd.load_model('dendritic_quad_soma_sigmoid')
+    want, npar = _pipeline(model, ('nS', 1), ('vD', 1))
+    sp = one_loop_spectrum(model, mean_field='solve', values=npar)
+    _close(sp.evaluate(('nS', 1), ('vD', 1), OMEGA), want)
+
+
+def test_delta_squared_bubble_is_refused():
+    """Two lines with a ``delta(tau)`` part: ``C0_yy`` twice."""
+    from daedalus.api.model import TemporalModelBuilder
+    b = (TemporalModelBuilder('delta squared').population('E', size=1)
+         .physical_field('x', population='E').physical_field('y', population='E'))
+    for k, v in (('w', 0.3), ('lam', 0.2), ('h', 0.5), ('c', 0.4), ('g', 0.1),
+                 ('D', 0.1)):
+        b = b.parameter(k, default=[v], indexed_by=['E'], domain='real')
+    model = (b.set_action_text('''
+                sum( xt[i]*((Dt + 1)*x[i] - w[i]*y[i] - lam[i]*y[i]^2)
+                   + yt[i]*(y[i] - h[i] - c[i]*x[i] - g[i]*x[i]*y[i])
+                   - D[i]*yt[i]^2/2 for i in E)''')
+             .set_mf_equation('xstar', 'w[i]*ystar[i] + lam[i]*ystar[i]^2')
+             .set_mf_equation('ystar', '(h[i] + c[i]*xstar[i])/(1 - g[i]*xstar[i])')
+             .build())
+    with pytest.raises(UnsupportedModelError, match=r'delta\(tau\)\^2'):
         one_loop_spectrum(model, mean_field='solve')
 
 

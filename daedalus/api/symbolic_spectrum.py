@@ -28,6 +28,18 @@ degree three and four:
 * ``bubble``: two cubic vertices joined by two lines,
   ``(1/2 pi) int L1(nu) L2(w - nu) d nu``.
 
+Equal times are Itô's (``G(0) = 0``).  A line with an instantaneous part (a
+spike train's ``G`` or contact term, ``L = L(inf) + L_r`` with ``L_r`` decaying)
+makes a loop depend on that rule:
+
+* a tadpole ``C0_pq(0)`` whose ``C_pq(tau)`` jumps at the tie takes its Itô
+  value (:meth:`~daedalus.api.symbolic_mean.OneLoopMean.C0`);
+* a bubble with ``L1 = L1(inf) + L1_r``: the ``delta(tau)`` of ``L1(inf)``
+  puts both vertices at one time, where the other line takes its Itô value,
+  zero for ``G`` and ``C0_pq(0)`` for ``C0``.  The bubble is
+  ``(1/2 pi) int L1_r(nu) L2(w - nu) d nu + L1(inf) L2(tau = 0)``, which
+  converges absolutely.
+
 The block ``Sigma_{xt xt}`` renormalizes the noise (``G Sigma G^H``).  The blocks
 ``Sigma_{xt dx}`` and ``Sigma_{dx xt}`` renormalize the response (``G Sigma C0 +
 C0 Sigma G^H``).  ``Sigma_{dx dx}`` vanishes by causality.
@@ -51,12 +63,9 @@ Refused (``UnsupportedModelError``):
 
 * spatial models;
 * a time derivative or a kernel on a vertex;
-* a loop with no Itô value:
-  - a tadpole ``C0_pq(0)`` with a contact term (``delta(tau)``);
-  - a bubble whose integrand decays slower than ``nu^-2``.  That is a delta
-    part of one line, such as a spike train's contact term, times a line
-    that jumps at equal times, such as a retarded line; the product depends
-    on the time-ordering rule at the tie.
+* a loop with no Itô value: a tadpole ``C0_pq(0)`` with a contact term
+  (``delta(0)``), or a bubble of two lines that both have a ``delta(tau)``
+  part (``delta(tau)^2``).
 * a singular ``K(w = 0)``, which leaves no mean shift.
 """
 from __future__ import annotations
@@ -168,17 +177,19 @@ class OneLoopSpectrum:
         return [t for t in self.terms if t.kind == kind]
 
     # ── lines ───────────────────────────────────────────────────────────
+    def _line_latex(self, kind, row, col) -> str:
+        rel = self.mean.relation
+        if kind == 'G':
+            return (rf'G_{{{rel._field_latex(row)}, '
+                    rf'{self.mean._resp_latex(col)}}}')
+        return (rf'C^{{(0)}}_{{{rel._field_latex(row)}, '
+                rf'{rel._field_latex(col)}}}')
+
     def _named_fn(self, kind, row, col):
         key = ('fn', kind, row, col)
         if key not in self._cache:
-            rel = self.mean.relation
-            if kind == 'G':
-                lx = (rf'G_{{{rel._field_latex(row)}, '
-                      rf'{self.mean._resp_latex(col)}}}')
-            else:
-                lx = (rf'C^{{(0)}}_{{{rel._field_latex(row)}, '
-                      rf'{rel._field_latex(col)}}}')
-            self._cache[key] = function(f'{kind}_{row}_{col}', latex_name=lx)
+            self._cache[key] = function(f'{kind}_{row}_{col}',
+                                        latex_name=self._line_latex(kind, row, col))
         return self._cache[key]
 
     def _explicit(self, kind, row, col):
@@ -192,6 +203,35 @@ class OneLoopSpectrum:
                 e = cov.entry(row, col)
             self._cache[key] = self.mean._fix(e)
         return self._cache[key]
+
+    def _decay(self, kind, row, col) -> int:
+        """``deg Q - deg P`` of the entry ``P / Q`` in ``omega`` (``-1`` for a
+        zero entry): 0 for a line with a ``delta(tau)`` part, 1 for one that
+        jumps at ``tau = 0``."""
+        key = ('decay', kind, row, col)
+        if key not in self._cache:
+            w = self.omega
+            e = SR(self._explicit(kind, row, col))
+            num, den = e.numerator(), e.denominator()
+            deg = lambda p: int(p.degree(w)) if p.has(w) else 0
+            self._cache[key] = (-1 if SR(num).is_trivial_zero()
+                                else deg(den) - deg(num))
+        return self._cache[key]
+
+    def _tail(self, ln: Line, form: str):
+        """The weight of ``delta(tau)`` in a line, the ``omega -> infinity``
+        limit of its entry: the symbol ``G_a_r_inf`` / ``C0_a_b_inf``
+        (``'named'``) or its value; zero for a line that decays."""
+        if self._decay(ln.kind, ln.row, ln.col) != 0:
+            return SR(0)
+        if form == 'named':
+            return SR.var(f'{ln.kind}_{ln.row}_{ln.col}_inf',
+                          latex_name=self._line_latex(ln.kind, ln.row, ln.col)
+                          + r'(\infty)')
+        cov = self.mean.covariance()
+        e = (cov.instantaneous(ln.row, ln.col) if ln.kind == 'G'
+             else cov.contact(ln.row, ln.col))
+        return self.mean._fix(e)
 
     def line(self, ln: Line, form: str = 'named'):
         """The value of a :class:`Line` in ``form`` (class docstring)."""
@@ -229,11 +269,23 @@ class OneLoopSpectrum:
                 seen.append((t.left, t.right))
         return seen
 
-    def _bubble_integrand(self, left, right, form):
-        return sum((t.coefficient * self.line(t.lines[0], form)
-                    * self.line(t.lines[1], form)
-                    for t in self.terms if t.kind == 'bubble'
-                    and (t.left, t.right) == (left, right)), SR(0))
+    def _bubble_parts(self, left, right, form, c0):
+        """The bubbles of ``Sigma_{left, right}``: the integrand over ``nu``
+        and the equal-time part.  A line's ``delta(tau)`` part pins the two
+        vertices to one time and takes the other line there, at its Itô value
+        (module docstring); the rest of the product is integrated."""
+        integrand, equal = SR(0), SR(0)
+        for t in self.terms:
+            if t.kind != 'bubble' or (t.left, t.right) != (left, right):
+                continue
+            tails = [self._tail(ln, form) for ln in t.lines]
+            l1, l2 = (self.line(ln, form) - tl for ln, tl in zip(t.lines, tails))
+            integrand += t.coefficient * l1 * l2
+            for tl, other in zip(tails, reversed(t.lines)):
+                if not SR(tl).is_trivial_zero() and other.kind == 'C0':
+                    equal += (t.coefficient * tl
+                              * self.mean.C0(other.row, other.col, form=c0))
+        return integrand, equal
 
     def sigma(self, left, right, form: str = 'named', c0: str = 'named'):
         """``Sigma_{left, right}(omega)``: equal-time terms plus the bubbles as
@@ -243,7 +295,8 @@ class OneLoopSpectrum:
         for t in self.terms:
             if (t.left, t.right) == (left, right) and t.kind != 'bubble':
                 out += t.coefficient * self._equal_time(t, c0)
-        bub = self._bubble_integrand(left, right, form)
+        bub, eq = self._bubble_parts(left, right, form, c0)
+        out += eq
         if not SR(bub).is_trivial_zero():
             out += integral(bub, self.nu, -oo, oo, hold=True) / (2 * pi)
         return out
@@ -323,10 +376,16 @@ class OneLoopSpectrum:
                 if (t.left, t.right) != (l, r):
                     continue
                 if t.kind == 'bubble':
-                    bub.append((outer, number(t.coefficient), [
-                        (line(ln.kind, ln.row, ln.col),
-                         float(SR(ln.freq).coefficient(nu)),
-                         float(SR(ln.freq).coefficient(w))) for ln in t.lines]))
+                    c, lns = number(t.coefficient), []
+                    for ln, other in zip(t.lines, reversed(t.lines)):
+                        tail = number(self._tail(ln, 'explicit'))
+                        if tail and other.kind == 'C0':
+                            v += c * tail * self._c0_number(
+                                (other.row, other.col), c0, vals)
+                        lns.append((line(ln.kind, ln.row, ln.col),
+                                    float(SR(ln.freq).coefficient(nu)),
+                                    float(SR(ln.freq).coefficient(w)), tail))
+                    bub.append((outer, c, lns))
                 else:
                     v += number(t.coefficient) * self._equal_number(t, c0, vals)
             if v:
@@ -338,8 +397,10 @@ class OneLoopSpectrum:
             if bub:
                 wts = [c * A(x) * B(-x) for (A, B), c, _ in bub]
                 tot += _nu_integral(
-                    lambda y: sum(wt * L1(p1 * y + q1 * x) * L2(p2 * y + q2 * x)
-                                  for wt, (_, _, ((L1, p1, q1), (L2, p2, q2)))
+                    lambda y: sum(wt * (L1(p1 * y + q1 * x) - t1)
+                                  * (L2(p2 * y + q2 * x) - t2)
+                                  for wt, (_, _, ((L1, p1, q1, t1),
+                                                  (L2, p2, q2, t2)))
                                   in zip(wts, bub)), epsrel)
             out.append(complex(tot))
         out = np.array(out)
@@ -365,7 +426,13 @@ class OneLoopSpectrum:
             if key not in self._cache:
                 self._cache[key] = self.mean.evaluate(c0, vals)
             return self._cache[key][t.shift]
-        legs = t.loop
+        return self._c0_number(t.loop, c0, vals)
+
+    def _c0_number(self, legs, c0, vals) -> complex:
+        """``C0_pq(0)`` (Itô) as a number, in form ``c0``."""
+        if c0 == 'named':
+            c0 = 'rational'
+        legs = self.mean._legs(*legs)
         if c0 == 'integral':
             return self.mean._integral_number(legs, vals)
         if c0 == 'residues':
@@ -572,37 +639,20 @@ def _wick(cubic, quartic, resp, phys, canon, w, nu, phys_order) -> list:
 
 def _check_loops(spec: OneLoopSpectrum) -> None:
     """Refuse loops without an Itô value (module docstring).  A line's decay
-    order is ``deg Q - deg P`` of its entry ``P / Q`` in ``omega`` (0 for a
-    delta part).  A tadpole loop needs order >= 2.  A bubble's integrand
-    needs ``o1 + o2 >= 2``: below that, the integral over ``nu`` converges
-    only conditionally.  That is the product of a delta with a line that
-    jumps at equal times, such as a contact term times a retarded line, whose
-    value depends on the time-ordering rule."""
-    w = spec.omega
-    orders: dict = {}
-
-    def order(kind, row, col):
-        if (kind, row, col) not in orders:
-            e = SR(spec._explicit(kind, row, col))
-            num, den = e.numerator(), e.denominator()
-            deg = lambda p: int(p.degree(w)) if p.has(w) else 0
-            orders[kind, row, col] = (-1 if SR(num).is_trivial_zero()
-                                      else deg(den) - deg(num))
-        return orders[kind, row, col]
-
+    order (:meth:`OneLoopSpectrum._decay`) is 0 when it has a ``delta(tau)``
+    part and 1 when it jumps at the tie.  A tadpole loop at order 0 is a
+    ``delta(0)``; a bubble whose two lines both have a ``delta(tau)`` part is
+    a ``delta(tau)^2``.  Every other loop takes its Itô value."""
     for t in spec.terms:
-        if t.kind == 'tadpole' and 0 <= order('C0', *t.loop) < 2:
+        if t.kind == 'tadpole' and spec._decay('C0', *t.loop) == 0:
             raise UnsupportedModelError(
                 f'the loop C0_{t.loop[0]},{t.loop[1]}(0) has a contact term '
                 f'(a delta(tau) in C(tau)): no equal-time value')
-        if t.kind != 'bubble':
-            continue
-        o = [order(ln.kind, ln.row, ln.col) for ln in t.lines]
-        if min(o) >= 0 and sum(o) < 2:
+        if t.kind == 'bubble' and all(
+                spec._decay(ln.kind, ln.row, ln.col) == 0 for ln in t.lines):
             raise UnsupportedModelError(
-                f'the bubble {t.lines[0]} {t.lines[1]} decays like '
-                f'nu^-{sum(o)}: it multiplies a delta part with a line that '
-                f'jumps at equal times, and has no Itô value')
+                f'the bubble {t.lines[0]} {t.lines[1]} multiplies two '
+                f'delta(tau) parts: delta(tau)^2 has no Itô value')
 
 
 def one_loop_spectrum(model: dict, *, values: Optional[dict] = None,
