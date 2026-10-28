@@ -493,6 +493,7 @@ def symbolic_propagator(K_ft, omega, fld: _Field, subs: dict):
     number} for the parameters that are not symbolic."""
     S = _sage()
     from daedalus.api._realization import _exactify, _spatial_symbol
+    from daedalus.api.symbolic_out import _real_in_s
     nf = K_ft.nrows()
     if K_ft.ncols() != nf:
         raise SymbolicLoopRefused('singular_pencil', 'K_ft is not square')
@@ -509,7 +510,7 @@ def symbolic_propagator(K_ft, omega, fld: _Field, subs: dict):
             if e.is_trivial_zero():
                 continue
             e = _exactify(e.subs(subs)).subs({S.SR(omega): -S.I * s})
-            e = e.expand()
+            e = _real_in_s(e.expand())
             if e.has(S.I):
                 raise SymbolicLoopRefused(
                     'complex_coefficients', f'K[{i},{j}] = {str(K_ft[i, j])[:100]} '

@@ -200,6 +200,26 @@ def _opname(op) -> str:
     return n.replace('_vararg', '')
 
 
+def _real_in_s(e):
+    """``e`` (an expression in ``s = i omega``) with the imaginary unit
+    cancelled where it cancels exactly: a kernel image written with ``I`` in
+    its numerator and denominator (``I w / (-I (1 + s tau)^2)``) is a real
+    rational function of ``s``.  Numerator and denominator are multiplied by
+    the coefficient conjugate (``I -> -I``) of the denominator, which makes
+    the denominator real; the numerator is then real exactly when ``e`` is.
+    A genuinely complex ``e`` comes back unchanged."""
+    e = SR(e)
+    if not e.has(_I):
+        return e
+    num, den = e.numerator(), e.denominator()
+    if den.has(_I):
+        conj = den.subs({_I: -_I})
+        num, den = (num * conj).expand(), (den * conj).expand()
+    if num.has(_I) or den.has(_I):
+        return e
+    return num / den
+
+
 def _qq_from_numeric(e) -> Any:
     """Exact rational from a numeric SR atom; floats map to the simplest
     rational inside their rounding interval (0.78 -> 39/50)."""
@@ -316,7 +336,7 @@ class _Bridge:
 
     # ── SR -> field ─────────────────────────────────────────────────────
     def to_field(self, expr):
-        e = SR(expr).subs({self.omega: -_I * self.s})
+        e = _real_in_s(SR(expr).subs({self.omega: -_I * self.s}))
         return self._conv(e, {})
 
     def _conv(self, e, memo):

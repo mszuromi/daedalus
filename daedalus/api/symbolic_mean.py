@@ -271,9 +271,10 @@ class MeanRelation:
         ``None`` when it does not move (no parameter changed, or only ones it
         does not depend on, such as a noise strength), else
         ``{'parameters': ..., 'saddle': ...}`` (the model's parameter dict and
-        the new saddle).  The root is the build's choice (the first, sorted by
-        the first field's saddle); a change in the number of stable roots
-        makes that choice ambiguous and is refused.  A value given for a
+        the new saddle).  The root is the one ``dd.run`` would use at those
+        parameters (the mean-field solve's first); it need not continue the
+        build's branch.  A change in the number of mean-field roots the solve
+        reports is refused.  A value given for a
         symbol fixed at the build (``values=`` or the saddle) must equal it."""
         given = _expand_param_names(_as_name_dict(values))
         for k, v in given.items():
@@ -302,11 +303,11 @@ class MeanRelation:
                     f'the saddle was solved at the build parameters; at '
                     f'{changed} the mean-field solve finds no fixed point '
                     f'({exc})') from exc
-            if new['n_stable'] != solve['n_stable']:
+            if new['n_roots'] != solve['n_roots']:
                 raise SymbolicOutError(
                     f'the saddle was solved at the build parameters, where the '
-                    f'mean field has {solve["n_stable"]} stable root(s); at '
-                    f'{changed} it has {new["n_stable"]}, so which root '
+                    f'mean-field solve reports {solve["n_roots"]} root(s); at '
+                    f'{changed} it reports {new["n_roots"]}, so which root '
                     f'continues the build\'s is ambiguous.  Rebuild with '
                     f'parameters= and mean_field= the saddle you mean')
             moved = any(not _same_number(new['saddle'].get(k), v)
@@ -910,11 +911,11 @@ def _pack_parameters(model, parameters: Optional[dict], fixed: dict) -> dict:
 
 def _saddle_solve(ft, model, fundamental) -> dict:
     """The pipeline's mean-field solve: ``{'saddle': {name: value},
-    'n_stable': number of stable roots}``."""
+    'n_roots': number of mean-field roots the solve reports}``."""
     from daedalus.api._mean_field import solve_mean_field
     out = solve_mean_field(ft, model, fundamental, verbose=False)
     return dict(saddle=_mf_symbols_only(model, out['num_params']),
-                n_stable=len(out.get('mf_stable_roots') or []))
+                n_roots=len(out.get('mf_stable_roots') or []))
 
 
 def _same_number(a, b, rtol: float = 1e-12) -> bool:

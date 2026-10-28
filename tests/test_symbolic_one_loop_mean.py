@@ -130,6 +130,17 @@ def test_point_process_model_with_kernels():
         _close({a: got[a] for a in want}, want)
 
 
+def test_alpha_kernel_real_in_s():
+    """Alpha synaptic kernels: K_ft carries ``I w / (I w^2 tg^2 + 2 w tg - I)``,
+    the real ``-w / (1 + s tg)^2`` in ``s = i omega``."""
+    model, _ = dd.load_model('quadratic_hawkes_alpha')
+    want, npar = _one_loop(model, [('n', 1), ('v', 2)])
+    lm = one_loop_mean(model, mean_field='solve', values=_params(npar))
+    for form in FORMS:
+        got = lm.evaluate(form)
+        _close({a: got[a] for a in want}, want)
+
+
 def test_non_polynomial_drift_is_exact_at_one_loop():
     model = (SDE('exponential drift').parameter('a', default=0.3)
              .parameter('sig', default=0.3).parameter('b', default=-1.0)

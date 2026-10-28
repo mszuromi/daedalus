@@ -467,6 +467,26 @@ def test_D_non_rational_propagator_names_the_offender():
         so.tree_covariance_from_matrices(None, Dm, w, K=K2)
 
 
+def test_D_kernel_real_in_s_is_accepted_complex_is_refused():
+    """An alpha-kernel image written as ``I k / (I w^2 T^2 + 2 w T - I)`` is
+    the real ``-k / (1 + s T)^2`` in ``s = i omega``; without the ``I`` in the
+    numerator it is complex in ``s`` and stays refused."""
+    w, mu, k, T = var('omega'), var('mu'), var('k'), var('T')
+    from sage.all import matrix
+    Dm = matrix(SR, [[2]])
+    alpha = I * k / (I * w**2 * T**2 + 2 * w * T - I)
+    cov = so.tree_covariance_from_matrices(None, Dm, w, K=matrix(SR, [[mu + I * w + alpha]]))
+    ref = 1 / (mu + I * w - k / (1 + I * w * T) ** 2)
+    vals = {mu: 1.3, k: 0.4, T: 0.7}
+    for om in (0.0, 0.6, 2.1):
+        got = complex(cov.G[0, 0].subs(vals).subs({w: om}).n())
+        assert abs(got - complex(ref.subs(vals).subs({w: om}).n())) < 1e-13
+    assert so._real_in_s(alpha.subs({w: -I * var('s')})).has(I) is False
+    for bad in (k / (I * w**2 * T**2 + 2 * w * T - I), I * k):
+        with pytest.raises(so.NonRationalPropagatorError, match='complex'):
+            so.tree_covariance_from_matrices(None, Dm, w, K=matrix(SR, [[mu + I * w + bad]]))
+
+
 def test_D_inconsistent_inputs_are_refused():
     w, mu = var('omega'), var('mu')
     from sage.all import matrix
