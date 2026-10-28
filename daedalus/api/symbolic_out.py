@@ -544,6 +544,66 @@ def _model_fundamental(model: dict, parameters: Optional[dict]) -> dict:
     return fund
 
 
+def _pack_parameters(model, parameters: Optional[dict], fixed: dict,
+                     strict: bool = True) -> dict:
+    """The model's parameter dict (``parameters=`` over the defaults) with
+    the pipeline-named ``fixed`` values written into it (``W12`` into
+    ``W[0][1]``, ``tau2`` into ``tau[1]``, a scalar without a default
+    added).  A ``fixed`` name that is not a model parameter is refused, or
+    skipped when not ``strict``."""
+    import copy
+    specs = [p for p in model.get('parameters') or [] if not p.get('mean_field')]
+    full = {p['name']: copy.deepcopy(p['default']) for p in specs
+            if p.get('default') is not None}
+    full.update(copy.deepcopy(dict(parameters or {})))
+    left = dict(fixed)
+    for p in specs:
+        if p['name'] not in full and p['name'] in left:
+            full[p['name']] = left.pop(p['name'])
+    for name, v in full.items():
+        if isinstance(v, (list, tuple, np.ndarray)):
+            v = [list(r) if isinstance(r, (list, tuple, np.ndarray)) else r
+                 for r in v]
+            for i, row in enumerate(v):
+                if isinstance(row, list):
+                    for j in range(len(row)):
+                        k = f'{name}{i + 1}{j + 1}'
+                        if k in left:
+                            row[j] = left.pop(k)
+                else:
+                    k = f'{name}{i + 1}'
+                    if k in left:
+                        v[i] = left.pop(k)
+            full[name] = v
+        elif name in left:
+            full[name] = left.pop(name)
+    if left and strict:
+        raise SymbolicOutError(f'values= names {sorted(left)} are not model '
+                               f'parameters')
+    return full
+
+
+def _solve_parameters(model: dict, parameters: Optional[dict],
+                      values: Optional[dict]) -> dict:
+    """The parameter dict a ``mean_field='solve'`` runs at: ``parameters=``
+    (the model defaults if omitted) with every ``values=`` entry that names
+    a model parameter written in, so the saddle is the one at the numbers
+    the expressions carry."""
+    given = {k: v for k, v in _expand_param_names(_as_name_dict(values)).items()
+             if not _is_saddle_symbol(k, model)}
+    if not given:
+        return _model_fundamental(model, parameters)
+    full = _pack_parameters(model, parameters, given, strict=False)
+    if not parameters:
+        missing = sorted(p['name'] for p in model.get('parameters') or []
+                         if p['name'] not in full and not p.get('mean_field'))
+        if missing:
+            raise SymbolicOutError(
+                'no parameters= given and these parameters declare no default '
+                'and are not in values=: ' + ', '.join(missing))
+    return full
+
+
 def _solve_mean_field(ft, model: dict, fundamental: dict) -> dict:
     """``num_params`` of the pipeline's MF solve ({SR symbol: float})."""
     from daedalus.api._mean_field import solve_mean_field
@@ -723,7 +783,8 @@ def tree_covariance(model: dict, *, values: Optional[dict] = None,
     mean_field : None | 'solve' | dict
         ``None`` keeps the saddle symbols (``xstar1`` ...) symbolic;
         ``'solve'`` runs the pipeline's mean-field solve at ``parameters`` (the
-        model defaults if omitted) and substitutes the saddle symbols;
+        model defaults if omitted) with the ``values`` that name model
+        parameters written in, and substitutes the saddle symbols;
         a dict gives them explicitly (``{'xstar1': 0}``).
     """
     _reject_spatial(model)
@@ -779,7 +840,7 @@ def _from_theory(model, ft, prop, *, values, mean_field, parameters):
     phys_names = names[nf:2 * nf]
     mf_vals: dict = {}
     if mean_field == 'solve':
-        fund = _model_fundamental(model, parameters)
+        fund = _solve_parameters(model, parameters, values)
         npar = _solve_mean_field(ft, model, fund)
         mf_vals = _mf_symbols_only(model, npar)
     elif isinstance(mean_field, dict):
@@ -800,9 +861,9 @@ def _from_theory(model, ft, prop, *, values, mean_field, parameters):
     cov._model = model
     cov._ft = ft
     cov._parameters = parameters
+    cov._values_given = dict(uvals)
     if mean_field == 'solve':
-        cov._mf_inputs = _expand_param_names(
-            _model_fundamental(model, parameters))
+        cov._mf_inputs = _expand_param_names(fund)
     return cov
 
 
@@ -1026,6 +1087,7 @@ class TreeCovariance:
     _model: Any = field(default=None, repr=False)
     _ft: Any = field(default=None, repr=False)
     _parameters: Any = field(default=None, repr=False)
+    _values_given: Optional[dict] = field(default=None, repr=False)
     _cache: dict = field(default_factory=dict, repr=False)
     # parameters a mean-field solve was run at (they are baked into the
     # saddle values); ModeSum refuses different values for them
@@ -1165,7 +1227,8 @@ class TreeCovariance:
         out: dict = {}
         if self._model is not None and self._ft is not None:
             try:
-                fund = _model_fundamental(self._model, self._parameters)
+                fund = _solve_parameters(self._model, self._parameters,
+                                         self._values_given)
                 npar = _solve_mean_field(self._ft, self._model, fund)
                 out = {str(k): float(v) for k, v in npar.items()
                        if isinstance(v, (int, float, np.floating))}
@@ -1255,6 +1318,7 @@ def _resubstitute(cov: TreeCovariance, vals: dict) -> TreeCovariance:
     new.mean_field_values.update(vals)
     new.values = dict(cov.values)
     new._model, new._ft, new._parameters = cov._model, cov._ft, cov._parameters
+    new._values_given = cov._values_given
     new._num_params = cov._num_params
     new._mf_inputs = cov._mf_inputs
     return new

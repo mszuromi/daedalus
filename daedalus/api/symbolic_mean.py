@@ -70,7 +70,7 @@ from sage.all import SR, matrix, SetPartitions, PolynomialRing
 
 from daedalus.api.symbolic_out import (
     SymbolicOutError, UnsupportedModelError, _reject_spatial, _expanded_theory,
-    _model_fundamental, _mf_symbols_only, _as_name_dict,
+    _mf_symbols_only, _as_name_dict, _pack_parameters, _solve_parameters,
     _expand_param_names, _is_saddle_symbol, to_sympy, to_latex,
 )
 
@@ -259,9 +259,11 @@ class MeanRelation:
         return dict(self._cache.get('defaults') or {})
 
     def with_defaults(self, values: Optional[dict] = None) -> dict:
-        """:attr:`defaults` with ``values`` (pipeline names, ``{'tau': [..]}``
+        """:attr:`defaults`, then the symbols fixed at the build
+        (:attr:`values`), then ``values`` (pipeline names, ``{'tau': [..]}``
         expanded) over them."""
         out = self.defaults
+        out.update(self.values)
         out.update(_expand_param_names(_as_name_dict(values)))
         return out
 
@@ -287,15 +289,17 @@ class MeanRelation:
         solve = build.get('solve')
         if solve is None:
             return None
-        defaults = self.defaults
+        # the build solved at the defaults with its values= written in
+        base = dict(self.defaults, **build['values'])
         changed = {k: v for k, v in given.items()
-                   if k in defaults and not _same_number(v, defaults[k])}
+                   if k in base and not _same_number(v, base[k])}
         if not changed:
             return None
         key = ('saddle_at', tuple(sorted(changed.items())))
         if key not in self._cache:
             model = build['model']
-            params = _pack_parameters(model, build['parameters'], changed)
+            params = _solve_parameters(model, build['parameters'],
+                                       dict(build['values'], **changed))
             try:
                 new = _saddle_solve(build['ft'], model, params)
             except ValueError as exc:
@@ -434,8 +438,9 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
         others stay symbolic.
     mean_field : None | 'solve' | dict
         ``None`` keeps the saddle symbols, ``'solve'`` substitutes the
-        pipeline's saddle at ``parameters`` (the model defaults if omitted),
-        a dict gives them.
+        pipeline's saddle at ``parameters`` (the model defaults if omitted)
+        with the ``values`` that name model parameters written in, a dict
+        gives them.
     """
     if not isinstance(model, dict) and callable(getattr(model, 'build', None)):
         model = model.build()
@@ -463,15 +468,15 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
     # substitutions: saddle (mean_field) then the user's values
     sub_names: dict = {}
     solve = None
+    uvals = _expand_param_names(_as_name_dict(values))
     if mean_field == 'solve':
-        solve = _saddle_solve(ft, model, _model_fundamental(model, parameters))
+        solve = _saddle_solve(ft, model, _solve_parameters(model, parameters, uvals))
         sub_names.update(solve['saddle'])
     elif isinstance(mean_field, dict):
         sub_names.update(_expand_param_names(_as_name_dict(mean_field)))
     elif mean_field is not None:
         raise SymbolicOutError(
             f"mean_field must be None, 'solve' or a dict; got {mean_field!r}")
-    uvals = _expand_param_names(_as_name_dict(values))
     sub_names.update(uvals)
     known = {str(v) for poly in list(ft._by_tp.values()) + list(
         (ft._mf_sector_raw or {}).values()) for c in poly.coefficients()
@@ -874,39 +879,6 @@ def _external_field(model, phys: str) -> tuple:
             return (str(pf.get('natural_name') or nm), int(idx))
     raise SymbolicOutError(f'cannot map the field {phys!r} to an external '
                            f'field of the model')
-
-
-def _pack_parameters(model, parameters: Optional[dict], fixed: dict) -> dict:
-    """The model's parameter dict (``parameters=`` over the defaults) with
-    the pipeline-named ``fixed`` values written into it (``W12`` into
-    ``W[0][1]``, ``tau2`` into ``tau[1]``)."""
-    import copy
-    full = {p['name']: copy.deepcopy(p['default'])
-            for p in model.get('parameters') or []
-            if p.get('default') is not None and not p.get('mean_field')}
-    full.update(copy.deepcopy(dict(parameters or {})))
-    left = dict(fixed)
-    for name, v in full.items():
-        if isinstance(v, (list, tuple, np.ndarray)):
-            v = [list(r) if isinstance(r, (list, tuple, np.ndarray)) else r
-                 for r in v]
-            for i, row in enumerate(v):
-                if isinstance(row, list):
-                    for j in range(len(row)):
-                        k = f'{name}{i + 1}{j + 1}'
-                        if k in left:
-                            row[j] = left.pop(k)
-                else:
-                    k = f'{name}{i + 1}'
-                    if k in left:
-                        v[i] = left.pop(k)
-            full[name] = v
-        elif name in left:
-            full[name] = left.pop(name)
-    if left:
-        raise SymbolicOutError(f'values= names {sorted(left)} are not model '
-                               f'parameters')
-    return full
 
 
 def _saddle_solve(ft, model, fundamental) -> dict:

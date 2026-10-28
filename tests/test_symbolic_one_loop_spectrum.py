@@ -156,6 +156,12 @@ def test_alpha_kernel_model():
     want, npar = _pipeline(model, ('n', 1), ('v', 2))
     sp = one_loop_spectrum(model, mean_field='solve', values=npar)
     _close(sp.evaluate(('n', 1), ('v', 2), OMEGA), want)
+    # values= that move the saddle (w21 0.2 -> 0.35) feed its solve
+    want, npar = _pipeline(model, ('n', 1), ('v', 2),
+                           parameters={'w': [[0.25, 0.25], [0.35, 0.3]]})
+    sp = one_loop_spectrum(model, mean_field='solve', values=npar)
+    for c0 in ('rational', 'residues'):
+        _close(sp.evaluate(('n', 1), ('v', 2), OMEGA, c0=c0), want)
 
 
 @pytest.mark.parametrize('a, b', [(('n', 1), ('n', 1)), (('n', 1), ('v', 2))])
