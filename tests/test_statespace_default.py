@@ -423,7 +423,7 @@ def test_graded_dressed_line_impulse():
     assert max(errs) <= 2e-15 * top
 
 
-def _two_stage_delayed_feedback(d):
+def _two_stage_delayed_feedback(d, g2=1.0):
     """Two-stage delayed negative feedback (a chemical master equation):
     0 -> X at Om c / (1 + (eps y(t - d))^2), X -> 0 at Om g1 x, X -> X + Y at
     Om b x, Y -> 0 at Om g2 y."""
@@ -431,7 +431,7 @@ def _two_stage_delayed_feedback(d):
     b = (TemporalTheoryBuilder('two-stage delayed negative feedback')
          .population('pop', size=1).physical_field('x', population='pop')
          .physical_field('y', population='pop'))
-    for k, v in dict(c=1.0, eps=0.5, b=1.0, g1=1.0, g2=1.0, d=d,
+    for k, v in dict(c=1.0, eps=0.5, b=1.0, g1=1.0, g2=g2, d=d,
                      Om=100.0).items():
         b = b.parameter(k, default=v, domain='positive')
     return (b.define_kernel('gd', delay='d')
@@ -447,12 +447,12 @@ def _two_stage_delayed_feedback(d):
             .build())
 
 
-def _two_stage_one_loop(order, lags, **delay):
+def _two_stage_one_loop(order, lags, d=0.5, g2=1.0, **delay):
     from daedalus.engine.integration.time_domain import statespace as SS
     SS._clear_caches()
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        r = compute_cumulants(_two_stage_delayed_feedback(0.5), k=2,
+        r = compute_cumulants(_two_stage_delayed_feedback(d, g2), k=2,
                               max_ell=1, external_fields=[('y', 1), ('y', 1)],
                               tau_grid=np.array(lags), parallel=False,
                               verbose=False, delay=dict(order=order, **delay))
@@ -490,6 +490,35 @@ def test_pade16_two_stage_feedback_at_a_nonzero_lag():
     assert not r['phase_j_engine'].get('fallback_by_reason')
     ref = np.array([-2.225495732590711e-06, 5.884300935931722e-06])
     assert np.max(np.abs(got - ref)) <= 1e-10 * np.max(np.abs(ref))
+
+
+def test_onenorm_power_bounds_of_a_graded_generator_stay_finite():
+    # a dense segment of graded dressed lines has ||A||_1 ~ 1e40: the bound
+    # ||A||^9 overflowed (OverflowError, a pole-route fallback 8-18 % off at
+    # Pade 16).  The bounds stay finite and still bound ||A^p||^(1/p).
+    from daedalus.engine.integration.time_domain import statespace as SS
+    A = np.array([[-1.0, 1e40, 0.0], [0.0, -2.0, 1e-30], [0.0, 0.0, -3.0]])
+    d = SS._onenorm_powers(A)
+    Ap = np.eye(3)
+    for p in range(1, SS._P_MAX + 2):
+        Ap = Ap @ A
+        assert np.isfinite(d[p])
+        assert d[p] >= (1 - 1e-12) * np.abs(Ap).sum(axis=0).max() ** (1.0 / p)
+    # below the overflow the bounds are the same numbers as before
+    small = SS._onenorm_powers(A * 1e-30)
+    for p in range(3, SS._P_MAX + 2):
+        assert small[p] == min(small[1] ** p, small[2] ** (2 * (p // 2))
+                               * small[1] ** (p % 2)) ** (1.0 / p)
+
+
+@pytest.mark.slow
+def test_pade16_dense_graded_segment_stays_on_the_route():
+    # (~14 min) g2 = 0.5, d = 0.3 at Pade 16: dense segments of dressed lines
+    # with ||A||_1 ~ 1e40 overflowed the Taylor bound and fell back on the
+    # pole route (2.886e-5 at tau = 2, 18 % off); the 16-field reference
+    got, r = _two_stage_one_loop(16, [2.0], d=0.3, g2=0.5, truncation=0)
+    assert not r['phase_j_engine'].get('fallback_by_reason')
+    assert abs(got[0] - 3.511719577122537e-05) <= 1e-9 * 3.511719577122537e-05
 
 # ── review round 2 ──────────────────────────────────────────────────────
 

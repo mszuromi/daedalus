@@ -21,3 +21,10 @@ unchanged.
 
 The one-loop term at `tau = 1` matches the same Padé-16 delay written as 16 auxiliary linear fields (no kernel, no
 dressed line) to 2e-19 absolute (4e-14 relative). The route's counters gain `ss_segments_scaled`.
+
+A dense segment of such lines could also fail before the stiffness test. Its norm reaches about `1e40`, and the
+bound on `||A^p||` used to choose the Taylor step overflowed (`OverflowError`). The evaluation then fell back on the
+pole route, which returned values 8 to 18 % off at nonzero lags with only the fallback warning. Example: the same
+model with `g2 = 0.5`, `d = 0.3`, at Padé 16. The bound is now taken root first when the power would overflow (the
+same bound; unchanged below the overflow). The example now runs with no fallback and matches its 16-field reference
+to 3e-11 relative at `tau = -1, 0, 0.5, 2`.

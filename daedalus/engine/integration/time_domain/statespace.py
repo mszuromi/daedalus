@@ -1481,8 +1481,12 @@ def _onenorm_powers(A, pmax=_P_MAX + 1):
         else:
             d[2] = _onenormest_power(A, 2)
     for p in range(3, pmax + 1):
-        n1, n2 = d[1] ** p, d[2] ** (2 * (p // 2)) * d[1] ** (p % 2)
-        d[p] = min(n1, n2) ** (1.0 / p)
+        try:
+            n1, n2 = d[1] ** p, d[2] ** (2 * (p // 2)) * d[1] ** (p % 2)
+            d[p] = min(n1, n2) ** (1.0 / p)
+        except OverflowError:
+            # a graded generator (norms ~1e40): the same bound root first
+            d[p] = min(d[1], d[2] ** (2 * (p // 2) / p) * d[1] ** ((p % 2) / p))
     return d
 
 
