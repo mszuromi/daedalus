@@ -40,6 +40,14 @@ Fourier integral ``(1/2 pi) int C0_pq(omega) d omega``, exact (rational in
 the parameters, by the state-space route) or as a residue sum over the poles
 of ``C0_pq`` (``RootOf`` beyond degree two).
 
+The equal-time value is Itô's.  Where one leg has an instantaneous part (a
+spike train, ``G`` constant at ``omega -> infinity``) and the other responds
+to it, ``C_pq(tau)`` jumps at ``tau = 0``; with ``G(0) = 0`` the response at
+the tie does not count.  Every form integrates the part of ``C0_pq(omega)``
+without those terms (:meth:`~daedalus.api.symbolic_out.TreeCovariance.ito_entry`),
+which decays like ``omega^-2``, and the rational form subtracts them from the
+tie value.  A loop with a ``delta(tau)`` (a contact term) is refused.
+
 Polynomial drifts are exact.  A non-polynomial drift (``exp(v)``, a sigmoid)
 is Taylor-expanded to ``order=`` and the relation holds up to the dropped
 terms of degree ``order + 1`` and higher; :attr:`MeanRelation.truncation`
@@ -580,7 +588,8 @@ class OneLoopMean:
     ``'named'``     the symbol ``kappa^{(0)}(dx_p, dx_q)`` (as in
                     :meth:`MeanRelation.loop_order`);
     ``'integral'``  ``(1/2 pi) int C0_pq(omega) d omega`` (held, unevaluated)
-                    of the symbolic tree covariance;
+                    of the symbolic tree covariance, without the terms that
+                    jump at the tie (module docstring);
     ``'rational'``  its exact value, rational in the parameters and the
                     saddle (state-space route, no roots);
     ``'residues'``  the residue sum over the poles of ``C0_pq``: explicit for
@@ -629,18 +638,21 @@ class OneLoopMean:
         return e.subs(sub) if sub else e
 
     def _entry(self, legs):
-        """``C0_pq(omega)`` with this relation's substitutions; refused if it
-        has a contact term (a white-noise-like field: ``C_pq(tau)`` has a
-        ``delta(tau)`` and no equal-time value)."""
+        """The Itô part of ``C0_pq(omega)`` (:meth:`TreeCovariance.ito_entry`)
+        with this relation's substitutions: its integral is ``C0_pq(0)``.
+        Where a line has an instantaneous part (a spike train) and the other a
+        retarded one, ``C_pq(tau)`` jumps at ``tau = 0``.  With ``G(0) = 0``
+        the response at the tie does not count, which is what dropping those
+        terms does.  Refused if ``C0_pq`` has a contact term (a white-noise-like
+        field: ``C_pq(tau)`` has a ``delta(tau)`` and no equal-time value)."""
         cov = self.covariance()
-        e = self._fix(cov.entry(*legs))
         tail = self._fix(cov.contact(*legs))
         if not SR(tail).is_trivial_zero() and SR(tail).simplify_rational() != 0:
             raise UnsupportedModelError(
                 f'C0_{legs[0]},{legs[1]}(omega) tends to {tail} as omega -> '
                 f'infinity: C(tau) has a delta(tau) term and no equal-time '
                 f'value, so this loop has no finite C0(0)')
-        return e
+        return self._fix(cov.ito_entry(*legs))
 
     def C0(self, p, q, form: str = 'named'):
         """The equal-time tree covariance ``C0_pq(tau = 0)`` in ``form``
@@ -702,7 +714,11 @@ class OneLoopMean:
         sc = symbolic_cumulant(self.model, k=2, max_ell=0, external_fields=ext,
                                parameters=params, symbols=symbols,
                                saddle=saddle or 'symbol')
-        e = self._fix(SR(sc.by_ell[0]))
+        # the external tie (the second leg earlier) is C_pq(0+): the Itô value
+        # plus the response of p to the instantaneous part of q
+        self._entry(legs)                                  # contact refusal
+        e = self._fix(SR(sc.by_ell[0])) - self._fix(
+            self.covariance().tie_term(*legs))
         self._cache[key] = e
         return e
 

@@ -233,3 +233,53 @@ def test_relation_refuses_a_moved_saddle():
     # 1 + 4 g h < 0: no fixed point left
     with pytest.raises(SymbolicOutError, match='no fixed point|ambiguous'):
         lm.evaluate('rational', {'h': -1.0})
+
+
+def _instantaneous_partner(x, y):
+    """``x' = -x + w y + lam x y`` with ``y = h + c x + eta`` (white, variance
+    ``D``): ``y`` has an instantaneous part, so ``C_xy(tau)`` jumps at the
+    tie.  Fields named ``x``, ``y`` to flip the order of the loop's legs."""
+    from daedalus.api.model import TemporalModelBuilder
+    b = (TemporalModelBuilder('instantaneous partner').population('E', size=1)
+         .physical_field(x, population='E').physical_field(y, population='E'))
+    for k, v in (('w', 0.3), ('lam', 0.2), ('h', 0.5), ('c', 0.4), ('D', 0.1)):
+        b = b.parameter(k, default=[v], indexed_by=['E'], domain='real')
+    return (b.set_action_text(f'''
+                sum( {x}t[i]*((Dt + 1)*{x}[i] - w[i]*{y}[i] - lam[i]*{x}[i]*{y}[i])
+                   + {y}t[i]*({y}[i] - h[i] - c[i]*{x}[i]) - D[i]*{y}t[i]^2/2
+                   for i in E)''')
+            .set_mf_equation(f'{x}star', f'w[i]*{y}star[i] + lam[i]*{x}star[i]*{y}star[i]')
+            .set_mf_equation(f'{y}star', f'h[i] + c[i]*{x}star[i]').build())
+
+
+@pytest.mark.parametrize('x, y', [('x', 'y'), ('z', 'a')])
+def test_a_loop_that_jumps_at_the_tie_takes_its_ito_value(x, y):
+    """Itô: ``x(t)`` does not see ``eta(t)``, so ``<dx dy> = c Var x`` and the
+    mean shift is ``lam c b^2 D / (2 kappa^2)`` (``b = w + lam x*``, ``kappa =
+    1 - lam y* - c b``).  Either one-sided limit of ``C_xy`` adds ``b D``."""
+    w, lam, h, c, D = 0.3, 0.2, 0.5, 0.4, 0.1
+    a2, a1, a0 = lam * c, w * c + lam * h - 1, w * h
+    xs = (-a1 - np.sqrt(a1 ** 2 - 4 * a2 * a0)) / (2 * a2)
+    b, kap = w + lam * xs, 1 - lam * (h + c * xs) - c * (w + lam * xs)
+    hand = lam * c * b * b * D / (2 * kap ** 2)
+    model = _instantaneous_partner(x, y)
+    want, _ = _one_loop(model, [(x, 1), (y, 1)])
+    _close(want, {f'd{x}1': hand, f'd{y}1': c * hand}, rtol=1e-12)
+    lm = one_loop_mean(model, mean_field='solve')
+    for form in FORMS:
+        _close(lm.evaluate(form), want)
+
+
+@pytest.fixture(scope='module')
+def dendritic():
+    model, _ = dd.load_model('dendritic_quad_soma_sigmoid')
+    want, npar = _one_loop(model, [('nS', 1), ('vD', 1)])
+    return one_loop_mean(model, mean_field='solve', values=_params(npar)), want
+
+
+@pytest.mark.parametrize('form', FORMS)
+def test_dendritic_spike_train_loop(dendritic, form):
+    """``C_{nS vD}`` jumps at the tie: every form takes its Itô value (the
+    integral form used to integrate the jump, 58 % off)."""
+    lm, want = dendritic
+    _close(lm.evaluate(form), want)

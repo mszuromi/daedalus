@@ -1076,6 +1076,56 @@ class TreeCovariance:
         return _contact_of(self.bridge, self.C0_f[self.index(a),
                                                   self.index(b)])[0]
 
+    # ── the Itô equal-time value ────────────────────────────────────────
+    def _split(self):
+        """``(G_inf, G_r0)``: the instantaneous part ``G_inf = lim G`` and the
+        jump ``G_r0 = lim s (G - G_inf)`` of the retarded part at ``tau = 0+``
+        (field matrices, limits ``omega -> infinity``)."""
+        if 'split' not in self._cache:
+            b, G = self.bridge, self.G_f
+            s = b.F(b.s_gen)
+
+            def lim(f):
+                if f == 0:
+                    return b.F(0)
+                gap = b.deg_s(f.denominator()) - b.deg_s(f.numerator())
+                if gap < 0:
+                    raise UnsupportedModelError(
+                        f'G grows like omega^{-gap}: a derivative of delta(tau) '
+                        f'in the propagator')
+                return _field_const(b, f) if gap == 0 else b.F(0)
+            Ginf = G.apply_map(lim)
+            self._cache['split'] = (Ginf, (s * (G - Ginf)).apply_map(lim))
+        return self._cache['split']
+
+    def ito_entry(self, a, b):
+        """``C0_ab(omega)`` without the terms that pair an instantaneous part
+        of one line with the retarded part of the other: ``[G_r D G_r^dagger]_ab``
+        with ``G_r = G - G_inf``.  With ``G_r(0) = 0`` (Itô) those terms vanish
+        at ``tau = 0``, so the equal-time value of ``C_ab`` is the integral of
+        this entry, which decays like ``omega^-2``.  The remaining part
+        ``G_inf D G_inf^T`` is the contact term (:meth:`contact`)."""
+        key = ('ito', self.index(a), self.index(b))
+        if key not in self._cache:
+            Ginf, _ = self._split()
+            Gr = self.G_f - Ginf
+            i, j = self.index(a), self.index(b)
+            row = Gr[i:i + 1, :]
+            col = Gr[j:j + 1, :].apply_map(self.bridge.neg_s).transpose()
+            self._cache[key] = self.bridge.frac_to_sr(
+                (row * self.D_f * col)[0, 0])
+        return self._cache[key]
+
+    def tie_term(self, a, b):
+        """``[G_r(0+) D G_inf^T]_ab``: the response of ``a`` to the
+        instantaneous part of ``b`` at the tie.  ``C_ab(0+)`` (``b`` earlier)
+        is the Itô value plus this term, ``C_ab(0-)`` the Itô value plus
+        :meth:`tie_term` ``(b, a)``."""
+        Ginf, Gr0 = self._split()
+        i, j = self.index(a), self.index(b)
+        return self.bridge.frac_to_sr(
+            (Gr0[i:i + 1, :] * self.D_f * Ginf[j:j + 1, :].transpose())[0, 0])
+
     # ── exports ─────────────────────────────────────────────────────────
     def default_values(self) -> dict:
         """Numeric values for the remaining symbols: from a result's
