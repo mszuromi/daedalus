@@ -1118,6 +1118,13 @@ class TreeCovariance:
             self._cache['split'] = (Ginf, (s * (G - Ginf)).apply_map(lim))
         return self._cache['split']
 
+    def instantaneous(self, a, r):
+        """``lim_{omega->inf} G_{a r}``: the weight of ``delta(tau)`` in
+        ``G_{a r}(tau)`` (zero for a retarded entry that decays)."""
+        Ginf, _ = self._split()
+        return self.bridge.frac_to_sr(
+            Ginf[self.index(a), self.resp_names.index(str(r))])
+
     def ito_entry(self, a, b):
         """``C0_ab(omega)`` without the terms that pair an instantaneous part
         of one line with the retarded part of the other: ``[G_r D G_r^dagger]_ab``
