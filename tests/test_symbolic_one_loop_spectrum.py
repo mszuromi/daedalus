@@ -156,6 +156,27 @@ def test_alpha_kernel_model():
     want, npar = _pipeline(model, ('n', 1), ('v', 2))
     sp = one_loop_spectrum(model, mean_field='solve', values=npar)
     _close(sp.evaluate(('n', 1), ('v', 2), OMEGA), want)
+    # values= that move the saddle (w21 0.2 -> 0.35) feed its solve
+    want, npar = _pipeline(model, ('n', 1), ('v', 2),
+                           parameters={'w': [[0.25, 0.25], [0.35, 0.3]]})
+    sp = one_loop_spectrum(model, mean_field='solve', values=npar)
+    for c0 in ('rational', 'residues'):
+        _close(sp.evaluate(('n', 1), ('v', 2), OMEGA, c0=c0), want)
+
+
+@pytest.mark.parametrize('name, pair', [
+    ('single_population_quad_exp_test', (('n', 1), ('v', 2))),
+    ('single_population_spike_reset_test', (('v', 1), ('v', 2)))])
+def test_built_at_moved_values_evaluates_without_values(name, pair):
+    """Built with ``values=`` off the defaults (every one moving the saddle),
+    then evaluated with no values: the same as ``dd.run(parameters=...)``."""
+    from test_symbolic_one_loop_mean import MOVED_BUILTINS
+    model, _ = dd.load_model(name)
+    want, npar = _pipeline(model, *pair, parameters=dict(MOVED_BUILTINS)[name])
+    sp = one_loop_spectrum(model, mean_field='solve', values=npar)
+    _close(sp.evaluate(*pair, OMEGA), want)
+    with pytest.raises(SymbolicOutError, match='Em1 was fixed'):
+        sp.evaluate(*pair, OMEGA, values={'Em1': 1.0})
 
 
 @pytest.mark.parametrize('a, b', [(('n', 1), ('n', 1)), (('n', 1), ('v', 2))])

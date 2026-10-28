@@ -23,12 +23,13 @@ from test_symbolic_mean import rate_network, W2, W3, TAU0, _value  # noqa: E402
 FORMS = ('rational', 'integral', 'residues')
 
 
-def _one_loop(model, fields):
+def _one_loop(model, fields, parameters=None):
     """Pipeline k = 1 one-loop means and the run's parameters."""
     out, npar = {}, None
     for name, i in fields:
         r = dd.run(model, dd.Config(k=1, max_ell=1, tau_grid=TAU0,
-                                    external_fields=[(name, i)]))
+                                    external_fields=[(name, i)],
+                                    parameters=parameters))
         out[f'd{name}{i}'] = _value(r, 1)
         npar = {str(k): float(v) for k, v in r['num_params'].items()}
     return out, npar
@@ -294,3 +295,72 @@ def test_dendritic_spike_train_loop(dendritic, form):
     integral form used to integrate the jump, 58 % off)."""
     lm, want = dendritic
     _close(lm.evaluate(form), want)
+
+
+def test_values_that_move_the_saddle_feed_the_solve():
+    """``values=`` naming a parameter the saddle depends on: the solve runs
+    there, as with ``parameters=`` (the expressions carry that number too)."""
+    model = _saddle_model()
+    lm = one_loop_mean(model, mean_field='solve', values={'g': 0.5})
+    for form in FORMS:
+        assert lm.evaluate(form)['dx1'].real == pytest.approx(_hand(g=0.5), rel=1e-12)
+        assert lm.evaluate(form, {'h': 1.5})['dx1'].real == pytest.approx(
+            _hand(g=0.5, h=1.5), rel=1e-12)
+    rel = lm.relation
+    assert rel.saddle_at({'g': 0.5}) is None        # the build's own value
+    moved = rel.saddle_at({'h': 1.5})
+    assert moved['parameters']['g'] == 0.5          # the re-solve keeps it
+    via = one_loop_mean(model, mean_field='solve', parameters={'g': 0.5, 'h': 0.8,
+                                                               'D': 0.05})
+    assert rel.values['xstar1'] == pytest.approx(via.relation.values['xstar1'], rel=1e-14)
+    xs = (np.sqrt(1 + 4 * 0.5 * 0.8) - 1) / (2 * 0.5)
+    cov = dd.tree_covariance(model, mean_field='solve', values={'g': 0.5})
+    assert cov.mean_field_values['xstar1'] == pytest.approx(xs, rel=1e-14)
+    # the saddle symbol kept: its reference value is solved at g = 0.5 too
+    cov = dd.tree_covariance(model, values={'g': 0.5})
+    assert cov.default_values()['xstar1'] == pytest.approx(xs, rel=1e-14)
+
+
+def test_alpha_kernel_values_that_move_the_saddle():
+    """Every parameter given in ``values=`` with ``w21`` moved off its
+    default (0.2 -> 0.35): the same as ``dd.run(parameters=...)``."""
+    model, _ = dd.load_model('quadratic_hawkes_alpha')
+    over = {'w': [[0.25, 0.25], [0.35, 0.3]]}
+    want, npar = _one_loop(model, [('n', 1), ('v', 2)], parameters=over)
+    assert npar['w21'] == 0.35
+    lm = one_loop_mean(model, mean_field='solve', values=_params(npar))
+    for form in FORMS:
+        got = lm.evaluate(form)
+        _close({a: got[a] for a in want}, want)
+
+
+MOVED = 1.07
+MOVED_BUILTINS = [
+    ('single_population_quad_exp_test', {'Em': [MOVED, MOVED]}),
+    ('single_population_spike_reset_test',
+     {'Em': [MOVED, MOVED], 'tau': [10 * MOVED, 9 * MOVED],
+      'a': [0.5 * MOVED, 0.5 * MOVED],
+      'w': [[0.25 * MOVED, 0.25 * MOVED], [0.2 * MOVED, 0.3 * MOVED]]}),
+]
+
+
+@pytest.mark.parametrize('name, over', MOVED_BUILTINS)
+def test_built_at_moved_values_evaluates_without_values(name, over):
+    """Built with ``values=`` off the defaults, then ``evaluate()`` with no
+    values: the default fallback fills only what the build left free."""
+    model, _ = dd.load_model(name)
+    want, npar = _one_loop(model, [('n', 1), ('v', 2)], parameters=over)
+    lm = one_loop_mean(model, mean_field='solve', values=_params(npar))
+    for form in FORMS:
+        got = lm.evaluate(form)
+        _close({a: got[a] for a in want}, want)
+    with pytest.raises(SymbolicOutError, match='Em1 was fixed'):
+        lm.evaluate('rational', {'Em1': 1.0})
+
+
+def test_too_many_symbols_points_to_values():
+    """The rational equal-time parts beyond ``max_symbols``: the refusal
+    names the ways out."""
+    lm = one_loop_mean(rate_network(W3, [1.0, 2.0, 0.7]), mean_field='solve')
+    with pytest.raises(dd.SymbolicLoopRefused, match='as values='):
+        lm.evaluate('rational')
