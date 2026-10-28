@@ -148,10 +148,44 @@ def test_refusals_and_exports(net2):
     with pytest.raises(SymbolicOutError, match='form must be'):
         lm.C0('dv1', 'dv1', form='closed')
     with pytest.raises(SymbolicOutError, match='no value'):
-        lm.evaluate('rational')
-    with pytest.raises(SymbolicOutError, match='no value'):
-        lm.evaluate('residues', {'a': 2.0})
+        dd.one_loop_mean(model).evaluate('rational')   # the saddle has no default
     with pytest.raises(SymbolicOutError, match="'explicit' or 'named'"):
         lm.G0('dv1', 'vt1', propagator='closed')
     assert all(isinstance(v, sympy.Expr) for v in lm.sympy().values())
     assert 'tadpoles' in str(lm)
+
+
+def _no_default():
+    """``D`` is declared without a default."""
+    return (SDE('no default').parameter('g', default=0.3).parameter('h', default=0.2)
+            .parameter('D').field('x').drift('x', '-x + g*x^2 + h')
+            .noise('xi', Gaussian(var='2*D'), into={'x': 1})).build()
+
+
+def test_evaluate_falls_back_on_the_model_defaults(net2):
+    """A parameter not given takes its model default; ``values=`` overrides
+    only the parameters it names; one with no default must be given."""
+    model, (want, npar) = net2
+    lm = one_loop_mean(model, mean_field='solve')
+    rel = lm.relation
+    assert rel.defaults == {k: v for k, v in _params(npar).items()}
+    for form in FORMS:
+        assert lm.evaluate(form) == pytest.approx(lm.evaluate(form, _params(npar)),
+                                                  rel=1e-13)
+    _close(lm.evaluate('rational'), want)
+    full = dict(rel.defaults, sig=0.45)
+    got = lm.evaluate('rational', {'sig': 0.45})
+    assert got == pytest.approx(lm.evaluate('rational', full), rel=1e-14)
+    # the loops scale with sig^2 at a fixed saddle
+    for a in got:
+        assert got[a] == pytest.approx(want[a] * (0.45 / 0.3) ** 2, rel=1e-10)
+    # the mean relation takes the same defaults
+    one = rel.loop_order(1)
+    cum = {s: 1.0 for e in one.values() for s in rel.cumulant_symbols(e)}
+    assert rel.evaluate(one, cumulants=cum) == rel.evaluate(one, _params(npar), cum)
+    # no default: the named error, naming it ('integral': the rational form
+    # runs the pipeline, which needs every parameter numeric up front)
+    lm2 = one_loop_mean(_no_default(), mean_field={'xstar1': 0.3})
+    with pytest.raises(SymbolicOutError, match="no value for .*'D'"):
+        lm2.evaluate('integral')
+    assert lm2.evaluate('integral', {'D': 0.05})['dx1'] != 0

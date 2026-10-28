@@ -69,8 +69,8 @@ import numpy as np
 from sage.all import SR, function, integral, pi, oo, matrix
 
 from daedalus.api.symbolic_out import (
-    SymbolicOutError, UnsupportedModelError, _expanded_theory, _as_name_dict,
-    _expand_param_names, to_sympy, to_latex,
+    SymbolicOutError, UnsupportedModelError, _expanded_theory, to_sympy,
+    to_latex,
 )
 from daedalus.api.symbolic_mean import (
     C0_FORMS, OneLoopMean, one_loop_mean, _forbidden_symbols,
@@ -281,7 +281,8 @@ class OneLoopSpectrum:
     def evaluate(self, a, b, omega, values: Optional[dict] = None,
                  c0: str = 'rational', epsrel: float = 1e-12):
         """``S^{(1)}_ab(omega)`` as numbers (complex; an array for an array of
-        ``omega``).  The equal-time parts are taken in form ``c0``: exact for
+        ``omega``), with ``values`` as in :meth:`OneLoopMean.evaluate` (a
+        parameter not given takes its model default).  The equal-time parts are taken in form ``c0``: exact for
         ``'rational'`` and ``'residues'``, by quadrature for ``'integral'``.
         The bubbles are integrated over ``nu`` by adaptive quadrature.  Every
         line is evaluated as a numeric ratio of polynomials (coefficients
@@ -289,7 +290,7 @@ class OneLoopSpectrum:
         carries for float inputs overflow a double-precision evaluation of
         the expression."""
         a, b = self._phys(a), self._phys(b)
-        vals = _expand_param_names(_as_name_dict(values))
+        vals = self.mean.relation.with_defaults(values)
         sub = {SR.var(k): SR(v) for k, v in vals.items()}
         w, nu = self.omega, self.nu
         lines: dict = {}

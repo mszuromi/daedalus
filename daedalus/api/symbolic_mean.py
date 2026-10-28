@@ -244,14 +244,27 @@ class MeanRelation:
         return sorted(str(v) for v in SR(expr).variables()
                       if str(v).startswith('kappa_'))
 
+    @property
+    def defaults(self) -> dict:
+        """The model's declared parameter defaults (``parameters=`` over
+        them), as pipeline symbol names; saddle values are not among them."""
+        return dict(self._cache.get('defaults') or {})
+
+    def with_defaults(self, values: Optional[dict] = None) -> dict:
+        """:attr:`defaults` with ``values`` (pipeline names, ``{'tau': [..]}``
+        expanded) over them."""
+        out = self.defaults
+        out.update(_expand_param_names(_as_name_dict(values)))
+        return out
+
     def evaluate(self, expr, values: Optional[dict] = None,
                  cumulants: Optional[dict] = None):
         """Number of ``expr`` (one expression, a dict or a list of them) with
-        the parameter ``values`` (pipeline names, ``{'tau': [..]}`` expanded)
-        and the ``cumulants`` (``{symbol or name: number}``); every symbol
-        must get a value."""
+        the parameter ``values`` (pipeline names, ``{'tau': [..]}`` expanded;
+        a parameter not given takes its model default) and the ``cumulants``
+        (``{symbol or name: number}``); every other symbol must get a value."""
         sub = {}
-        for k, v in _expand_param_names(_as_name_dict(values)).items():
+        for k, v in self.with_defaults(values).items():
             sub[SR.var(k)] = SR(v)
         for k, v in (cumulants or {}).items():
             sub[SR.var(str(k))] = SR(v)
@@ -444,6 +457,7 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
             if p.startswith(nm) and idx.isdigit():
                 fl[p] = f'{lx}_{{{idx}}}'
     rel._cache['field_latex'] = fl
+    rel._cache['defaults'] = _parameter_defaults(model, parameters)
     if mean_field is None and any(_is_saddle_symbol(str(v), model)
                                   for t in terms for v in SR(t.coefficient).variables()):
         rel.notes.append('saddle symbols kept: the relation holds at the '
@@ -668,11 +682,12 @@ class OneLoopMean:
     def evaluate(self, form: str = 'rational', values: Optional[dict] = None
                  ) -> dict:
         """``{a: number}``: the one-loop mean shift with every remaining
-        symbol given in ``values`` (pipeline names; the saddle too, unless the
-        relation was built with ``mean_field=``).  ``'integral'`` integrates
+        symbol given in ``values`` (pipeline names; a parameter not given takes
+        its model default, the saddle has none unless the relation was built
+        with ``mean_field=``).  ``'integral'`` integrates
         numerically (an independent check of ``'rational'``), ``'residues'``
         sums the modes at 256 bits."""
-        vals = _expand_param_names(_as_name_dict(values))
+        vals = self.relation.with_defaults(values)
         if form == 'integral':
             c0 = {legs: self._integral_number(legs, vals) for legs in self.loops}
         elif form == 'residues':
@@ -786,6 +801,19 @@ def _pack_parameters(model, parameters: Optional[dict], fixed: dict) -> dict:
         raise SymbolicOutError(f'values= names {sorted(left)} are not model '
                                f'parameters')
     return full
+
+
+def _parameter_defaults(model, parameters: Optional[dict]) -> dict:
+    """The numeric declared defaults of the model's parameters
+    (``parameters=`` over them) as pipeline symbol names; saddle values
+    (``mean_field=True``) and symbolic defaults are left out."""
+    out = {}
+    for k, v in _expand_param_names(_pack_parameters(model, parameters, {})).items():
+        if isinstance(v, (bool, np.bool_)) or not isinstance(
+                v, (int, float, complex, np.number)):
+            continue
+        out[k] = v
+    return out
 
 
 def one_loop_mean(model: dict, *, values: Optional[dict] = None,

@@ -102,6 +102,16 @@ def test_network_matches_the_pipeline(net2, pair):
     _close(sp.evaluate(*pair, OMEGA, npar), want)
 
 
+def test_evaluate_falls_back_on_the_model_defaults(net2):
+    model, sp = net2
+    want, npar = _pipeline(model, ('v', 1), ('v', 2))
+    _close(sp.evaluate(('v', 1), ('v', 2), OMEGA), want, rtol=1e-12)
+    got = sp.evaluate(('v', 1), ('v', 2), OMEGA, {'a': 2.5})
+    full = sp.evaluate(('v', 1), ('v', 2), OMEGA, dict(npar, a=2.5))
+    _close(got, full, rtol=1e-13)
+    assert np.max(np.abs(got - want)) > 1e-3 * np.max(np.abs(want))
+
+
 def test_equal_time_forms_agree(net2):
     model, sp = net2
     _, npar = _pipeline(model, ('v', 1), ('v', 1))
@@ -154,7 +164,7 @@ def test_refusals_and_exports(net2):
     with pytest.raises(SymbolicOutError, match='unknown physical field'):
         sp.spectrum(('v', 3), ('v', 1))
     with pytest.raises(SymbolicOutError, match='no value'):
-        sp.evaluate(('v', 1), ('v', 1), 0.5)
+        one_loop_spectrum(model).evaluate(('v', 1), ('v', 1), 0.5)   # no saddle
     with pytest.raises(SymbolicOutError, match='kind must be'):
         sp.by_kind('ladder')
     assert isinstance(sp.sympy(('v', 1), ('v', 1)), sympy.Expr)
