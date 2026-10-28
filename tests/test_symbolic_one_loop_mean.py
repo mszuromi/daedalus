@@ -148,10 +148,88 @@ def test_refusals_and_exports(net2):
     with pytest.raises(SymbolicOutError, match='form must be'):
         lm.C0('dv1', 'dv1', form='closed')
     with pytest.raises(SymbolicOutError, match='no value'):
-        lm.evaluate('rational')
-    with pytest.raises(SymbolicOutError, match='no value'):
-        lm.evaluate('residues', {'a': 2.0})
+        dd.one_loop_mean(model).evaluate('rational')   # the saddle has no default
     with pytest.raises(SymbolicOutError, match="'explicit' or 'named'"):
         lm.G0('dv1', 'vt1', propagator='closed')
     assert all(isinstance(v, sympy.Expr) for v in lm.sympy().values())
     assert 'tadpoles' in str(lm)
+
+
+def _no_default():
+    """``D`` is declared without a default."""
+    return (SDE('no default').parameter('g', default=0.3).parameter('h', default=0.2)
+            .parameter('D').field('x').drift('x', '-x + g*x^2 + h')
+            .noise('xi', Gaussian(var='2*D'), into={'x': 1})).build()
+
+
+def test_evaluate_falls_back_on_the_model_defaults(net2):
+    """A parameter not given takes its model default; ``values=`` overrides
+    only the parameters it names; one with no default must be given."""
+    model, (want, npar) = net2
+    lm = one_loop_mean(model, mean_field='solve')
+    rel = lm.relation
+    assert rel.defaults == {k: v for k, v in _params(npar).items()}
+    for form in FORMS:
+        assert lm.evaluate(form) == pytest.approx(lm.evaluate(form, _params(npar)),
+                                                  rel=1e-13)
+    _close(lm.evaluate('rational'), want)
+    full = dict(rel.defaults, sig=0.45)
+    got = lm.evaluate('rational', {'sig': 0.45})
+    assert got == pytest.approx(lm.evaluate('rational', full), rel=1e-14)
+    # the loops scale with sig^2 at a fixed saddle
+    for a in got:
+        assert got[a] == pytest.approx(want[a] * (0.45 / 0.3) ** 2, rel=1e-10)
+    # the mean relation takes the same defaults
+    one = rel.loop_order(1)
+    cum = {s: 1.0 for e in one.values() for s in rel.cumulant_symbols(e)}
+    assert rel.evaluate(one, cumulants=cum) == rel.evaluate(one, _params(npar), cum)
+    # no default: the named error, naming it ('integral': the rational form
+    # runs the pipeline, which needs every parameter numeric up front)
+    lm2 = one_loop_mean(_no_default(), mean_field={'xstar1': 0.3})
+    with pytest.raises(SymbolicOutError, match="no value for .*'D'"):
+        lm2.evaluate('integral')
+    assert lm2.evaluate('integral', {'D': 0.05})['dx1'] != 0
+
+
+def _saddle_model():
+    return (SDE('quadratic drift').parameter('g', default=0.3).parameter('h', default=0.8)
+            .parameter('D', default=0.05).field('x').drift('x', '-x - g*x^2 + h')
+            .noise('xi', Gaussian(var='2*D'), into={'x': 1})).build()
+
+
+def _hand(g=0.3, h=0.8, D=0.05):
+    """dx = (-x - g x^2 + h) dt + sqrt(2 D) dW: x* = (sqrt(1 + 4 g h) - 1)/(2 g),
+    K = 1 + 2 g x*, C0(0) = D / K, one-loop mean -g C0(0) / K."""
+    xs = (np.sqrt(1 + 4 * g * h) - 1) / (2 * g)
+    K = 1 + 2 * g * xs
+    return -g * D / K ** 2
+
+
+@pytest.mark.parametrize('over', [{}, {'h': 1.5}, {'g': 0.5}, {'g': 0.5, 'D': 0.1},
+                                  {'D': 0.1}])
+def test_override_that_moves_the_saddle_resolves_it(over):
+    """h enters only through the saddle; g through the saddle and the vertex;
+    D not through the saddle (no re-solve needed)."""
+    lm = one_loop_mean(_saddle_model(), mean_field='solve')
+    for form in FORMS:
+        assert lm.evaluate(form, over)['dx1'].real == pytest.approx(_hand(**over),
+                                                                    rel=1e-10)
+    assert (lm.relation.saddle_at(over) is None) == (set(over) <= {'D'})
+
+
+def test_relation_refuses_a_moved_saddle():
+    lm = one_loop_mean(_saddle_model(), mean_field='solve')
+    rel = lm.relation
+    one = rel.loop_order(1)
+    cum = {s: 1.0 for e in one.values() for s in rel.cumulant_symbols(e)}
+    with pytest.raises(SymbolicOutError, match='saddle .* moves'):
+        rel.evaluate(one, {'h': 1.5}, cum)
+    rel.evaluate(one, {'D': 0.1}, cum)                  # the saddle stays
+    with pytest.raises(SymbolicOutError, match='fixed to'):
+        lm.evaluate('rational', {'xstar1': 0.5})
+    fixed = one_loop_mean(_saddle_model(), mean_field='solve', values={'g': 0.3})
+    with pytest.raises(SymbolicOutError, match='fixed to'):
+        fixed.evaluate('rational', {'g': 0.5})
+    # 1 + 4 g h < 0: no fixed point left
+    with pytest.raises(SymbolicOutError, match='no fixed point|ambiguous'):
+        lm.evaluate('rational', {'h': -1.0})

@@ -62,7 +62,7 @@ from sage.all import SR, matrix, SetPartitions, PolynomialRing
 
 from daedalus.api.symbolic_out import (
     SymbolicOutError, UnsupportedModelError, _reject_spatial, _expanded_theory,
-    _model_fundamental, _solve_mean_field, _mf_symbols_only, _as_name_dict,
+    _model_fundamental, _mf_symbols_only, _as_name_dict,
     _expand_param_names, _is_saddle_symbol, to_sympy, to_latex,
 )
 
@@ -244,14 +244,97 @@ class MeanRelation:
         return sorted(str(v) for v in SR(expr).variables()
                       if str(v).startswith('kappa_'))
 
+    @property
+    def defaults(self) -> dict:
+        """The model's declared parameter defaults (``parameters=`` over
+        them), as pipeline symbol names; saddle values are not among them."""
+        return dict(self._cache.get('defaults') or {})
+
+    def with_defaults(self, values: Optional[dict] = None) -> dict:
+        """:attr:`defaults` with ``values`` (pipeline names, ``{'tau': [..]}``
+        expanded) over them."""
+        out = self.defaults
+        out.update(_expand_param_names(_as_name_dict(values)))
+        return out
+
+    def saddle_at(self, values: Optional[dict] = None) -> Optional[dict]:
+        """Where the saddle substituted at the build (``mean_field='solve'``)
+        lies at the parameters :meth:`with_defaults` gives for ``values``:
+        ``None`` when it does not move (no parameter changed, or only ones it
+        does not depend on, such as a noise strength), else
+        ``{'parameters': ..., 'saddle': ...}`` (the model's parameter dict and
+        the new saddle).  The root is the build's choice (the first, sorted by
+        the first field's saddle); a change in the number of stable roots
+        makes that choice ambiguous and is refused.  A value given for a
+        symbol fixed at the build (``values=`` or the saddle) must equal it."""
+        given = _expand_param_names(_as_name_dict(values))
+        for k, v in given.items():
+            if k in self.values and not _same_number(v, self.values[k]):
+                raise SymbolicOutError(
+                    f'{k} was fixed to {self.values[k]} when the relation was '
+                    f'built (values= or the saddle) and cannot be changed to '
+                    f'{v} at evaluation; rebuild with the new value')
+        build = self._cache.get('build') or {}
+        solve = build.get('solve')
+        if solve is None:
+            return None
+        defaults = self.defaults
+        changed = {k: v for k, v in given.items()
+                   if k in defaults and not _same_number(v, defaults[k])}
+        if not changed:
+            return None
+        key = ('saddle_at', tuple(sorted(changed.items())))
+        if key not in self._cache:
+            model = build['model']
+            params = _pack_parameters(model, build['parameters'], changed)
+            try:
+                new = _saddle_solve(build['ft'], model, params)
+            except ValueError as exc:
+                raise SymbolicOutError(
+                    f'the saddle was solved at the build parameters; at '
+                    f'{changed} the mean-field solve finds no fixed point '
+                    f'({exc})') from exc
+            if new['n_stable'] != solve['n_stable']:
+                raise SymbolicOutError(
+                    f'the saddle was solved at the build parameters, where the '
+                    f'mean field has {solve["n_stable"]} stable root(s); at '
+                    f'{changed} it has {new["n_stable"]}, so which root '
+                    f'continues the build\'s is ambiguous.  Rebuild with '
+                    f'parameters= and mean_field= the saddle you mean')
+            moved = any(not _same_number(new['saddle'].get(k), v)
+                        for k, v in solve['saddle'].items())
+            self._cache[key] = (dict(parameters=params, saddle=new['saddle'])
+                                if moved else None)
+        return self._cache[key]
+
+    def _evaluation_values(self, values):
+        """:meth:`with_defaults`, refused when the build's saddle does not
+        hold at those parameters (:meth:`saddle_at`): the expressions carry
+        it as a number."""
+        moved = self.saddle_at(values)
+        if moved is not None:
+            raise SymbolicOutError(
+                f'the saddle was solved at the build parameters and moves at '
+                f'these values ({self._moved(moved)}): the relation carries it '
+                f'as a number.  Rebuild with parameters= (or pass the saddle '
+                f'as mean_field=); OneLoopMean.evaluate re-solves it itself')
+        return self.with_defaults(values)
+
+    def _moved(self, moved) -> str:
+        old = self._cache['build']['solve']['saddle']
+        return ', '.join(f'{k} {old[k]:.6g} -> {moved["saddle"][k]:.6g}'
+                         for k in sorted(old))
+
     def evaluate(self, expr, values: Optional[dict] = None,
                  cumulants: Optional[dict] = None):
         """Number of ``expr`` (one expression, a dict or a list of them) with
-        the parameter ``values`` (pipeline names, ``{'tau': [..]}`` expanded)
-        and the ``cumulants`` (``{symbol or name: number}``); every symbol
-        must get a value."""
+        the parameter ``values`` (pipeline names, ``{'tau': [..]}`` expanded;
+        a parameter not given takes its model default) and the ``cumulants``
+        (``{symbol or name: number}``); every other symbol must get a value.
+        A value that moves the build's saddle (:meth:`saddle_at`) is refused:
+        rebuild with ``parameters=``."""
         sub = {}
-        for k, v in _expand_param_names(_as_name_dict(values)).items():
+        for k, v in self._evaluation_values(values).items():
             sub[SR.var(k)] = SR(v)
         for k, v in (cumulants or {}).items():
             sub[SR.var(str(k))] = SR(v)
@@ -370,9 +453,10 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
 
     # substitutions: saddle (mean_field) then the user's values
     sub_names: dict = {}
+    solve = None
     if mean_field == 'solve':
-        npar = _solve_mean_field(ft, model, _model_fundamental(model, parameters))
-        sub_names.update(_mf_symbols_only(model, npar))
+        solve = _saddle_solve(ft, model, _model_fundamental(model, parameters))
+        sub_names.update(solve['saddle'])
     elif isinstance(mean_field, dict):
         sub_names.update(_expand_param_names(_as_name_dict(mean_field)))
     elif mean_field is not None:
@@ -444,6 +528,9 @@ def mean_relation(model: dict, *, order: Optional[int] = None,
             if p.startswith(nm) and idx.isdigit():
                 fl[p] = f'{lx}_{{{idx}}}'
     rel._cache['field_latex'] = fl
+    rel._cache['defaults'] = _parameter_defaults(model, parameters)
+    rel._cache['build'] = dict(model=model, parameters=parameters, ft=ft,
+                               values=dict(uvals), solve=solve)
     if mean_field is None and any(_is_saddle_symbol(str(v), model)
                                   for t in terms for v in SR(t.coefficient).variables()):
         rel.notes.append('saddle symbols kept: the relation holds at the '
@@ -668,11 +755,17 @@ class OneLoopMean:
     def evaluate(self, form: str = 'rational', values: Optional[dict] = None
                  ) -> dict:
         """``{a: number}``: the one-loop mean shift with every remaining
-        symbol given in ``values`` (pipeline names; the saddle too, unless the
-        relation was built with ``mean_field=``).  ``'integral'`` integrates
+        symbol given in ``values`` (pipeline names; a parameter not given takes
+        its model default, the saddle has none unless the relation was built
+        with ``mean_field=``).  A value the build's saddle depends on re-solves
+        it (:meth:`MeanRelation.saddle_at`) and evaluates the tadpoles rebuilt
+        there.  ``'integral'`` integrates
         numerically (an independent check of ``'rational'``), ``'residues'``
         sums the modes at 256 bits."""
-        vals = _expand_param_names(_as_name_dict(values))
+        moved = self.relation.saddle_at(values)
+        if moved is not None:
+            return self.at(moved).evaluate(form, values)
+        vals = self.relation.with_defaults(values)
         if form == 'integral':
             c0 = {legs: self._integral_number(legs, vals) for legs in self.loops}
         elif form == 'residues':
@@ -700,6 +793,17 @@ class OneLoopMean:
                 raise SymbolicOutError(f'no value for {free}')
             out[a] = complex(tot.n())
         return out
+
+    def at(self, moved: dict) -> 'OneLoopMean':
+        """This one-loop mean rebuilt at the parameters and saddle of
+        :meth:`MeanRelation.saddle_at` (cached)."""
+        key = ('at', tuple(sorted(moved['saddle'].items())))
+        if key not in self._cache:
+            build = self.relation._cache['build']
+            self._cache[key] = one_loop_mean(
+                self.model, values=build['values'] or None, mean_field='solve',
+                parameters=moved['parameters'])
+        return self._cache[key]
 
     def _integral_number(self, legs, vals) -> complex:
         from scipy.integrate import quad
@@ -786,6 +890,35 @@ def _pack_parameters(model, parameters: Optional[dict], fixed: dict) -> dict:
         raise SymbolicOutError(f'values= names {sorted(left)} are not model '
                                f'parameters')
     return full
+
+
+def _saddle_solve(ft, model, fundamental) -> dict:
+    """The pipeline's mean-field solve: ``{'saddle': {name: value},
+    'n_stable': number of stable roots}``."""
+    from daedalus.api._mean_field import solve_mean_field
+    out = solve_mean_field(ft, model, fundamental, verbose=False)
+    return dict(saddle=_mf_symbols_only(model, out['num_params']),
+                n_stable=len(out.get('mf_stable_roots') or []))
+
+
+def _same_number(a, b, rtol: float = 1e-12) -> bool:
+    if a is None or b is None:
+        return a is b
+    a, b = complex(a), complex(b)
+    return abs(a - b) <= rtol * max(abs(a), abs(b), 1e-300)
+
+
+def _parameter_defaults(model, parameters: Optional[dict]) -> dict:
+    """The numeric declared defaults of the model's parameters
+    (``parameters=`` over them) as pipeline symbol names; saddle values
+    (``mean_field=True``) and symbolic defaults are left out."""
+    out = {}
+    for k, v in _expand_param_names(_pack_parameters(model, parameters, {})).items():
+        if isinstance(v, (bool, np.bool_)) or not isinstance(
+                v, (int, float, complex, np.number)):
+            continue
+        out[k] = v
+    return out
 
 
 def one_loop_mean(model: dict, *, values: Optional[dict] = None,

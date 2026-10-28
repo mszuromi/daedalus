@@ -69,8 +69,8 @@ import numpy as np
 from sage.all import SR, function, integral, pi, oo, matrix
 
 from daedalus.api.symbolic_out import (
-    SymbolicOutError, UnsupportedModelError, _expanded_theory, _as_name_dict,
-    _expand_param_names, to_sympy, to_latex,
+    SymbolicOutError, UnsupportedModelError, _expanded_theory, to_sympy,
+    to_latex,
 )
 from daedalus.api.symbolic_mean import (
     C0_FORMS, OneLoopMean, one_loop_mean, _forbidden_symbols,
@@ -281,7 +281,10 @@ class OneLoopSpectrum:
     def evaluate(self, a, b, omega, values: Optional[dict] = None,
                  c0: str = 'rational', epsrel: float = 1e-12):
         """``S^{(1)}_ab(omega)`` as numbers (complex; an array for an array of
-        ``omega``).  The equal-time parts are taken in form ``c0``: exact for
+        ``omega``), with ``values`` as in :meth:`OneLoopMean.evaluate` (a
+        parameter not given takes its model default; one the build's saddle
+        depends on re-solves it and evaluates the diagrams rebuilt there, see
+        :meth:`at`).  The equal-time parts are taken in form ``c0``: exact for
         ``'rational'`` and ``'residues'``, by quadrature for ``'integral'``.
         The bubbles are integrated over ``nu`` by adaptive quadrature.  Every
         line is evaluated as a numeric ratio of polynomials (coefficients
@@ -289,7 +292,10 @@ class OneLoopSpectrum:
         carries for float inputs overflow a double-precision evaluation of
         the expression."""
         a, b = self._phys(a), self._phys(b)
-        vals = _expand_param_names(_as_name_dict(values))
+        moved = self.mean.relation.saddle_at(values)
+        if moved is not None:
+            return self.at(moved).evaluate(a, b, omega, values, c0, epsrel)
+        vals = self.mean.relation.with_defaults(values)
         sub = {SR.var(k): SR(v) for k, v in vals.items()}
         w, nu = self.omega, self.nu
         lines: dict = {}
@@ -338,6 +344,17 @@ class OneLoopSpectrum:
             out.append(complex(tot))
         out = np.array(out)
         return out if np.ndim(omega) else complex(out[0])
+
+    def at(self, moved: dict) -> 'OneLoopSpectrum':
+        """This spectrum rebuilt at the parameters and saddle of
+        :meth:`~daedalus.api.symbolic_mean.MeanRelation.saddle_at` (cached)."""
+        key = ('at', tuple(sorted(moved['saddle'].items())))
+        if key not in self._cache:
+            build = self.mean.relation._cache['build']
+            self._cache[key] = one_loop_spectrum(
+                self.mean.model, values=build['values'] or None,
+                mean_field='solve', parameters=moved['parameters'])
+        return self._cache[key]
 
     def _equal_number(self, t, c0, vals) -> complex:
         """A tadpole's ``C0_pq(0)`` or a mean shift, as a number."""
