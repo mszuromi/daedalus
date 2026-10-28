@@ -287,7 +287,13 @@ class MeanRelation:
         if key not in self._cache:
             model = build['model']
             params = _pack_parameters(model, build['parameters'], changed)
-            new = _saddle_solve(build['ft'], model, params)
+            try:
+                new = _saddle_solve(build['ft'], model, params)
+            except ValueError as exc:
+                raise SymbolicOutError(
+                    f'the saddle was solved at the build parameters; at '
+                    f'{changed} the mean-field solve finds no fixed point '
+                    f'({exc})') from exc
             if new['n_stable'] != solve['n_stable']:
                 raise SymbolicOutError(
                     f'the saddle was solved at the build parameters, where the '

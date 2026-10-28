@@ -16,7 +16,7 @@ the old saddle. Two examples, for `dx = (-x - g x^2 + h) dt + sqrt(2 D) dW` buil
 `OneLoopMean` and `OneLoopSpectrum` evaluate the diagrams rebuilt at the new parameters and saddle (`.at(...)`,
 cached). `MeanRelation.evaluate` takes arbitrary expressions and so cannot rebuild them; it refuses with a named
 error. Further refusals:
-- a change in the number of stable roots, which makes the root's identity ambiguous;
+- a change in the number of stable roots, which makes the root's identity ambiguous, or no fixed point at all;
 - a value that differs from one fixed at the build (`values=` or the saddle).
 
 A parameter the saddle does not depend on, such as a noise strength, is evaluated as before. Calls that used to

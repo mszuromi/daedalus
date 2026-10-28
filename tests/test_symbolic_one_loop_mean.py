@@ -230,3 +230,6 @@ def test_relation_refuses_a_moved_saddle():
     fixed = one_loop_mean(_saddle_model(), mean_field='solve', values={'g': 0.3})
     with pytest.raises(SymbolicOutError, match='fixed to'):
         fixed.evaluate('rational', {'g': 0.5})
+    # 1 + 4 g h < 0: no fixed point left
+    with pytest.raises(SymbolicOutError, match='no fixed point|ambiguous'):
+        lm.evaluate('rational', {'h': -1.0})
