@@ -149,6 +149,15 @@ def test_point_process_model_with_kernels():
     _close(sp.evaluate(('n', 1), ('v', 2), OMEGA), want)
 
 
+def test_alpha_kernel_model():
+    """Alpha kernels, real in ``s = i omega`` once the ``I`` of their image
+    cancels; lines of order 2 and 3 in the bubbles."""
+    model, _ = dd.load_model('quadratic_hawkes_alpha')
+    want, npar = _pipeline(model, ('n', 1), ('v', 2))
+    sp = one_loop_spectrum(model, mean_field='solve', values=npar)
+    _close(sp.evaluate(('n', 1), ('v', 2), OMEGA), want)
+
+
 def test_loop_without_an_ito_value_is_refused():
     """A spike train's delta(tau) times a retarded line that jumps at the
     tie: the bubble converges only conditionally."""
