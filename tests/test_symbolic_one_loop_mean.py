@@ -189,3 +189,44 @@ def test_evaluate_falls_back_on_the_model_defaults(net2):
     with pytest.raises(SymbolicOutError, match="no value for .*'D'"):
         lm2.evaluate('integral')
     assert lm2.evaluate('integral', {'D': 0.05})['dx1'] != 0
+
+
+def _saddle_model():
+    return (SDE('quadratic drift').parameter('g', default=0.3).parameter('h', default=0.8)
+            .parameter('D', default=0.05).field('x').drift('x', '-x - g*x^2 + h')
+            .noise('xi', Gaussian(var='2*D'), into={'x': 1})).build()
+
+
+def _hand(g=0.3, h=0.8, D=0.05):
+    """dx = (-x - g x^2 + h) dt + sqrt(2 D) dW: x* = (sqrt(1 + 4 g h) - 1)/(2 g),
+    K = 1 + 2 g x*, C0(0) = D / K, one-loop mean -g C0(0) / K."""
+    xs = (np.sqrt(1 + 4 * g * h) - 1) / (2 * g)
+    K = 1 + 2 * g * xs
+    return -g * D / K ** 2
+
+
+@pytest.mark.parametrize('over', [{}, {'h': 1.5}, {'g': 0.5}, {'g': 0.5, 'D': 0.1},
+                                  {'D': 0.1}])
+def test_override_that_moves_the_saddle_resolves_it(over):
+    """h enters only through the saddle; g through the saddle and the vertex;
+    D not through the saddle (no re-solve needed)."""
+    lm = one_loop_mean(_saddle_model(), mean_field='solve')
+    for form in FORMS:
+        assert lm.evaluate(form, over)['dx1'].real == pytest.approx(_hand(**over),
+                                                                    rel=1e-10)
+    assert (lm.relation.saddle_at(over) is None) == (set(over) <= {'D'})
+
+
+def test_relation_refuses_a_moved_saddle():
+    lm = one_loop_mean(_saddle_model(), mean_field='solve')
+    rel = lm.relation
+    one = rel.loop_order(1)
+    cum = {s: 1.0 for e in one.values() for s in rel.cumulant_symbols(e)}
+    with pytest.raises(SymbolicOutError, match='saddle .* moves'):
+        rel.evaluate(one, {'h': 1.5}, cum)
+    rel.evaluate(one, {'D': 0.1}, cum)                  # the saddle stays
+    with pytest.raises(SymbolicOutError, match='fixed to'):
+        lm.evaluate('rational', {'xstar1': 0.5})
+    fixed = one_loop_mean(_saddle_model(), mean_field='solve', values={'g': 0.3})
+    with pytest.raises(SymbolicOutError, match='fixed to'):
+        fixed.evaluate('rational', {'g': 0.5})
