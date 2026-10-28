@@ -225,3 +225,35 @@ def test_refusals_and_exports(net2):
     assert r'\Sigma_{vt1, dv1}' in sp.latex()
     assert sp.sigma_matrix().nrows() == 4
     assert 'bubble' in str(sp)
+
+
+@pytest.mark.parametrize('a, b', [(('x', 1), ('x', 1)), (('x', 1), ('y', 1))])
+def test_equal_time_by_diagram_sums_to_the_cumulant(a, b):
+    """``C^{(1)}_ab(0)`` diagram by diagram: the sum is the pipeline's and
+    the symbolic cumulant's ``k = 2``, ``ell = 1`` value at ``tau = 0``."""
+    model = _cross()
+    r = dd.run(model, dd.Config(k=2, max_ell=1, tau_grid=[0.0],
+                                external_fields=[a, b]))
+    want = complex(np.ravel(r['C_tau_by_ell'][1])[0]).real
+    sp = one_loop_spectrum(model, mean_field='solve')
+    terms = sp.equal_time(a, b)
+    assert {t.kind for t, _ in terms} >= {'mean_shift', 'bubble'}
+    total = sum(v for _, v in terms)
+    assert abs(total - want) <= 1e-10 * abs(want)
+    sc = dd.symbolic_cumulant(model, k=2, max_ell=1, external_fields=[a, b])
+    assert abs(complex(sc.evaluate(ell=1)) - total) <= 1e-10 * abs(want)
+
+
+def test_equal_time_refused_where_the_correlation_jumps():
+    """``C_xy(tau)`` of the white-noise partner jumps at the tie at one loop
+    too; ``C_xx`` does not."""
+    from test_symbolic_one_loop_mean import _instantaneous_partner
+    model = _instantaneous_partner('x', 'y')
+    sp = one_loop_spectrum(model, mean_field='solve')
+    with pytest.raises(UnsupportedModelError, match='jump at tau = 0'):
+        sp.equal_time(('x', 1), ('y', 1))
+    r = dd.run(model, dd.Config(k=2, max_ell=1, tau_grid=[0.0],
+                                external_fields=[('x', 1), ('x', 1)]))
+    want = complex(np.ravel(r['C_tau_by_ell'][1])[0]).real
+    total = sum(v for _, v in sp.equal_time(('x', 1), ('x', 1)))
+    assert abs(total - want) <= 1e-10 * abs(want)

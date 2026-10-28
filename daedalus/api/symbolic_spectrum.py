@@ -348,6 +348,73 @@ class OneLoopSpectrum:
         moved = self.mean.relation.saddle_at(values)
         if moved is not None:
             return self.at(moved).evaluate(a, b, omega, values, c0, epsrel)
+        diags = self._numeric_diagrams(a, b, values, c0)
+        oms = np.atleast_1d(np.asarray(omega, dtype=float))
+        out = []
+        for x in oms:
+            tot = sum(A(x) * B(-x) * k for _, A, B, k, _ in diags)
+            bub = [(bb[0] * A(x) * B(-x), bb[1])
+                   for _, A, B, _, bb in diags if bb is not None]
+            if bub:
+                tot += _nu_integral(
+                    lambda y: sum(wt * _bubble_lines(lns, y, x)
+                                  for wt, lns in bub), epsrel)
+            out.append(complex(tot))
+        out = np.array(out)
+        return out if np.ndim(omega) else complex(out[0])
+
+    def equal_time(self, a, b, values: Optional[dict] = None,
+                   c0: str = 'rational', epsrel: float = 1e-10) -> list:
+        """The one-loop equal-time covariance ``C^{(1)}_ab(tau = 0) = (1/2 pi)
+        int S^{(1)}_ab(w) dw``, diagram by diagram: ``[(term, value)]`` for
+        the :attr:`terms` that reach ``(a, b)``.  The values sum to the
+        ``k = 2``, ``ell = 1`` value at ``tau = 0`` of the pipeline and of
+        :func:`~daedalus.api.symbolic_loop.symbolic_cumulant`.  ``values``,
+        ``c0`` and the quadrature as in :meth:`evaluate` (a bubble is a double
+        integral over ``w`` and ``nu``; every diagram is integrated to
+        ``epsrel`` of the largest).
+
+        Refused (``UnsupportedModelError``) where the two outer lines together
+        decay slower than ``w^-2``: there ``C^{(1)}_ab(tau)`` may jump at the
+        tie, and its value at ``tau = 0`` depends on the side."""
+        a, b = self._phys(a), self._phys(b)
+        moved = self.mean.relation.saddle_at(values)
+        if moved is not None:
+            return self.at(moved).equal_time(a, b, values, c0, epsrel)
+        for l, r in self.pairs():
+            o = [self._decay(ln.kind, ln.row, ln.col)
+                 for ln in (self._outer(a, l, 1), self._outer(b, r, -1))]
+            if min(o) >= 0 and sum(o) < 2:
+                raise UnsupportedModelError(
+                    f'the outer lines of Sigma[{l},{r}] in S_{a},{b} decay like '
+                    f'w^-{sum(o)}: C^(1)_{a},{b}(tau) may jump at tau = 0, so '
+                    f'it has no single equal-time value here')
+        diags = self._numeric_diagrams(a, b, values, c0)
+        if not diags:
+            return []
+        ks = np.array([k for *_, k, _ in diags])
+        bub = [i for i, d in enumerate(diags) if d[4] is not None]
+        cs = np.array([diags[i][4][0] for i in bub])
+
+        def f(x):
+            v = ks.copy()
+            if bub:
+                v[bub] += cs * _nu_integral(lambda y: np.array(
+                    [_bubble_lines(diags[i][4][1], y, x) for i in bub]),
+                    epsrel, vector=True)
+            return np.array([A(x) * B(-x) for _, A, B, *_ in diags]) * v
+        return list(zip([d[0] for d in diags],
+                        _nu_integral(f, epsrel, vector=True)))
+
+    def _numeric_diagrams(self, a, b, values, c0) -> list:
+        """Per diagram of ``S^{(1)}_ab``: ``(term, A, B, k, bubble)``, with the
+        outer lines ``A(w)`` and ``B(-w)`` as callables, the equal-time part
+        ``k`` and, for a bubble, ``(coefficient, lines)``: each line at ``p nu
+        + q w`` as ``(L, p, q, t)``, ``t`` its ``delta`` weight.  Every
+        line is evaluated as a numeric ratio of polynomials (coefficients
+        normalized at 256 bits): the exact rationals the tree covariance
+        carries for float inputs overflow a double-precision evaluation of
+        the expression.  Diagrams whose outer lines vanish are left out."""
         vals = self.mean.relation.with_defaults(values)
         sub = {SR.var(k): SR(v) for k, v in vals.items()}
         w, nu = self.omega, self.nu
@@ -366,45 +433,33 @@ class OneLoopSpectrum:
                 raise SymbolicOutError(f'no value for {free}')
             return complex(e.n())
 
-        eq, bub = [], []   # (outer lines, value) and (outer, coeff, lines)
+        out = []
         for l, r in self.pairs():
             ol = self._outer(a, l, 1)
             orr = self._outer(b, r, -1)
-            outer = (line(ol.kind, ol.row, ol.col), line(orr.kind, orr.row, orr.col))
-            v = 0j
+            if -1 in (self._decay(ol.kind, ol.row, ol.col),
+                      self._decay(orr.kind, orr.row, orr.col)):
+                continue
+            A = line(ol.kind, ol.row, ol.col)
+            B = line(orr.kind, orr.row, orr.col)
             for t in self.terms:
                 if (t.left, t.right) != (l, r):
                     continue
-                if t.kind == 'bubble':
-                    c, lns = number(t.coefficient), []
-                    for ln, other in zip(t.lines, reversed(t.lines)):
-                        tail = number(self._tail(ln, 'explicit'))
-                        if tail and other.kind == 'C0':
-                            v += c * tail * self._c0_number(
-                                (other.row, other.col), c0, vals)
-                        lns.append((line(ln.kind, ln.row, ln.col),
-                                    float(SR(ln.freq).coefficient(nu)),
-                                    float(SR(ln.freq).coefficient(w)), tail))
-                    bub.append((outer, c, lns))
-                else:
-                    v += number(t.coefficient) * self._equal_number(t, c0, vals)
-            if v:
-                eq.append((outer, v))
-        oms = np.atleast_1d(np.asarray(omega, dtype=float))
-        out = []
-        for x in oms:
-            tot = sum(A(x) * B(-x) * v for (A, B), v in eq)
-            if bub:
-                wts = [c * A(x) * B(-x) for (A, B), c, _ in bub]
-                tot += _nu_integral(
-                    lambda y: sum(wt * (L1(p1 * y + q1 * x) - t1)
-                                  * (L2(p2 * y + q2 * x) - t2)
-                                  for wt, (_, _, ((L1, p1, q1, t1),
-                                                  (L2, p2, q2, t2)))
-                                  in zip(wts, bub)), epsrel)
-            out.append(complex(tot))
-        out = np.array(out)
-        return out if np.ndim(omega) else complex(out[0])
+                if t.kind != 'bubble':
+                    out.append((t, A, B, number(t.coefficient)
+                                * self._equal_number(t, c0, vals), None))
+                    continue
+                c, k, lns = number(t.coefficient), 0j, []
+                for ln, other in zip(t.lines, reversed(t.lines)):
+                    tail = number(self._tail(ln, 'explicit'))
+                    if tail and other.kind == 'C0':
+                        k += c * tail * self._c0_number(
+                            (other.row, other.col), c0, vals)
+                    lns.append((line(ln.kind, ln.row, ln.col),
+                                float(SR(ln.freq).coefficient(nu)),
+                                float(SR(ln.freq).coefficient(w)), tail))
+                out.append((t, A, B, k, (c, tuple(lns))))
+        return out
 
     def at(self, moved: dict) -> 'OneLoopSpectrum':
         """This spectrum rebuilt at the parameters and saddle of
@@ -490,15 +545,25 @@ def _numeric_rational(e, w):
     return lambda x: np.polyval(nc, x) / np.polyval(dc, x)
 
 
-def _nu_integral(f, epsrel: float) -> complex:
-    """``(1/2 pi) int f(nu) d nu`` over the real line."""
+def _bubble_lines(lns, y, x) -> complex:
+    """The product of a bubble's two lines at ``nu = y``, ``w = x``, each
+    less its ``delta`` weight."""
+    (L1, p1, q1, t1), (L2, p2, q2, t2) = lns
+    return (L1(p1 * y + q1 * x) - t1) * (L2(p2 * y + q2 * x) - t2)
+
+
+def _nu_integral(f, epsrel: float, vector: bool = False):
+    """``(1/2 pi) int f(nu) d nu`` over the real line; ``vector``: ``f``
+    is a complex array, integrated to ``epsrel`` of its largest entry."""
     from scipy.integrate import quad_vec
     def g(y):
-        z = complex(f(y))
-        return np.array([z.real, z.imag])
+        z = np.atleast_1d(np.asarray(f(y), dtype=complex))
+        return np.concatenate([z.real, z.imag])
     v = quad_vec(g, -np.inf, np.inf, epsabs=1e-300, epsrel=epsrel,
                  norm='max', limit=2000)[0]
-    return complex(v[0], v[1]) / (2 * np.pi)
+    n = len(v) // 2
+    z = (v[:n] + 1j * v[n:]) / (2 * np.pi)
+    return z if vector else complex(z[0])
 
 
 def _phys_of(model, phys: str):
