@@ -115,7 +115,8 @@ def test_opt_out_and_clear():
 def test_fixed_order_never_touches_the_cache():
     m = _model()
     r = _run(m, order=8)
-    assert r['delay']['orders_run'] == [8] and r['delay']['order_source'] == 'search'
+    # (n = 4 is its error estimate)
+    assert r['delay']['orders_run'] == [4, 8] and r['delay']['order_source'] == 'search'
     assert _run(m)['delay']['order_source'] == 'search'
 
 
@@ -129,6 +130,67 @@ def test_capped_search_is_pinned_by_the_cache():
     assert again['delay']['order_source'] == 'replay' and again['delay']['n'] == 4
     assert again['status'] == 'target_missed'
     _same(first, again)
+
+
+def test_the_order_does_not_depend_on_the_wall_time(monkeypatch):
+    """No wall-time cap by default: the estimate alone picks the order, so a
+    slow or loaded machine settles on the order a quiet one does.  An explicit
+    wall_max is a reported stop that says it depends on the machine."""
+    assert dl.DEFAULTS['wall_max'] is None
+    m = _model('delay order no wall cap')
+    quiet = _run(m, order_cache=False)
+    monkeypatch.setattr(dl, '_predicted_growth', lambda *a, **k: (1e9, 'a loaded machine'))
+    busy = _run(m, order_cache=False)
+    assert busy['delay']['n'] == quiet['delay']['n'] == 8
+    assert busy['delay']['target_met'] is True and busy['status'] == 'ok'
+    _same(quiet, busy)
+    capped = _run(m, order_cache=False, wall_max=900.0)
+    info = capped['delay']
+    assert info['n'] == 4 and capped['status'] == 'target_missed'
+    assert "speed and load" in info['cap'] and info['stop_reason'] == info['cap']
+
+
+def test_fixed_order_is_estimated_against_the_order_below():
+    m = _model('delay fixed order estimate')
+    with pytest.warns(dl.DelayOrderWarning, match='estimated against n = 4'):
+        r = compute_cumulants(m, k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
+                              tau_grid=TAUS, parallel=False, verbose=False, use_cache=False,
+                              taylor_order=4, delay=dict(order=8, tol=1e-12))
+    info = r['delay']
+    assert info['orders_run'] == [4, 8] and info['estimate_order'] == 4 and info['n'] == 8
+    assert info['target_met'] is False and r['status'] == 'target_missed'
+    assert info['est_rel_error'] == info['est_by_order'][8] > 1e-12
+    # the returned run is the one the pinned order gave without an estimate
+    alone = _run(m, order=8, estimate=False)
+    assert alone['delay']['orders_run'] == [8] and alone['delay']['est_by_order'] == {}
+    assert alone['delay']['target_met'] is None and alone['status'] == 'ok'
+    _same(r, alone)
+    # the estimate is the search's: the same number at the same pair of orders
+    met = _run(m, order=8)
+    auto = _run(m, order_cache=False)
+    assert met['delay']['target_met'] is True and met['status'] == 'ok'
+    assert met['delay']['est_rel_error'] == pytest.approx(auto['delay']['est_by_order'][8],
+                                                          rel=1e-3)
+
+
+def test_pinned_order_of_a_long_delay_reports_its_error():
+    # one-stage delayed negative feedback at d = 5: the one-loop term moves by
+    # ~10 % from n = 8 to n = 16, and a pinned n = 8 used to report no
+    # estimate.  Its estimate bounds that move.
+    from tests.test_delay_loops_memory_61 import _negative_feedback
+    m = _negative_feedback('hard')
+    kw = dict(k=2, max_ell=1, external_fields=[('x', 1), ('x', 1)],
+              tau_grid=np.array([-1.0, 0.0, 1.0]), parallel=False, verbose=False)
+    with pytest.warns(dl.DelayOrderWarning, match='at n = 8'):
+        r8 = compute_cumulants(m, delay=dict(order=8), **kw)
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        r16 = compute_cumulants(m, delay=dict(order=16, estimate=False), **kw)
+    move = (np.max(np.abs(np.asarray(r8['C_tau']) - np.asarray(r16['C_tau'])))
+            / np.max(np.abs(np.asarray(r16['C_tau']))))
+    l8, l16 = (np.real(np.asarray(r['C_tau_by_ell'][1])) for r in (r8, r16))
+    assert np.max(np.abs(l8 - l16)) > 0.05 * np.max(np.abs(l16))
+    assert r8['status'] == 'target_missed' and r8['delay']['est_rel_error'] > move
 
 
 def test_unfingerprinted_model_is_not_cached():

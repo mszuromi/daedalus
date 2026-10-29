@@ -626,7 +626,7 @@ class Config:
     # ── delay kernels (daedalus.api.delay) ──
     # options of the Pade route for models with delays, as
     # ``compute_cumulants(delay=...)``: e.g. {'order': 8} (fixed order) or
-    # {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}.  None:
+    # {'tol': 1e-6, 'n_max': 16, 'tree': 'exact'}.  None:
     # the route's defaults (automatic order).
     delay: Optional[dict] = None
 
@@ -977,7 +977,7 @@ def config_options(spatial=None):
             ('resum', "None | 'hartree' (self-consistent Gaussian; max_ell 0) | 'screened' or {'method': 'screened', 'mass': 'pms'|'hartree'|kappa, 'observable': 'trace_cov'|'C0'|[fields], 'step', 'kappa_range', 'n_scan'} (k=1 the mean, k=2 the covariance: loop orders re-expanded around a variational propagator, order N = max_ell) → C_tau, C_tau_by_order, C_tau_spread, resummation"),
         ]),
         ('delay kernels (daedalus.api.delay)', [
-            ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'wall_max': 900, 'tree': 'exact'}; None → automatic order"),
+            ('delay', "options of the Padé route: {'order': 8} or {'tol': 1e-6, 'n_max': 16, 'tree': 'exact'}; None → automatic order"),
         ]),
         ('Dyson dressing (coupled unequal-D)', [
             ('dyson_order',         'None=leave model; int≥0 overrides the Dyson order'),

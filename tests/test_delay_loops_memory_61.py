@@ -122,7 +122,7 @@ def test_estimate_bounds_the_census_tightly(census, form, n_pop):
                           max_ell=1, external_fields=ext,
                           tau_grid=np.array([0.5]), parallel=False,
                           verbose=False, use_cache=False,
-                          delay={'order': 4})
+                          delay={'estimate': False, 'order': 4})
     built, est = sum(census), r['phase_j_memory']['ss_bytes']
     assert built > 0
     assert built <= est <= 1.05 * built
@@ -154,7 +154,7 @@ def test_zero_prefactor_diagrams_on_the_ss_branch(monkeypatch):
     the 1,446 diagrams are exactly zero.  Refused at ~122 GB before; the
     census builds 0.39 GB."""
     kw = dict(k=2, max_ell=1, external_fields=[('n', 1), ('n', 2)],
-              tau_grid=np.array([-3.0, 0.5, 3.0]), delay={'order': 4})
+              tau_grid=np.array([-3.0, 0.5, 3.0]), delay={'estimate': False, 'order': 4})
     model = _delay_pp('spike', n_pop=2).build()
     est = _prepass_only(monkeypatch, model, **kw)       # default budget
     assert not est['above_budget'] and est['bytes'] < 6e9
@@ -207,9 +207,9 @@ def _run(model, discard, ext=(('n', 1), ('n', 1)), ell=1, **kw):
 
 def test_discard_is_bit_identical_and_releases():
     model = _delay_pp('voltage', n_pop=1, w=((0.5,),)).build()
-    _run(model, False, delay={'order': 4})                       # warm
-    a = _run(model, False, delay={'order': 4})
-    b = _run(model, True, delay={'order': 4})
+    _run(model, False, delay={'estimate': False, 'order': 4})                       # warm
+    a = _run(model, False, delay={'estimate': False, 'order': 4})
+    b = _run(model, True, delay={'estimate': False, 'order': 4})
     for e in a['C_tau_by_ell']:
         assert np.array_equal(np.asarray(a['C_tau_by_ell'][e]),
                               np.asarray(b['C_tau_by_ell'][e]))
@@ -245,7 +245,7 @@ def test_discard_auto_fires_only_over_budget(monkeypatch):
     est = _prepass_only(monkeypatch, _delay_pp('spike', n_pop=1,
                                                w=((0.5,),)).build(),
                         k=2, max_ell=1, external_fields=[('n', 1)] * 2,
-                        tau_grid=TAU, delay={'order': 4}, discard='auto')
+                        tau_grid=TAU, delay={'estimate': False, 'order': 4}, discard='auto')
     assert est['delta_record_bytes'] == est['bytes']
     assert est['held_bytes'] == est['bytes']
     # the CME of the delayed negative feedback: no δ part, no records

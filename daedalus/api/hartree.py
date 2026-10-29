@@ -1200,7 +1200,7 @@ def _hartree_delayed(model, parameters, delay, kw):
                     'order': n, 'estimate': est, 'orders': list(orders),
                     'estimates': list(ests)})
                 return finish(r, n, est, 'search', orders, ests)
-            if time.perf_counter() - t0 > o['wall_max']:
+            if o['wall_max'] is not None and time.perf_counter() - t0 > o['wall_max']:
                 break
         prev = r
     raise HartreeError(
