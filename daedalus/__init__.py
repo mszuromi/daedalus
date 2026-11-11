@@ -146,6 +146,8 @@ _PIPELINE_EXPORTS = {
     'PhaseJIncompleteError':     'daedalus.api.compute',
     # Phase J over its memory budget (PHASE_J_MEM_BUDGET_GB)
     'PhaseJResourceError':       'daedalus.api.compute',
+    # a δ-subset whose δ lines close a cycle: the term carries δ(0)
+    'DeltaCycleError':           'daedalus.api.compute',
     # a discard=True run asked for a point it did not evaluate
     'DiscardedDiagramsError':    'daedalus.api.compute',
     'backends':                  'daedalus.api.routing',

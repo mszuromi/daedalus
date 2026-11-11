@@ -207,7 +207,7 @@ class PhaseJIncompleteWarning(UserWarning):
 
 
 from daedalus.engine.integration.time_domain.final_integral import (  # noqa: E402
-    PhaseJResourceError, growth_scoped as _growth_scoped)
+    PhaseJResourceError, DeltaCycleError, growth_scoped as _growth_scoped)
 
 
 class SpatialAccuracyWarning(UserWarning):

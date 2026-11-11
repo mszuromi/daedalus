@@ -809,7 +809,8 @@ PLAN_BYTES_PER_TUPLE = 1100
 PHASE_J_PREPASS_REFUSE_FACTOR = 8
 
 
-from daedalus.engine.integration.time_domain._light import PhaseJResourceError  # noqa: E402,F401
+from daedalus.engine.integration.time_domain._light import (  # noqa: E402,F401
+    PhaseJResourceError, DeltaCycleError)
 
 
 # ── the default memory budget ───────────────────────────────────
@@ -5347,6 +5348,28 @@ def _delta_solve_legacy(edge_info, delta_edges, integration_vars):
     return substitutions, remaining_int_vars, ext_time_equalities
 
 
+def _delta_cycle_error(edge_info, delta_edges, residual, diagram):
+    """The :class:`DeltaCycleError` of a δ-subset one of whose δ constraints
+    is identically zero once the others are solved (the subset's δ lines
+    close a cycle: the term carries δ(0))."""
+    lines = tuple((edge_info[i]['u'], edge_info[i]['v'], edge_info[i]['pi'],
+                   edge_info[i]['ri']) for i in delta_edges)
+    shown = ', '.join(f'{u}->{v} (G/C entry ({pi}, {ri}))'
+                      for (u, v, pi, ri) in lines)
+    return DeltaCycleError(
+        f"delta_cycle: a δ-subset of diagram serial {diagram} has δ-carrying "
+        f"lines [{shown}] that close a cycle (for instance two parallel δ "
+        f"lines, or a δ line from a vertex to itself), so one δ constraint "
+        f"reads δ(0) once the others are solved: the term is "
+        f"infinite, not a number, and Phase J refuses it on every route.  "
+        f"The perturbation series of this model is ill-defined as written "
+        f"-- typically a field with white (δ-correlated) fluctuations enters "
+        f"a vertex nonlinearly (an equal-time <u(t)^2> of white noise).  "
+        f"Give that field a finite correlation time (an OU / Markov-embedded "
+        f"noise) or regularize the vertex.",
+        diagram=diagram, delta_edges=lines, residual=str(residual))
+
+
 def _delta_solve_exact(edge_info, delta_edges, integration_vars):
     """``_delta_solve_legacy`` with the M10 lever: the same elimination
     order and the same substitutions, solved by ``_delta_eliminate_exact``
@@ -6707,12 +6730,14 @@ def integrate_diagram(
             _eq_zero = _residual_is_zero_exact(eq)
             if _eq_zero is None:
                 try:
-                    if bool(eq.is_zero()):
-                        continue
+                    _eq_zero = bool(eq.is_zero())
                 except Exception:
-                    pass
-            elif _eq_zero:
-                continue
+                    _eq_zero = False
+            if _eq_zero:
+                # an identically-zero δ constraint: the subset's δ lines
+                # close a cycle and the term carries δ(0) (infinite)
+                raise _delta_cycle_error(edge_info, delta_edges, eq,
+                                         _diag_serial)
             # Nontrivial equation → shot-noise
             has_shotnoise = True
             nontrivial_equalities.append(SR(eq))
