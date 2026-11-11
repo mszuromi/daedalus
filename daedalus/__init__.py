@@ -148,6 +148,8 @@ _PIPELINE_EXPORTS = {
     'PhaseJResourceError':       'daedalus.api.compute',
     # a δ-subset whose δ lines close a cycle: the term carries δ(0)
     'DeltaCycleError':           'daedalus.api.compute',
+    # a propagator entry growing at large omega (G(t) carries delta')
+    'ImproperPropagatorError':   'daedalus.api.compute',
     # a discard=True run asked for a point it did not evaluate
     'DiscardedDiagramsError':    'daedalus.api.compute',
     'backends':                  'daedalus.api.routing',

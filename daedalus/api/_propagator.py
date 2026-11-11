@@ -139,6 +139,47 @@ def _qq(x):
         return QQ(RR(x))
 
 
+def _improper_entries_exact(G_ft_F, nf):
+    """``((i, j, deg P - deg Q), ...)`` for every reduced entry ``P / Q`` of
+    the exact inverse that grows at large omega (``deg P > deg Q``)."""
+    out = []
+    for i in range(nf):
+        for j in range(nf):
+            e = G_ft_F[i, j]
+            if e == 0:
+                continue
+            dn, dd = e.numerator().degree(), e.denominator().degree()
+            if dn > dd:
+                out.append((i, j, int(dn - dd)))
+    return tuple(out)
+
+
+#: Growth probe of the numerical tiers (``_improper_entries_probe``): an
+#: entry is improper when ``|G(w2)| > _GROWTH_RATIO |G(w1)|`` at
+#: ``w2 = 100 w1`` far above every pole (a proper entry is flat or decays
+#: there; a degree-one growth gives 100).
+_GROWTH_RATIO = 30.0
+
+
+def _improper_entries_probe(K_at, nf, w_scale=None):
+    """The entries of ``G = K^{-1}`` that grow at large omega, from two
+    numerical probes (used only when the exact tier did not decide):
+    ``((i, j, None), ...)``.  Never raises (``()`` on failure)."""
+    import numpy as np
+    try:
+        w1 = 1e8 * max(1.0, float(w_scale or 0.0))
+        G1 = np.linalg.inv(K_at(w1 * (1 + 0j)))
+        G2 = np.linalg.inv(K_at(100 * w1 * (1 + 0j)))
+    except Exception:
+        return ()
+    if not (np.all(np.isfinite(G1)) and np.all(np.isfinite(G2))):
+        return ()
+    floor = 1e-12 * float(np.max(np.abs(G2))) if G2.size else 0.0
+    return tuple((i, j, None) for i in range(nf) for j in range(nf)
+                 if abs(G2[i, j]) > floor
+                 and abs(G2[i, j]) > _GROWTH_RATIO * abs(G1[i, j]))
+
+
 def _d_delta_exact(G_ft_F, nf):
     """``D_delta = lim_{omega -> oo} G_ft`` entrywise from the exact reduced
     entries (the same values as the tier-1 per-entry computation)."""
@@ -481,6 +522,12 @@ def _compute_residues_via_polynomial_fracfield(K_ft, omega, num_params, nf,
         # let the caller fall through to the numpy-cofactor path.
         G_ft_F = _run_with_timeout(
             K_ft_F.inverse, _POLYNOMIAL_PATH_BUDGET_SEC)
+        if analysis_out is not None:
+            # entries growing at large omega, decided exactly before any
+            # exit of this tier (compute_poles_and_residues records them in
+            # prop['improper_entries']; Phase J refuses them by name)
+            analysis_out['_improper_exact'] = _improper_entries_exact(
+                G_ft_F, nf)
 
         # Convert CF[om] polynomials to CDF[om] for numerical root-finding.
         PR_cdf = PolynomialRing(CDF, 'om_cdf')
@@ -1887,6 +1934,7 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     prop['pole_clusters'] = None
     prop['pole_deformation'] = None
     prop.pop('jordan_incomplete', None)
+    prop.pop('improper_entries', None)
     pole_vals_tier1, C_mats_tier1, D_delta_tier1 = (
         _compute_residues_via_polynomial_fracfield(
             K_ft, omega, num_params, nf, verbose=verbose,
@@ -1895,6 +1943,8 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     # the exact pole record for the analyzer's G3 gate (empty when the
     # exact path failed before Q(omega); bookkeeping only)
     tier1_why = pole_analysis.pop('_tier1_fallback_reason', None)
+    improper = pole_analysis.pop('_improper_exact', None)
+    prop['improper_entries'] = improper or ()
     if (pole_vals_tier1 is None and tier1_why is not None
             and pole_analysis.get('residue_route') != 'failed'):
         import warnings
@@ -2315,6 +2365,11 @@ def compute_poles_and_residues(prop, num_params, verbose=True, tau_max=None,
     nonzero = [[bool(any(c != 0 for c in K_num_coeffs[i][j]))
                 for j in range(nf)] for i in range(nf)]
     C_mats = _numerical_residues(pole_vals, _K_at, nonzero, zeros_all, nf)
+    if improper is None:
+        # the exact tier did not reach the inverse: decide the growing
+        # entries numerically (refused by name in Phase J, never dropped)
+        prop['improper_entries'] = _improper_entries_probe(_K_at, nf,
+                                                           w_scale)
 
     prop['pole_vals'] = pole_vals
     prop['C_mats']    = C_mats

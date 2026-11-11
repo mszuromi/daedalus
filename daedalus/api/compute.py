@@ -207,7 +207,9 @@ class PhaseJIncompleteWarning(UserWarning):
 
 
 from daedalus.engine.integration.time_domain.final_integral import (  # noqa: E402
-    PhaseJResourceError, DeltaCycleError, growth_scoped as _growth_scoped)
+    PhaseJResourceError, DeltaCycleError, ImproperPropagatorError,
+    refuse_improper_propagator as _refuse_improper_propagator,
+    growth_scoped as _growth_scoped)
 
 
 class SpatialAccuracyWarning(UserWarning):
@@ -2977,6 +2979,10 @@ def _run_phase_j(state):
         # G3 pole statistics (daedalus.api.analyze); informational when the
         # state-space route covers the run
         state.preflight.poles(prop, ss_route=ss_route)
+    # a growing entry (deg P > deg Q): its polynomial part is in neither
+    # the poles nor D_delta, so refuse before the enumeration (also
+    # refused by compute_correction_td, for direct callers)
+    _refuse_improper_propagator(prop)
 
     # ── 5. Field-index maps + prediagram + typed diagram pipeline ─
     if verbose:
