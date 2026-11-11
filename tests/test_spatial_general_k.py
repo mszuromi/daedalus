@@ -761,3 +761,87 @@ def test_k3_nongaussian_noise_source_tree():
     o = np.array([oracle(a_, b_) for a_, b_ in pts])
     rel = np.max(np.abs(v - o) / np.abs(o))
     assert rel < 2e-4, (v, o, rel)
+
+
+def _rd_quad_model():
+    from daedalus.api.model import ModelBuilder
+    return (ModelBuilder('rd-quad-grid-only-test', n_populations=0)
+            .physical_field('p', spatial_dim=1)
+            .parameter('mu', default=1.0, domain='positive')
+            .parameter('DD', default=1.0, domain='positive')
+            .parameter('g', default=0.25, domain='real')
+            .parameter('T', default=1.0, domain='positive')
+            .mf_residual(lhs='(Dt+mu-DD*Laplacian)*p', rhs='0')
+            .set_action_text('pt*(Dt(p)+mu*p-DD*Lap(p)+g*p^2) - T*pt^2')
+            .operator_ir().boundary('infinite').initial('stationary')
+            .build())
+
+
+_RD_FUND = {'mu': 1.0, 'DD': 1.0, 'g': 0.25, 'T': 1.0}
+
+
+def _grid_only_route_run(monkeypatch, route):
+    from daedalus.api import compute_cumulants
+    if route == 'kpoint':
+        kw = dict(k=3, external_fields=[('p', 1)] * 3,
+                  spatial_points=np.array([[[1.0, 0.0], [1.0, 0.0]]]))
+        return 'C_kpoint', 'spatial k-point route', lambda: compute_cumulants(
+            _rd_quad_model(), max_ell=1, fundamental=_RD_FUND, use_cache=False,
+            parallel=False, verbose=False, **kw)
+    monkeypatch.setenv('SPATIAL_FORCE_NUMERICAL_FT', '1')
+    kw = dict(k=2, external_fields=[('p', 1)] * 2, tau_max=0.5,
+              tau_step=0.5, spatial_grid=np.array([0.0, 1.0]))
+    return 'C_tau_x', 'spatial numerical-FT route', lambda: compute_cumulants(
+        _rd_quad_model(), max_ell=1, fundamental=_RD_FUND, use_cache=False,
+        parallel=False, verbose=False, **kw)
+
+
+def _check_grid_only_info(route, th):
+    if route == 'numerical_ft':
+        info = th['spatial_info']
+        assert info['integrator'] == 'grid'
+        assert info['integrator_requested'] == 'mc'
+        assert not any(a.get('reason') == 'monte_carlo_integrator'
+                       for a in (th.get('spatial_accuracy') or {}).get('items', []))
+
+
+@pytest.mark.parametrize('route', ['kpoint', 'numerical_ft'])
+def test_mc_request_on_a_grid_only_route_warns(monkeypatch, route):
+    """The single-field k-point route and the numerical-FT route have only
+    the product grid.  SPATIAL_INTEGRATOR=mc used to be ignored there (the
+    numerical-FT route also labelled the grid value a Monte-Carlo estimate);
+    now a SpatialIntegratorWarning says so and info records
+    integrator='grid' with integrator_requested='mc'.  (The loop kernels are
+    stubbed: this pins the switch, the slow twin pins the values.)"""
+    import daedalus.engine.integration.spatial.full_integrator as FIs
+    from daedalus.engine.integration.spatial.full_integrator import (
+        SpatialIntegratorWarning)
+    monkeypatch.setattr(FIs, 'diagram_correlator',
+                        lambda *a, **k: 0j)
+    monkeypatch.setattr(FIs, 'diagram_correlator_pts',
+                        lambda d_, p_, x_pts, *a, **k: np.zeros(len(x_pts)))
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', 'mc')
+    key, where, run = _grid_only_route_run(monkeypatch, route)
+    with pytest.warns(SpatialIntegratorWarning, match=where):
+        th = run()
+    _check_grid_only_info(route, th)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('route', ['kpoint', 'numerical_ft'])
+def test_mc_request_on_a_grid_only_route_is_the_grid_value(monkeypatch, route):
+    """... and the value under SPATIAL_INTEGRATOR=mc is the grid's, bit for
+    bit (about 3 min for both routes)."""
+    import warnings
+    from daedalus.engine.integration.spatial.full_integrator import (
+        SpatialIntegratorWarning)
+    monkeypatch.delenv('SPATIAL_INTEGRATOR', raising=False)
+    key, where, run = _grid_only_route_run(monkeypatch, route)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SpatialIntegratorWarning)
+        ref = run()
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', 'mc')
+    with pytest.warns(SpatialIntegratorWarning, match=where):
+        th = run()
+    np.testing.assert_array_equal(np.asarray(th[key]), np.asarray(ref[key]))
+    _check_grid_only_info(route, th)

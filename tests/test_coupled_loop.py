@@ -293,3 +293,88 @@ def test_coupled_nonlinear_loop_e2e_smoke():
     assert c_tree > 0 and c_1l > 0
     assert c_1l < c_tree, ('stabilizing cubic must reduce the variance: '
                            f'tree {c_tree:.5f} -> 1-loop {c_1l:.5f}')
+
+
+def _smoke_run(**kw):
+    from daedalus.api import compute_cumulants
+    g, h, ga, gb = 0.4, 0.3, 0.3, 0.3
+    return compute_cumulants(model=_two_species(g, h, ga=ga, gb=gb), k=2,
+                             max_ell=1, fundamental=_fund(g, h, ga, gb),
+                             external_fields=[('a', 1), ('a', 1)],
+                             tau_max=0.8, tau_step=0.4,
+                             spatial_grid=np.array([0.0, 1.0]),
+                             parallel=False, verbose=False, use_cache=False,
+                             **kw)
+
+
+def test_mc_request_on_the_coupled_route_warns_and_runs_the_grid(monkeypatch):
+    """The coupled route has only the product grid: SPATIAL_INTEGRATOR=mc /
+    SPATIAL_MC_N used to be ignored silently.  Now a SpatialIntegratorWarning
+    says so, the info records both, and the value is the grid's, bit for bit."""
+    import warnings
+    from daedalus.engine.integration.spatial.full_integrator import (
+        SpatialIntegratorWarning)
+    monkeypatch.delenv('SPATIAL_INTEGRATOR', raising=False)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', SpatialIntegratorWarning)
+        ref = _smoke_run()
+    assert ref['spatial_info']['integrator'] == 'grid'
+    assert 'integrator_requested' not in ref['spatial_info']
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', 'mc')
+    monkeypatch.setenv('SPATIAL_MC_N', '1000')
+    with pytest.warns(SpatialIntegratorWarning,
+                      match=r'coupled multi-field.*SPATIAL_MC_N=1000 is ignored'):
+        th = _smoke_run()
+    info = th['spatial_info']
+    assert info['integrator'] == 'grid' and info['integrator_requested'] == 'mc'
+    np.testing.assert_array_equal(np.asarray(th['C_tau_x']),
+                                  np.asarray(ref['C_tau_x']))
+    monkeypatch.setenv('SPATIAL_INTEGRATOR', 'montecarlo')
+    with pytest.raises(ValueError, match="expected 'grid'"):
+        _smoke_run()
+
+
+def test_memory_refusal_comes_first_and_names_a_grid_that_fits(monkeypatch):
+    """Over the budget, the coupled route refuses BEFORE evaluating any
+    diagram, and names the common SPATIAL_GRID_NT/NS that fits; that grid
+    then runs."""
+    import re
+    import daedalus.engine.integration.spatial.full_integrator as FIs
+    from daedalus.engine.integration.spatial.full_integrator import (
+        SpatialMemoryBudgetError)
+    calls = []
+    orig = FIs.diagram_kinematic_spectral
+
+    def counted(*a, **k):
+        calls.append(k.get('n_t'))
+        return orig(*a, **k)
+    monkeypatch.setattr(FIs, 'diagram_kinematic_spectral', counted)
+    for v in ('SPATIAL_GRID_NT', 'SPATIAL_GRID_NS', 'SPATIAL_INTEGRATOR'):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', '0.01')
+    with pytest.raises(SpatialMemoryBudgetError) as ei:
+        _smoke_run()
+    msg = str(ei.value)
+    assert 'coupled spatial loop correction' in msg
+    assert 'grid n_t=22, n_s=24' in msg and 'SPATIAL_INTEGRATOR=mc does not apply' in msg
+    m = re.search(r'SPATIAL_GRID_NT=(\d+) SPATIAL_GRID_NS=\1 needs ~[\d.]+ GB and fits',
+                  msg)
+    assert m, msg
+    # the tree is evaluated in closed form; no loop chamber ran
+    assert [c for c in calls if c is not None] == [], calls
+    g = int(m.group(1))
+    assert 8 <= g < 22
+    monkeypatch.setenv('SPATIAL_GRID_NT', str(g))
+    monkeypatch.setenv('SPATIAL_GRID_NS', str(g))
+    th = _smoke_run()
+    assert np.all(np.isfinite(np.asarray(th['C_tau_x']).real))
+    assert set(c for c in calls if c is not None) == {g}
+    # and the next finer grid would not have fitted
+    monkeypatch.setenv('SPATIAL_GRID_NT', str(g + 1))
+    monkeypatch.setenv('SPATIAL_GRID_NS', str(g + 1))
+    with pytest.raises(SpatialMemoryBudgetError):
+        _smoke_run()
+    # a budget no grid fits says so
+    monkeypatch.setenv('SPATIAL_MEM_BUDGET_GB', '1e-7')
+    with pytest.raises(SpatialMemoryBudgetError, match='no grid down to'):
+        _smoke_run()

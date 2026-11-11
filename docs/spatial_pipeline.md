@@ -292,6 +292,15 @@ tens of GB → OOM. Controls (all in `compute_cumulants`/the bridge via env or `
 | `SPATIAL_INTEGRATOR=mc` (+ `SPATIAL_MC_N`, default 1e6) | importance-sampled Monte-Carlo (`diagram_kinematic(method='mc')`): nested `Exp(μ)` time-gaps + `Exp(μ)` σ's; bounded memory, `O(1/√N)`. **Validated <0.1% for PLAIN φⁿ vertices** (the feasible ℓ=2 path for Allen-Cahn/RD where the grid OOMs); **BIASED for derivative vertices** (the `det M→0` loop-degeneracy singularity → infinite variance). |
 | `SPATIAL_GRID_NT` / `SPATIAL_GRID_NS` | coarsen the loop grid (accuracy tradeoff — validate vs the simulator). |
 
+`mc` and `bessel` exist only on the single-field k=2 analytic-IFT path. The coupled
+multi-field route (spectral assignments, k=2 and k-point), the single-field k-point route
+and the numerical-FT route (derivative vertices at d≥2) have only the product grid: there
+`SPATIAL_INTEGRATOR=mc`/`bessel` (and `SPATIAL_MC_N`) is not applied, a
+`SpatialIntegratorWarning` says so, and the result's info records `integrator='grid'` with
+`integrator_requested`. The coupled route checks every chamber of every loop diagram against
+the budget before it evaluates any; its refusal names the finest common
+`SPATIAL_GRID_NT = SPATIAL_GRID_NS` that fits (down to 8).
+
 **Practical guidance:** ℓ=1 is fast + exact for every theory; for ℓ=2, plain theories use
 `SPATIAL_INTEGRATOR=mc`, derivative theories use `SPATIAL_INTEGRATOR=bessel` at d=1.
 

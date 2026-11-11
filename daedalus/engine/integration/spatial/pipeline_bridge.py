@@ -1550,9 +1550,15 @@ def compute_coupled_loop_correlator(
     from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
     from daedalus.engine.diagrams.symmetry import external_wick_compensation
     from daedalus.engine.integration.spatial.full_integrator import (
-        diagram_kinematic_spectral, spectral_rows, k2_leaf_time_assignments)
+        diagram_kinematic_spectral, spectral_rows, k2_leaf_time_assignments,
+        grid_only_route, refuse_spectral_grid)
     from daedalus.engine.integration.spatial.spectral_propagator import spectral_projectors
 
+    # the spectral-assignment sum has only the deterministic product grid
+    integrator_requested = (grid_only_route(
+        'coupled multi-field spatial route',
+        'per-segment spectral masses: no Monte-Carlo sampler')
+        if max_ell >= 1 else 'grid')
     M = np.asarray(tree_info['M'], dtype=float)
     Dhat = np.asarray(tree_info['Dhat'], dtype=float)
     D0 = float(tree_info['D0'])
@@ -1611,6 +1617,7 @@ def compute_coupled_loop_correlator(
     dCx_by_ell = {el: np.zeros((len(taus), len(xg)), dtype=complex)
                   for el in range(1, max_ell + 1)}
     n_diag = n_live = 0
+    jobs = []                    # (el, dd, pv, patterns, nt, ns, per-tau times)
     for el in range(1, max_ell + 1):
         for td, pre in by_ell.get(el, []):
             n_diag += 1
@@ -1771,17 +1778,29 @@ def compute_coupled_loop_correlator(
                 def _ets(tau):
                     return [{li: 0.0, lj: float(tau)}], 1.0
 
-            for it, tau in enumerate(taus):
-                et_list, fac = _ets(tau)
-                val = 0.0
-                for et in et_list:
-                    for irow, Wp, mt, pt in patterns:
-                        I = diagram_kinematic_spectral(
-                            dd, [0.0], et, mt, D0, spatial_dim=d, xs=xg,
-                            n_t=nt, n_s=ns, mu_scale=mu_scale,
-                            power_table=pt, insert_rows=irow)  # (n_kept, n_x)
-                        val = val + pv * (Wp @ I)
-                dCx_by_ell[el][it, :] += fac * val
+            jobs.append((el, dd, pv, patterns, nt, ns,
+                         [_ets(tau) for tau in taus]))
+
+    # memory: every chamber of every diagram is checked BEFORE any is
+    # evaluated (a two-loop refusal used to come after the whole one-loop
+    # pass), and the refusal names a common grid that fits all of them
+    refuse_spectral_grid(
+        [(dd, et, nt, ns, Wp.size, len(xg))
+         for _el, dd, _pv, patterns, nt, ns, ets in jobs
+         for et_list, _fac in ets for et in et_list
+         for _ir, Wp, _mt, _pt in patterns],
+        what='coupled spatial loop correction')
+    for el, dd, pv, patterns, nt, ns, ets in jobs:
+        for it, (et_list, fac) in enumerate(ets):
+            val = 0.0
+            for et in et_list:
+                for irow, Wp, mt, pt in patterns:
+                    I = diagram_kinematic_spectral(
+                        dd, [0.0], et, mt, D0, spatial_dim=d, xs=xg,
+                        n_t=nt, n_s=ns, mu_scale=mu_scale,
+                        power_table=pt, insert_rows=irow)  # (n_kept, n_x)
+                    val = val + pv * (Wp @ I)
+            dCx_by_ell[el][it, :] += fac * val
 
     C_by_order = {0: np.array(C0, dtype=np.complex128)}
     running = np.array(C0, dtype=np.complex128)
@@ -1798,8 +1817,11 @@ def compute_coupled_loop_correlator(
                  'eigvals': eig, 'max_abs_imag': max_abs_imag,
                  'imag_frac': max_abs_imag / ref,
                  'n_diagrams': n_diag, 'n_live_diagrams': n_live,
+                 'integrator': 'grid',
                  'C_by_order': {el: np.real(C).astype(float)
                                 for el, C in C_by_order.items()}})
+    if integrator_requested != 'grid':
+        info['integrator_requested'] = integrator_requested
     return np.real(C1).astype(float), info
 
 
@@ -2055,12 +2077,21 @@ def compute_spatial_correlator_generic(
     # quadrature, default, validated) or 'mc' (importance-sampled Monte-Carlo —
     # bounded memory, O(1/√N); the feasible ℓ≥2 path for PLAIN φⁿ models where
     # the product grid OOMs).  See docs/spatial_loop_integral_analytic_mc.md.
-    import os as _osi
-    _integrator = _osi.environ.get('SPATIAL_INTEGRATOR', 'grid').strip().lower()
-    _mc_n = int(float(_osi.environ.get('SPATIAL_MC_N', '1000000')))
-    if _integrator not in ('grid', 'mc', 'bessel'):
-        raise ValueError(f"SPATIAL_INTEGRATOR={_integrator!r}: expected 'grid', "
-                         f"'mc' or 'bessel'.")
+    from daedalus.engine.integration.spatial.full_integrator import (
+        spatial_integrator_request)
+    _integrator, _mc_n = spatial_integrator_request()
+    _integrator_requested = _integrator
+    if _integrator != 'grid' and not (
+            (all(rec[2] is None for rec in live_g) or d == 1)
+            and _osg.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') != '1'):
+        # d >= 2 derivative vertices (or a forced numerical FT) take the
+        # numerical q -> x FT, whose q-loop has only the product grid
+        from daedalus.engine.integration.spatial.full_integrator import (
+            grid_only_route)
+        grid_only_route('spatial numerical-FT route',
+                        'derivative vertices at d >= 2, or '
+                        'SPATIAL_FORCE_NUMERICAL_FT=1')
+        _integrator = 'grid'
     if _integrator == 'mc' and any(rec[2] is not None for rec in live_g):
         import warnings as _wmc
         _wmc.warn(
@@ -2158,10 +2189,6 @@ def compute_spatial_correlator_generic(
     import os as _os
     _force_num = _os.environ.get('SPATIAL_FORCE_NUMERICAL_FT', '') == '1'
     _use_analytic = (_all_plain or d == 1) and not _force_num
-    if _integrator in ('mc', 'bessel') and not _use_analytic and verbose:
-        print(f'        [{_integrator.upper()}] NOTE: requested backend does NOT apply here '
-              '(d≥2 derivative vertices route to the numerical FT) — falling back to the '
-              'grid q-loop.  Analytic mc/bessel cover plain (any d) + derivative (d=1).')
     dCx_by_ell = {el: np.zeros((len(taus), len(xg))) for el in ells}   # real-space δC(τ,x)
 
     if _use_analytic:
@@ -2329,6 +2356,8 @@ def compute_spatial_correlator_generic(
     if deriv_acc is not None:
         info['derivative_accuracy'] = deriv_acc
     info['integrator'] = _integrator
+    if _integrator_requested != _integrator:
+        info['integrator_requested'] = _integrator_requested
     return C1, info
 
 
@@ -2379,8 +2408,11 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
     from daedalus.engine.diagrams.symmetry import external_wick_compensation
     from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
     from daedalus.engine.integration.spatial.full_integrator import (
-        diagram_correlator_pts, field_respecting_mappings)
+        diagram_correlator_pts, field_respecting_mappings, grid_only_route)
 
+    # the k-point mapping-sum driver has only the deterministic product grid
+    integrator_requested = (grid_only_route('spatial k-point route')
+                            if max_ell >= 1 else 'grid')
     k = len(external_fields)
     pts = _np.asarray(points, dtype=float)
     if pts.ndim == 2 and k == 2:
@@ -2538,6 +2570,9 @@ def compute_spatial_kpoint(ft, model, prop, num_params, external_fields,
             'coarse_spread': float(_np.max(_np.abs(_dspread))
                                    / max(float(_np.max(_np.abs(total))),
                                          1e-300))}
+    info['integrator'] = 'grid'
+    if integrator_requested != 'grid':
+        info['integrator_requested'] = integrator_requested
     if _v_drift:
         info['drift_velocity'] = _v_drift
     return total, info
@@ -2684,9 +2719,16 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
     from daedalus.engine.diagrams.type_assignment import build_field_index_map
     from daedalus.engine.integration.spatial.diagram_descriptor import diagram_to_cstack
     from daedalus.engine.integration.spatial.full_integrator import (
-        diagram_kinematic_spectral, spectral_rows, field_respecting_mappings)
+        diagram_kinematic_spectral, spectral_rows, field_respecting_mappings,
+        grid_only_route)
     from daedalus.engine.integration.spatial.spectral_propagator import (
         spectral_projectors)
+
+    # the spectral-assignment sum has only the deterministic product grid
+    integrator_requested = (grid_only_route(
+        'coupled multi-field spatial k-point route',
+        'per-segment spectral masses: no Monte-Carlo sampler')
+        if max_ell >= 1 else 'grid')
 
     M = np.asarray(tree_info['M'], dtype=float)
     Dhat = np.asarray(tree_info['Dhat'], dtype=float)
@@ -2810,8 +2852,10 @@ def compute_coupled_kpoint(ft, model, prop, num_params, external_fields,
             print(f'[coupled k={k}] ell={el}: summed')
 
     info = {'per_ell': per_ell, 'eig': eig, 'D0': D0, 'k': k, 'coupled': True,
-            'max_ell': max_ell, 'n_modes': nf,
+            'max_ell': max_ell, 'n_modes': nf, 'integrator': 'grid',
             'max_abs_imag': float(np.max(np.abs(np.imag(total))))}
+    if integrator_requested != 'grid':
+        info['integrator_requested'] = integrator_requested
     if _v_drift:
         info['drift_velocity'] = _v_drift
     return np.real(total).astype(float), info

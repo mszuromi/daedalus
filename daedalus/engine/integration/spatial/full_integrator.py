@@ -514,6 +514,115 @@ def _refuse_chamber_memory(need, P, what):
             f'there.')
 
 
+def spectral_chamber_bytes(descr, external_times, n_t, n_s, n_assign, n_x=1):
+    """Peak bytes of ONE causal chamber of :func:`diagram_kinematic_spectral`:
+    the ``(P, n_assign)`` exponent and amplitude plus the ``(P, n_x)`` heat
+    kernel, complex, with ``P = n_t^{n_V}·split·n_s^{n_C}`` (an upper bound:
+    zero-width segments are dropped)."""
+    import os
+    n_V = len(descr.internal_vertices)
+    n_C = sum(1 for e in descr.edges if e.kind == 'C')
+    P = (n_t ** n_V) * time_grid_split_factor(
+        descr, external_times, n_t,
+        int(os.environ.get('SPATIAL_SEGMENT_NODES', 8))) * (n_s ** n_C)
+    return P * (3 * int(n_assign) + 2 * max(1, int(n_x))) * 16.0, P
+
+
+# the coarsest grid a refusal suggests: below it the chamber quadrature is not
+# trusted to settle (compare two grids on the model at hand either way)
+_COARSEST_HINT_GRID = 8
+
+
+def refuse_spectral_grid(cases, what='coupled spectral kinematic'):
+    """Raise :class:`SpatialMemoryBudgetError` when the largest chamber of
+    ``cases`` (``(descr, external_times, n_t, n_s, n_assign, n_x)`` tuples,
+    one per spectral-kinematic call) exceeds the spatial memory budget.
+
+    The message names the grid in use and the finest common
+    ``SPATIAL_GRID_NT = SPATIAL_GRID_NS = g`` that fits (the overrides set
+    every diagram's grid, so ``g`` must fit all of ``cases``), down to
+    ``g = 8``.  The coupled route has only this deterministic product grid:
+    ``SPATIAL_INTEGRATOR=mc`` does not apply to it."""
+    bud, rule = _spatial_mem_budget()
+    worst = None
+    for c in cases:
+        need, P = spectral_chamber_bytes(*c)
+        if worst is None or need > worst[0]:
+            worst = (need, P, c)
+    if worst is None or worst[0] <= bud:
+        return
+    need, P, (descr, _et, n_t, n_s, n_assign, n_x) = worst
+    n_V = len(descr.internal_vertices)
+    n_C = sum(1 for e in descr.edges if e.kind == 'C')
+    hint = None
+    for g in range(min(n_t, n_s), _COARSEST_HINT_GRID - 1, -1):
+        need_g = max(spectral_chamber_bytes(d_, et_, g, g, na_, nx_)[0]
+                     for d_, et_, _nt, _ns, na_, nx_ in cases)
+        if need_g <= bud:
+            hint = (g, need_g)
+            break
+    if hint is not None:
+        g, need_g = hint
+        grid_txt = (
+            f'SPATIAL_GRID_NT={g} SPATIAL_GRID_NS={g} needs ~{need_g / 1e9:.2f} GB '
+            f'and fits: a coarser grid trades accuracy, so compare it with a '
+            f'second, coarser grid (e.g. {g - 2}) to see that the result has '
+            f'settled')
+    else:
+        grid_txt = (
+            f'no grid down to SPATIAL_GRID_NT=SPATIAL_GRID_NS='
+            f'{_COARSEST_HINT_GRID} fits the budget')
+    raise SpatialMemoryBudgetError(
+        f'{what}: one causal chamber needs ~{need / 1e9:.2f} GB '
+        f'(n_V={n_V} internal vertices, n_C={n_C} correlation edges: '
+        f'P={P:.2e} samples at grid n_t={n_t}, n_s={n_s}, x {n_assign} '
+        f'spectral assignments, {max(1, int(n_x))} output points) over the '
+        f'budget {bud / 1e9:.2f} GB ({rule}).  Options: coarsen the grid -- '
+        f'{grid_txt}; lower max_ell or the number of output points; or raise '
+        f'SPATIAL_MEM_BUDGET_GB if the RAM is there.  (This route has only the '
+        f'deterministic grid: SPATIAL_INTEGRATOR=mc does not apply.)')
+
+
+class SpatialIntegratorWarning(RuntimeWarning):
+    """``SPATIAL_INTEGRATOR`` asks for a backend (``mc`` / ``bessel``) that the
+    spatial route at hand does not have; its deterministic product grid is
+    used, and ``SPATIAL_MC_N`` is ignored.  See
+    :func:`spatial_integrator_request`."""
+
+
+def spatial_integrator_request():
+    """``(integrator, mc_n)`` from ``SPATIAL_INTEGRATOR`` (``'grid'``, the
+    default, ``'mc'`` or ``'bessel'``; anything else raises ``ValueError``)
+    and ``SPATIAL_MC_N`` (default ``1e6``) -- the one parser of both."""
+    import os
+    integ = os.environ.get('SPATIAL_INTEGRATOR', 'grid').strip().lower()
+    if integ not in ('grid', 'mc', 'bessel'):
+        raise ValueError(f"SPATIAL_INTEGRATOR={integ!r}: expected 'grid', "
+                         f"'mc' or 'bessel'.")
+    return integ, int(float(os.environ.get('SPATIAL_MC_N', '1000000')))
+
+
+def grid_only_route(route, why=None):
+    """For a spatial route that has only the deterministic product grid: the
+    requested backend (:func:`spatial_integrator_request`), with a
+    :class:`SpatialIntegratorWarning` -- shown even under the Sage
+    launcher's ``PYTHONWARNINGS=ignore`` -- when it is not ``'grid'``.  The
+    caller uses the grid either way and records both in its info."""
+    integ, mc_n = spatial_integrator_request()
+    if integ != 'grid':
+        from daedalus.engine._warn_helpers import ensure_warning_shown
+        msg = (f'SPATIAL_INTEGRATOR={integ} is not available on the {route}'
+               f'{" (" + why + ")" if why else ""}: it has only the '
+               f'deterministic product grid, which is used'
+               f'{f" (SPATIAL_MC_N={mc_n:g} is ignored)" if integ == "mc" else ""}.  '
+               f'The result is the grid value, not a {integ} estimate.  To '
+               f'make the grid cheaper, coarsen SPATIAL_GRID_NT / '
+               f'SPATIAL_GRID_NS.')
+        ensure_warning_shown(SpatialIntegratorWarning, 'always', message=msg)
+        warnings.warn(msg, SpatialIntegratorWarning, stacklevel=3)
+    return integ
+
+
 def time_grid_split_factor(descr, external_times, n_t=None, n_short=8):
     """How many times larger the causal-chamber time grid is because each
     vertex interval splits at the external times inside its static leaf
@@ -1624,19 +1733,8 @@ def diagram_kinematic_spectral(descr, q_vec, external_times, mass_table, D,
     xs_arr = None if xs is None else np.asarray(xs, dtype=float)
     # memory guard: per chamber the (P, n_assign) exponent and amplitude plus
     # the (P, n_x) heat-kernel arrays, P = n_t^{n_V}·split·n_s^{n_C}
-    _P = (n_t ** n_V) * time_grid_split_factor(
-        descr, external_times, n_t,
-        int(__import__('os').environ.get('SPATIAL_SEGMENT_NODES', 8))) * Ps
     _nx = 1 if xs_arr is None else max(1, len(xs_arr))
-    _need = _P * (3 * n_assign + 2 * _nx) * 16.0
-    _bud, _rule = _spatial_mem_budget()
-    if _need > _bud:
-        raise SpatialMemoryBudgetError(
-            f'coupled spectral kinematic would allocate ~{_need / 1e9:.1f} GB per '
-            f'chamber (P={_P:.2e} samples x {n_assign} spectral assignments, '
-            f'{_nx} output points) over the budget {_bud / 1e9:.2f} GB ({_rule}).  '
-            f'Lower max_ell, coarsen SPATIAL_GRID_NT/NS, or raise '
-            f'SPATIAL_MEM_BUDGET_GB if the RAM is there.')
+    refuse_spectral_grid([(descr, external_times, n_t, n_s, n_assign, _nx)])
     L = a.shape[1]
     total = (np.zeros((n_assign, len(xs_arr)), dtype=complex)
              if xs_arr is not None else np.zeros(n_assign, dtype=complex))
