@@ -1145,6 +1145,7 @@ def _hartree_delayed(model, parameters, delay, kw):
         r.info['model'] = model.get('name', '<unnamed>')
         r.info['delay'] = {'order': int(n), 'estimate': est,
                            'target': o['tol'], 'order_source': source,
+                           'target_met': None if est is None else bool(est <= o['tol']),
                            'orders': list(orders), 'estimates': list(ests),
                            'kernels': names,
                            'lag_correlator_change': r.info.get(
@@ -1154,6 +1155,10 @@ def _hartree_delayed(model, parameters, delay, kw):
                + (f', estimated relative error {est:.2e} (target '
                   f'{o["tol"]:.1e})' if est is not None else
                   ' (order given: no error estimate)')
+               + ('; the given order misses the target (a higher order, or '
+                  "delay={'order': 'auto'}, reaches it)"
+                  if source == 'given' and est is not None and est > o['tol']
+                  else '')
                + (f'; the lag correlator changed by {r.info["delay_lag_change"]:.1e} '
                   f'from the order before (it converges more slowly than the '
                   f'spectrum and the covariance)'
@@ -1169,8 +1174,24 @@ def _hartree_delayed(model, parameters, delay, kw):
                               stacklevel=3)
         return r
     if o['order'] != 'auto':
-        return finish(run(o['order']), o['order'], None, 'given',
-                      [o['order']], [])
+        # a given order is estimated as the search estimates its orders:
+        # against the order below it (``estimate=False``: no estimate)
+        n = o['order']
+        r = run(n)
+        if not o['estimate']:
+            return finish(r, n, None, 'given', [n], [])
+        m_ = n // 2 if n >= 2 else 2
+        try:
+            rm = run(m_)
+        except Exception as exc:
+            r.info['delay_estimate_error'] = f'{type(exc).__name__}: {exc}'
+            return finish(r, n, None, 'given', [n], [])
+        lo, hi = (rm, r) if m_ < n else (r, rm)
+        scales = _delay_scales(lo)
+        a, b = _delay_observable(lo, scales[0]), _delay_observable(hi, scales[0])
+        est = float(np.max(np.abs(b - a)) / max(np.max(np.abs(b)), 1e-300))
+        r.info['delay_lag_change'] = _delay_lag_change(lo, hi, scales[1])
+        return finish(r, n, est, 'given', sorted({m_, n}), [est])
     key = _delay_cache_key(model, parameters, kw, o)
     cached = D._order_cache_get(key).get('hartree')
     if cached is not None:
@@ -1242,7 +1263,9 @@ def hartree(model, parameters=None, *, delay=None, **kw):
 
     ``delay``: the options of a model with hard delays (the keys of
     ``dd.Config.delay``: ``order`` ``'auto'`` or an integer, ``tol``,
-    ``n_start``, ``n_max``, ``wall_max``, ``order_cache``).  A model without
+    ``n_start``, ``n_max``, ``wall_max``, ``order_cache``, ``estimate``).  A
+    given ``order`` is estimated against ``order // 2`` (the advisory says
+    when it misses ``tol``; ``estimate=False`` runs it alone).  A model without
     a delay ignores it.  With delays the kernels are embedded through their
     Pade approximants; ``order='auto'`` runs the order search of the loop
     path (``n_start``, doubling to ``n_max``) until two orders agree to

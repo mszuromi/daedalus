@@ -23,7 +23,13 @@ class PhaseJResourceError(DaedalusError, MemoryError):
     BEFORE the plan that crosses it is allocated (and, from
     ``compute_cumulants``, before Phase J starts when its estimate already
     crosses it), under every analyzer policy.  ``estimate``: the numbers
-    (tuples, bytes, budget, the offending diagram / subset).  (Defined here,
+    (tuples, bytes, budget, the offending diagram / subset).  It always
+    propagates: a run the guard stops is never returned as a result with
+    ``status = 'incomplete'`` (that status names diagrams Phase J cannot
+    evaluate), also from ``dd.run``'s k >= 3 slices (permuted-leg runs) and
+    covariance derivatives.  Only the automatic Pade order treats a refused
+    HIGHER order as its cost cap: the completed lower order is returned with
+    ``status = 'target_missed'``.  (Defined here,
     re-exported by ``final_integral``, so a spawned worker raises the same
     class without importing Sage.)"""
 

@@ -2109,6 +2109,11 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                 f'where leg j meets another leg is the left limit of its '
                 f'slice (times in _kpoint_slice_times)')
 
+        except MemoryError:
+            # a memory refusal (PhaseJResourceError, e.g. of a permuted-leg
+            # run) raises as it does inside compute_cumulants: never an
+            # incomplete result
+            raise
         except Exception as e:
             # The slices could not be evaluated: the result keeps the
             # callables (``total_C``) but has no curve, so it is marked
@@ -2146,6 +2151,8 @@ def run(model: dict, cfg: Config, module=None) -> dict:
                     res['_kpoint_grid_note'] = (
                         f'τ downsampled to {gtau.size} pts/axis '
                         f'({gtau.size ** (k - 1)} evals) to bound grid cost')
+            except MemoryError:
+                raise
             except Exception as e:
                 res['_kpoint_grid_error'] = repr(e)
                 _kpoint_incomplete(

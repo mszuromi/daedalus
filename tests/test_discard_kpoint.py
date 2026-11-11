@@ -15,6 +15,7 @@ budget, the largest diagram within it) or mid-run, when the run's measured
 growth crosses ``DISCARD_AUTO_GROWTH_FRACTION`` of the budget.  The growth
 here is simulated deterministically: the footprint reading counts the live
 per-diagram callables."""
+import warnings
 import weakref
 
 import numpy as np
@@ -304,3 +305,25 @@ def test_slice_failure_still_reported(monkeypatch, disc):
         assert 'slice evaluation failed' in r['_kpoint_slice_error']
         if out == 'moment':
             assert r['moment'] is None
+
+
+def test_guard_in_a_permuted_leg_run_raises(monkeypatch):
+    """The memory guard stopping one of dd.run's permuted-leg runs (a k >= 3
+    cumulant of two fields) raises, as it does when it stops the run itself:
+    it used to be caught by the slice evaluation and returned as an
+    incomplete result with C_tau = None and a PhaseJIncompleteWarning."""
+    import daedalus.api as api
+    orig = api.compute_cumulants
+    calls = []
+
+    def guarded(**kw):
+        calls.append(list(kw['external_fields']))
+        if len(calls) > 1:                       # the permuted-leg run
+            raise FI.PhaseJResourceError('memory budget exceeded (simulated)')
+        return orig(**kw)
+    monkeypatch.setattr(api, 'compute_cumulants', guarded)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', dd.PhaseJIncompleteWarning)
+        with pytest.raises(FI.PhaseJResourceError, match='simulated'):
+            dd.run(_two_field(), _cfg(False, max_ell=0))
+    assert len(calls) == 2 and calls[1] != calls[0]

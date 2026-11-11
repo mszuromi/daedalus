@@ -76,7 +76,8 @@ it keeps every distinct stable solution.
   `wall_max`, `order_cache`): the orders $n_\mathrm{start}, 2n_\mathrm{start}, \dots, n_\mathrm{max}$ are run until two
   consecutive orders agree to `tol` in the mean, the covariance and the spectra of the fields, which converge
   geometrically with the order. If $n_\mathrm{max}$ or `wall_max` is reached first the call is **refused**
-  (`HartreeError`, with the estimate and the orders tried); `delay={'order': n}` accepts an order without an estimate.
+  (`HartreeError`, with the estimate and the orders tried); `delay={'order': n}` accepts a given order, estimated
+  against $n/2$ (the advisory says when it misses `tol`; `'estimate': False` runs it alone, without an estimate).
   `result.info['delay']` records the order, the estimate, the orders tried and where the order came from (`'search'`,
   `'replay'` of a cached order, `'given'`); the advisory `HARTREE_DELAY_PADE` is always set, and also gives the change
   of the lag correlator from the order before, which converges only algebraically (the Padé approximant of a delay
