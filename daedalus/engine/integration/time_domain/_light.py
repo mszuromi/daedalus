@@ -31,6 +31,33 @@ class PhaseJResourceError(DaedalusError, MemoryError):
         super().__init__(message)
         self.estimate = estimate
 
+
+class DeltaCycleError(DaedalusError, ValueError):
+    r"""A δ-subset of a diagram whose δ-carrying lines close a cycle: two
+    parallel δ lines between the same vertices, or a δ line from a vertex
+    back to itself (a white, equal-time correlator or a δ propagator part
+    contracted on one vertex).  Its δ constraints are linearly dependent, so
+    once the others are solved the last one reads ``δ(0)``: the term is
+    infinite, not a number, and no Phase J route evaluates it (both raise
+    this; ``reason`` is ``'delta_cycle'``).  It means the model's
+    perturbation series is ill-defined as written -- typically a field with
+    white (δ-correlated) fluctuations entering a vertex nonlinearly, so
+    ``<u(t)^2>`` appears.  Give the field a finite correlation time (an OU /
+    Markov-embedded noise) or regularize the vertex.  ``diagram``: the
+    diagram serial; ``delta_edges``: the subset's δ lines as ``(u, v, pi,
+    ri)`` (vertex indices and propagator entry); ``residual``: the
+    identically-zero δ constraint (as text).  (Defined here, re-exported by
+    ``final_integral``, so a spawned worker raises the same class without
+    importing Sage.)"""
+
+    reason = 'delta_cycle'
+
+    def __init__(self, message, diagram=None, delta_edges=(), residual=None):
+        super().__init__(message)
+        self.diagram = diagram
+        self.delta_edges = tuple(delta_edges)
+        self.residual = residual
+
 import collections as _collections_ctr
 import threading as _threading_ctr
 

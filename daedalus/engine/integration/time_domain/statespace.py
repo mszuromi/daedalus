@@ -3803,7 +3803,10 @@ def _contract(nv, leaf_mask, edges, delta):
     """The DAG of one δ-subset: the edges in ``delta`` contracted, cycles
     merged (their vertices share a time), the smooth edges kept:
     ``(nv, leaf_mask, [(u, v, n)])``, or ``None`` when a smooth edge has no
-    states (the subset is never built)."""
+    states (the subset is never built).  A subset whose δ edges themselves
+    close a cycle (it carries δ(0)) is still counted here, so the estimate
+    stays an upper bound: ``integrate_diagram`` refuses it by name on every
+    route (``DeltaCycleError``) when it is reached."""
     parent = list(range(nv))
 
     def find(x):
