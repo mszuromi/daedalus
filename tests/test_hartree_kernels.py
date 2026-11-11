@@ -186,11 +186,18 @@ def test_a_target_that_is_not_reached_is_refused():
     with pytest.raises(HartreeError, match='did not reach the target') as ei:
         hartree(m, warn=False, delay={'tol': 1e-30, 'n_start': 2, 'n_max': 8})
     assert 'orders tried [2, 4, 8]' in str(ei.value)
-    # an order given explicitly is accepted, flagged as having no estimate
+    # an order given explicitly is accepted, estimated against the order
+    # below it, and its missed target is in the advisory
     r = hartree(m, warn=False, delay={'order': 4})
-    assert r.info['delay']['order_source'] == 'given'
-    assert r.info['delay']['estimate'] is None
-    assert any('no error estimate' in x['message'] for x in r.advisories)
+    d = r.info['delay']
+    assert d['order_source'] == 'given' and d['orders'] == [2, 4]
+    assert d['estimate'] > 0 and d['target_met'] is False
+    assert any('misses the target' in x['message'] for x in r.advisories)
+    # estimate=False: the order alone, the same closure
+    r0 = hartree(m, warn=False, delay={'order': 4, 'estimate': False})
+    assert r0.info['delay']['estimate'] is None
+    assert any('no error estimate' in x['message'] for x in r0.advisories)
+    assert np.array_equal(r0.cov, r.cov) and np.array_equal(r0.mean, r.mean)
 
 
 def test_delay_advisory_is_warned():

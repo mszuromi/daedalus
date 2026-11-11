@@ -408,6 +408,8 @@ def _derivatives(model, legs, max_ell, values, grid, pairs, verbose, options,
             try:
                 pts[s] = _matrix_pass(model, legs, max_ell, v, grid, pairs,
                                       False, verbose, options)
+            except MemoryError:
+                raise                       # a memory refusal keeps its type
             except Exception as exc:
                 raise CovarianceDerivativeError(
                     f'derivative of {label}: the run at {label} = '
