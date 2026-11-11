@@ -712,6 +712,11 @@ def compute_correction_td(
             'pole_vals / C_mats do not represent the propagator.  Use '
             'compute_cumulants, which resolves it (daedalus.api._pole_clusters), or '
             'pass the propagator of a deformation node.')
+    # an entry growing at large omega: its delta' part is in neither the
+    # poles nor D_delta (ImproperPropagatorError, on both routes)
+    from daedalus.engine.integration.time_domain.final_integral import (
+        refuse_improper_propagator)
+    refuse_improper_propagator(propagator_data)
     if on_divergence is not None:
         from daedalus.engine.integration.time_domain.final_integral import (
             _divergence_policy)

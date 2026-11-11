@@ -323,6 +323,69 @@ class PoleFreePropagatorError(DaedalusError, ValueError):
         self.reasons = dict(reasons or {})
 
 
+class ImproperPropagatorError(DaedalusError, ValueError):
+    r"""The propagator has poles and at least one entry that GROWS at large
+    ω (``deg P > deg Q`` of its reduced form ``P / Q``): ``G(t)`` carries
+    ``δ'(t)`` (or higher derivative) terms.  Neither Phase J route
+    represents them -- the pole list holds the strictly proper part and
+    ``D_delta`` the constant one, so the polynomial part would be dropped
+    and the cumulant come out without it.  Raised instead of returning a
+    value, on both routes (``reason`` is ``'improper_propagator'``); the
+    model analyzer's ``G3_IMPROPER`` names the same entries before the run
+    when it is on.  Typically a field's ``Dt`` sits on another field's
+    response (``y = Dt u`` with ``u`` algebraic): check the ``Dt`` terms,
+    one per field, on its own response.  A propagator with no pole at all
+    is left to :class:`PoleFreePropagatorError`.  ``entries``: the
+    offending ``(pi, ri)``; ``growth``: ``{(pi, ri): deg P - deg Q}``
+    (``None`` when decided numerically)."""
+
+    reason = 'improper_propagator'
+
+    def __init__(self, message, entries=(), growth=None):
+        super().__init__(message)
+        self.entries = tuple(entries)
+        self.growth = dict(growth or {})
+
+
+def refuse_improper_propagator(propagator_data):
+    r"""Raise :class:`ImproperPropagatorError` when ``propagator_data`` (the
+    dict of ``build_propagator`` / ``compute_poles_and_residues``) records
+    improper entries (``'improper_entries'``: ``(pi, ri, deg P - deg Q)``
+    triples) and has at least one pole; otherwise return.  A pole-free
+    propagator is decided per diagram by ``_pole_free_forced_delta_edges``
+    (``PoleFreePropagatorError``)."""
+    if not hasattr(propagator_data, 'get'):
+        return
+    bad = propagator_data.get('improper_entries') or ()
+    if not bad or not propagator_data.get('pole_vals'):
+        return
+    names = list(propagator_data.get('ring_gen_names') or ())
+    nf = propagator_data.get('nf')
+
+    def _lab(pi, ri):
+        try:
+            return f'G[{names[nf + pi]}, {names[ri]}]'
+        except (IndexError, TypeError):
+            return f'G[pi={pi}, ri={ri}]'
+    growth = {(int(p), int(r)): (None if g is None else int(g))
+              for p, r, g in bad}
+    lines = ', '.join(
+        _lab(p, r) + ('' if g is None else f' ~ omega^{g}')
+        for (p, r), g in sorted(growth.items()))
+    n = len(growth)
+    raise ImproperPropagatorError(
+        f"improper_propagator: {n} propagator entr{'y' if n == 1 else 'ies'} "
+        f"grow{'s' if n == 1 else ''} at large omega (deg P > deg Q): "
+        f'{lines}.  G(t) then carries delta\'(t) (or higher derivative) '
+        f'terms, which no Phase J route represents (the poles hold the '
+        f'strictly proper part, D_delta the constant one), so no value is '
+        f'returned rather than one without them, on every route.  This is '
+        f"the analyzer's G3_IMPROPER (preflight off, or that error "
+        f'downgraded).  Remedy: check the Dt terms -- one Dt per field, on '
+        f'its own response.',
+        entries=sorted(growth), growth=growth)
+
+
 def _entry_is_provably_instantaneous(propagator_data, num_params, pi, ri):
     r"""Decide whether entry ``G[pi, ri]`` is PROVABLY a pure δ (or 0),
     i.e. whether its smooth part ``G(ω) − G(ω → ∞)`` is identically zero.

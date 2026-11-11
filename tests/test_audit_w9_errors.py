@@ -48,6 +48,7 @@ _KEPT = {
     'daedalus.engine.integration.time_domain.final_integral.PoleFreePropagatorError': ValueError,
     'daedalus.engine.integration.time_domain.final_integral.PhaseJResourceError': MemoryError,
     'daedalus.engine.integration.time_domain.final_integral.DeltaCycleError': ValueError,
+    'daedalus.engine.integration.time_domain.final_integral.ImproperPropagatorError': ValueError,
     'daedalus.engine.integration.time_domain.final_integral.PhaseJDivergenceError': ArithmeticError,
     'daedalus.engine.integration.time_domain.final_integral.DeltaSolveValidationError': AssertionError,
 }
