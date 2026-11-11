@@ -276,7 +276,14 @@ def test_pipeline_tree_exact_and_one_loop_vs_hartree():
     assert np.max(np.abs(loop - ref)) / np.max(np.abs(ref)) < 1e-4    # Pade-8: 2.9e-5
     info = r['delay']
     assert info['n'] == 8 and info['tree'] == 'exact' and info['tree_method'] == 'bvp'
-    assert info['target_met'] is None and info['stability']['status'] == 'stable'
+    assert info['stability']['status'] == 'stable'
+    # a pinned order is estimated against the order below it, as the search
+    # estimates its orders: the true loop error of n = 8 is below it, and the
+    # default target (1e-8) is missed
+    assert info['orders_run'] == [4, 8] and info['estimate_order'] == 4
+    true = np.max(np.abs(loop - ref)) / np.max(np.abs(np.real(r['C_tau'])))
+    assert true < info['est_rel_error'] == info['est_by_order'][8]
+    assert info['target_met'] is False and r['status'] == 'target_missed'
     assert 1e-4 < info['tree_vs_pade_rel'] < 1e-3                       # Pade-8 tree: 3.2e-4
     assert r['analysis'].has('G3_DELAY_APPROXIMATED')
     assert r['analysis'].traits.propagator_class == 'delay-rational'
@@ -451,7 +458,7 @@ def test_delayed_kernel_in_a_nonlinear_term_keeps_its_delay():
     the Pade image (the unshifted time image never reaches the vertex), equal
     to the same kernel declared with delay= + freq_image."""
     kw = dict(k=2, max_ell=1, external_fields=EXT, tau_grid=np.array([0.0, 0.5, 2.0]),
-              parallel=False, verbose=False, use_cache=False, delay={'order': 4})
+              parallel=False, verbose=False, use_cache=False, delay={'order': 4, 'estimate': False})
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         a = compute_cumulants(_cond_model('delay cond A', time_expr='heaviside(t - d)*exp(-(t - d)/tau)/tau'), **kw)
@@ -473,7 +480,7 @@ def test_hard_delay_in_a_nonlinear_term_is_never_silent():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         r = compute_cumulants(m, k=2, max_ell=1, external_fields=EXT, tau_grid=np.array([0.0, 1.0]),
-                              parallel=False, verbose=False, use_cache=False, delay={'order': 4})
+                              parallel=False, verbose=False, use_cache=False, delay={'order': 4, 'estimate': False})
     assert r['status'] == 'ok' and r['delay']['incomplete'] is None
     assert r['delay']['approximant'] == 'pade'
     assert np.max(np.abs(r['C_tau_by_ell'][1])) > 0

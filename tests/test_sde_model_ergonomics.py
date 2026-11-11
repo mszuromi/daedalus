@@ -68,7 +68,7 @@ def test_indexed_delayed_field_switch_on_is_the_explicit_kernel_run():
             warnings.simplefilter('ignore')
             return compute_cumulants(m, k=2, max_ell=0, external_fields=[('v', 1), ('v', 2)], t_min=0.0,
                                      times=np.array([[0.2, 0.2], [0.7, 0.7], [1.5, 1.0]]), parallel=False,
-                                     verbose=False, use_cache=False, delay={'order': 8})
+                                     verbose=False, use_cache=False, delay={'order': 8, 'estimate': False})
     a = run(_pop().equation('v', '(Dt + 1)*v', 'sum(w[i,j]*v[j](t - d) for j in E)')
             .noise('xi', Gaussian(var=1), into={'v': 1}))
     b = run(_pop().define_kernel('g', kernel=Kernel.delay('d'))

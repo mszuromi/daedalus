@@ -84,7 +84,7 @@ def _g6_run(name, order):
         return compute_cumulants(_delayed_ou(name).build(), k=2, max_ell=0,
                                  external_fields=[('x', 1), ('x', 1)],
                                  tau_grid=np.array([0.0, 1.0]),
-                                 delay={'order': order, 'tree': 'pade'}, **RUN)
+                                 delay={'order': order, 'tree': 'pade', 'estimate': False}, **RUN)
 
 
 def test_bug5_graded_realization_measured_and_harmless():

@@ -133,7 +133,7 @@ def test_hard_delay_in_a_product_runs_the_all_pass_approximant():
             c0 = _counter('conv_lines_dressed_direct')
             rd = compute_cumulants(_product_model(f'dnl hard product {n}', freq_image='1',
                                                   delay='d'),
-                                   delay={'order': n, 'tree': 'pade'}, **kw)
+                                   delay={'estimate': False, 'order': n, 'tree': 'pade'}, **kw)
             assert _counter('conv_lines_dressed_direct') > c0
             rr = compute_cumulants(_product_model(f'dnl rational product {n}',
                                                   freq_image=_rational_text(n, n)), **kw)
@@ -161,7 +161,7 @@ def test_hard_delay_in_a_product_equals_its_markov_embedding(n):
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         rd = compute_cumulants(_product_model('dnl hard product mk', freq_image='1', delay='d'),
-                               delay={'order': n, 'tree': 'pade'}, **kw)
+                               delay={'estimate': False, 'order': n, 'tree': 'pade'}, **kw)
         # the stable saddle x* = sqrt(3) - 1 (the search may list the
         # unstable root -1 - sqrt(3) first; the analyzer refuses that one)
         from daedalus.api.analyze import AnalyzerError
@@ -196,7 +196,7 @@ def test_undressable_line_falls_back_on_the_strictly_proper_approximant(monkeypa
         warnings.simplefilter('ignore')
         c0 = _counter('conv_kernel_direct_refused')
         rd = compute_cumulants(_product_model('dnl hard product leg', freq_image='1', delay='d'),
-                               delay={'order': n, 'tree': 'pade'}, **kw)
+                               delay={'estimate': False, 'order': n, 'tree': 'pade'}, **kw)
         assert _counter('conv_kernel_direct_refused') > c0
         rr = compute_cumulants(_product_model('dnl rational product leg',
                                               freq_image=_rational_text(n - 1, n)), **kw)
@@ -223,7 +223,7 @@ def test_hard_delay_in_a_product_drift_form_converges_with_an_exact_tree(monkeyp
     for n in (4, 8):
         with warnings.catch_warnings(record=True) as ws:
             warnings.simplefilter('always')
-            r = compute_cumulants(m, delay={'order': n}, **kw)
+            r = compute_cumulants(m, delay={'estimate': False, 'order': n}, **kw)
         assert r['status'] == 'ok'
         assert r['delay']['approximant'] == 'pade' and r['delay']['tree'] == 'exact'
         assert not any('could not evaluate' in str(w.message) for w in ws)
@@ -234,7 +234,7 @@ def test_hard_delay_in_a_product_drift_form_converges_with_an_exact_tree(monkeyp
     monkeypatch.setattr(FI, 'DRESS_CONV_KERNELS', False)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
-        rp = compute_cumulants(m, delay={'order': 8}, **kw)
+        rp = compute_cumulants(m, delay={'estimate': False, 'order': 8}, **kw)
     assert rp['delay']['approximant'] == 'pade_proper'
     proper = [np.real(np.asarray(rp['C_tau_by_ell'][ell])) for ell in (0, 1)]
     np.testing.assert_array_equal(out[4][0], out[8][0])          # exact tree
@@ -284,7 +284,7 @@ def test_delayed_leg_operator_inside_exp_equals_the_voltage_form():
     # (slow: the spike-only one loop dresses every leg, ~75 s)
     kw = dict(k=2, max_ell=1, external_fields=[('dn', 1), ('dn', 1)],
               tau_grid=np.array([-4.0, 0.0, 0.5, 1.5, 6.0]), parallel=False, verbose=False,
-              delay={'order': 4})
+              delay={'estimate': False, 'order': 4})
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         v = compute_cumulants(_hawkes_voltage(), **kw)
@@ -303,7 +303,7 @@ def test_bare_delay_inside_exp_of_a_spike_field_is_refused_by_name():
     with warnings.catch_warnings(record=True) as ws:
         warnings.simplefilter('always')
         r = compute_cumulants(m, k=2, max_ell=1, external_fields=[('dn', 1), ('dn', 1)],
-                              tau_grid=TAU, parallel=False, verbose=False, delay={'order': 4})
+                              tau_grid=TAU, parallel=False, verbose=False, delay={'estimate': False, 'order': 4})
     assert r['status'] == 'incomplete'
     assert r['delay']['approximant'] == 'pade' and r['delay']['target_met'] is False
     assert r['delay']['cap'].startswith('refused') and 'delta' in r['delay']['cap']
@@ -412,7 +412,7 @@ def test_delayed_spike_train_times_a_continuous_field_runs():
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         a = compute_cumulants(_spike_times_voltage('dnl spike x voltage'),
-                              delay={'order': 2, 'tree': 'pade'}, **kw)
+                              delay={'estimate': False, 'order': 2, 'tree': 'pade'}, **kw)
         b = compute_cumulants(_spike_times_voltage('dnl spike x voltage markov', n_markov=2),
                               **kw)
     assert a['status'] == b['status'] == 'ok'
@@ -449,7 +449,7 @@ def test_bare_delay_of_a_continuous_field_inside_exp_runs_in_a_spiking_model():
     equation as a delayed alpha filter), tree and one loop, same order."""
     kw = dict(k=2, max_ell=1, external_fields=[('dn', 1), ('dn', 1)],
               tau_grid=np.array([-4.0, 0.0, 0.5, 1.5, 6.0]), parallel=False, verbose=False,
-              delay={'order': 4, 'tree': 'pade'})
+              delay={'estimate': False, 'order': 4, 'tree': 'pade'})
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         a = compute_cumulants(_hawkes_delayed_voltage_leg(), **kw)
@@ -472,7 +472,7 @@ def test_bare_delay_of_a_spike_field_in_a_linear_term_runs():
         warnings.simplefilter('ignore')
         r = compute_cumulants(_linear_hawkes_bare_delay(), k=2, max_ell=1,
                               external_fields=[('dn', 1), ('dn', 1)], tau_grid=TAU,
-                              parallel=False, verbose=False, delay={'order': 4})
+                              parallel=False, verbose=False, delay={'estimate': False, 'order': 4})
     assert r['status'] == 'ok' and r['delay']['approximant'] == 'pade'
     assert r['delay']['cap'] is None or not str(r['delay']['cap']).startswith('refused')
     assert np.max(np.abs(np.asarray(r['C_tau_by_ell'][0]))) > 0
@@ -487,7 +487,7 @@ def test_delay_warnings_are_shown_under_sages_startup_filters(monkeypatch):
     import sys
     m = _hawkes_spike_only(p=0.3, image='1', name='dnl Hawkes bare delay in exp')
     kw = dict(k=2, max_ell=1, external_fields=[('dn', 1), ('dn', 1)],
-              tau_grid=TAU, parallel=False, verbose=False, delay={'order': 4})
+              tau_grid=TAU, parallel=False, verbose=False, delay={'estimate': False, 'order': 4})
     monkeypatch.setattr(sys, 'warnoptions', ['ignore'])
 
     def sage_like():

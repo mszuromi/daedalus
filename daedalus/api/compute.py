@@ -2001,10 +2001,12 @@ def compute_cumulants(
     delay : dict or None
         Options for models with delay kernels (``exp(-i omega d)`` factors in
         a kernel image; see :mod:`daedalus.api.delay`): ``order`` (``'auto'`` or a
-        fixed Pade order ``n``), ``tol`` (target relative accuracy of the
-        observable, default ``1e-8``), ``n_start`` / ``n_max`` (doubling search,
-        default 4 / 16), ``wall_max`` (cap in s on the predicted wall time of
-        the next order, default 900), ``tree`` (``'exact'``, default: the
+        fixed Pade order ``n``, estimated against ``n // 2``), ``tol`` (target
+        relative accuracy of the observable, default ``1e-8``), ``n_start`` /
+        ``n_max`` (doubling search, default 4 / 16), ``wall_max`` (cap in s on
+        the predicted wall time of the next order, default ``None``: the
+        estimate alone picks the order), ``estimate`` (default ``True``: a
+        fixed order's error estimate), ``tree`` (``'exact'``, default: the
         k = 2 tree from the exact delayed covariance; ``'pade'``),
         ``order_cache`` (default ``True``: an entry's repeated call replays its
         search; another entry at the same model and parameter point starts its

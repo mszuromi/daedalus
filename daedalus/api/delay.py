@@ -30,8 +30,11 @@ realization cannot take it as it is.  This module
   relative error of the observable, ``max_tau |C_n - C_2n| / max_tau |C_2n|``
   (conservative: it was measured 3-5x above the true error of ``C_n``,
   and the reported value is ``C_2n``), meets the target (default ``1e-8``),
-  or until ``n_max`` or the predicted wall time of the next order exceeds the
-  cap (then a warning says the target was missed).  The prediction is the
+  or until ``n_max`` (then a warning says the target was missed): the order
+  is chosen by the estimate alone, the same on every machine.  An explicit
+  ``wall_max`` also stops the search when the predicted wall time of the next
+  order exceeds it (a reported stop that depends on the machine's speed and
+  load: the record, the status and the warning say so).  The prediction is the
   measured wall of the last order times the growth of a cost proxy of the
   realizations, ``mean(states)^2 * (1 + mean(stiffness))`` per entry (the next
   order's realization is built and balanced-truncated as the run will be:
@@ -77,13 +80,19 @@ saddle is refused by name before any approximation runs.
 
 Options (``compute_cumulants(..., delay={...})``):
 
-``order``    ``'auto'`` (default) or a fixed ``n``;
+``order``    ``'auto'`` (default) or a fixed ``n``.  A fixed order is estimated
+             as the search estimates its orders: the same pipeline at ``n // 2``
+             gives ``est_rel_error`` (``estimate_order``), and a missed ``tol``
+             is a ``DelayOrderWarning`` and ``status = 'target_missed'``;
 ``tol``      target relative accuracy of the observable (default ``1e-8``);
 ``n_start``  first order of the doubling search (default 4);
 ``n_max``    largest order (default 16: one loop beyond it leaves the state-space
              route's fast range on c976a25, e.g. the scalar delayed OU takes 6 s at
              n = 16 and more than 30 min at n = 20);
-``wall_max`` cap (s) on the predicted wall time of the next order (default 900);
+``wall_max`` cap (s) on the predicted wall time of the next order (default ``None``:
+             no cap; a cap makes the order depend on the machine's speed and load);
+``estimate`` ``True`` (default): a fixed order runs ``n // 2`` too for its
+             estimate; ``False`` runs ``n`` alone (no estimate, no warning);
 ``tree``     ``'exact'`` (default) or ``'pade'``;
 ``truncation`` ``'auto'`` (default: the first order at ``min(truncation_tol(),
              tol / 100)``, later orders adaptive, above), a fixed relative
@@ -101,7 +110,7 @@ The result carries ``result['delay']`` (orders tried, walls, the estimate,
 whether the target was met, the tree used and its comparison with the Pade
 tree), the analyzer finding ``G3_DELAY_APPROXIMATED`` and an
 ``approximation`` entry of the assumptions ledger (``delay:<kernel>``).  A
-missed target (``n_max`` / ``wall_max`` reached, a higher order the engine
+missed target (``n_max`` / ``wall_max`` reached, a fixed order above ``tol``, a higher order the engine
 could not finish, e.g. refused by the memory budget, or a diverging
 difference) sets ``result['status'] = 'target_missed'`` (``'incomplete'``
 when Phase J left diagrams out) next to the ``DelayOrderWarning``.  At
@@ -131,8 +140,8 @@ __all__ = ['Kernel', 'clear_order_cache', 'pade_coefficients', 'pade_image', 'de
            'pade_mn_coefficients', 'bare_delay_kernels',
            'bare_delays_on_delta_lines', 'DEFAULTS']
 
-DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=900.0,
-                tree='exact', truncation='auto', order_cache=True)
+DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=None,
+                tree='exact', truncation='auto', order_cache=True, estimate=True)
 
 #: Cost model of the order controller: the wall of order ``m`` scales like
 #: ``S^COST_EXPONENT_STATES * (1 + nu)^COST_EXPONENT_STIFFNESS``, ``S`` the mean
@@ -666,8 +675,9 @@ def resolve_options(opts) -> dict:
     o['n_start'] = max(1, int(o['n_start']))
     o['n_max'] = max(o['n_start'], int(o['n_max']))
     o['tol'] = float(o['tol'])
-    o['wall_max'] = float(o['wall_max'])
+    o['wall_max'] = None if o['wall_max'] is None else float(o['wall_max'])
     o['order_cache'] = bool(o['order_cache'])
+    o['estimate'] = bool(o['estimate'])
     if o['truncation'] != 'auto':
         try:
             t = float(o['truncation'])
@@ -1227,8 +1237,30 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
                            f'approximant (unstable: {skipped}; failed: {failed})')
     r = runs[n_used]
     fixed = opts['order'] != 'auto'
-    target_met = (None if fixed and loops_need_n else
-                  (est is not None and est <= opts['tol']) if loops_need_n else True)
+    ctrl['estimate_order'] = None
+    if fixed and loops_need_n and opts['estimate'] and not incomplete:
+        # a pinned order is estimated as the search estimates its orders:
+        # against the order below it
+        est, m_est, why = _fixed_order_estimate(
+            model, sub_call, n_used, opts, k, exact, ctx, runs, walls, skipped, failed,
+            verbose, call, ctrl, approximant == 'pade_proper')
+        ctrl['estimate_order'] = m_est
+        if est is not None:
+            ests[n_used] = est
+            cap = f'fixed order n = {n_used} (estimated against n = {m_est})'
+        else:
+            cap = f'fixed order n = {n_used}: no error estimate ({why})'
+    if not loops_need_n:
+        target_met = True
+    elif fixed and est is None:
+        target_met = None
+    else:
+        target_met = est is not None and est <= opts['tol']
+    if fixed and loops_need_n and opts['estimate'] and est is None and not incomplete:
+        from daedalus.api.save import _ensure_warning_shown
+        _msg = f'delay: {cap}.'
+        _ensure_warning_shown(DelayOrderWarning, 'always', message=_msg, stacklevel=3)
+        warnings.warn(_msg, DelayOrderWarning, stacklevel=3)
     if incomplete:
         target_met = False
     elif target_met is False:
@@ -1368,15 +1400,52 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             ctrl['predicted_walls_s'][nxt] = round(pred, 1)
             if verbose:
                 print(f'[delay] n = {nxt} predicted at {pred:.0f} s ({how})')
-            if pred > opts['wall_max']:
+            if opts['wall_max'] is not None and pred > opts['wall_max']:
+                # an explicit wall-time cap: the order then depends on the
+                # machine's speed and load (the estimate alone decides
+                # without one)
                 cap = (f'next order n = {nxt} predicted at {pred:.0f} s '
-                       f'> wall_max {opts["wall_max"]:.0f} s ({how})')
+                       f'> wall_max {opts["wall_max"]:g} s ({how}); a wall-time stop '
+                       "depends on this machine's speed and load, delay={'order': n} "
+                       'pins the order')
                 break
         prev = n
     if ctrl['stop'] is None:
         ctrl['stop'] = cap or (f'fixed order n = {seq[0]}' if opts['order'] != 'auto'
                                else f'n_max = {opts["n_max"]} reached')
     return est, cap, n_used, incomplete, ctrl
+
+
+def _fixed_order_estimate(model, sub_call, n, opts, k, exact, ctx, runs, walls, skipped,
+                          failed, verbose, call, ctrl, proper):
+    """The error estimate of a pinned order ``n``: the same pipeline at
+    ``m = n // 2`` (``2`` for ``n = 1``) with the truncation tolerance of
+    ``n``, and the search's estimate of ``n`` from it, ``max |C_m - C_n| /
+    max |C_n|`` (loops only with the exact tree).  The run at ``n`` is the one
+    returned, unchanged.  Returns ``(est, m, None)``, or ``(None, m, why)``
+    when order ``m`` does not run."""
+    m = n // 2 if n >= 2 else 2
+    runs_m, walls_m, skipped_m, failed_m = {}, {}, {}, {}
+    try:
+        out = _run_orders(model, sub_call, [m], opts, k, exact, True, ctx, runs_m, walls_m,
+                          skipped_m, failed_m, {}, verbose, call, proper=proper,
+                          t_first=ctrl['truncation_by_order'].get(n))
+    except Exception as exc:
+        failed[m] = f'{type(exc).__name__}: {str(exc)[:300]}'
+        return None, m, f'order n = {m} failed ({type(exc).__name__})'
+    if out[2] is None or out[3]:
+        failed[m] = 'Phase J skipped diagrams' if out[3] else 'no usable run'
+        return None, m, f'order n = {m}: {failed[m]}'
+    runs[m], walls[m] = runs_m[m], walls_m[m]
+    t_scale = ctrl.get('sample_time_scale') or 1.0
+    tot_m, loop_m = _observable(runs_m[m], k, t_scale)
+    tot_n, loop_n = _observable(runs[n], k, t_scale)
+    est = (_rel(loop_m, loop_n, tot_n) if exact is not None
+           else _rel(tot_m, tot_n, tot_n))
+    if verbose:
+        print(f'[delay] fixed order n = {n}: estimated relative error {est:.3g} '
+              f'(against n = {m})')
+    return est, m, None
 
 
 def _lastargs(last, k, m):
@@ -1479,6 +1548,8 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'predicted_walls_s': ctrl['predicted_walls_s'],
         'cost_correction': ctrl['cost_correction'],
         'stop_reason': ctrl['stop'],
+        # a pinned order: the order its estimate was measured against
+        'estimate_order': ctrl.get('estimate_order'),
         # 'search'; 'replay': this entry's earlier search at this model and point
         # (order_cache), its estimate and target; 'verified': the search of another
         # entry started the ladder at the cached order (the estimate is this
@@ -1490,6 +1561,9 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
     }
     r['delay'] = info
     r.pop('delay_tree_vs_pade', None)
+    if call.get('verbose', True):
+        print(f'[delay] Pade order n = {n_used}: {ctrl["stop"]}'
+              + (f'; estimated relative error {est:.3g}' if est is not None else ''))
     cfg = r.get('config')
     if isinstance(cfg, dict):
         cfg['delay_pade_model'] = cfg.get('model_name')
@@ -1612,7 +1686,7 @@ def _record_in_report(r, report_true, info, policy=None):
                 + ('' if info['target_met'] is not False else
                    f'; target {info["tol"]:g} missed ({info["cap"] or "n_max"})')
                 + (f' (fixed order n = {n}: no estimate)' if info['target_met'] is None else '')
-                + '.',
+                + f'; order: {info["stop_reason"]}.',
         remedy=('none needed' if info['target_met'] is not False else
                 "raise delay={'wall_max': ...} / {'n_max': ...}, or accept the estimate"))
     entry = _an.LedgerEntry(
