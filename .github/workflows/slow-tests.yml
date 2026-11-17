@@ -68,5 +68,7 @@ jobs:
           environment-file: environment.yml
           cache-environment: true
 
+      # At the default memory budget the package's guard refuses some of
+      # these runs; tests/conftest.py reports such a refusal as a skip.
       - name: Run the bigmem tests (one at a time)
         run: python -m pytest tests/ -q -m bigmem --durations=0

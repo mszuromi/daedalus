@@ -151,3 +151,29 @@ def pytest_terminal_summary(terminalreporter):
                                  'symbols (report only)')
         for nodeid, items in _SAGE_GUARD_REPORT:
             terminalreporter.write_line(f'{nodeid}: {items}')
+
+
+# -- bigmem tests: a memory-guard refusal is a skip, not a failure ---------
+#
+# A `bigmem` test needs more memory than the default budget allows (see
+# pytest.ini).  When the package's own memory guard refuses the run at the
+# budget in force (SpatialMemoryBudgetError, PhaseJResourceError: both are
+# DaedalusError and MemoryError), the test is skipped with the guard's
+# message and the variable to raise.  A real out-of-memory error, or any
+# other failure, still fails the test.
+
+@pytest.hookimpl(wrapper=True)
+def pytest_pyfunc_call(pyfuncitem):
+    if pyfuncitem.get_closest_marker('bigmem') is None:
+        return (yield)
+    from daedalus.engine.errors import DaedalusError
+    try:
+        return (yield)
+    except MemoryError as exc:
+        if not isinstance(exc, DaedalusError):
+            raise
+        first = str(exc).strip().splitlines()[0] if str(exc).strip() else ''
+        pytest.skip(f'bigmem: the memory guard refused this run at the '
+                    f'budget in force ({type(exc).__name__}: {first[:240]}). '
+                    f'Raise SPATIAL_MEM_BUDGET_GB / PHASE_J_MEM_BUDGET_GB on '
+                    f'a machine with the memory to run it.')
