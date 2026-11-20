@@ -1033,6 +1033,12 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     from daedalus.api.compute import compute_cumulants
     from daedalus.api import analyze as _an
     from daedalus.api import _delay_exact as _dx
+    from daedalus.api.access import resolve_external_fields
+    # bare names ('x' = ('x', 1)) resolved here too: the analyzer question,
+    # the exact tree and the order sub-runs all see the same legs as a run
+    # spelled with pairs (the same result, byte for byte)
+    call = dict(call)
+    call['external_fields'] = resolve_external_fields(model, call.get('external_fields'))
     opts = resolve_options(call.get('delay'))
     k = int(call['k'])
     max_ell = int(call.get('max_ell') or 0)
@@ -1586,6 +1592,10 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         msg = (f'delay: the Pade approximation of {what} reached an '
                f'estimated relative error {est if est is not None else float("nan"):.3g} '
                f'at n = {n_used} (target {opts["tol"]:g}); {cap or "n_max reached"}.')
+        if exact is None and exact_note:
+            # the tree is Pade because the exact tree was unavailable: that is
+            # the cause to name, not the order
+            msg += f" The exact tree was not used: {str(exact_note).rstrip('.')}."
         from daedalus.api.save import _ensure_warning_shown
         _ensure_warning_shown(DelayOrderWarning, 'always', message=msg,
                               stacklevel=4)

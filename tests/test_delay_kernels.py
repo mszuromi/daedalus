@@ -557,3 +557,57 @@ def test_g2k_review_cases_real_roots_aliasing_long_delays():
     with pytest.raises(ExactTreeUnavailable, match='not positive'):
         ExactTree(DelayedStateSpace(np.array([[-1.0]]), np.array([[-2.0]]), one, np.array([[0.0]]),
                                     one, np.array([[0.0]]), 1.4, np.array([[0.2]])), 0, 0)
+
+
+# ── bare-name external fields on the delay route ───────────────────────
+
+
+def _two_field_delayed(name):
+    return (SDE(name).parameter('a', default=1.0).parameter('c', default=-0.6)
+            .parameter('d', default=0.7, domain='positive').parameter('k', default=0.8)
+            .parameter('b', default=1.2).parameter('s', default=0.4)
+            .field('u').field('v').drift('u', '-a*u + c*v(t - d)').drift('v', '-k*v + b*u')
+            .noise('w', Gaussian(var='s^2'), into={'v': 1}).build())
+
+
+def test_bare_name_externals_keep_the_exact_delay_tree():
+    """['v', 'v'] is [('v', 1), ('v', 1)] on the delay route too: the analyzer
+    question, the exact tree and the order sub-runs see the same legs (a bare
+    name used to reach the exact tree unresolved and fall back to the Pade
+    tree, missing the target)."""
+    taus = np.array([-1.0, 0.0, 0.6, 2.0])
+    out = []
+    for ext in (['v', 'v'], [('v', 1), ('v', 1)]):
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            r = compute_cumulants(_two_field_delayed('delay bare-name legs'), k=2, max_ell=0,
+                                  external_fields=ext, tau_grid=taus, parallel=False,
+                                  verbose=False, use_cache=False)
+        out.append(r)
+    a, b = out
+    for key in ('tree', 'tree_method', 'tree_note', 'n', 'target_met', 'est_rel_error'):
+        assert a['delay'][key] == b['delay'][key], key
+    assert a['delay']['tree'] == 'exact' and a['delay']['tree_note'] is None
+    assert a['status'] == b['status'] == 'ok'
+    assert np.array_equal(np.asarray(a['C_tau']), np.asarray(b['C_tau']))
+
+
+def test_order_warning_names_the_missing_exact_tree(monkeypatch):
+    """When the exact tree is unavailable the tree is Pade, and the order
+    warning names that cause (``tree_note``), not only the order."""
+    from daedalus.api import _delay_exact as _dx
+    from daedalus.api.delay import DelayOrderWarning
+
+    def _refuse(*a, **kw):
+        raise _dx.ExactTreeUnavailable('a reason the test forces')
+    monkeypatch.setattr(_dx.ExactTree, 'from_context', classmethod(_refuse))
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        r = compute_cumulants(_two_field_delayed('delay forced pade tree'), k=2, max_ell=0,
+                              external_fields=[('v', 1), ('v', 1)], tau_grid=np.array([0.0, 1.0]),
+                              parallel=False, verbose=False, use_cache=False, delay={'order': 4})
+    info = r['delay']
+    assert info['tree'] == 'pade' and 'a reason the test forces' in info['tree_note']
+    assert r['status'] == 'target_missed'
+    msgs = [str(w.message) for w in W if issubclass(w.category, DelayOrderWarning)]
+    assert msgs and all('a reason the test forces' in m for m in msgs), msgs
