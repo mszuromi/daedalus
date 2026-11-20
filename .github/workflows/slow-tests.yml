@@ -37,6 +37,14 @@ jobs:
           environment-file: environment.yml
           cache-environment: true
 
+      # the last digits of the ill-conditioned Pade-16 tests depend on the
+      # runner's CPU and BLAS kernel; record them so a drift can be attributed
+      - name: Runner CPU and BLAS
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)|Flags' | cut -c1-200 || true
+          python -c "import numpy; numpy.show_config()" 2>/dev/null | grep -iA3 'blas' | head -20 || true
+          python -c "import threadpoolctl, json; print(json.dumps(threadpoolctl.threadpool_info(), indent=1))" 2>/dev/null || true
+
       - name: Select this shard's files
         run: |
           python -m pytest tests/ -q --collect-only -m "slow and not bigmem" 2>/dev/null \

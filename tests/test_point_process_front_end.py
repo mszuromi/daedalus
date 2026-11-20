@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -309,11 +310,23 @@ def test_delayed_spike_only_equals_voltage_form():
     ext, tau = [('n', 1), ('n', 1)], np.array([-3.0, 0.5, 3.0])
     out = []
     for form in ('voltage', 'spike'):
-        r = compute_cumulants(_delay_pp(form, n_pop=1, w=((0.5,),)).build(), k=2, max_ell=1,
-                              external_fields=ext, tau_grid=tau, parallel=False, verbose=False,
-                              use_cache=False, delay={'order': 8})
-        assert r['status'] == 'ok'
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')     # the order-8 estimate misses the default target
+            r = compute_cumulants(_delay_pp(form, n_pop=1, w=((0.5,),)).build(), k=2, max_ell=1,
+                                  external_fields=ext, tau_grid=tau, parallel=False, verbose=False,
+                                  use_cache=False, delay={'order': 8})
+        # a pinned order is estimated against the order below it, and reports
+        # 'target_missed' when that estimate is above the default tol; the
+        # test is about the equality of the two forms, not about the target
+        assert r['status'] in ('ok', 'target_missed')
+        info = r['delay']
+        assert info['n'] == 8 and info['tree'] == 'exact'
+        assert np.isfinite(info['est_rel_error'])
+        assert (r['status'] == 'ok') == bool(info['target_met'])
         out.append(r)
+    assert out[0]['status'] == out[1]['status']
+    np.testing.assert_allclose(out[1]['delay']['est_rel_error'], out[0]['delay']['est_rel_error'],
+                               rtol=1e-6)
     for ell in (0, 1):
         a = np.asarray(out[0]['C_tau_by_ell'][ell])
         b = np.asarray(out[1]['C_tau_by_ell'][ell])

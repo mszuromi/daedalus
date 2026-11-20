@@ -51,6 +51,11 @@ except ImportError:
     _HAS_SIGALRM = False
 
 
+# After the budget, the timeout is raised again every this many seconds
+# until one raise reaches Python code (see ``_run_with_timeout``).
+_TIMEOUT_REFIRE_SEC = 1.0
+
+
 class _PolynomialPathTimeout(Exception):
     """Raised when the polynomial fraction-field inverse exceeds budget."""
 
@@ -62,21 +67,45 @@ def _run_with_timeout(fn, timeout_sec, *args, **kwargs):
     :class:`_PolynomialPathTimeout` on expiry.  No-op timeout (just calls
     ``fn`` directly) on platforms without SIGALRM, or when
     ``timeout_sec`` is ``None`` (explicit disable).
+
+    The handler's exception can land inside a Cython callback that does
+    not propagate exceptions (Sage's ``py_is_real``, called back from
+    pynac): it is printed as "Exception ignored" and the callback returns
+    a default value.  So the handler re-arms itself (every
+    ``_TIMEOUT_REFIRE_SEC``) until one raise reaches Python code, and a
+    result computed after a swallowed raise is discarded (the timeout is
+    raised when ``fn`` returns): the fallback runs promptly, and never on
+    a value a silenced callback may have corrupted.
     """
     if not _HAS_SIGALRM or timeout_sec is None:
         return fn(*args, **kwargs)
 
+    state = {'fired': 0, 'done': False}
+    msg = f'polynomial fraction-field path exceeded {timeout_sec}s budget'
+
     def _handler(signum, frame):
-        raise _PolynomialPathTimeout(
-            f'polynomial fraction-field path exceeded {timeout_sec}s budget')
+        if state['done']:
+            return
+        state['fired'] += 1
+        # again shortly, in case this raise is swallowed by a callback
+        _signal.setitimer(_signal.ITIMER_REAL, _TIMEOUT_REFIRE_SEC)
+        raise _PolynomialPathTimeout(msg)
 
     old_handler = _signal.signal(_signal.SIGALRM, _handler)
-    _signal.alarm(int(timeout_sec))
+    _signal.setitimer(_signal.ITIMER_REAL, max(float(timeout_sec), 1e-3))
     try:
-        return fn(*args, **kwargs)
+        try:
+            result = fn(*args, **kwargs)
+        finally:
+            state['done'] = True
     finally:
-        _signal.alarm(0)
+        _signal.setitimer(_signal.ITIMER_REAL, 0)
         _signal.signal(_signal.SIGALRM, old_handler)
+    if state['fired']:
+        raise _PolynomialPathTimeout(
+            msg + ' (the timeout was raised inside a callback that ignores '
+            'exceptions; the result is discarded)')
+    return result
 
 
 def _record_pole_analysis(out, G_ft_F, Q_poly, nf, roots=None,
