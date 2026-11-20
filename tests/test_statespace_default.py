@@ -489,7 +489,13 @@ def test_pade16_two_stage_feedback_at_a_nonzero_lag():
     got, r = _two_stage_one_loop(16, [0.0, 1.0])
     assert not r['phase_j_engine'].get('fallback_by_reason')
     ref = np.array([-2.225495732590711e-06, 5.884300935931722e-06])
-    assert np.max(np.abs(got - ref)) <= 1e-10 * np.max(np.abs(ref))
+    # runner precision, not drift: the Pade-16 dressed lines are graded
+    # (||A||_1 ~ 1e40 before the balancing similarity), so the last digits
+    # depend on the BLAS kernel / CPU of the machine; at one commit hosted
+    # runners gave up to 1.4e-10 relative (Nov 15) where this machine gives
+    # less.  1e-8 keeps a ~70x margin over that and is still ~1e7 times
+    # tighter than the 8-18 % pole-route fallback this test guards against
+    assert np.max(np.abs(got - ref)) <= 1e-8 * np.max(np.abs(ref))
 
 
 def test_onenorm_power_bounds_of_a_graded_generator_stay_finite():
@@ -518,7 +524,11 @@ def test_pade16_dense_graded_segment_stays_on_the_route():
     # pole route (2.886e-5 at tau = 2, 18 % off); the 16-field reference
     got, r = _two_stage_one_loop(16, [2.0], d=0.3, g2=0.5, truncation=0)
     assert not r['phase_j_engine'].get('fallback_by_reason')
-    assert abs(got[0] - 3.511719577122537e-05) <= 1e-9 * 3.511719577122537e-05
+    # runner precision, not drift (see the test above): at one commit hosted
+    # runners gave 2.1e-9 (Nov 1), a pass (Nov 8) and 1.3e-8 (Nov 15)
+    # relative.  1e-6 keeps a ~75x margin over the worst and is ~1e5 times
+    # tighter than the 18 % pole-route fallback
+    assert abs(got[0] - 3.511719577122537e-05) <= 1e-6 * 3.511719577122537e-05
 
 # ── review round 2 ──────────────────────────────────────────────────────
 
