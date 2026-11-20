@@ -298,6 +298,11 @@ res = compute_cumulants(m.build(), k=2, max_ell=0, external_fields=[('v', 1), ('
 bounds = res['input_jitter']['n']['fit']['bound_by_order']             # {1: 0.0, 2: 3.9e-07, 3: 2.2e-06, ...}
 ```
 
+Here the input drives a single unit. In a population model, an unindexed input `nX` used in a population's equation or
+rate follows the bare-name broadcast rule: each unit gets its own INDEPENDENT copy (`mf_values['nXstar']` has one
+entry per unit). An input SHARED by all units needs a population of size 1, `.population('X', size=1)` with
+`.point_process('nX', 'lamX', population='X')` and `sum(u[i]*Conv(kX*g, nX[j]) for j in X)` in the rate.
+
 ### Spectra and integrated correlators (k = 2)
 
 `spectra=` asks for exact spectral and integrated outputs, computed from the state-space triples of the run with no
