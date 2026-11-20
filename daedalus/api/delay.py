@@ -156,6 +156,12 @@ DEFAULTS = dict(order='auto', tol=1e-8, n_start=4, n_max=16, wall_max=None,
 COST_EXPONENT_STATES = 2.0
 COST_EXPONENT_STIFFNESS = 1.0
 
+#: A cost advisory (a ``DelayOrderWarning`` before the run) when the automatic
+#: search's next order is predicted to take longer than this many seconds and
+#: no ``wall_max`` is set: the search goes on (the estimate alone decides the
+#: order), and the message says how to pin the order reached so far.
+ADVISORY_WALL_S = 600.0
+
 
 class DelayOrderWarning(UserWarning):
     """The automatic Pade order missed its accuracy target (cap or n_max)."""
@@ -872,7 +878,21 @@ def _observable(r, k, t_scale=1.0):
         tot = np.asarray(r['C_tau'], dtype=complex)
         tree = np.asarray(by.get(0), dtype=complex) if by.get(0) is not None else 0 * tot
         return tot, tot - tree
-    # k >= 3: total_C(t0, ..., t_{k-1}) at a few distinct, ordered times
+    # k >= 3: total_C(t0, ..., t_{k-1}) at a few distinct, ordered times; the
+    # lazy callables cost a Phase J evaluation per point (minutes on a large
+    # realization), so the values are kept with the run (``_OBS_MEMO``,
+    # dropped from the returned result) and every caller reuses them
+    memo = r.setdefault(_OBS_MEMO, {})
+    key = (int(k), float(t_scale))
+    if key not in memo:
+        memo[key] = _observable_k3(r, k, t_scale)
+    return memo[key]
+
+
+_OBS_MEMO = '_delay_observable_memo'
+
+
+def _observable_k3(r, k, t_scale):
     pts = _sample_points(k, t_scale)
     if r.get('C_points') is not None:
         # evaluate-and-discard: the callables answer the run's fixed points
@@ -1356,6 +1376,13 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
                    'dressed with its direct term needs a strictly proper image)')
             est = None
             break
+        if k >= 3:
+            # the k >= 3 values are lazy: their evaluation at the sample
+            # points (memoized with the run) is part of this order's cost,
+            # and of the wall the next order's prediction scales
+            t1 = time.perf_counter()
+            _finite(r, k, t_scale)
+            walls[n] += time.perf_counter() - t1
         bad_tree = (loops_need_n and exact is not None
                     and r.get('delay_tree_vs_pade') is not None
                     and not r['delay_tree_vs_pade'] <= 1.0)
@@ -1406,6 +1433,24 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
             ctrl['predicted_walls_s'][nxt] = round(pred, 1)
             if verbose:
                 print(f'[delay] n = {nxt} predicted at {pred:.0f} s ({how})')
+            if opts['wall_max'] is None and pred > ADVISORY_WALL_S:
+                _amsg = (f'delay: the next Pade order n = {nxt} is predicted at {pred:.0f} s '
+                         f'(n = {n} took {walls[n]:.0f} s; {how}); the search goes on, the '
+                         'estimate alone decides the order. '
+                         + (f'The estimated relative error at n = {n} is {est:.3g}; '
+                            if est is not None else '')
+                         + f"delay={{'order': {n}}} pins this order (it runs n = {n} and "
+                         f'n = {max(n // 2, 2)} for its estimate)')
+                ctrl['cost_advisory'] = _amsg
+                # shown now, before the run: the search may run inside a
+                # warnings-recording context (a bare delay) that re-emits
+                # the warning below only when the search is over
+                import sys as _sys
+                print(f'DelayOrderWarning (advisory): {_amsg}', file=_sys.stderr, flush=True)
+                from daedalus.api.save import _ensure_warning_shown
+                _ensure_warning_shown(DelayOrderWarning, 'always', message=_amsg,
+                                      stacklevel=4)
+                warnings.warn(_amsg, DelayOrderWarning, stacklevel=4)
             if opts['wall_max'] is not None and pred > opts['wall_max']:
                 # an explicit wall-time cap: the order then depends on the
                 # machine's speed and load (the estimate alone decides
@@ -1553,6 +1598,7 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'cost_by_order': ctrl['cost_by_order'],
         'predicted_walls_s': ctrl['predicted_walls_s'],
         'cost_correction': ctrl['cost_correction'],
+        'cost_advisory': ctrl.get('cost_advisory'),
         'stop_reason': ctrl['stop'],
         # a pinned order: the order its estimate was measured against
         'estimate_order': ctrl.get('estimate_order'),
@@ -1567,6 +1613,7 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
     }
     r['delay'] = info
     r.pop('delay_tree_vs_pade', None)
+    r.pop(_OBS_MEMO, None)
     if call.get('verbose', True):
         print(f'[delay] Pade order n = {n_used}: {ctrl["stop"]}'
               + (f'; estimated relative error {est:.3g}' if est is not None else ''))

@@ -25,6 +25,7 @@ Scalar delayed OU: dx = (-a x + c x(t - d) - eps x^3) dt + sqrt(2D) dW,
 a = 1, c = -2, D = 0.1 (Hopf at d* = 2 pi / (3 sqrt 3) = 1.2092).
 """
 import math
+import time
 import os
 import sys
 import warnings
@@ -611,3 +612,62 @@ def test_order_warning_names_the_missing_exact_tree(monkeypatch):
     assert r['status'] == 'target_missed'
     msgs = [str(w.message) for w in W if issubclass(w.category, DelayOrderWarning)]
     assert msgs and all('a reason the test forces' in m for m in msgs), msgs
+
+
+# ── the order search's cost accounting ─────────────────────────────────
+
+
+def _k3_auto(name, **delay):
+    m = (SDE(name).parameter('a', default=A_).parameter('c', default=C_)
+         .parameter('d', default=0.5, domain='positive').parameter('b', default=0.3)
+         .parameter('D', default=D_).field('x').drift('x', '-a*x + c*x(t - d) - b*x^2')
+         .noise('xi', Gaussian(var='2*D'), couples={'x': 1}).build())
+    with warnings.catch_warnings(record=True) as W:
+        warnings.simplefilter('always')
+        r = compute_cumulants(m, k=3, max_ell=0, external_fields=[('x', 1)] * 3,
+                              parallel=False, verbose=False, use_cache=False,
+                              delay=dict(order_cache=False, **delay))
+    return r, W
+
+
+def test_k3_sample_values_are_evaluated_once_per_order_and_timed(monkeypatch):
+    """At k >= 3 the values are lazy callables: the controller evaluates them
+    once per order at its sample points (kept with the run, not in the
+    result), and that evaluation is part of the order's wall, which the
+    next order's prediction scales."""
+    from daedalus.api import delay as DL
+    calls = []
+    real = DL._observable_k3
+
+    def slow(r, k, t_scale):
+        calls.append(id(r))
+        time.sleep(0.3)
+        return real(r, k, t_scale)
+    monkeypatch.setattr(DL, '_observable_k3', slow)
+    r, _W = _k3_auto('delay k3 cost accounting', n_max=8, tol=1e-30)
+    info = r['delay']
+    assert info['orders_run'] == [4, 8]
+    assert len(calls) == len(set(calls)) == 2              # once per order
+    assert all(w >= 0.3 for w in info['walls_s'].values())
+    assert DL._OBS_MEMO not in r
+
+
+def test_cost_advisory_before_an_expensive_order(monkeypatch, capfd):
+    """A next order predicted above ADVISORY_WALL_S is announced (a
+    DelayOrderWarning naming how to pin the order reached), and the search
+    goes on: the same orders and the same numbers as without the advisory."""
+    from daedalus.api import delay as DL
+    ref, _ = _k3_auto('delay advisory ref', n_max=8, tol=1e-30)
+    assert ref['delay']['cost_advisory'] is None
+    monkeypatch.setattr(DL, 'ADVISORY_WALL_S', 0.0)
+    r, W = _k3_auto('delay advisory', n_max=8, tol=1e-30)
+    msgs = [str(w.message) for w in W if issubclass(w.category, DL.DelayOrderWarning)
+            and 'is predicted at' in str(w.message)]
+    assert len(msgs) == 1 and "delay={'order': 4}" in msgs[0]
+    # also printed when raised (a bare delay's search records its warnings
+    # and re-emits them only at the end)
+    assert 'DelayOrderWarning (advisory): ' + msgs[0] in capfd.readouterr().err
+    assert r['delay']['cost_advisory'] == msgs[0]
+    assert r['delay']['orders_run'] == ref['delay']['orders_run'] == [4, 8]
+    pts = [(0.0, 0.3, 0.8)]
+    assert [complex(r['total_C'](*p)) for p in pts] == [complex(ref['total_C'](*p)) for p in pts]
