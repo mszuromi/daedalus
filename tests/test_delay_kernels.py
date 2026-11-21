@@ -647,7 +647,9 @@ def test_k3_sample_values_are_evaluated_once_per_order_and_timed(monkeypatch):
     r, _W = _k3_auto('delay k3 cost accounting', n_max=8, tol=1e-30)
     info = r['delay']
     assert info['orders_run'] == [4, 8]
-    assert len(calls) == len(set(calls)) == 2              # once per order
+    # once per order: 4, 8 and the opposite-parity check of 8 (n = 5)
+    assert info['parity_probe']['order'] == 5
+    assert len(calls) == len(set(calls)) == 3
     assert all(w >= 0.3 for w in info['walls_s'].values())
     assert DL._OBS_MEMO not in r
 
