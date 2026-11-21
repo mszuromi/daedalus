@@ -2377,7 +2377,8 @@ def _exact_poles(K_num, omega, nf):
         return 0, [], True, delta, improper, None
     PRc = PolynomialRing(CDF, 'om_c')
     Qc = PRc([complex(c) for c in Q.coefficients(sparse=False)])
-    poles = sorted((complex(r) for r, _ in Qc.roots(CDF)),
+    from daedalus.api._propagator import verified_roots
+    poles = sorted(verified_roots(Q, [complex(r) for r, _ in Qc.roots(CDF)]),
                    key=lambda p: (p.imag, p.real)) if Q.degree() > 0 else []
     squarefree = bool(Q.is_squarefree())
     clusters = None

@@ -74,6 +74,22 @@ and is refused by name (``bare_delays_on_delta_lines``); on a continuous
 field, next to continuous legs only, or in a linear term, it runs.  The tree
 stays exact.
 
+A delay times a filter of relative degree one (``Kernel.delay(d) *
+Kernel.exponential(tau)``) filtering a spike train (a field whose propagator
+has a delta part) takes the strictly proper ``[n-1/n]`` approximant for that
+kernel in every run (``contact_delay_kernels``; the record lists them in
+``proper_kernels``): the direct term ``(-1)^n`` of the (n, n) image passes
+through the filter, the approximated kernel then starts at ``(-1)^n h(0+)``
+instead of 0, and a point-process covariance, which holds ``Lambda K(tau)``
+at short lags, would keep that error at ``tau = 0`` at every order.
+
+The doubling estimate compares orders of one parity (``n // 2`` and ``n``),
+so an error that alternates with the parity of ``n`` cancels in it.  One
+order of the other parity just above ``n // 2`` checks it
+(``result['delay']['parity_probe']``); ``est_rel_error`` is the larger of the
+two (the probe is more accurate than ``n // 2``, so it raises the estimate
+only when such an error is there).
+
 Stability is decided with the TRUE exponential (``daedalus.api._kernel_stability``,
 the analyzer's G2-K gate), never from the approximant: an unstable delayed
 saddle is refused by name before any approximation runs.
@@ -428,23 +444,38 @@ def specs_may_delay(specs) -> bool:
     return False
 
 
-def pade_model(model: dict, n: int, proper: bool = False) -> dict:
+def pade_model(model: dict, n: int, proper: bool = False, proper_kernels=None) -> dict:
     """A copy of ``model`` whose kernel images carry the Pade (n, n)
     approximant of every delay factor (``proper``: the strictly proper
     ``[n-1/n]`` instead, for a hard delay at a vertex leg; see
-    ``compute_delayed``) (its own name and fingerprint, so its
+    ``compute_delayed``; ``proper_kernels``: names of kernels that take the
+    ``[n-1/n]`` approximant anyway, default ``model['_delay_proper_kernels']``,
+    see ``contact_delay_kernels``) (its own name and fingerprint, so its
     caches never mix with the true model's or another order's).  The copy
     asks the propagator builder to skip the symbolic inverse (the numbers are
     substituted before inverting; the symbolic inverse of a Pade-n kernel
     matrix is the slow part and nothing downstream needs it)."""
     from sage.all import SR
     hook = model['kernel_ft_image']
+    if proper_kernels is None:
+        proper_kernels = model.get('_delay_proper_kernels') or ()
+    if not isinstance(proper_kernels, dict):
+        proper_kernels = {k_: 1 for k_ in proper_kernels}
+    # {kernel name: how far the numerator degree drops below n}
+    sp = {str(k_): max(1, int(v_)) for k_, v_ in proper_kernels.items()}
 
     m_ = int(n) - 1 if proper else None
 
+    def _m_of(key, _n, _m):
+        drop = sp.get(str(key))
+        if drop is None:
+            return _m
+        return max(0, _n - drop) if _m is None else min(_m, max(0, _n - drop))
+
     def hook_n(ns, omega, _hook=hook, _n=int(n), _m=m_):
         out = _hook(ns, omega) or {}
-        return {k: pade_substitute(SR(v), omega, _n, _m) for k, v in out.items()}
+        return {k: pade_substitute(SR(v), omega, _n, _m_of(k, _n, _m))
+                for k, v in out.items()}
 
     m = dict(model)
     m['kernel_ft_image'] = hook_n
@@ -464,8 +495,11 @@ def pade_model(model: dict, n: int, proper: bool = False) -> dict:
     tag = f'Pade [{int(n) - 1}/{int(n)}]' if proper else f'Pade {int(n)}'
     m['name'] = f'{base} [delay {tag}]'
     m['spec_signature'] = (f"{model.get('spec_signature', '')}-pade{int(n)}"
-                           + ('sp' if proper else ''))
-    m['_delay_pade'] = {'n': int(n), 'model': base, 'proper': bool(proper)}
+                           + ('sp' if proper else '')
+                           + (f"-sp[{','.join(f'{k_}:{sp[k_]}' for k_ in sorted(sp))}]"
+                              if sp else ''))
+    m['_delay_pade'] = {'n': int(n), 'model': base, 'proper': bool(proper),
+                        'proper_kernels': dict(sorted(sp.items()))}
     m['_numeric_first_propagator'] = True
     return m
 
@@ -950,16 +984,11 @@ def _reemit(recorded):
         warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
 
 
-def bare_delay_kernels(model: dict, ns) -> list:
-    """The delayed kernels whose image without its delay factor is not
-    strictly proper (a bare hard delay ``delta(t - d)``, or a delta part next to
-    the delay), as sorted names; a kernel whose degree cannot be decided counts
-    as bare (conservative)."""
+def _stripped_relative_degree(val, omega):
+    """``deg(denominator) - deg(numerator)`` in ``omega`` of a delayed kernel
+    image with its delay factor(s) ``exp(-I*omega*d)`` replaced by 1 (the
+    filter behind the delay), or ``None`` when it cannot be decided."""
     from sage.all import SR, exp
-    hook = model.get('kernel_ft_image')
-    if hook is None or ns is None:
-        return []
-    omega = SR.var('omega')
 
     def strip(e):
         e = SR(e)
@@ -969,18 +998,101 @@ def bare_delay_kernels(model: dict, ns) -> list:
         ops = e.operands()
         return e if not ops else e.operator()(*[strip(o) for o in ops])
 
+    try:
+        e = SR(strip(SR(val))).rational_simplify()
+        return int(SR(e.denominator()).degree(omega)) - int(SR(e.numerator()).degree(omega))
+    except Exception:
+        return None
+
+
+def bare_delay_kernels(model: dict, ns) -> list:
+    """The delayed kernels whose image without its delay factor is not
+    strictly proper (a bare hard delay ``delta(t - d)``, or a delta part next to
+    the delay), as sorted names; a kernel whose degree cannot be decided counts
+    as bare (conservative)."""
+    from sage.all import SR
+    hook = model.get('kernel_ft_image')
+    if hook is None or ns is None:
+        return []
+    omega = SR.var('omega')
     out = []
     for key, val in (hook(ns, omega) or {}).items():
         if not delay_factors(SR(val), omega):
             continue
-        try:
-            e = SR(strip(SR(val))).rational_simplify()
-            proper = SR(e.numerator()).degree(omega) < SR(e.denominator()).degree(omega)
-        except Exception:
-            proper = False
-        if not proper:
+        rho = _stripped_relative_degree(val, omega)
+        if rho is None or rho < 1:
             out.append(str(key))
     return sorted(out)
+
+
+def _kernel_attachment_names(ctx, ns=None) -> dict:
+    """``{kernel name: {names of the fields it filters}}`` from the expanded
+    theory's namespace (``ns``, else the analyzer's)."""
+    raw = None
+    for ns_ in (ns, ctx.ns, ctx.pipeline_ns):
+        raw = getattr(ns_, '_kernel_attachments', None) if ns_ is not None else None
+        if raw:
+            break
+    return {str(k): {str(f) for f in v} for k, v in (raw or {}).items()}
+
+
+def delta_carrying_fields(ctx, orders=(1, 2)) -> set:
+    """The physical fields whose propagator has a delta part (point-process
+    fields), read off ``G = K^{-1}`` of the true model's analyzer context
+    with every delay factor replaced by its Pade (n, n) image for each ``n``
+    in ``orders`` (both parities: the image tends to ``(-1)^n``, so a
+    delayed spike train counts too).  Raises when it cannot decide."""
+    from sage.all import SR
+    from daedalus.api import analyze as _an
+    if ctx.K_ft is None or ctx.num_params is None:
+        raise ValueError('no linear operator to read')
+    names = list(ctx.ring_names)
+    nt = int(ctx.n_tilde)
+    out = set()
+    for n in orders:
+        K = ctx.K_ft.apply_map(
+            lambda e, _n=int(n): pade_substitute(SR(e).subs(ctx.num_params), ctx.omega, _n))
+        res = _an._exact_poles(K, ctx.omega, nt)
+        if res is None:
+            raise ValueError('the propagator inverse did not finish within its budget')
+        out |= {names[nt + i] for (i, _j) in res[3]}
+    return out
+
+
+def contact_delay_kernels(model: dict, ctx, ns=None) -> list:
+    """The delayed kernels whose (n, n) Pade image would put a jump at
+    ``t = 0+`` into the kernel that a point process samples there: a delay
+    times a filter of relative degree one (``Kernel.delay(d) *
+    Kernel.exponential(tau)``), filtering a field whose propagator has a
+    delta part (a spike train).  The all-pass image is ``(-1)^n + (strictly
+    proper)``: its direct term passes through the filter, so the
+    approximated kernel starts at ``(-1)^n h(0+)`` instead of 0, and a
+    point-process covariance, which holds ``Lambda K(tau)`` at short lags,
+    keeps an error of that size at ``tau = 0`` at every order.  These kernels
+    take the strictly proper ``[n-1/n]`` approximant (its kernel starts at
+    0).  A filter of relative degree >= 2 starts at 0 by itself, and a
+    continuous field only integrates the short-lag layer, so neither needs
+    it.  When the delta parts cannot be decided every such kernel is listed
+    (the strictly proper approximant converges as well, only one order
+    lower)."""
+    from sage.all import SR
+    hook = model.get('kernel_ft_image')
+    if hook is None or ns is None:
+        return []
+    omega = SR.var('omega')
+    first = sorted(str(key) for key, val in (hook(ns, omega) or {}).items()
+                   if delay_factors(SR(val), omega)
+                   and _stripped_relative_degree(val, omega) == 1)
+    if not first:
+        return []
+    att = _kernel_attachment_names(ctx, ns)
+    try:
+        delta = delta_carrying_fields(ctx)
+    except Exception:
+        return first
+    if not att:
+        return first
+    return [k_ for k_ in first if att.get(k_, set()) & delta]
 
 
 def bare_delays_on_delta_lines(ctx, bare, orders=(1, 2), ns=None):
@@ -1001,26 +1113,12 @@ def bare_delays_on_delta_lines(ctx, bare, orders=(1, 2), ns=None):
     (both parities: the image tends to ``(-1)^n``, so a delayed spike train
     ``delta(t - d)`` counts too).  Raises when it cannot decide (the caller
     then falls back to the per-model test)."""
-    from sage.all import SR
-    from daedalus.api import analyze as _an
-    raw = None
-    for ns_ in (ns, ctx.ns, ctx.pipeline_ns):
-        raw = getattr(ns_, '_kernel_attachments', None) if ns_ is not None else None
-        if raw:
-            break
-    att = {str(k): {str(f) for f in v} for k, v in (raw or {}).items()}
+    att = _kernel_attachment_names(ctx, ns)
     if not att or ctx.K_ft is None or ctx.num_params is None:
         raise ValueError('no kernel attachments / linear operator to read')
+    from sage.all import SR
     names = list(ctx.ring_names)
-    nt = int(ctx.n_tilde)
-    delta_fields = set()
-    for n in orders:
-        K = ctx.K_ft.apply_map(
-            lambda e, _n=int(n): pade_substitute(SR(e).subs(ctx.num_params), ctx.omega, _n))
-        res = _an._exact_poles(K, ctx.omega, nt)
-        if res is None:
-            raise ValueError('the propagator inverse did not finish within its budget')
-        delta_fields |= {names[nt + i] for (i, _j) in res[3]}
+    delta_fields = delta_carrying_fields(ctx, orders)
     # the kernels in a vertex with at least two delta-carrying physical legs
     # (the delayed leg included: it is a leg of the field it delays)
     delta_idx = [j for j, nm in enumerate(names) if nm in delta_fields]
@@ -1141,6 +1239,10 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     # only then are its warnings held back (a retry that completes replaces
     # them); every other model runs exactly as before
     bare = bare_delay_kernels(model, ns)
+    # a delay times a first-order filter on a spike train: the strictly
+    # proper [n-1/n] approximant for that kernel (contact_delay_kernels)
+    contact = contact_delay_kernels(model, ctx, ns)
+    model_run = dict(model, _delay_proper_kernels=tuple(contact)) if contact else model
     w_first = []
     cache_key = _order_cache_key(model, ctx, opts, call, k, max_ell, exact) \
         if loops_need_n else None
@@ -1152,7 +1254,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         # this entry searched before: one run at its order, with that search's
         # truncation tolerance
         try:
-            out = _run_orders(model, sub_call, [rec['n']], opts, k, exact, loops_need_n, ctx,
+            out = _run_orders(model_run, sub_call, [rec['n']], opts, k, exact, loops_need_n, ctx,
                               runs, walls, skipped, failed, ests, verbose, call,
                               proper=rec['approximant'] == 'pade_proper', t_first=rec['trunc'])
         except Exception:
@@ -1177,7 +1279,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         if n0 in seq and seq.index(n0) > 0:
             seq2 = [seq[seq.index(n0) - 1]] + seq2
         try:
-            out = _run_orders(model, sub_call, seq2, opts, k, exact, loops_need_n, ctx,
+            out = _run_orders(model_run, sub_call, seq2, opts, k, exact, loops_need_n, ctx,
                               runs, walls, skipped, failed, ests, verbose, call,
                               proper=base['approximant'] == 'pade_proper')
         except Exception:
@@ -1194,10 +1296,10 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         if bare:
             with warnings.catch_warnings(record=True) as w_first:
                 warnings.simplefilter('always')
-                out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+                out = _run_orders(model_run, sub_call, seq, opts, k, exact, loops_need_n, ctx,
                                   runs, walls, skipped, failed, ests, verbose, call)
         else:
-            out = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+            out = _run_orders(model_run, sub_call, seq, opts, k, exact, loops_need_n, ctx,
                               runs, walls, skipped, failed, ests, verbose, call)
     est, cap, n_used, incomplete, ctrl = out
     # the delta part is read off the (rational) approximated model's analysis
@@ -1239,7 +1341,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         for dct in (runs, walls, skipped, failed, ests):
             dct.clear()
         try:
-            out2 = _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx,
+            out2 = _run_orders(model_run, sub_call, seq, opts, k, exact, loops_need_n, ctx,
                                runs, walls, skipped, failed, ests, verbose, call,
                                proper=True)
         except Exception as exc:          # the first attempt's record stands
@@ -1268,7 +1370,7 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         # a pinned order is estimated as the search estimates its orders:
         # against the order below it
         est, m_est, why = _fixed_order_estimate(
-            model, sub_call, n_used, opts, k, exact, ctx, runs, walls, skipped, failed,
+            model_run, sub_call, n_used, opts, k, exact, ctx, runs, walls, skipped, failed,
             verbose, call, ctrl, approximant == 'pade_proper')
         ctrl['estimate_order'] = m_est
         if est is not None:
@@ -1276,6 +1378,31 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
             cap = f'fixed order n = {n_used} (estimated against n = {m_est})'
         else:
             cap = f'fixed order n = {n_used}: no error estimate ({why})'
+    ctrl['parity_probe'] = None
+    if (loops_need_n and est is not None and not incomplete and source != 'replay'
+            and (opts['estimate'] or not fixed)):
+        # the doubling estimate compares orders of one parity (n // 2, n): an
+        # error that alternates with the parity of n (the (-1)^n direct term
+        # of the all-pass image reaching an observable) cancels in it.  One
+        # order of the other parity, just above n // 2, measures it; it is
+        # more accurate than n // 2, so it raises the estimate only when
+        # such an error is there.
+        p_est, m_p, why_p, wall_p = _parity_probe(
+            model_run, sub_call, n_used, opts, k, exact, ctx, runs, walls, failed,
+            verbose, call, ctrl, approximant == 'pade_proper')
+        ctrl['parity_probe'] = {'order': m_p, 'est': p_est, 'note': why_p,
+                                'wall_s': None if wall_p is None else round(wall_p, 3)}
+        if p_est is not None and p_est > est:
+            note = (f'the opposite-parity order n = {m_p} differs by {p_est:.3g} '
+                    f'(the same-parity estimate was {est:.3g}: an error that '
+                    'alternates with the parity of n)')
+            est = p_est
+            ests[n_used] = est
+            cap = f'{cap}; {note}' if cap else note
+            if est > opts['tol'] and str(ctrl.get('stop') or '').startswith('target'):
+                ctrl['stop'] = note
+    elif source == 'replay':
+        ctrl['parity_probe'] = (rec or {}).get('parity_probe')
     if not loops_need_n:
         target_met = True
     elif fixed and est is None:
@@ -1302,11 +1429,12 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
     if source != 'replay' and cache_key is not None and not incomplete:
         _order_cache_put(cache_key, entry, dict(
             n=n_used, approximant=approximant, trunc=ctrl['truncation_by_order'].get(n_used),
-            est=est, ests=dict(ests), cap=cap, stop=ctrl['stop']))
+            est=est, ests=dict(ests), cap=cap, stop=ctrl['stop'],
+            parity_probe=ctrl.get('parity_probe')))
     ctrl['order_source'] = source
     _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
-            t_all, ctrl, approximant)
+            t_all, ctrl, approximant, contact)
     return r
 
 
@@ -1363,6 +1491,10 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
                         'to run it)')
             break
         walls[n] = time.perf_counter() - t0
+        _eng = r.get('phase_j_engine') or {}
+        ctrl.setdefault('statespace_share_by_order', {})[n] = (
+            float(_eng.get('statespace_share') or 0.0)
+            if _eng.get('engine') == 'statespace' else 0.0)
         if exact is not None:
             _install_exact_tree(r, exact, call)
         if r.get('status') == 'incomplete':
@@ -1386,6 +1518,8 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
         bad_tree = (loops_need_n and exact is not None
                     and r.get('delay_tree_vs_pade') is not None
                     and not r['delay_tree_vs_pade'] <= 1.0)
+        if r.get('delay_tree_vs_pade') is not None:
+            ctrl.setdefault('tree_vs_pade_by_order', {})[n] = float(r['delay_tree_vs_pade'])
         if bad_tree or not _finite(r, k, t_scale):
             why = ('its Pade tree is %.3g of max|C| away from the exact tree'
                    % r['delay_tree_vs_pade'] if bad_tree else 'non-finite values')
@@ -1394,7 +1528,7 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
                 continue
             if prev is None:
                 raise RuntimeError(f'delay: no Pade order up to n = {n} is usable ({why}); '
-                                   "raise delay={'n_max': ...} (a long delay needs a higher order)")
+                                   + _unusable_remedy(ctrl.get('tree_vs_pade_by_order') or {}))
             failed[n] = why
             cap = f'order n = {n} is not usable ({why})'
             break
@@ -1488,6 +1622,8 @@ def _fixed_order_estimate(model, sub_call, n, opts, k, exact, ctx, runs, walls, 
         failed[m] = 'Phase J skipped diagrams' if out[3] else 'no usable run'
         return None, m, f'order n = {m}: {failed[m]}'
     runs[m], walls[m] = runs_m[m], walls_m[m]
+    ctrl.setdefault('statespace_share_by_order', {}).update(
+        out[4].get('statespace_share_by_order') or {})
     t_scale = ctrl.get('sample_time_scale') or 1.0
     tot_m, loop_m = _observable(runs_m[m], k, t_scale)
     tot_n, loop_n = _observable(runs[n], k, t_scale)
@@ -1497,6 +1633,61 @@ def _fixed_order_estimate(model, sub_call, n, opts, k, exact, ctx, runs, walls, 
         print(f'[delay] fixed order n = {n}: estimated relative error {est:.3g} '
               f'(against n = {m})')
     return est, m, None
+
+
+def _unusable_remedy(dist: dict) -> str:
+    """The remedy of the refusal "no Pade order is usable": raising
+    ``n_max`` helps only when the Pade tree's distance to the exact tree
+    (``dist``: {order: distance}) shrinks with the order."""
+    ns_ = sorted(dist)
+    if len(ns_) >= 2 and not dist[ns_[-1]] < 0.5 * dist[ns_[0]]:
+        trail = ', '.join(f'n = {n_}: {dist[n_]:.3g}' for n_ in ns_)
+        return ('the distance does not shrink with the order (' + trail + '), so a '
+                "higher delay={'n_max': ...} will not help: the Pade approximant does "
+                'not converge to this delayed model; this is a limitation of the '
+                'delay route for this model, please report it')
+    return "raise delay={'n_max': ...} (a long delay needs a higher order)"
+
+
+def _parity_probe(model, sub_call, n, opts, k, exact, ctx, runs, walls, failed, verbose,
+                  call, ctrl, proper):
+    """The estimate of order ``n`` against the smallest order ``m > n // 2``
+    of the other parity (``max |C_m - C_n| / max |C_n|``, loops only with
+    the exact tree), with the truncation tolerance of ``n``.  Returns
+    ``(est, m, None, wall)``, or ``(None, m, why, None)`` when there is no
+    such order below ``n`` or it does not run (``wall``: of the probe's own
+    run, ``None`` when order ``m`` had run already).  The probe is not
+    added to ``runs``: ``orders_run`` stays the search's."""
+    m = n // 2 + 1
+    if m % 2 == n % 2:
+        m += 1
+    if m >= n:
+        return None, None, f'no order of the other parity below n = {n}', None
+    if m in runs:
+        r_m, wall = runs[m], None
+    else:
+        runs_m, walls_m, skipped_m, failed_m = {}, {}, {}, {}
+        try:
+            out = _run_orders(model, sub_call, [m], opts, k, exact, True, ctx, runs_m, walls_m,
+                              skipped_m, failed_m, {}, verbose, call, proper=proper,
+                              t_first=ctrl['truncation_by_order'].get(n))
+        except Exception as exc:
+            return (None, m, f'order n = {m} failed ({type(exc).__name__}: {str(exc)[:200]})',
+                    None)
+        if out[2] is None or out[3]:
+            return None, m, f'order n = {m}: ' + ('Phase J skipped diagrams' if out[3] else
+                                                  f'no usable run ({skipped_m or failed_m})'), None
+        r_m, wall = runs_m[m], walls_m[m]
+        ctrl.setdefault('statespace_share_by_order', {}).update(
+            out[4].get('statespace_share_by_order') or {})
+    t_scale = ctrl.get('sample_time_scale') or 1.0
+    tot_m, loop_m = _observable(r_m, k, t_scale)
+    tot_n, loop_n = _observable(runs[n], k, t_scale)
+    est = (_rel(loop_m, loop_n, tot_n) if exact is not None
+           else _rel(tot_m, tot_n, tot_n))
+    if verbose:
+        print(f'[delay] n = {n} against the opposite-parity order n = {m}: {est:.3g}')
+    return est, m, None, wall
 
 
 def _lastargs(last, k, m):
@@ -1558,7 +1749,7 @@ def _predicted_growth(ctx, n, nxt, prev, walls, cache, ctrl, tols=None, r_last=N
 
 def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, runs, walls,
             skipped, failed, ests, est, cap, n_used, incomplete, target_met, loops_need_n,
-            t_all, ctrl, approximant='pade'):
+            t_all, ctrl, approximant='pade', contact=()):
     """The record of ``compute_delayed`` (``r['delay']``, the report, the files,
     the warning)."""
     # 4. the record
@@ -1570,6 +1761,10 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         # 'pade': (n, n); 'pade_proper': the strictly proper [n-1/n] (a hard
         # delay at a vertex leg: the (n, n) image is not strictly proper)
         'approximant': approximant,
+        # kernels that took the strictly proper [n-1/n] approximant within a
+        # (n, n) run: a delay times a first-order filter on a spike train
+        # (contact_delay_kernels)
+        'proper_kernels': sorted(contact or ()),
         'n': n_used,
         'orders_run': sorted(runs),
         'orders_skipped_unstable': skipped,
@@ -1602,6 +1797,14 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'stop_reason': ctrl['stop'],
         # a pinned order: the order its estimate was measured against
         'estimate_order': ctrl.get('estimate_order'),
+        # the share of each order's Phase J subsets on the state-space route
+        # (below 1: the route declined a realization, e.g. an ill-conditioned
+        # high order; that order's lazy evaluations, such as the spectra's
+        # quadrature, then run mode sums)
+        'statespace_share_by_order': ctrl.get('statespace_share_by_order') or {},
+        # the order of the other parity that checks the estimate
+        # ({'order', 'est', 'note'}; est_rel_error is the larger of the two)
+        'parity_probe': ctrl.get('parity_probe'),
         # 'search'; 'replay': this entry's earlier search at this model and point
         # (order_cache), its estimate and target; 'verified': the search of another
         # entry started the ladder at the cached order (the estimate is this
@@ -1729,8 +1932,11 @@ def _record_in_report(r, report_true, info, policy=None):
     names = ', '.join(f'{kn} (d = {", ".join(ds)})' for kn, ds in info['delays'].items())
     est = info['est_rel_error']
     m_ = n - 1 if info.get('approximant') == 'pade_proper' else n
+    sp_k = info.get('proper_kernels') or []
     loop_txt = ('the loops by Pade (%d, %d) of exp(-i omega d)' % (m_, n)
                 + (' (strictly proper: a delay at a vertex leg)' if m_ != n else '')
+                + (' ([%d/%d] for %s: a delayed first-order filter of a spike train)'
+                   % (n - 1, n, ', '.join(sp_k)) if sp_k and m_ == n else '')
                 + (f', est. rel. error {est:.2g} (|C_n - C_2n|)' if est is not None else ''))
     tree_txt = ('the tree exact (linear delayed covariance, %s)' % info['tree_method']
                 if info['tree'] == 'exact' else
@@ -1749,6 +1955,7 @@ def _record_in_report(r, report_true, info, policy=None):
     entry = _an.LedgerEntry(
         kind='approximation', name='delay:' + ','.join(info['delays']),
         detail=(f'Pade({m_},{n}) of exp(-i omega d) in the loops'
+                + (f' (Pade({n - 1},{n}) for {", ".join(sp_k)})' if sp_k and m_ == n else '')
                 + (f'; est. rel. error {est:.2g}' if est is not None else '')
                 + ('; tree exact' if info['tree'] == 'exact' else '; tree Pade')
                 + (f'; realizations balanced-truncated (relative H-inf tolerance '
