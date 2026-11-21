@@ -136,7 +136,7 @@ def _record_pole_analysis(out, G_ft_F, Q_poly, nf, roots=None,
         Qc = PolynomialRing(CDF, 'om_c')(
             [complex(c) for c in Q_poly.coefficients(sparse=False)])
         roots = Qc.roots(CDF)
-    poles = (sorted((complex(r) for r, _ in roots),
+    poles = (sorted(verified_roots(Q_poly, [complex(r) for r, _ in roots]),
                     key=lambda p: (p.imag, p.real))
              if Q_poly.degree() > 0 else [])
     if squarefree is None:
@@ -147,6 +147,40 @@ def _record_pole_analysis(out, G_ft_F, Q_poly, nf, roots=None,
     out.update(degree=int(Q_poly.degree()), poles=tuple(poles),
                squarefree=squarefree, delta=tuple(delta),
                improper=tuple(improper))
+
+
+#: Precision (bits) of the roots that ``verified_roots`` recomputes.
+VERIFY_ROOTS_PREC = 160
+
+
+def verified_roots(Q_poly, roots, prec=VERIFY_ROOTS_PREC):
+    """The roots of the exact polynomial ``Q_poly`` (over ``QQ[i]``), as
+    complex numbers, from its double-precision roots ``roots``: when one of
+    them lies on or below the real axis (or within ``NEAR_AXIS_RTOL`` of
+    it), all of them are recomputed from the exact coefficients at ``prec``
+    bits (PARI ``polroots``) and returned instead.  The roots of a high-degree
+    ``Q`` (a Pade approximant of a delay gives degree ~ 100 and more) come out
+    of a double-precision root finder far off, some in the lower half plane
+    although every true root is retarded; the stability verdict reads
+    them.  ``roots`` is returned unchanged when none is suspect or the
+    recomputation fails."""
+    roots = [complex(r) for r in roots]
+    if not any(r.imag <= NEAR_AXIS_RTOL * abs(r) for r in roots):
+        return roots
+    try:
+        from sage.all import pari, QQ
+        I = pari('I')
+        cs = []
+        for c in reversed(list(Q_poly.list())):
+            v = list(c.list()) if hasattr(c, 'list') else [c]
+            a = pari(QQ(v[0]))
+            b = pari(QQ(v[1])) if len(v) > 1 else 0
+            cs.append(a + b * I)
+        hp = pari.Pol(cs).polroots(precision=int(prec))
+        out = [complex(r) for r in hp]
+    except Exception:
+        return roots
+    return out if len(out) == len(roots) else roots
 
 
 def _record_pole_analysis_safe(out, *args, **kw):
