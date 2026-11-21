@@ -480,6 +480,76 @@ def _refuse_result(result):
                             'closures (a loaded file?)')
 
 
+#: A predicted quadrature wall time (s) above which ``spectra`` says so
+#: before it integrates (the run goes on).
+QUAD_ADVISORY_S = 600.0
+#: Lower bound of the C(tau) evaluations of one QUADPACK integral at the
+#: default tolerances (a 21-point Gauss-Kronrod rule on a few subintervals;
+#: the real and imaginary parts share the memoized evaluations).
+_QUAD_EVALS_MIN = 100
+
+
+def _quad_cost_advisory(result, c, quad_orders, om, Ts, why):
+    """The predicted wall time of the quadrature orders (``None`` when there
+    are none): one evaluation of each order's Phase J callable is timed (a
+    lazy evaluation, which on the pole route runs a whole mode sum) and
+    multiplied by a lower bound of the evaluations of the integrals asked for
+    (``_QUAD_EVALS_MIN`` per QUADPACK integral: the spectrum at each
+    nonzero frequency takes two oscillatory integrals of two evaluations of
+    C each, ``S0`` and both one-sided integrals to infinity three, each
+    window up to two per side).  Above ``QUAD_ADVISORY_S`` a
+    ``SpectraWarning`` says so before the integration starts."""
+    if not quad_orders:
+        return None
+    import time as _time
+    per_eval = {}
+    for e in quad_orders:
+        fn = (c.smooth_fns or {}).get(e)
+        if fn is None:
+            continue
+        ts = []
+        for t in (0.613, -1.377):          # off any grid; the second is the steady cost
+            t0 = _time.perf_counter()
+            try:
+                complex(fn(0.0, t))
+            except Exception:
+                break
+            ts.append(_time.perf_counter() - t0)
+        if ts:
+            per_eval[e] = min(ts)
+    n_w = 0 if om is None else int(np.count_nonzero(np.asarray(om) != 0.0))
+    n_w0 = 0 if om is None else int(np.size(om)) - n_w
+    n_T = 0 if Ts is None else int(np.size(Ts))
+    units = 4 * n_w + 2 * n_w0 + 3 + 4 * n_T
+    pred = sum(per_eval.values()) * units * _QUAD_EVALS_MIN
+    out = {'orders': list(quad_orders), 'eval_s_by_ell': per_eval,
+           'predicted_s_min': round(pred, 1)}
+    if pred > QUAD_ADVISORY_S:
+        reason = '; '.join(f'ell={e}: {why.get(e)}' for e in quad_orders)
+        dl = result.get('delay') if isinstance(result.get('delay'), dict) else None
+        hint = ''
+        if dl is not None:
+            lower = [n_ for n_ in (dl.get('orders_run') or []) if n_ < (dl.get('n') or 0)]
+            share = (dl.get('statespace_share_by_order') or {})
+            ok = [n_ for n_ in lower if float(share.get(n_, 0.0)) >= 1.0]
+            hint = (f" The delay order n = {max(ok)} ran entirely on the state-space route, "
+                    f"whose spectra are exact: delay={{'order': {max(ok)}}} pins it."
+                    if ok else '')
+        msg = (f'spectra: the numerical integration of loop order(s) {list(quad_orders)} '
+               f'is predicted to take at least {pred:.0f} s ({units} integrals x '
+               f'>= {_QUAD_EVALS_MIN} evaluations x '
+               + ', '.join(f'{v:.3g} s per evaluation of ell={e}' for e, v in per_eval.items())
+               + f'; {reason}). It goes on; fewer frequencies and windows, or no '
+               'spectra=, are faster.' + hint)
+        out['advisory'] = msg
+        import sys as _sys
+        print(f'SpectraWarning (advisory): {msg}', file=_sys.stderr, flush=True)
+        from daedalus.api.save import _ensure_warning_shown
+        _ensure_warning_shown(SpectraWarning, 'always', message=msg, stacklevel=3)
+        warnings.warn(msg, SpectraWarning, stacklevel=3)
+    return out
+
+
 def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
             epsrel=_EPSREL, limit=_LIMIT) -> dict:
     """The exact spectral and integrated outputs of a live k = 2 result
@@ -570,6 +640,7 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
                '(error estimates in error_by_ell)')
         warnings.warn(msg, MEFallbackWarning, stacklevel=2)
         notes.append(msg)
+    quad_cost = _quad_cost_advisory(result, c, quad_orders, om, Ts, why)
 
     nan = complex('nan')
     out_S, out_I, out_In, out_Iinf, out_Iinfn, out_C0 = {}, {}, {}, {}, {}, {}
@@ -710,6 +781,7 @@ def spectra(result, omega=None, T=None, *, method='auto', epsabs=_EPSABS,
         'status': 'ok',
         'notes': notes,
         'conventions': CONVENTIONS,
+        'quad_cost': quad_cost,
     }
     dl_rec = result.get('delay') if isinstance(result.get('delay'), dict) \
         else None

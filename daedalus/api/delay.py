@@ -1491,6 +1491,10 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
                         'to run it)')
             break
         walls[n] = time.perf_counter() - t0
+        _eng = r.get('phase_j_engine') or {}
+        ctrl.setdefault('statespace_share_by_order', {})[n] = (
+            float(_eng.get('statespace_share') or 0.0)
+            if _eng.get('engine') == 'statespace' else 0.0)
         if exact is not None:
             _install_exact_tree(r, exact, call)
         if r.get('status') == 'incomplete':
@@ -1618,6 +1622,8 @@ def _fixed_order_estimate(model, sub_call, n, opts, k, exact, ctx, runs, walls, 
         failed[m] = 'Phase J skipped diagrams' if out[3] else 'no usable run'
         return None, m, f'order n = {m}: {failed[m]}'
     runs[m], walls[m] = runs_m[m], walls_m[m]
+    ctrl.setdefault('statespace_share_by_order', {}).update(
+        out[4].get('statespace_share_by_order') or {})
     t_scale = ctrl.get('sample_time_scale') or 1.0
     tot_m, loop_m = _observable(runs_m[m], k, t_scale)
     tot_n, loop_n = _observable(runs[n], k, t_scale)
@@ -1672,6 +1678,8 @@ def _parity_probe(model, sub_call, n, opts, k, exact, ctx, runs, walls, failed, 
             return None, m, f'order n = {m}: ' + ('Phase J skipped diagrams' if out[3] else
                                                   f'no usable run ({skipped_m or failed_m})'), None
         r_m, wall = runs_m[m], walls_m[m]
+        ctrl.setdefault('statespace_share_by_order', {}).update(
+            out[4].get('statespace_share_by_order') or {})
     t_scale = ctrl.get('sample_time_scale') or 1.0
     tot_m, loop_m = _observable(r_m, k, t_scale)
     tot_n, loop_n = _observable(runs[n], k, t_scale)
@@ -1789,6 +1797,11 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         'stop_reason': ctrl['stop'],
         # a pinned order: the order its estimate was measured against
         'estimate_order': ctrl.get('estimate_order'),
+        # the share of each order's Phase J subsets on the state-space route
+        # (below 1: the route declined a realization, e.g. an ill-conditioned
+        # high order; that order's lazy evaluations, such as the spectra's
+        # quadrature, then run mode sums)
+        'statespace_share_by_order': ctrl.get('statespace_share_by_order') or {},
         # the order of the other parity that checks the estimate
         # ({'order', 'est', 'note'}; est_rel_error is the larger of the two)
         'parity_probe': ctrl.get('parity_probe'),
