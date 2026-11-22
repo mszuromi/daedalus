@@ -26,6 +26,8 @@ dependencies:
   - numba=0.68.0         # loop-integrator speed; required by the sim cells in notebooks/examples/
   - pip>=26.2.2          # security minimum (Oct 2026 pip / certifi CA incident)
   - certifi>=2026.10.19  # security minimum (same incident: the revised CA bundle)
+  - cypari2=2.2.4        # conda-forge's cypari2 2.2.8 (Nov 2026) segfaults in Sage's mpfr -> PARI conversion
+                         # (sage/libs/pari/convert_sage_real_mpfr.pyx) on CI; 2.2.4 is the build the suite passed on
   - setuptools=82.0.1    # distutils for pyximport: the compiled enumeration (engine/enumeration/fastenum.py);
                          # Python >= 3.12 has none, and conda's sage 10.9 / py3.14 does not pull setuptools in
                          # (without it the pure-Python enumeration runs, with a warning)
