@@ -1133,7 +1133,24 @@ def _hartree_delayed(model, parameters, delay, kw):
     order search of the loop path (``daedalus.api.delay``): ``n_start``, doubling up
     to ``n_max``, the first order that agrees with the one before to ``tol``
     (the mean, the covariance and the lag correlator, relative to the
-    largest entry).  A target that is not met is refused."""
+    largest entry).  A target that is not met is refused.
+
+    Every kernel takes the diagonal (n, n) approximant, also a delayed
+    first-order filter of a spike train, for which the loop path takes the
+    strictly proper ``[n-1/n]`` one (``daedalus.api.delay.contact_delay_kernels``,
+    ``result['delay']['proper_kernels']``).  The loop path needs it because a
+    point-process covariance holds the kernel pointwise at short lags
+    (``Lambda K(tau)``), where the (n, n) kernel starts at ``(-1)^n f(0+)``
+    instead of 0.  The closure reports no such covariance: its input fields
+    (point processes, noises exposed as fields) are replaced by their drive
+    and eliminated, and every field it reports is a dynamical one, which
+    integrates the kernel.  There the all-pass (n, n) image is the better
+    approximant: ``|P_n(-i x)/P_n(i x)| = 1`` keeps the modulus of the kernel's
+    image exact, so a delay of an exogenous input is reproduced exactly at
+    every order (the delay is invisible in the stationary statistics of the
+    field it drives), while the ``[n-1/n]`` image, which is not all-pass,
+    leaves an error of 1e-3 at n = 8 and 1e-4 at n = 16 there.
+    ``result.info['delay']['approximant']`` records the choice."""
     from daedalus.api import delay as D
     o = D.resolve_options(delay)
     warn = kw.get('warn', True)
@@ -1148,6 +1165,9 @@ def _hartree_delayed(model, parameters, delay, kw):
                            'target_met': None if est is None else bool(est <= o['tol']),
                            'orders': list(orders), 'estimates': list(ests),
                            'kernels': names,
+                           # the diagonal (n, n) image for every kernel (no
+                           # [n-1/n] kernels: see _hartree_delayed)
+                           'approximant': 'pade', 'proper_kernels': [],
                            'lag_correlator_change': r.info.get(
                                'delay_lag_change')}
         msg = (f'the hard delay of {", ".join(names)} is embedded through its '

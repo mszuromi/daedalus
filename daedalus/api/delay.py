@@ -90,6 +90,28 @@ order of the other parity just above ``n // 2`` checks it
 two (the probe is more accurate than ``n // 2``, so it raises the estimate
 only when such an error is there).
 
+The true covariance of such a model jumps at ``|tau| = d`` (the kernel
+``f(t - d)`` starts at ``f(0+) != 0``).  No rational approximant has the jump:
+each smooths it over ``~d / n`` and rings about it (the Gibbs-like precursor
+of the Pade step response reaches back to ``tau = 0``), so lags within
+``~d / n`` of it carry about half the jump at every order, and two orders
+of a comparison agree there.  At k = 2 the approximated part of the lag
+correlator (the tree on a Pade tree, the loops on the exact tree) is fitted
+near each jump to the approximant's own step and ramp responses
+(``pade_step_ramp``, ``_jump_error``); the ringing envelope of the fit is the
+error per lag (``result['delay']['jump']['error_by_tau']``), its largest
+value relative to ``max |C|`` enters ``est_rel_error``, and the lags within
+``JUMP_LAYER d / n`` of a jump are marked (``['jump']['near_jump']``) and
+named in the ``DelayOrderWarning``.  A higher order narrows the layer but
+does not remove it; the exact tree (one delay, the default) does.
+
+The automatic search replaces an order whose realization the state-space
+route declines as ill-conditioned (graded beyond double precision: its
+subsets run on mode sums and its lazy evaluations, such as the spectra's
+quadrature, are slow) by the first neighbouring order ``n - 1, n + 1, n - 2,
+n + 2`` the route takes (``_statespace_neighbour``;
+``result['delay']['declined_orders']``).  A pinned order runs as given.
+
 Stability is decided with the TRUE exponential (``daedalus.api._kernel_stability``,
 the analyzer's G2-K gate), never from the approximant: an unstable delayed
 saddle is refused by name before any approximation runs.
@@ -1281,7 +1303,8 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         try:
             out = _run_orders(model_run, sub_call, seq2, opts, k, exact, loops_need_n, ctx,
                               runs, walls, skipped, failed, ests, verbose, call,
-                              proper=base['approximant'] == 'pade_proper')
+                              proper=base['approximant'] == 'pade_proper',
+                              avoid_declined=opts['order'] == 'auto')
         except Exception:
             out = None
         if out is None or out[2] is None or out[3]:
@@ -1297,10 +1320,12 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
             with warnings.catch_warnings(record=True) as w_first:
                 warnings.simplefilter('always')
                 out = _run_orders(model_run, sub_call, seq, opts, k, exact, loops_need_n, ctx,
-                                  runs, walls, skipped, failed, ests, verbose, call)
+                                  runs, walls, skipped, failed, ests, verbose, call,
+                                  avoid_declined=opts['order'] == 'auto')
         else:
             out = _run_orders(model_run, sub_call, seq, opts, k, exact, loops_need_n, ctx,
-                              runs, walls, skipped, failed, ests, verbose, call)
+                              runs, walls, skipped, failed, ests, verbose, call,
+                              avoid_declined=opts['order'] == 'auto')
     est, cap, n_used, incomplete, ctrl = out
     # the delta part is read off the (rational) approximated model's analysis
     # (the true model's G3 does not see poles through a delay factor)
@@ -1343,7 +1368,8 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
         try:
             out2 = _run_orders(model_run, sub_call, seq, opts, k, exact, loops_need_n, ctx,
                                runs, walls, skipped, failed, ests, verbose, call,
-                               proper=True)
+                               proper=True,
+                               avoid_declined=opts['order'] == 'auto')
         except Exception as exc:          # the first attempt's record stands
             out2 = None
             proper_error = f'{type(exc).__name__}: {str(exc)[:300]}'
@@ -1403,6 +1429,49 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
                 ctrl['stop'] = note
     elif source == 'replay':
         ctrl['parity_probe'] = (rec or {}).get('parity_probe')
+    ctrl['jump'] = None
+    if contact and k == 2 and loops_need_n and not incomplete:
+        # the true covariance jumps at |tau| = d (a delayed first-order filter
+        # of a spike train); every approximant smooths it over ~d/n, and both
+        # orders of a comparison carry about half the jump there, so the
+        # estimate above does not see it: a model of the ringing does
+        lags = jump_lags(contact, delays, ctx)
+
+        def _approximated_at(pts, _n=n_used):
+            # one run of the order reached on the fit lags: the approximated
+            # part of the correlator there (the loops when the tree is exact)
+            from daedalus.api._realization import truncation_scope
+            with truncation_scope(ctrl['truncation_by_order'].get(_n)):
+                rr = compute_cumulants(pade_model(model_run, _n, approximant == 'pade_proper'),
+                                       **dict(sub_call, tau_grid=np.asarray(pts, dtype=float)))
+            tot = np.asarray(rr['C_tau'], dtype=complex).ravel()
+            if exact is None:
+                return tot
+            t0_ = (rr.get('C_tau_by_ell') or {}).get(0)
+            return tot - (np.asarray(t0_, dtype=complex).ravel() if t0_ is not None else 0.0)
+
+        jrec = _jump_error(r, _approximated_at, n_used, lags, opts['tol']) if lags else None
+        ctrl['jump'] = jrec
+        if jrec is not None:
+            je = jrec.get('est_rel_error')
+            flagged = any(jrec.get('near_jump') or ())
+            if verbose and (flagged or je):
+                print(f'[delay] {_jump_note(jrec, n_used)}')
+            note = _jump_note(jrec, n_used)
+            if (flagged or (je is not None and est is not None and je > est)) \
+                    and note not in (cap or ''):
+                cap = f'{cap}; {note}' if cap else note
+            if je is not None and est is not None and je > est:
+                est = je
+                ests[n_used] = est
+                if est > opts['tol'] and str(ctrl.get('stop') or '').startswith('target'):
+                    ctrl['stop'] = note
+            elif flagged and (est is None or je is None):
+                # no estimate (estimate=False), or no fit: still never silent
+                from daedalus.api.save import _ensure_warning_shown
+                _msg = f'delay: {note}.'
+                _ensure_warning_shown(DelayOrderWarning, 'always', message=_msg, stacklevel=3)
+                warnings.warn(_msg, DelayOrderWarning, stacklevel=3)
     if not loops_need_n:
         target_met = True
     elif fixed and est is None:
@@ -1439,10 +1508,13 @@ def compute_delayed(model: dict, call: dict, delays: dict, ns=None):
 
 
 def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, walls,
-                skipped, failed, ests, verbose, call, proper=False, t_first=None):
+                skipped, failed, ests, verbose, call, proper=False, t_first=None,
+                avoid_declined=False):
     """The order loop of ``compute_delayed`` (``t_first``: the truncation
     tolerance of the first order, instead of the base one, to replay an order
-    from the order cache); returns ``(est, cap, n_used,
+    from the order cache; ``avoid_declined``: an order whose realization the
+    state-space route declines as ill-conditioned is replaced by a neighbouring
+    order it takes, ``_statespace_neighbour``); returns ``(est, cap, n_used,
     incomplete, ctrl)`` (``ctrl``: the controller's record: state counts,
     predictions, cost exponent, why it stopped)."""
     from daedalus.api.compute import compute_cumulants
@@ -1491,10 +1563,20 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
                         'to run it)')
             break
         walls[n] = time.perf_counter() - t0
-        _eng = r.get('phase_j_engine') or {}
-        ctrl.setdefault('statespace_share_by_order', {})[n] = (
-            float(_eng.get('statespace_share') or 0.0)
-            if _eng.get('engine') == 'statespace' else 0.0)
+        ctrl.setdefault('statespace_share_by_order', {})[n] = _statespace_share(r)
+        if avoid_declined and _declined_reasons(r):
+            # the state-space route declined this order's realization as
+            # ill-conditioned (graded beyond double precision): its subsets ran
+            # on mode sums, and its lazy evaluations (the spectra's quadrature)
+            # are slow; a neighbouring order whose realization the route takes
+            # serves the search as well (the estimate compares it with the
+            # order before, the parity probe with the other parity)
+            alt = _statespace_neighbour(model, sub_call, n, seq, prev, opts, proper, t_cur,
+                                        runs, ctrl, verbose, r)
+            if alt is not None:
+                n, r = alt[0], alt[1]
+                walls[n] = alt[2]
+                ctrl['truncation_by_order'][n] = t_cur
         if exact is not None:
             _install_exact_tree(r, exact, call)
         if r.get('status') == 'incomplete':
@@ -1601,6 +1683,68 @@ def _run_orders(model, sub_call, seq, opts, k, exact, loops_need_n, ctx, runs, w
     return est, cap, n_used, incomplete, ctrl
 
 
+#: How many neighbouring orders the search tries in place of an order whose
+#: realization the state-space route declines (``_statespace_neighbour``).
+NEIGHBOUR_TRIES = 2
+
+
+def _statespace_share(r) -> float:
+    """The share of a run's Phase J subsets on the state-space route (0 off
+    the route)."""
+    eng = r.get('phase_j_engine') or {}
+    return (float(eng.get('statespace_share') or 0.0)
+            if eng.get('engine') == 'statespace' else 0.0)
+
+
+def _declined_reasons(r) -> dict:
+    """The state-space route's declines of a run that an ill-conditioned
+    realization caused (``{reason: subsets}``, empty for none)."""
+    eng = r.get('phase_j_engine') or {}
+    return {str(k_): v for k_, v in (eng.get('ss_declined_by_reason') or {}).items()
+            if 'ill_conditioned' in str(k_)}
+
+
+def _statespace_neighbour(model, sub_call, n, seq, prev, opts, proper, t_cur, runs, ctrl,
+                          verbose, r_n):
+    """In place of order ``n``, whose realization the state-space route
+    declined as ill-conditioned (``r_n``: its run), the first of the orders
+    ``n - 1, n + 1, n - 2, n + 2`` (above the order before, at most ``n_max``,
+    not on the ladder, ``NEIGHBOUR_TRIES`` at most) that runs entirely on the
+    route, as ``(order, run, wall)``; ``None`` when none does (order ``n``
+    then stands: its values are right, its lazy evaluations slow).  The
+    record is ``ctrl['declined_orders'][n]``."""
+    from daedalus.api.compute import compute_cumulants
+    from daedalus.api._realization import truncation_scope
+    lo = prev if prev is not None else 1
+    cand = [c for c in (n - 1, n + 1, n - 2, n + 2)
+            if lo < c <= opts['n_max'] and c not in seq and c not in runs]
+    rec = {'reasons': _declined_reasons(r_n), 'statespace_share': _statespace_share(r_n),
+           'tried': {}, 'replaced_by': None}
+    ctrl.setdefault('declined_orders', {})[n] = rec
+    for c in cand[:NEIGHBOUR_TRIES]:
+        if verbose:
+            print(f'[delay] the state-space route declined the realization of n = {n} '
+                  f'({rec["reasons"]}): trying n = {c}')
+        t0 = time.perf_counter()
+        try:
+            with truncation_scope(t_cur):
+                r_c = compute_cumulants(pade_model(model, c, proper), **sub_call)
+        except Exception as exc:
+            rec['tried'][c] = f'{type(exc).__name__}: {str(exc)[:160]}'
+            continue
+        wall = time.perf_counter() - t0
+        share = _statespace_share(r_c)
+        ctrl.setdefault('statespace_share_by_order', {})[c] = share
+        rec['tried'][c] = share
+        raw = (r_c.get('phase_j_engine') or {}).get('statespace_share')
+        if (not _declined_reasons(r_c) and r_c.get('status') != 'incomplete'
+                and (raw is None or share >= 1.0)):
+            # every subset on the route (or none to route)
+            rec['replaced_by'] = c
+            return c, r_c, wall
+    return None
+
+
 def _fixed_order_estimate(model, sub_call, n, opts, k, exact, ctx, runs, walls, skipped,
                           failed, verbose, call, ctrl, proper):
     """The error estimate of a pinned order ``n``: the same pipeline at
@@ -1688,6 +1832,208 @@ def _parity_probe(model, sub_call, n, opts, k, exact, ctx, runs, walls, failed, 
     if verbose:
         print(f'[delay] n = {n} against the opposite-parity order n = {m}: {est:.3g}')
     return est, m, None, wall
+
+
+# ── the covariance's jump at |tau| = d (a delayed first-order filter of a
+#    spike train) ─────────────────────────────────────────────────────────
+
+#: Half-width, in units of ``d / n``, of the layer around ``|tau| = d`` that
+#: ``result['delay']['jump']['near_jump']`` marks: no rational approximant
+#: resolves the jump there (the Pade step response rises over about ``d / n``).
+JUMP_LAYER = 2.0
+#: Safety factor of the jump error model (the step-and-ramp fit leaves the
+#: filter's own decay across the layer out).  With it the largest estimated
+#: error was 1.2-1.6 times the true one at n = 8 and 16 on single-delay linear
+#: units against their exact tree, 0.95-1.05 times at n = 4.
+JUMP_SAFETY = 1.25
+#: Lags of the fit of the approximated covariance around each jump (one run
+#: of the order reached on them, on each side of tau = 0 the grid has).
+JUMP_FIT_POINTS = 21
+
+_PADE_PR_CACHE = {}
+
+
+def _pade_poles_residues(m: int, n: int):
+    """Poles ``p_k`` of the ``[m/n]`` Pade approximant ``R`` of ``exp(-z)`` and
+    the residues of ``R(z)/z`` there (60 digits, as mpmath numbers, cached):
+    the step response of ``R`` is ``1 + sum_k r_k exp(p_k x)`` for ``x > 0``
+    (time in units of the delay)."""
+    key = (int(m), int(n))
+    if key not in _PADE_PR_CACHE:
+        import mpmath as mp
+        with mp.workdps(60):
+            a, b = pade_mn_coefficients(m, n)
+            num = [mp.mpf(c.numerator) / c.denominator * (-1) ** k for k, c in enumerate(a)]
+            den = [mp.mpf(c.numerator) / c.denominator for c in b]
+            roots = mp.polyroots(den[::-1], maxsteps=400, extraprec=400)
+            dden = [k * den[k] for k in range(1, len(den))]
+            res = [mp.polyval(num[::-1], p) / mp.polyval(dden[::-1], p) / p for p in roots]
+        _PADE_PR_CACHE[key] = (roots, res)
+    return _PADE_PR_CACHE[key]
+
+
+def pade_step_ramp(m: int, n: int, x):
+    """``(sigma, rho)``: the step and ramp responses of the ``[m/n]`` Pade
+    approximant of ``exp(-z)`` at times ``x`` in units of the delay (the exact
+    delayed responses are ``Theta(x - 1)`` and ``(x - 1) Theta(x - 1)``).
+    Double precision while the residues allow it (``n <= 16``), mpmath
+    beyond."""
+    roots, res = _pade_poles_residues(m, n)
+    x = np.atleast_1d(np.asarray(x, dtype=float))
+    xp = np.maximum(x, 0.0)
+    big = max(abs(complex(r_)) for r_ in res)
+    if big < 1e8:
+        p = np.array([complex(z) for z in roots])
+        r = np.array([complex(z) for z in res])
+        E = np.exp(np.outer(xp, p))
+        sig = 1.0 + np.real(E @ r)
+        rho = xp + np.real(((E - 1.0) / p) @ r)
+    else:
+        import mpmath as mp
+        dps = 30 + int(math.log10(big))
+        sig, rho = np.empty(x.size), np.empty(x.size)
+        with mp.workdps(dps):
+            for i, xi in enumerate(xp):
+                xi = mp.mpf(float(xi))
+                e = [mp.e ** (p_ * xi) for p_ in roots]
+                sig[i] = float(mp.re(1 + mp.fsum(r_ * e_ for r_, e_ in zip(res, e))))
+                rho[i] = float(mp.re(xi + mp.fsum(r_ * (e_ - 1) / p_
+                                                  for r_, e_, p_ in zip(res, e, roots))))
+    return np.where(x > 0, sig, 0.0), np.where(x > 0, rho, 0.0)
+
+
+def _jump_envelope(m, n, x, J, K):
+    """``max |J (sigma - Theta) + K (rho - ramp)|`` over a window of half-width
+    ``1 / n`` around each ``x`` (units of the delay), on ``x``'s side of the
+    jump: the size of the approximant's ringing there, without the nodes of
+    its oscillation."""
+    out = np.zeros(np.size(x))
+    h = 1.0 / n
+    for i, x0 in enumerate(np.atleast_1d(x)):
+        lo, hi = (x0 - h, min(x0 + h, 1.0 - 1e-12)) if x0 < 1.0 else (max(x0 - h, 1.0), x0 + h)
+        ys = np.linspace(max(lo, 0.0), hi, 41)
+        s, r = pade_step_ramp(m, n, ys)
+        err = J * (s - (ys >= 1.0)) + K * (r - np.maximum(ys - 1.0, 0.0))
+        out[i] = float(np.max(np.abs(err)))
+    return out
+
+
+def jump_lags(contact, delays, ctx) -> dict:
+    """``{d: [kernels]}``: the numeric delays of the contact kernels
+    (``contact_delay_kernels``), at which the true covariance jumps: the
+    kernel ``f(t - d)`` starts at ``f(0+) != 0`` and a point process holds
+    ``Lambda K(tau)`` at short lags."""
+    from sage.all import SR
+    out = {}
+    for kn in contact or ():
+        for X in delays.get(kn, ()):
+            try:
+                d = float(SR(X).subs(ctx.num_params))
+            except Exception:
+                continue
+            if np.isfinite(d) and d > 0:
+                out.setdefault(round(d, 12), []).append(kn)
+    return {d: sorted(set(v)) for d, v in sorted(out.items())}
+
+
+def _jump_error(r, evaluate, n, lags, tol):
+    """The error of the approximated k = 2 lag correlator next to the jumps of
+    the true one at ``|tau| = d`` (``lags``: ``jump_lags``), which the order
+    comparisons cannot see (every order carries about half the jump within
+    ``~d / n`` of it).
+
+    Model: the approximated correlator near ``d`` is a smooth part plus ``J
+    sigma_n(|tau| / d) + K rho_n(|tau| / d)`` (the ``[n-1/n]`` step and ramp
+    responses, ``pade_step_ramp``); ``J`` (the jump) and ``K`` (the jump of the
+    slope) are fitted, with a quadratic background per window, to the
+    approximated part (the loops when the tree is exact) at ``JUMP_FIT_POINTS``
+    lags per jump, ``|tau| / d in [1 - w, 1 + w]``, ``w = min(1/2, 2/n)``, on
+    each side of ``tau = 0`` the grid has (``evaluate(lags)``: those values,
+    one run of order ``n`` on the fit lags).  The error at a grid lag is
+    ``JUMP_SAFETY`` times the ringing envelope of the fit (``_jump_envelope``),
+    summed over the jumps.  Returns the record (``est_rel_error``: the largest
+    error relative to ``max |C|``, as ``est_rel_error`` of the orders), or
+    ``None`` when ``r`` has no lag grid."""
+    taus = r.get('tau_grid')
+    C = r.get('C_tau')
+    if taus is None or C is None or r.get('C_times') is not None:
+        return None
+    taus = np.asarray(taus, dtype=float).ravel()
+    C = np.asarray(C)
+    if C.shape != taus.shape:
+        return None
+    m = n - 1
+    scale = float(np.max(np.abs(C))) if C.size else 0.0
+    rec = {'lags': [{'d': d, 'kernels': ks, 'layer_half_width': JUMP_LAYER * d / n}
+                    for d, ks in lags.items()], 'tau': taus.tolist(), 'approximant': f'[{m}/{n}]',
+           'error_by_tau': None, 'near_jump': None, 'est_rel_error': None, 'note': None,
+           'wall_s': None}
+    layer = np.zeros(taus.size, dtype=bool)
+    for d in lags:
+        layer |= np.abs(np.abs(taus) - d) <= JUMP_LAYER * d / n
+    t0 = time.perf_counter()
+    w = min(0.5, 2.0 / n)
+    xs = np.linspace(1.0 - w, 1.0 + w, JUMP_FIT_POINTS)
+    sides = [s for s in (1.0, -1.0) if np.any(np.sign(taus) == s) or (s > 0 and np.any(taus == 0))]
+    dl = list(lags)
+    pts = np.concatenate([d * xs for d in dl])
+    err = np.zeros(taus.size)
+    fits = {d: {} for d in lags}
+    try:
+        vals = np.asarray(evaluate(np.concatenate([s * pts for s in sides])), dtype=complex)
+        for i_s, s in enumerate(sides):
+            ys = vals[i_s * pts.size:(i_s + 1) * pts.size]
+            cols = []
+            for j, d in enumerate(dl):
+                ind = np.zeros(pts.size)
+                ind[j * xs.size:(j + 1) * xs.size] = 1.0
+                u = pts / d - 1.0
+                cols += [ind, ind * u, ind * u * u]
+            for d in dl:
+                sg, rh = pade_step_ramp(m, n, pts / d)
+                cols += [sg, rh]
+            X = np.column_stack(cols)
+            coef = np.linalg.lstsq(X, np.column_stack([ys.real, ys.imag]), rcond=None)[0]
+            coef = coef[:, 0] + 1j * coef[:, 1]
+            resid = float(np.max(np.abs(X @ coef - ys)))
+            JK = coef[3 * len(dl):]
+            on = (np.sign(taus) == s) | ((taus == 0) & (s > 0))
+            for j, d in enumerate(dl):
+                J, K = JK[2 * j], JK[2 * j + 1]
+                fits[d]['+' if s > 0 else '-'] = {
+                    'jump': complex(J) if abs(J.imag) > 1e-14 * abs(J) else float(J.real),
+                    'slope_jump': complex(K) if abs(K.imag) > 1e-14 * abs(K) else float(K.real),
+                    'fit_residual': resid}
+                if np.any(on):
+                    err[on] += JUMP_SAFETY * _jump_envelope(m, n, np.abs(taus[on]) / d, J, K)
+    except Exception as exc:
+        rec.update(near_jump=layer.tolist(), wall_s=round(time.perf_counter() - t0, 3),
+                   note=f'the jump fit failed ({type(exc).__name__}: {str(exc)[:160]})')
+        return rec
+    for e_ in rec['lags']:
+        e_['fit'] = fits[e_['d']]
+    thr = tol * scale
+    rec.update(error_by_tau=err.tolist(), near_jump=(layer & (err > thr)).tolist(),
+               est_rel_error=float(np.max(err) / scale) if scale > 0 else float(np.max(err)),
+               wall_s=round(time.perf_counter() - t0, 3))
+    return rec
+
+
+def _jump_note(rec, n):
+    """The cap / warning text of a jump record with flagged lags."""
+    near = [t for t, b in zip(rec['tau'], rec['near_jump'] or ()) if b]
+    ds = ', '.join(f'{d:.4g}' for d in (e['d'] for e in rec['lags']))
+    txt = (f'the true covariance jumps at |tau| = {ds} (a delayed first-order filter of a '
+           f'spike train); the approximant smooths each jump over ~d/n')
+    if near:
+        txt += (f': the lags {[round(t, 6) for t in near]} lie within {JUMP_LAYER:g} d/n of one '
+                'and carry part of it (no Pade order converges there pointwise; '
+                "result['delay']['jump']['error_by_tau'] has the estimated error per lag)")
+    if rec.get('est_rel_error') is not None:
+        txt += f'; its estimated relative error is {rec["est_rel_error"]:.3g} at n = {n}'
+    elif rec.get('note'):
+        txt += f' ({rec["note"]})'
+    return txt
 
 
 def _lastargs(last, k, m):
@@ -1802,9 +2148,20 @@ def _finish(r, model, call, opts, delays, report_true, ctx, exact, exact_note, r
         # high order; that order's lazy evaluations, such as the spectra's
         # quadrature, then run mode sums)
         'statespace_share_by_order': ctrl.get('statespace_share_by_order') or {},
+        # orders of the automatic search whose realization the route declined as
+        # ill-conditioned: {order: {'reasons', 'statespace_share', 'tried':
+        # {neighbour: share or error}, 'replaced_by': the neighbour run in its
+        # place, or None}} (_statespace_neighbour)
+        'declined_orders': ctrl.get('declined_orders') or {},
         # the order of the other parity that checks the estimate
         # ({'order', 'est', 'note'}; est_rel_error is the larger of the two)
         'parity_probe': ctrl.get('parity_probe'),
+        # k = 2, a delayed first-order filter of a spike train: the true
+        # covariance jumps at |tau| = d; the approximant's error there per lag
+        # ('error_by_tau'), the lags within JUMP_LAYER d/n of a jump
+        # ('near_jump'), the fitted jumps (_jump_error); est_rel_error
+        # includes its 'est_rel_error'
+        'jump': ctrl.get('jump'),
         # 'search'; 'replay': this entry's earlier search at this model and point
         # (order_cache), its estimate and target; 'verified': the search of another
         # entry started the ladder at the cached order (the estimate is this
